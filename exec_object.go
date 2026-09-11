@@ -95,13 +95,19 @@ func (st *execState) writeFieldValue(ctx context.Context, w *jsonw.Writer, obj *
 	return st.writeValue(ctx, w, v, fd.typ, fd.shape, f, &pathNode{parent: path, key: f.alias})
 }
 
-// callLeaf invokes a leaf executor with panic protection and, for resolver
-// fields, a FieldContext.
-func (st *execState) callLeaf(ctx context.Context, w *jsonw.Writer, f *planField, parent, args any, path *pathNode) (err error) {
+// fieldContext attaches a FieldContext for resolver fields and, when field
+// interceptors observe every field, for pure fields as well.
+func (st *execState) fieldContext(ctx context.Context, f *planField, parent, args any, path *pathNode) context.Context {
 	fd := f.def
-	if !fd.pure {
-		ctx = withField(ctx, &FieldContext{Field: fd.def, Object: fd.object.def, Args: args, Parent: parent, field: f, path: &pathNode{parent: path, key: f.alias}})
+	if fd.pure && len(st.e.fieldInterceptors) == 0 {
+		return ctx
 	}
+	return withField(ctx, &FieldContext{Field: fd.def, Object: fd.object.def, Args: args, Parent: parent, field: f, path: &pathNode{parent: path, key: f.alias}})
+}
+
+// callLeaf invokes a leaf executor with panic protection and a FieldContext.
+func (st *execState) callLeaf(ctx context.Context, w *jsonw.Writer, f *planField, parent, args any, path *pathNode) (err error) {
+	ctx = st.fieldContext(ctx, f, parent, args, path)
 	if st.e.recover {
 		defer func() {
 			if r := recover(); r != nil {
@@ -114,10 +120,7 @@ func (st *execState) callLeaf(ctx context.Context, w *jsonw.Writer, f *planField
 
 // callResolve invokes a composite executor with the same protections.
 func (st *execState) callResolve(ctx context.Context, f *planField, parent, args any, path *pathNode) (v any, err error) {
-	fd := f.def
-	if !fd.pure {
-		ctx = withField(ctx, &FieldContext{Field: fd.def, Object: fd.object.def, Args: args, Parent: parent, field: f, path: &pathNode{parent: path, key: f.alias}})
-	}
+	ctx = st.fieldContext(ctx, f, parent, args, path)
 	if st.e.recover {
 		defer func() {
 			if r := recover(); r != nil {
