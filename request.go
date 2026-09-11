@@ -35,58 +35,74 @@ func (r *Response) HasRequestErrors() bool {
 	return r.Data == nil && len(r.Errors) > 0
 }
 
-// WriteTo writes the JSON response envelope to w.
+// WriteTo writes the JSON response envelope to w with errors, data and
+// extensions in that order, omitting members that are empty. Data is written
+// straight from the execution buffer without an intermediate copy.
 func (r *Response) WriteTo(w io.Writer) (int64, error) {
-	b, err := r.MarshalJSON()
+	head, tail, err := r.envelope()
 	if err != nil {
 		return 0, err
 	}
-	n, err := w.Write(b)
-	return int64(n), err
+	var total int64
+	for _, part := range [][]byte{head, r.Data, tail} {
+		if len(part) == 0 {
+			continue
+		}
+		n, err := w.Write(part)
+		total += int64(n)
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
 }
 
-// MarshalJSON renders the response envelope with errors, data and extensions
-// in that order, omitting members that are empty.
-func (r *Response) MarshalJSON() ([]byte, error) {
-	var buf bytes.Buffer
-	buf.Grow(len(r.Data) + 64)
-	buf.WriteByte('{')
+// envelope renders the bytes preceding and following Data.
+func (r *Response) envelope() (head, tail []byte, err error) {
+	head = append(head, '{')
 	first := true
 	if len(r.Errors) > 0 {
-		buf.WriteString(`"errors":[`)
+		head = append(head, `"errors":[`...)
 		for i, e := range r.Errors {
 			if i > 0 {
-				buf.WriteByte(',')
+				head = append(head, ',')
 			}
-			b, err := e.appendJSON(nil)
-			if err != nil {
-				return nil, err
+			if head, err = e.appendJSON(head); err != nil {
+				return nil, nil, err
 			}
-			buf.Write(b)
 		}
-		buf.WriteByte(']')
+		head = append(head, ']')
 		first = false
 	}
 	if r.Data != nil {
 		if !first {
-			buf.WriteByte(',')
+			head = append(head, ',')
 		}
-		buf.WriteString(`"data":`)
-		buf.Write(r.Data)
+		head = append(head, `"data":`...)
 		first = false
 	}
 	if len(r.Extensions) > 0 {
 		if !first {
-			buf.WriteByte(',')
+			tail = append(tail, ',')
 		}
-		buf.WriteString(`"extensions":`)
+		tail = append(tail, `"extensions":`...)
 		ext, err := json.Marshal(r.Extensions)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		buf.Write(ext)
+		tail = append(tail, ext...)
 	}
-	buf.WriteByte('}')
+	tail = append(tail, '}')
+	return head, tail, nil
+}
+
+// MarshalJSON renders the response envelope as a single byte slice.
+func (r *Response) MarshalJSON() ([]byte, error) {
+	var buf bytes.Buffer
+	buf.Grow(len(r.Data) + 64)
+	if _, err := r.WriteTo(&buf); err != nil {
+		return nil, err
+	}
 	return buf.Bytes(), nil
 }
 
