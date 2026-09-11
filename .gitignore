@@ -1,0 +1,17 @@
+# Binaries and build artifacts
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+*.prof
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Go tooling
+/vendor/
+coverage.*
