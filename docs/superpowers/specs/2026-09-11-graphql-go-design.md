@@ -77,7 +77,7 @@ runtime performance and covering the full GraphQL specification.
 
 ```
                   ┌────────────────────────────────────────────────────────┐
-                  │ transport/http  transport/ws  transport/sse            │
+                  │ transport/gqlhttp  transport/gqlws  transport/gqlsse   │
                   └───────────────┬────────────────────────────────────────┘
                                   │ Request
                                   ▼
@@ -100,16 +100,17 @@ runtime performance and covering the full GraphQL specification.
 ### 4.1 Package Layout
 
 ```
-github.com/syssam/graphql-go              package graphql — public core
-  ├─ internal/plan                        operation → Plan compiler
-  ├─ internal/exec                        executor: scheduling, writer, null bubbling, errors
+github.com/syssam/graphql-go              package graphql — public core and engine
+  │   schema.go, registry.go, binding_*.go   binding API, type registry, shape validation
+  │   plan.go, plan_cache.go                 operation → Plan compiler, LRU cache
+  │   exec*.go                               executor: scheduling, null bubbling, errors
+  │   introspection.go                       __schema / __type implemented with the public binding API
   ├─ internal/jsonw                       allocation-free JSON writer
-  ├─ internal/introspection               __schema / __type implemented with the public binding API
   ├─ codegen                              library: Config, Manifest, Generate
   │   └─ cmd/gqlc                         thin CLI over the library
-  ├─ transport/http                       GraphQL over HTTP (POST/GET), APQ, batching
-  ├─ transport/ws                         graphql-transport-ws
-  ├─ transport/sse                        GraphQL over SSE (distinct connections mode)
+  ├─ transport/gqlhttp                    GraphQL over HTTP (POST/GET), APQ, batching
+  ├─ transport/gqlws                      graphql-transport-ws
+  ├─ transport/gqlsse                     GraphQL over SSE (distinct connections mode)
   ├─ ext/complexity                       static + dynamic complexity and depth limits
   ├─ ext/otel                             OpenTelemetry tracing and metrics
   ├─ benchmarks/                          synthetic schema generator, gqlgen baseline, run.sh
@@ -119,6 +120,13 @@ github.com/syssam/graphql-go              package graphql — public core
 Dependency policy: the root package depends only on `gqlparser/v2` and the
 standard library. Transports and extensions live in sub-packages so their
 dependencies are opt-in.
+
+The plan compiler and executor live in the root package rather than in
+`internal/` sub-packages: the generic binding constructors must produce the
+engine's field-executor values directly, and Go's import direction would
+otherwise force every engine type to be re-exported through aliases. The
+engine is still split into focused files, and only the JSON writer, which has
+no dependency on engine types, is a separate internal package.
 
 ## 5. Public API: Binding Surface
 
@@ -177,7 +185,7 @@ generated group packages); a duplicated field is an error.
 | `InputField[T, V]` | `(name string, set func(*T, V)) InputFieldOption` | Typed setter for one input field / argument. `V` must be shape-compatible with the SDL type. |
 | `OmittableField[T, V]` | `(name string, set func(*T, graphql.Omittable[V]))` | Setter that distinguishes "absent" from "null". |
 | `Enum[T comparable]` | `(name string, values map[T]string) SchemaOption` | Bidirectional mapping between Go values and GraphQL enum names. Registers `T`, `*T`, `[]T`, `[]*T`. |
-| `Scalar[T]` | `(name string, marshal func(*Writer, T), unmarshal func(any) (T, error)) SchemaOption` | Custom scalar. Built-ins: `Int` (int, int32, int64), `Float` (float64, float32), `String`, `Boolean`, `ID` (`graphql.ID`, string, int64). |
+| `Scalar[T]` | `(name string, marshal func(*Writer, T) error, unmarshal func(any) (T, error)) SchemaOption` | Custom scalar. `marshal` may fail (for example an out-of-range `Int`), which is reported as a field error. Built-ins: `Int` (int, int32, int64), `Float` (float64, float32), `String`, `Boolean`, `ID` (`graphql.ID`, string, int64). |
 | `Interface[T]`, `Union[T]` | `(name string, opts ...AbstractOpt) SchemaOption` | `T` is a Go interface type. Concrete GraphQL type is resolved from the dynamic Go type via the registry; `graphql.TypeResolver(func(T) string)` overrides. |
 | `Directive[A]` | `(name string, func(next FieldFunc, args A) FieldFunc) SchemaOption` | Schema-directive middleware, applied once at `NewSchema`. Fields carrying a directive go through the `any`-typed `FieldFunc` path, like intercepted fields (Section 5.7). |
 | `Root` | `type Root struct{}` | Parent value for `Query`, `Mutation`, `Subscription` fields. |
@@ -248,7 +256,8 @@ func (w *Writer) String(string); Int(int64); Float(float64); Bool(bool); Null();
 type ID string
 
 // FieldFunc is the type-erased field executor used by directives and field interceptors.
-type FieldFunc func(ctx context.Context, parent any) (any, error)
+// args is the decoded argument struct pointer (*A) or nil for fields without arguments.
+type FieldFunc func(ctx context.Context, parent any, args any) (any, error)
 
 type Executor struct{ /* schema, plan cache, semaphore, interceptors */ }
 func NewExecutor(s *Schema, opts ...ExecutorOption) *Executor
@@ -299,27 +308,32 @@ type FieldInterceptor     interface { InterceptField(ctx context.Context, fc *Fi
 ```
 
 Request and operation interceptors wrap each request once and have negligible
-cost. Field interceptors are compiled into the field executors at `NewSchema`;
-when none are registered the executor path contains no indirection. A field
-interceptor forces the affected field's result through `any`, so field-level
-interception is documented as opt-in and is used by `ext/otel` only when
-field spans are enabled.
+cost. Field interceptors are registered on the `Executor` and baked into the
+field executors when a `Plan` is compiled (the plan cache is per executor, so
+each plan already knows its interceptor chain); when none are registered the
+executor path contains no indirection. A field interceptor forces the
+affected field's result through `any`, so field-level interception is
+documented as opt-in and is used by `ext/otel` only when field spans are
+enabled.
 
 ## 6. Execution Engine
 
 ### 6.1 Request Pipeline
 
-1. **Cache lookup.** Key = 64-bit `hash/maphash` of `(Query, OperationName)`;
-   if `Extensions.persistedQuery.sha256Hash` is present, that hash is the key.
-   Entries store the original query string and a hit is confirmed by string
-   equality, so a hash collision can never return a foreign plan. Variables
-   are never part of the key.
+1. **Document cache lookup.** Key = 64-bit `hash/maphash` of the query
+   string; if `Extensions.persistedQuery.sha256Hash` is present, that hash is
+   the key. Entries store the original query string and a hit is confirmed by
+   string equality, so a hash collision can never return a foreign document.
+   Variables are never part of the key.
 2. **Miss path.** `gqlparser` parses and validates the document against the
-   schema. `internal/plan` compiles each operation into a `Plan`. The plan is
-   stored in the LRU (default 1,024 entries, configurable).
+   schema. The entry (default LRU of 1,024 documents, configurable) holds the
+   validated document and a small map of compiled `Plan`s keyed by
+   `(operation name, skip/include variant)`.
 3. **Variable coercion.** Variables are decoded from `json.RawMessage` and
-   coerced against the plan's variable definitions per request.
-4. **Execution.** `internal/exec` walks the plan and writes the response body.
+   coerced against the operation's variable definitions per request; the
+   `@skip`/`@include` variant key is derived from them and the matching plan
+   is compiled on first use.
+4. **Execution.** The executor walks the plan and writes the response body.
 5. **Presentation.** Errors pass through `ErrorPresenter`; the transport writes
    the envelope.
 
@@ -331,10 +345,15 @@ A `Plan` is an immutable tree produced once per (document, operation):
   field set per possible concrete type, so runtime type resolution is a map
   lookup followed by a direct pointer to the right field set.
 - Each field node holds: the typed field executor (already wrapped with schema
-  directives and field interceptors), pre-serialized `"alias":` bytes, the
-  sub-selection, non-null and list flags, and a `@skip`/`@include` condition
-  (constant-folded when literal; evaluated per request when it references a
-  variable).
+  directives at `NewSchema` and with the executor's field interceptors at
+  plan time), pre-serialized `"alias":` bytes, the sub-selection, and
+  non-null and list flags.
+- **`@skip` / `@include` are constant-folded.** A parsed document records the
+  set of Boolean variables referenced by `@skip`/`@include` (typically zero to
+  three). The plan is specialized per combination of their values, and that
+  bitmask is part of the plan-cache key beneath the document entry. Plans
+  therefore contain no runtime conditions. Documents referencing more than 16
+  such variables are compiled per request without caching.
 - **Argument pre-decoding.** If a field's arguments contain no variables they
   are decoded into the typed `A` struct at plan time. At execution a shallow
   copy of that struct is passed to the resolver. Nested pointers inside are
@@ -401,7 +420,7 @@ cancelled. Transports map this to their protocol.
 
 ### 6.7 Introspection
 
-`internal/introspection` binds `__Schema`, `__Type`, `__Field`,
+`introspection.go` binds `__Schema`, `__Type`, `__Field`,
 `__InputValue`, `__EnumValue`, `__Directive` to `gqlparser`'s AST types using
 the same public binding API. `graphql.DisableIntrospection()` rejects
 `__schema` and `__type` selections at validation time. Introspection responses
@@ -541,7 +560,7 @@ benchmark suite (Section 10).
 
 ## 8. Transports and Production Features (v0.1)
 
-### 8.1 `transport/http`
+### 8.1 `transport/gqlhttp`
 
 - `POST` with `application/json`; `GET` with query parameters (queries only,
   mutations rejected per GraphQL over HTTP).
@@ -557,7 +576,7 @@ benchmark suite (Section 10).
 - Body size limit, decode timeout via context, `Content-Encoding: gzip`
   response support left to the surrounding server middleware.
 
-### 8.2 `transport/ws`
+### 8.2 `transport/gqlws`
 
 - `graphql-transport-ws` protocol: `connection_init`/`connection_ack`,
   `ping`/`pong`, `subscribe`/`next`/`error`/`complete`.
@@ -566,7 +585,7 @@ benchmark suite (Section 10).
   connection.
 - Per-connection subscription limit, keep-alive interval, init timeout.
 
-### 8.3 `transport/sse`
+### 8.3 `transport/gqlsse`
 
 GraphQL over Server-Sent Events, distinct connections mode (one HTTP request
 per operation). Supports queries, mutations and subscriptions.
@@ -634,7 +653,7 @@ compatibility layer.
 
 - Unit tests in every package; the root package is covered by table-driven
   tests of the binding API and shape validation.
-- `internal/exec` conformance suite ported from graphql-js executor tests and
+- Executor conformance suite ported from graphql-js executor tests and
   the specification's examples: execution order, coercion, null bubbling,
   error paths, abstract types, mutations, subscriptions.
 - Codegen golden tests; CI additionally runs `go build` and `go vet` on the
@@ -663,16 +682,16 @@ The v0.1 scope is delivered in four phases; each phase ends with passing
 tests and a runnable example.
 
 1. **Core and engine.** Root package binding API, type registry, shape
-   validation, `internal/plan`, `internal/exec` (queries and mutations),
-   `internal/jsonw`, introspection, `transport/http` without APQ. Exit
+   validation, plan compiler, executor (queries and mutations),
+   `internal/jsonw`, introspection, `transport/gqlhttp` without APQ. Exit
    criterion: a hand-written example schema passes the execution conformance
    suite.
 2. **Codegen.** `codegen` library (manifest and auto-bind modes), `cmd/gqlc`,
    golden tests, generated-output compile check in CI. Exit criterion: the
    phase-1 example is regenerated from SDL with no hand-written bindings.
 3. **Subscriptions and streaming transports.** `Subscribe*` bindings,
-   `Executor.Subscribe`, `transport/ws`, `transport/sse`, APQ in
-   `transport/http`.
+   `Executor.Subscribe`, `transport/gqlws`, `transport/gqlsse`, APQ in
+   `transport/gqlhttp`.
 4. **Production extensions and benchmarks.** `ext/complexity`, `ext/otel`,
    synthetic schema generator, gqlgen baseline, `docs/benchmarks.md`.
 
