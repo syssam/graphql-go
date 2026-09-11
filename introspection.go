@@ -99,7 +99,9 @@ type introDirective struct {
 type introTypeArgs struct{ Name string }
 type includeDeprecatedArgs struct{ IncludeDeprecated *bool }
 
-func (a includeDeprecatedArgs) include() bool { return a.IncludeDeprecated != nil && *a.IncludeDeprecated }
+func (a includeDeprecatedArgs) include() bool {
+	return a.IncludeDeprecated != nil && *a.IncludeDeprecated
+}
 
 func namedType(s *ast.Schema, def *ast.Definition) *introType {
 	if def == nil {

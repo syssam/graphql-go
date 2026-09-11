@@ -695,6 +695,38 @@ tests and a runnable example.
 4. **Production extensions and benchmarks.** `ext/complexity`, `ext/otel`,
    synthetic schema generator, gqlgen baseline, `docs/benchmarks.md`.
 
+### Phase 1 Deviations
+
+Implementation of phase 1 settled the following details differently from the
+text above; the text is kept as the design rationale and this list is the
+authoritative behaviour.
+
+- **`Object[E]` takes the element type.** `Object[User]`, not
+  `Object[*User]`; a pointer type parameter is rejected at `NewSchema` with a
+  message naming the element type. Values still flow through the executor as
+  `*E`, and field functions may take either `*E` (no copy) or `E`.
+- **Nullable input positions require a Go type that can hold null.** A
+  nullable SDL input field or argument (`Int`, `Int = 1`, `[Int]`) must map
+  to a pointer or slice even when a default value exists, because a client may
+  still send an explicit `null`. `Omittable[V]` does not relax this: use
+  `Omittable[*int]` for `Int`.
+- **Leaf list shapes go two levels deep without reflection.** Scalars and
+  enums register `E`, `*E`, `[]E`, `[]*E`, `[][]E` and `[][]*E`. Deeper leaf
+  nesting is a schema-build error rather than a reflection fallback; only
+  composite lists (`[][]*Post`) use the reflective traverser with a startup
+  warning.
+- **Field interceptors observe pure fields too.** When at least one
+  `FieldInterceptor` is registered, every field, pure or resolver, receives a
+  `FieldContext` with a materialisable path. Without field interceptors pure
+  fields still run with no context allocation.
+- **Introspection is a set of pure bindings** on the meta types gqlparser
+  injects, installed after user options and skipped entirely when
+  `DisableIntrospection()` is set. `@defer` from gqlparser's prelude is not
+  advertised until it is executed.
+- **`gqlhttp` returns 406** when the `Accept` header allows neither supported
+  media type, and treats `*/*` and `application/*` as preferring
+  `application/graphql-response+json`.
+
 ## 12. Risks and Mitigations
 
 | Risk | Mitigation |

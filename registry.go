@@ -243,8 +243,8 @@ func asList(raw any) []any {
 // registry. E is the non-pointer Go type named in Object[E]; values flow
 // through the executor as *E.
 type objectShapes struct {
-	elem  reflect.Type // E
-	ptr   reflect.Type // *E
+	elem  reflect.Type  // E
+	ptr   reflect.Type  // *E
 	toPtr func(any) any // E → *E (copies the value)
 	deref func(any) any // *E → E
 }

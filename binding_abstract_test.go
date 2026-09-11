@@ -11,8 +11,8 @@ type tOther struct{ ID string }
 
 type node interface{ nodeID() string }
 
-func (u *tUser) nodeID() string { return u.ID }
-func (p *tPost) nodeID() string { return p.ID }
+func (u *tUser) nodeID() string  { return u.ID }
+func (p *tPost) nodeID() string  { return p.ID }
 func (o *tOther) nodeID() string { return o.ID }
 
 const abstractSDL = `
