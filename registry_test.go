@@ -90,6 +90,61 @@ func TestLeafWriterShapes(t *testing.T) {
 	}
 }
 
+func TestNestedLeafListShapes(t *testing.T) {
+	r := newTestRegistry()
+	w := jsonw.New()
+
+	if err := leafWriter[[][]int](t, r, "Int")(w, [][]int{{1, 2}, {}}, parseType("[[Int!]!]!")); err != nil || string(w.Bytes()) != "[[1,2],[]]" {
+		t.Fatalf("[][]int: %v %s", err, w.Bytes())
+	}
+
+	w.Reset()
+	if err := leafWriter[[][]*int](t, r, "Int")(w, [][]*int{{ptr(1), nil}, nil}, parseType("[[Int]]")); err != nil || string(w.Bytes()) != "[[1,null],null]" {
+		t.Fatalf("[][]*int with nulls: %v %s", err, w.Bytes())
+	}
+
+	// A range error two levels deep must null only that element and report
+	// the full index chain.
+	w.Reset()
+	err := leafWriter[[][]int64](t, r, "Int")(w, [][]int64{{1}, {1 << 40, 2}}, parseType("[[Int]!]!"))
+	var soft *elementErrors
+	if !errors.As(err, &soft) || len(soft.errs) != 1 || string(w.Bytes()) != "[[1],[null,2]]" {
+		t.Fatalf("nested soft error: %v %s", err, w.Bytes())
+	}
+	var outer *indexedError
+	if !errors.As(soft.errs[0], &outer) || outer.index != 1 {
+		t.Fatalf("outer index: %v", soft.errs[0])
+	}
+	var inner *indexedError
+	if !errors.As(outer.err, &inner) || inner.index != 0 {
+		t.Fatalf("inner index: %v", outer.err)
+	}
+
+	// A non-null inner element failure nulls the nullable inner list.
+	w.Reset()
+	err = leafWriter[[][]int64](t, r, "Int")(w, [][]int64{{1 << 40}, {5}}, parseType("[[Int!]]"))
+	if !errors.As(err, &soft) || len(soft.errs) != 1 || string(w.Bytes()) != "[null,[5]]" {
+		t.Fatalf("nullable inner list: %v %s", err, w.Bytes())
+	}
+
+	// When the inner list is non-null too, the failure aborts the whole list.
+	w.Reset()
+	err = leafWriter[[][]int64](t, r, "Int")(w, [][]int64{{1 << 40}}, parseType("[[Int!]!]"))
+	if !errors.As(err, &outer) || outer.index != 0 || !errors.As(outer.err, &inner) || inner.index != 0 {
+		t.Fatalf("non-null nested element error: %v", err)
+	}
+
+	if v, err := decoder[[][]*int](t, r, "Int")([]any{[]any{int64(1), nil}, nil}, parseType("[[Int]]")); err != nil || len(v) != 2 || *v[0][0] != 1 || v[0][1] != nil || v[1] != nil {
+		t.Fatalf("decode [][]*int: %v %v", v, err)
+	}
+	if _, err := decoder[[][]int](t, r, "Int")([]any{[]any{int64(1)}, nil}, parseType("[[Int!]!]")); !errors.Is(err, errNonNull) {
+		t.Fatalf("null inner list for [[Int!]!] should fail, got %v", err)
+	}
+	if !r.nilChecks[reflect.TypeFor[[][]int]()]([][]int(nil)) || r.nilChecks[reflect.TypeFor[[][]int]()]([][]int{}) {
+		t.Fatal("nil check for [][]int")
+	}
+}
+
 func TestLeafDecoderShapes(t *testing.T) {
 	r := newTestRegistry()
 

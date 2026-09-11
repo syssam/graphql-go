@@ -83,8 +83,19 @@ func writeNull(w *jsonw.Writer, t *ast.Type) error {
 	return nil
 }
 
+// nullInput reports a null input value against its SDL type. Validation
+// rejects nulls in non-null positions before decoding; this is the last line
+// of defence.
+func nullInput(t *ast.Type) error {
+	if t.NonNull {
+		return errNonNull
+	}
+	return nil
+}
+
 // registerLeaf registers writers and decoders for a scalar or enum bound to
-// Go type E, in the shapes E, *E, []E and []*E.
+// Go type E, in the shapes E, *E, []E, []*E, [][]E and [][]*E. Deeper list
+// nesting is rare enough that it is left unsupported for leaf types.
 func registerLeaf[E any](r *registry, name string, kind ast.DefinitionKind, write func(*jsonw.Writer, E) error, decode func(any) (E, error)) {
 	r.leafKinds[name] = kind
 	if _, ok := r.leafValidators[name]; !ok {
@@ -94,16 +105,6 @@ func registerLeaf[E any](r *registry, name string, kind ast.DefinitionKind, writ
 		}
 	}
 
-	tE := reflect.TypeFor[E]()
-	tPE := reflect.TypeFor[*E]()
-	tSE := reflect.TypeFor[[]E]()
-	tSPE := reflect.TypeFor[[]*E]()
-
-	r.shapes[typeKey{name, tE}] = shapeInfo{depth: 0, nullable: []bool{false}}
-	r.shapes[typeKey{name, tPE}] = shapeInfo{depth: 0, nullable: []bool{true}}
-	r.shapes[typeKey{name, tSE}] = shapeInfo{depth: 1, nullable: []bool{true, false}}
-	r.shapes[typeKey{name, tSPE}] = shapeInfo{depth: 1, nullable: []bool{true, true}}
-
 	wE := func(w *jsonw.Writer, v E, _ *ast.Type) error { return write(w, v) }
 	wPE := func(w *jsonw.Writer, v *E, t *ast.Type) error {
 		if v == nil {
@@ -111,67 +112,6 @@ func registerLeaf[E any](r *registry, name string, kind ast.DefinitionKind, writ
 		}
 		return write(w, *v)
 	}
-	// Element failures inside a list with nullable elements null out only that
-	// element; the collected errors are returned as elementErrors after the
-	// list has been written in full.
-	wSE := func(w *jsonw.Writer, v []E, t *ast.Type) error {
-		if v == nil {
-			return writeNull(w, t)
-		}
-		var soft *elementErrors
-		w.BeginArray()
-		for i, e := range v {
-			m := w.Mark()
-			if err := write(w, e); err != nil {
-				if t.Elem.NonNull {
-					return &indexedError{i, err}
-				}
-				w.Rewind(m)
-				w.Null()
-				soft = soft.add(i, err)
-			}
-		}
-		w.EndArray()
-		if soft != nil {
-			return soft
-		}
-		return nil
-	}
-	wSPE := func(w *jsonw.Writer, v []*E, t *ast.Type) error {
-		if v == nil {
-			return writeNull(w, t)
-		}
-		var soft *elementErrors
-		w.BeginArray()
-		for i, e := range v {
-			if e == nil {
-				if t.Elem.NonNull {
-					return &indexedError{i, errNonNull}
-				}
-				w.Null()
-				continue
-			}
-			m := w.Mark()
-			if err := write(w, *e); err != nil {
-				if t.Elem.NonNull {
-					return &indexedError{i, err}
-				}
-				w.Rewind(m)
-				w.Null()
-				soft = soft.add(i, err)
-			}
-		}
-		w.EndArray()
-		if soft != nil {
-			return soft
-		}
-		return nil
-	}
-	setLeafWriter(r, name, tE, wE)
-	setLeafWriter(r, name, tPE, wPE)
-	setLeafWriter(r, name, tSE, wSE)
-	setLeafWriter(r, name, tSPE, wSPE)
-
 	dE := func(raw any, _ *ast.Type) (E, error) {
 		if raw == nil {
 			var zero E
@@ -179,9 +119,9 @@ func registerLeaf[E any](r *registry, name string, kind ast.DefinitionKind, writ
 		}
 		return decode(raw)
 	}
-	dPE := func(raw any, _ *ast.Type) (*E, error) {
+	dPE := func(raw any, t *ast.Type) (*E, error) {
 		if raw == nil {
-			return nil, nil
+			return nil, nullInput(t)
 		}
 		v, err := decode(raw)
 		if err != nil {
@@ -189,17 +129,84 @@ func registerLeaf[E any](r *registry, name string, kind ast.DefinitionKind, writ
 		}
 		return &v, nil
 	}
-	dSE := func(raw any, t *ast.Type) ([]E, error) {
+
+	registerLeafShape(r, name, []bool{false}, wE, dE)
+	registerLeafShape(r, name, []bool{true}, wPE, dPE)
+	wSE, dSE := registerLeafShape(r, name, []bool{true, false}, listWriter(wE), listDecoder(dE))
+	wSPE, dSPE := registerLeafShape(r, name, []bool{true, true}, listWriter(wPE), listDecoder(dPE))
+	registerLeafShape(r, name, []bool{true, true, false}, listWriter(wSE), listDecoder(dSE))
+	registerLeafShape(r, name, []bool{true, true, true}, listWriter(wSPE), listDecoder(dSPE))
+}
+
+// registerLeafShape records one Go shape V of a leaf type. nullable has one
+// entry per list level plus the innermost value, outermost first.
+func registerLeafShape[V any](r *registry, name string, nullable []bool, write func(*jsonw.Writer, V, *ast.Type) error, decode func(any, *ast.Type) (V, error)) (func(*jsonw.Writer, V, *ast.Type) error, func(any, *ast.Type) (V, error)) {
+	tV := reflect.TypeFor[V]()
+	key := typeKey{name, tV}
+	r.shapes[key] = shapeInfo{depth: len(nullable) - 1, nullable: nullable}
+	setLeafWriter(r, name, tV, write)
+	r.decoders[key] = decode
+	if nullable[0] {
+		r.nilChecks[tV] = func(v any) bool {
+			tv, ok := v.(V)
+			return !ok || reflect.ValueOf(tv).IsNil()
+		}
+	}
+	return write, decode
+}
+
+// listWriter lifts an element writer to a slice writer. Element failures
+// inside a list with nullable elements null out only that element; the
+// collected errors are returned as elementErrors after the list has been
+// written in full. Failures under a non-null element type abort the list.
+func listWriter[V any](elem func(*jsonw.Writer, V, *ast.Type) error) func(*jsonw.Writer, []V, *ast.Type) error {
+	return func(w *jsonw.Writer, v []V, t *ast.Type) error {
+		if v == nil {
+			return writeNull(w, t)
+		}
+		var soft *elementErrors
+		w.BeginArray()
+		for i, e := range v {
+			m := w.Mark()
+			err := elem(w, e, t.Elem)
+			if err == nil {
+				continue
+			}
+			var nested *elementErrors
+			if errors.As(err, &nested) {
+				// The element is a list that already nulled its own failing
+				// members; keep it and re-index the collected errors.
+				for _, ie := range nested.errs {
+					soft = soft.add(i, ie)
+				}
+				continue
+			}
+			if t.Elem.NonNull {
+				return &indexedError{i, err}
+			}
+			w.Rewind(m)
+			w.Null()
+			soft = soft.add(i, err)
+		}
+		w.EndArray()
+		if soft != nil {
+			return soft
+		}
+		return nil
+	}
+}
+
+// listDecoder lifts an element decoder to a slice decoder applying the
+// specification's list coercion; a non-list input becomes a one-element list.
+func listDecoder[V any](elem func(any, *ast.Type) (V, error)) func(any, *ast.Type) ([]V, error) {
+	return func(raw any, t *ast.Type) ([]V, error) {
 		if raw == nil {
-			return nil, nil
+			return nil, nullInput(t)
 		}
 		items := asList(raw)
-		out := make([]E, len(items))
+		out := make([]V, len(items))
 		for i, it := range items {
-			if it == nil {
-				return nil, &indexedError{i, errNonNull}
-			}
-			v, err := decode(it)
+			v, err := elem(it, t.Elem)
 			if err != nil {
 				return nil, &indexedError{i, err}
 			}
@@ -207,35 +214,6 @@ func registerLeaf[E any](r *registry, name string, kind ast.DefinitionKind, writ
 		}
 		return out, nil
 	}
-	dSPE := func(raw any, t *ast.Type) ([]*E, error) {
-		if raw == nil {
-			return nil, nil
-		}
-		items := asList(raw)
-		out := make([]*E, len(items))
-		for i, it := range items {
-			if it == nil {
-				if t.Elem.NonNull {
-					return nil, &indexedError{i, errNonNull}
-				}
-				continue
-			}
-			v, err := decode(it)
-			if err != nil {
-				return nil, &indexedError{i, err}
-			}
-			out[i] = &v
-		}
-		return out, nil
-	}
-	r.decoders[typeKey{name, tE}] = dE
-	r.decoders[typeKey{name, tPE}] = dPE
-	r.decoders[typeKey{name, tSE}] = dSE
-	r.decoders[typeKey{name, tSPE}] = dSPE
-
-	r.nilChecks[tPE] = func(v any) bool { p, _ := v.(*E); return p == nil }
-	r.nilChecks[tSE] = func(v any) bool { s, _ := v.([]E); return s == nil }
-	r.nilChecks[tSPE] = func(v any) bool { s, _ := v.([]*E); return s == nil }
 }
 
 func setLeafWriter[V any](r *registry, name string, t reflect.Type, typed func(*jsonw.Writer, V, *ast.Type) error) {

@@ -23,7 +23,7 @@ func checkOutputLeafShape(r *registry, key typeKey, sdl *ast.Type) error {
 		if _, known := r.leafKinds[key.name]; !known {
 			return fmt.Errorf("%s %s has no Scalar or Enum binding", leafKindName(r, key.name), key.name)
 		}
-		return fmt.Errorf("Go type %s is not registered for %s; expected one of E, *E, []E or []*E where E is a bound Go type", key.typ, key.name)
+		return fmt.Errorf("Go type %s is not registered for %s; expected E, *E or up to two list levels of them where E is a bound Go type", key.typ, key.name)
 	}
 	if want := listDepth(sdl); info.depth != want {
 		return fmt.Errorf("Go type %s has %d list level(s) but %s has %d", key.typ, info.depth, sdl.String(), want)
@@ -41,7 +41,7 @@ func checkInputShape(r *registry, key typeKey, sdl *ast.Type) error {
 				return fmt.Errorf("type %s has no Scalar, Enum or Input binding", key.name)
 			}
 		}
-		return fmt.Errorf("Go type %s is not registered for %s; expected one of E, *E, []E or []*E where E is a bound Go type", key.typ, key.name)
+		return fmt.Errorf("Go type %s is not registered for %s; expected E, *E or up to two list levels of them where E is a bound Go type", key.typ, key.name)
 	}
 	if want := listDepth(sdl); info.depth != want {
 		return fmt.Errorf("Go type %s has %d list level(s) but %s has %d", key.typ, info.depth, sdl.String(), want)

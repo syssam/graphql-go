@@ -170,8 +170,10 @@ func NewSchema(src Source, opts ...SchemaOption) (*Schema, error) {
 	for _, opt := range opts {
 		opt.applySchema(b)
 	}
-	for _, opt := range introspectionOptions() {
-		opt.applySchema(b)
+	if b.introspection {
+		for _, opt := range introspectionOptions(b) {
+			opt.applySchema(b)
+		}
 	}
 
 	s := b.build()
