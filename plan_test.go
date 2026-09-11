@@ -1,0 +1,124 @@
+package graphql
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/vektah/gqlparser/v2/parser"
+	"github.com/vektah/gqlparser/v2/validator"
+	"github.com/vektah/gqlparser/v2/validator/rules"
+
+	"github.com/syssam/graphql-go/internal/jsonw"
+)
+
+func compileFixture(t *testing.T, e *Executor, query string, cond map[string]bool) *plan {
+	t.Helper()
+	doc, err := parser.ParseQuery(astSource(query))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if errs := validator.ValidateWithRules(e.schema.ast, doc, rules.NewDefaultRules()); len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	p, perrs := compilePlan(e.schema, e, doc, doc.Operations[0], cond)
+	if perrs != nil {
+		t.Fatal(perrs[0])
+	}
+	return p
+}
+
+func fieldNames(fields []*planField) string {
+	names := make([]string, len(fields))
+	for i, f := range fields {
+		names[i] = f.alias
+	}
+	return strings.Join(names, ",")
+}
+
+func TestPlanMergesResponseKeys(t *testing.T) {
+	_, e := newFixtureExecutor(t)
+	p := compileFixture(t, e, `{ me { id ...A friends { id } } } fragment A on User { friends { name } id }`, nil)
+	me := p.sel.fields[0]
+	if got := fieldNames(p.sel.fields); got != "me" {
+		t.Fatalf("root fields = %s", got)
+	}
+	if got := fieldNames(me.sub.fields); got != "id,friends" {
+		t.Fatalf("me fields = %s", got)
+	}
+	friends := me.sub.fields[1]
+	if got := fieldNames(friends.sub.fields); got != "name,id" {
+		t.Fatalf("merged friends sub-selection = %s", got)
+	}
+	if string(friends.key) != string(jsonw.EncodeKey("friends")) {
+		t.Fatalf("key bytes = %s", friends.key)
+	}
+}
+
+func TestPlanAbstractByType(t *testing.T) {
+	_, e := newFixtureExecutor(t)
+	p := compileFixture(t, e, `{ me { pet { name ... on Dog { barks } ... on Cat { lives } } } }`, nil)
+	pet := p.sel.fields[0].sub.fields[0]
+	if pet.abstract == nil || pet.sub.byType == nil {
+		t.Fatal("pet should compile as an abstract selection")
+	}
+	if got := fieldNames(pet.sub.byType["Dog"].fields); got != "name,barks" {
+		t.Fatalf("Dog fields = %s", got)
+	}
+	if got := fieldNames(pet.sub.byType["Cat"].fields); got != "name,lives" {
+		t.Fatalf("Cat fields = %s", got)
+	}
+}
+
+func TestPlanConditions(t *testing.T) {
+	_, e := newFixtureExecutor(t)
+	q := `query($a: Boolean!, $b: Boolean!) { me { id @include(if: $a) name @skip(if: $b) nick @skip(if: true) tags @include(if: true) } }`
+	doc, _ := parser.ParseQuery(astSource(q))
+	if got := strings.Join(condVariables(doc), ","); got != "a,b" {
+		t.Fatalf("condVariables = %s", got)
+	}
+	p := compileFixture(t, e, q, map[string]bool{"a": true, "b": false})
+	if got := fieldNames(p.sel.fields[0].sub.fields); got != "id,name,tags" {
+		t.Fatalf("fields = %s", got)
+	}
+	p = compileFixture(t, e, q, map[string]bool{"a": false, "b": true})
+	if got := fieldNames(p.sel.fields[0].sub.fields); got != "tags" {
+		t.Fatalf("fields = %s", got)
+	}
+	key, _ := variantKey([]string{"a", "b"}, map[string]any{"a": true, "b": true})
+	if key != 3 {
+		t.Fatalf("variant key = %d", key)
+	}
+}
+
+func TestPlanArgumentPreDecoding(t *testing.T) {
+	_, e := newFixtureExecutor(t)
+	p := compileFixture(t, e, `query($n: String) { a: users(filter: {limit: 1}) { id } b: users(filter: {name: $n}) { id } c: users { id } }`, nil)
+	a, b, c := p.sel.fields[0], p.sel.fields[1], p.sel.fields[2]
+	if a.dynamicArgs || a.args == nil || *a.args.(*usersArgs).Filter.Limit != 1 {
+		t.Fatalf("literal arguments must be pre-decoded: %+v", a.args)
+	}
+	if !b.dynamicArgs || b.args != nil {
+		t.Fatal("arguments referencing variables must be dynamic")
+	}
+	if c.dynamicArgs || c.args == nil || c.args.(*usersArgs).Filter != nil {
+		t.Fatalf("absent optional argument must decode to zero value: %+v", c.args)
+	}
+	if p.complexity != 6 {
+		t.Fatalf("complexity = %d, want 6", p.complexity)
+	}
+}
+
+func TestPlanSchedulability(t *testing.T) {
+	_, e := newFixtureExecutor(t)
+	p := compileFixture(t, e, `{ me { id name } users { id friends { id } } }`, nil)
+	me, users := p.sel.fields[0], p.sel.fields[1]
+	if me.sub.directSchedulable != 0 || me.sub.deepSchedulable {
+		t.Fatal("pure-only selection must not be schedulable")
+	}
+	if users.sub.directSchedulable != 1 || !users.sub.deepSchedulable {
+		t.Fatalf("users selection: direct=%d deep=%v", users.sub.directSchedulable, users.sub.deepSchedulable)
+	}
+	if p.sel.directSchedulable != 2 {
+		t.Fatalf("root direct schedulable = %d", p.sel.directSchedulable)
+	}
+}

@@ -111,23 +111,37 @@ func registerLeaf[E any](r *registry, name string, kind ast.DefinitionKind, writ
 		}
 		return write(w, *v)
 	}
+	// Element failures inside a list with nullable elements null out only that
+	// element; the collected errors are returned as elementErrors after the
+	// list has been written in full.
 	wSE := func(w *jsonw.Writer, v []E, t *ast.Type) error {
 		if v == nil {
 			return writeNull(w, t)
 		}
+		var soft *elementErrors
 		w.BeginArray()
 		for i, e := range v {
+			m := w.Mark()
 			if err := write(w, e); err != nil {
-				return &indexedError{i, err}
+				if t.Elem.NonNull {
+					return &indexedError{i, err}
+				}
+				w.Rewind(m)
+				w.Null()
+				soft = soft.add(i, err)
 			}
 		}
 		w.EndArray()
+		if soft != nil {
+			return soft
+		}
 		return nil
 	}
 	wSPE := func(w *jsonw.Writer, v []*E, t *ast.Type) error {
 		if v == nil {
 			return writeNull(w, t)
 		}
+		var soft *elementErrors
 		w.BeginArray()
 		for i, e := range v {
 			if e == nil {
@@ -137,11 +151,20 @@ func registerLeaf[E any](r *registry, name string, kind ast.DefinitionKind, writ
 				w.Null()
 				continue
 			}
+			m := w.Mark()
 			if err := write(w, *e); err != nil {
-				return &indexedError{i, err}
+				if t.Elem.NonNull {
+					return &indexedError{i, err}
+				}
+				w.Rewind(m)
+				w.Null()
+				soft = soft.add(i, err)
 			}
 		}
 		w.EndArray()
+		if soft != nil {
+			return soft
+		}
 		return nil
 	}
 	setLeafWriter(r, name, tE, wE)
