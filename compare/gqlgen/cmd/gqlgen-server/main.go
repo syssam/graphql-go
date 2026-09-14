@@ -11,8 +11,8 @@ import (
 	"net/http"
 
 	"github.com/99designs/gqlgen/graphql/handler"
-	theirgen "github.com/syssam/graphql-go/compare/gqlgen"
-	"github.com/syssam/graphql-go/compare/gqlgen/exec"
+	theirgen "github.com/syssam/graphql-go/compare/gqlgen/gen"
+	"github.com/syssam/graphql-go/compare/gqlgen/gen/exec"
 )
 
 func main() {

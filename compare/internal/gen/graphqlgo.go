@@ -23,31 +23,31 @@ func writeGraphQLGo(root string, n int) error {
 	// Clear the tree first. Regenerating at a smaller entity count otherwise
 	// leaves the previous run's SDL and packages behind, and the schema then
 	// fails to build on types that no longer have bindings.
-	if err := os.RemoveAll(filepath.Join(root, "graphqlgo")); err != nil {
+	if err := os.RemoveAll(filepath.Join(root, "graphqlgo", "gen")); err != nil {
 		return err
 	}
 
 	if err := codegen.Generate(context.Background(), codegen.Config{
 		Dir:         root,
 		SchemaGlobs: []string{"schema/*.graphql"},
-		Output:      "graphqlgo",
-		Package:     ModulePath + "/graphqlgo",
+		Output:      "graphqlgo/gen",
+		Package:     ModulePath + "/graphqlgo/gen",
 		Models:      models,
 	}); err != nil {
 		return fmt.Errorf("generate: %w", err)
 	}
-	return writeFile(filepath.Join(root, "graphqlgo", "resolvers.go"), graphqlGoResolvers(n))
+	return writeFile(filepath.Join(root, "graphqlgo", "gen", "resolvers.go"), graphqlGoResolvers(n))
 }
 
 func graphqlGoResolvers(n int) string {
 	var b strings.Builder
-	b.WriteString(header("graphqlgo"))
+	b.WriteString(header("gen"))
 
 	imports := []string{`"context"`, "", `"` + ModulePath + `/shared"`}
 	for i := range n {
-		imports = append(imports, fmt.Sprintf(`"%s/graphqlgo/%s"`, ModulePath, strings.ToLower(EntityName(i))))
+		imports = append(imports, fmt.Sprintf(`"%s/graphqlgo/gen/%s"`, ModulePath, strings.ToLower(EntityName(i))))
 	}
-	imports = append(imports, `"`+ModulePath+`/graphqlgo/prelude"`)
+	imports = append(imports, `"`+ModulePath+`/graphqlgo/gen/prelude"`)
 	fmt.Fprintf(&b, "import (\n\t%s\n)\n", indentJoin(imports))
 
 	b.WriteString(`

@@ -163,15 +163,23 @@ entities (47x), against 0.37 us to 9.98 us (27x).
 
     compare/
       gen.go              go run gen.go -n 200
-      cmd/graphqlgo-server, cmd/gqlgen-server   one process each, so a load
-                          test does not have both sharing a GC and a CPU
       internal/gen/       the generator: schema, shared structs, both engines
       engines.go          the two runners
       compare_test.go     both engines must return identical JSON
       bench_test.go       the same operations against both, in process
       http_test.go        the same operations through a real HTTP server
       load_test.go        throughput under concurrent clients
-      schema/  shared/  gqlgen/  graphqlgo/     generated, git-ignored
+      graphqlgo/
+        cmd/graphqlgo-server/   one process per engine, so a load test does
+        gen/                    not have both sharing a GC and a CPU
+      gqlgen/
+        cmd/gqlgen-server/
+        gen/
+      schema/  shared/    generated, git-ignored
+
+Generated output lives under each engine's `gen/`, which is what the generator
+deletes and git ignores. Hand-written code sits beside it and survives
+regeneration.
 
 ## Caveats
 

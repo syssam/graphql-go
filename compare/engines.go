@@ -19,9 +19,9 @@ import (
 	"github.com/vektah/gqlparser/v2/ast"
 
 	"github.com/syssam/graphql-go"
-	theirgen "github.com/syssam/graphql-go/compare/gqlgen"
-	"github.com/syssam/graphql-go/compare/gqlgen/exec"
-	ourgen "github.com/syssam/graphql-go/compare/graphqlgo"
+	theirgen "github.com/syssam/graphql-go/compare/gqlgen/gen"
+	"github.com/syssam/graphql-go/compare/gqlgen/gen/exec"
+	ourgen "github.com/syssam/graphql-go/compare/graphqlgo/gen"
 )
 
 // NewGraphQLGo builds the graphql-go executor over the generated bindings.

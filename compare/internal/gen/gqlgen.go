@@ -18,20 +18,20 @@ import (
 func writeGqlgen(root string, n int) error {
 	// Clear the tree first, for the same reason as graphqlgo: a smaller run
 	// must not inherit the previous one's generated packages.
-	if err := os.RemoveAll(filepath.Join(root, "gqlgen")); err != nil {
+	if err := os.RemoveAll(filepath.Join(root, "gqlgen", "gen")); err != nil {
 		return err
 	}
-	if err := writeFile(filepath.Join(root, "gqlgen", "gqlgen.yml"), gqlgenConfig(n)); err != nil {
+	if err := writeFile(filepath.Join(root, "gqlgen", "gen", "gqlgen.yml"), gqlgenConfig(n)); err != nil {
 		return err
 	}
-	cfg, err := config.LoadConfig(filepath.Join(root, "gqlgen", "gqlgen.yml"))
+	cfg, err := config.LoadConfig(filepath.Join(root, "gqlgen", "gen", "gqlgen.yml"))
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
 	if err := api.Generate(cfg); err != nil {
 		return fmt.Errorf("generate: %w", err)
 	}
-	return writeFile(filepath.Join(root, "gqlgen", "resolvers.go"), gqlgenResolvers(n))
+	return writeFile(filepath.Join(root, "gqlgen", "gen", "resolvers.go"), gqlgenResolvers(n))
 }
 
 func gqlgenConfig(n int) string {
@@ -43,10 +43,10 @@ skip_mod_tidy: true
 schema:
   - schema/*.graphql
 exec:
-  filename: gqlgen/exec/generated.go
+  filename: gqlgen/gen/exec/generated.go
   package: exec
 model:
-  filename: gqlgen/exec/model/models_gen.go
+  filename: gqlgen/gen/exec/model/models_gen.go
   package: model
 models:
   PageInfo:
@@ -76,12 +76,12 @@ models:
 
 func gqlgenResolvers(n int) string {
 	var b strings.Builder
-	b.WriteString(header("gqlgen"))
+	b.WriteString(header("gen"))
 	fmt.Fprintf(&b, `import (
 	"context"
 
-	"%[1]s/gqlgen/exec"
-	"%[1]s/gqlgen/exec/model"
+	"%[1]s/gqlgen/gen/exec"
+	"%[1]s/gqlgen/gen/exec/model"
 	"%[1]s/shared"
 )
 

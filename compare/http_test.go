@@ -11,8 +11,8 @@ import (
 	"github.com/99designs/gqlgen/graphql/handler"
 	"github.com/syssam/graphql-go"
 	"github.com/syssam/graphql-go/compare"
-	theirgen "github.com/syssam/graphql-go/compare/gqlgen"
-	"github.com/syssam/graphql-go/compare/gqlgen/exec"
+	theirgen "github.com/syssam/graphql-go/compare/gqlgen/gen"
+	"github.com/syssam/graphql-go/compare/gqlgen/gen/exec"
 	"github.com/syssam/graphql-go/transport/gqlhttp"
 )
 

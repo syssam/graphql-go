@@ -22,5 +22,5 @@ coverage.*
 # Generated engine code in compare/ (gqlgen emits ~14 MB at 200 entities)
 /compare/schema/
 /compare/shared/
-/compare/gqlgen/
-/compare/graphqlgo/
+/compare/gqlgen/gen/
+/compare/graphqlgo/gen/
