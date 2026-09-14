@@ -86,8 +86,9 @@ launching sibling tasks (`pushWave`), which is what makes DataLoader batching wo
 
 **Codegen (`codegen/`, `cmd/gqlc`).** SDL-only: it never loads Go packages. It emits models,
 args structs, a `Resolver` interface and bindings that call the same public constructors as
-hand-written code. One SDL group stays flat in `Output`; two or more become subpackages plus
-a `Resolvers` struct, with models split the same way (`model/<group>/`) so a one-group edit
+hand-written code. Each group emits a single `generated.go` holding its args, `Resolver`
+interface and bindings — one file per package, since that is the unit the compiler rebuilds.
+One SDL group stays flat in `Output`; two or more become subpackages plus a `Resolvers` struct, with models split the same way (`model/<group>/`) so a one-group edit
 does not invalidate every other group's compiled package — except when two groups' input
 objects reference each other, which would be an import cycle and falls back to one shared
 `model` package (`modelGroupsAcyclic`). Generated files are strings run through `go/format` (not Jennifer), and

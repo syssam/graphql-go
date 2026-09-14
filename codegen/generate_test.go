@@ -31,7 +31,7 @@ func TestGenerateHelloFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bindings, err := os.ReadFile(filepath.Join(dir, "graph", "bindings.go"))
+	bindings, err := os.ReadFile(filepath.Join(dir, "graph", "generated.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,18 +46,18 @@ func TestGenerateHelloFiles(t *testing.T) {
 		`graphql.Args[UserArgs]()`,
 	} {
 		if !strings.Contains(src, want) {
-			t.Errorf("bindings.go missing %s\n%s", want, src)
+			t.Errorf("generated.go missing %s\n%s", want, src)
 		}
 	}
-	for _, rel := range []string{"schema.go", "args.go", "resolver.go", "model/models.go", "schema/schema.graphql"} {
+	for _, rel := range []string{"schema.go", "model/models.go", "schema/schema.graphql"} {
 		p := filepath.Join(dir, "graph", filepath.FromSlash(rel))
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("missing %s: %v", rel, err)
 		}
 	}
 	fset := token.NewFileSet()
-	if _, err := parser.ParseFile(fset, filepath.Join(dir, "graph", "bindings.go"), bindings, 0); err != nil {
-		t.Fatalf("bindings.go does not parse: %v", err)
+	if _, err := parser.ParseFile(fset, filepath.Join(dir, "graph", "generated.go"), bindings, 0); err != nil {
+		t.Fatalf("generated.go does not parse: %v", err)
 	}
 }
 
@@ -200,7 +200,7 @@ func TestGenerateRichFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bindings, err := os.ReadFile(filepath.Join(dir, "graph", "bindings.go"))
+	bindings, err := os.ReadFile(filepath.Join(dir, "graph", "generated.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,11 +218,11 @@ func TestGenerateRichFiles(t *testing.T) {
 		`func(v *model.Post) *time.Time`,
 	} {
 		if !strings.Contains(src, want) {
-			t.Errorf("bindings.go missing %s\n%s", want, src)
+			t.Errorf("generated.go missing %s\n%s", want, src)
 		}
 	}
 	if strings.Contains(src, "__type") || strings.Contains(src, "__schema") {
-		t.Errorf("introspection fields leaked into bindings.go\n%s", src)
+		t.Errorf("introspection fields leaked into generated.go\n%s", src)
 	}
 	models, err := os.ReadFile(filepath.Join(dir, "graph", "model", "models.go"))
 	if err != nil {
@@ -244,7 +244,7 @@ func TestGenerateRichFiles(t *testing.T) {
 	if strings.Contains(ms, "type Time ") {
 		t.Errorf("mapped scalar Time should not emit a model type\n%s", ms)
 	}
-	res, err := os.ReadFile(filepath.Join(dir, "graph", "resolver.go"))
+	res, err := os.ReadFile(filepath.Join(dir, "graph", "generated.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,10 +254,10 @@ func TestGenerateRichFiles(t *testing.T) {
 		`PostAuthor(ctx context.Context, obj *model.Post)`,
 	} {
 		if !strings.Contains(rs, want) {
-			t.Errorf("resolver.go missing %s\n%s", want, rs)
+			t.Errorf("generated.go missing %s\n%s", want, rs)
 		}
 	}
-	args, err := os.ReadFile(filepath.Join(dir, "graph", "args.go"))
+	args, err := os.ReadFile(filepath.Join(dir, "graph", "generated.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +268,7 @@ func TestGenerateRichFiles(t *testing.T) {
 		`Filter *model.PostFilter`,
 	} {
 		if !strings.Contains(as, want) {
-			t.Errorf("args.go missing %s\n%s", want, as)
+			t.Errorf("generated.go missing %s\n%s", want, as)
 		}
 	}
 	if strings.Contains(as, "Omittable") {
@@ -298,10 +298,10 @@ type Query { users: [User!]! user(id: ID!): User }
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "graph", "bindings.go")); err == nil {
-		t.Fatal("root bindings.go should not exist when there are multiple groups")
+	if _, err := os.Stat(filepath.Join(dir, "graph", "generated.go")); err == nil {
+		t.Fatal("root generated.go should not exist when there are multiple groups")
 	}
-	userBind, err := os.ReadFile(filepath.Join(dir, "graph", "user", "bindings.go"))
+	userBind, err := os.ReadFile(filepath.Join(dir, "graph", "user", "generated.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,13 +313,13 @@ type Query { users: [User!]! user(id: ID!): User }
 		`func Bindings(r Resolver)`,
 	} {
 		if !strings.Contains(us, want) {
-			t.Errorf("user/bindings.go missing %s\n%s", want, us)
+			t.Errorf("user/generated.go missing %s\n%s", want, us)
 		}
 	}
 	if strings.Contains(us, "graphql.Query") {
 		t.Errorf("Query bindings leaked into user group\n%s", us)
 	}
-	postBind, err := os.ReadFile(filepath.Join(dir, "graph", "post", "bindings.go"))
+	postBind, err := os.ReadFile(filepath.Join(dir, "graph", "post", "generated.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +333,7 @@ type Query { users: [User!]! user(id: ID!): User }
 		`graphql.Args[UserArgs]()`,
 	} {
 		if !strings.Contains(ps, want) {
-			t.Errorf("post/bindings.go missing %s\n%s", want, ps)
+			t.Errorf("post/generated.go missing %s\n%s", want, ps)
 		}
 	}
 	sch, err := os.ReadFile(filepath.Join(dir, "graph", "schema.go"))
@@ -355,21 +355,21 @@ type Query { users: [User!]! user(id: ID!): User }
 			t.Errorf("schema.go missing %s\n%s", want, ss)
 		}
 	}
-	resUser, err := os.ReadFile(filepath.Join(dir, "graph", "user", "resolver.go"))
+	resUser, err := os.ReadFile(filepath.Join(dir, "graph", "user", "generated.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(resUser), "UserPosts(") {
-		t.Errorf("user/resolver.go missing UserPosts\n%s", resUser)
+		t.Errorf("user/generated.go missing UserPosts\n%s", resUser)
 	}
-	resPost, err := os.ReadFile(filepath.Join(dir, "graph", "post", "resolver.go"))
+	resPost, err := os.ReadFile(filepath.Join(dir, "graph", "post", "generated.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	rp := string(resPost)
 	for _, want := range []string{"PostAuthor(", "Users(", "User("} {
 		if !strings.Contains(rp, want) {
-			t.Errorf("post/resolver.go missing %s\n%s", want, rp)
+			t.Errorf("post/generated.go missing %s\n%s", want, rp)
 		}
 	}
 }
@@ -394,15 +394,15 @@ func TestGenerateGroupFuncOmitsPureGroupFromResolvers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	userBind, err := os.ReadFile(filepath.Join(dir, "graph", "user", "bindings.go"))
+	userBind, err := os.ReadFile(filepath.Join(dir, "graph", "user", "generated.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(userBind), "func Bindings()") {
 		t.Fatalf("pure user group should expose Bindings() with no Resolver\n%s", userBind)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "graph", "user", "resolver.go")); err == nil {
-		t.Fatal("pure user group should not emit resolver.go")
+	if strings.Contains(string(userBind), "type Resolver interface") {
+		t.Fatalf("pure user group should not declare a Resolver\n%s", userBind)
 	}
 	sch, err := os.ReadFile(filepath.Join(dir, "graph", "schema.go"))
 	if err != nil {
@@ -553,7 +553,7 @@ func TestGenerateRootScalarFieldsAreResolvers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	b, err := os.ReadFile(filepath.Join(dir, "graph", "bindings.go"))
+	b, err := os.ReadFile(filepath.Join(dir, "graph", "generated.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -564,7 +564,7 @@ func TestGenerateRootScalarFieldsAreResolvers(t *testing.T) {
 		}
 	}
 
-	r, err := os.ReadFile(filepath.Join(dir, "graph", "resolver.go"))
+	r, err := os.ReadFile(filepath.Join(dir, "graph", "generated.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -614,7 +614,7 @@ extend type Query { beta(f: BetaFilter): Beta }
 
 	// Bindings are still split per group; only the models are shared.
 	for _, g := range []string{"alpha", "beta"} {
-		b, err := os.ReadFile(filepath.Join(dir, "graph", g, "bindings.go"))
+		b, err := os.ReadFile(filepath.Join(dir, "graph", g, "generated.go"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -646,7 +646,7 @@ type Query { product(id: ID!): Product }
 		t.Fatalf("generate: %v", err)
 	}
 
-	for _, name := range []string{"bindings.go", "resolver.go"} {
+	for _, name := range []string{"generated.go"} {
 		b, err := os.ReadFile(filepath.Join(dir, "graph", name))
 		if err != nil {
 			t.Fatal(err)

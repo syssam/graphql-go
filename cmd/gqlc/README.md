@@ -24,6 +24,10 @@ more groups) and call `graph.NewSchema(r, extra...)`. Custom scalars listed
 under `models` must still be bound with `graphql.Scalar` in the `NewSchema`
 options.
 
+Each group is emitted as one `generated.go` holding its argument structs,
+`Resolver` interface and bindings; the compiler rebuilds per package, so extra
+files bought nothing.
+
 Multiple SDL files (or `codegen.Config.GroupFunc`) split bindings *and*
 models into per-group packages (`<group>/` and `model/<group>/`), so editing
 one entity recompiles that group, the root package and `main` rather than the

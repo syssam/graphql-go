@@ -163,6 +163,8 @@ entities (47x), against 0.37 us to 9.98 us (27x).
 
     compare/
       gen.go              go run gen.go -n 200
+      cmd/graphqlgo-server, cmd/gqlgen-server   one process each, so a load
+                          test does not have both sharing a GC and a CPU
       internal/gen/       the generator: schema, shared structs, both engines
       engines.go          the two runners
       compare_test.go     both engines must return identical JSON

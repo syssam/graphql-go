@@ -20,7 +20,7 @@ func TestRunWritesBindings(t *testing.T) {
 	if err := run([]string{"-config", cfg}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "graph", "bindings.go")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, "graph", "generated.go")); err != nil {
 		t.Fatal(err)
 	}
 }

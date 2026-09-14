@@ -10,6 +10,50 @@ import (
 	"github.com/syssam/graphql-go/examples/basic/graph/model"
 )
 
+type CreatePostArgs struct {
+	AuthorID graphql.ID
+	Title    string
+	Body     string
+}
+
+type UpdatePostArgs struct {
+	ID    graphql.ID
+	Input model.UpdatePostInput
+}
+
+type NodeArgs struct {
+	ID graphql.ID
+}
+
+type UserArgs struct {
+	ID graphql.ID
+}
+
+type PostsArgs struct {
+	Filter *model.PostFilter
+}
+
+type SearchArgs struct {
+	Term string
+}
+
+type UserPostsArgs struct {
+	First *int
+}
+
+// Resolver holds methods for fields that are not struct data.
+type Resolver interface {
+	CreatePost(ctx context.Context, args CreatePostArgs) (*model.Post, error)
+	UpdatePost(ctx context.Context, args UpdatePostArgs) (*model.Post, error)
+	PostAuthor(ctx context.Context, obj *model.Post) (*model.User, error)
+	Node(ctx context.Context, args NodeArgs) (any, error)
+	User(ctx context.Context, args UserArgs) (*model.User, error)
+	Users(ctx context.Context) ([]*model.User, error)
+	Posts(ctx context.Context, args PostsArgs) ([]*model.Post, error)
+	Search(ctx context.Context, args SearchArgs) ([]any, error)
+	UserPosts(ctx context.Context, obj *model.User, args UserPostsArgs) ([]*model.Post, error)
+}
+
 func Bindings(r Resolver) graphql.SchemaOption {
 	return graphql.Options(
 		graphql.Enum[model.Role]("Role", map[model.Role]string{

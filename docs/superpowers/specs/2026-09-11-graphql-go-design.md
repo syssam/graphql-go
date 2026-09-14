@@ -806,7 +806,11 @@ passed to `graph.NewSchema`.
   it does not collide with the embed directory; `model` and the output
   package name get a `grp` suffix. A schema that resolves to a single group
   stays flat in `Output` (`NewSchema(r Resolver)`). Multiple groups emit
-  `<group>/bindings.go` and `type Resolvers struct { User user.Resolver; ... }`.
+  `<group>/generated.go` and `type Resolvers struct { User user.Resolver; ... }`.
+  One file per group, not the three of section 7.4: args, the Resolver
+  interface and the bindings share a package, so splitting them multiplied the
+  file count without changing what the compiler rebuilds, which is decided per
+  package. A 200-entity schema went from 806 files to 404.
   Groups with only pure fields expose `Bindings()` and are omitted from
   `Resolvers`. Root fields still use `graphql.Query` / `Mutation` /
   `Subscription`, not `Object[graphql.Root]`. `model` is one package per group

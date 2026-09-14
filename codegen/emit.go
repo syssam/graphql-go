@@ -37,13 +37,7 @@ func (b *builder) emit() (map[string][]byte, error) {
 		return nil, err
 	}
 	if len(groups) <= 1 {
-		if err := putGo(files, "args.go", b.emitArgs(b.pkgName, "")); err != nil {
-			return nil, err
-		}
-		if err := putGo(files, "resolver.go", b.emitResolver(b.pkgName, "")); err != nil {
-			return nil, err
-		}
-		if err := putGo(files, "bindings.go", b.emitBindings(b.pkgName, "", true)); err != nil {
+		if err := putGo(files, "generated.go", b.emitGroup(b.pkgName, "", true)); err != nil {
 			return nil, err
 		}
 		if err := putGo(files, "schema.go", b.emitSchema()); err != nil {
@@ -52,17 +46,7 @@ func (b *builder) emit() (map[string][]byte, error) {
 		return files, nil
 	}
 	for _, g := range groups {
-		prefix := g + "/"
-		if err := putGo(files, prefix+"args.go", b.emitArgs(g, g)); err != nil {
-			return nil, err
-		}
-		withR := b.hasResolver(g)
-		if withR {
-			if err := putGo(files, prefix+"resolver.go", b.emitResolver(g, g)); err != nil {
-				return nil, err
-			}
-		}
-		if err := putGo(files, prefix+"bindings.go", b.emitBindings(g, g, withR)); err != nil {
+		if err := putGo(files, g+"/generated.go", b.emitGroup(g, g, b.hasResolver(g))); err != nil {
 			return nil, err
 		}
 	}
@@ -168,7 +152,7 @@ func (b *builder) emitModel(group string) string {
 	return b.header(selfPkg) + b.importBlock(s, selfPkg) + s
 }
 
-func (b *builder) emitArgs(pkg, group string) string {
+func (b *builder) emitArgs(group string) string {
 	var body strings.Builder
 	for _, name := range b.typeNames(ast.Object) {
 		if !b.inGroup(name, group) {
@@ -186,11 +170,7 @@ func (b *builder) emitArgs(pkg, group string) string {
 			body.WriteString("}\n\n")
 		}
 	}
-	s := body.String()
-	if s == "" {
-		return ""
-	}
-	return b.header(pkg) + b.importBlock(s, "") + s
+	return body.String()
 }
 
 func (b *builder) importBlock(src, selfPkg string) string {
@@ -238,7 +218,7 @@ func (b *builder) importBlock(src, selfPkg string) string {
 	return out.String()
 }
 
-func (b *builder) emitResolver(pkg, group string) string {
+func (b *builder) emitResolver(group string) string {
 	var body strings.Builder
 	body.WriteString("// Resolver holds methods for fields that are not struct data.\n")
 	body.WriteString("type Resolver interface {\n")
@@ -273,11 +253,10 @@ func (b *builder) emitResolver(pkg, group string) string {
 		}
 	}
 	body.WriteString("}\n")
-	s := body.String()
-	return b.header(pkg) + b.importBlock(s, "") + s
+	return body.String()
 }
 
-func (b *builder) emitBindings(pkg, group string, withResolver bool) string {
+func (b *builder) emitBindings(group string, withResolver bool) string {
 	var w strings.Builder
 	if withResolver {
 		w.WriteString("func Bindings(r Resolver) graphql.SchemaOption {\n\treturn graphql.Options(\n")
@@ -386,8 +365,7 @@ func (b *builder) emitBindings(pkg, group string, withResolver bool) string {
 	}
 
 	w.WriteString("\t)\n}\n")
-	s := w.String()
-	return b.header(pkg) + b.importBlock(s, "") + s
+	return w.String()
 }
 
 func (b *builder) fieldCall(typeName string, fd *ast.FieldDefinition, root bool) string {
@@ -463,4 +441,32 @@ func (b *builder) emitSchemaGrouped(groups []string) string {
 	w.WriteString("\tall = append(all, opts...)\n")
 	w.WriteString("\treturn graphql.NewSchema(graphql.SDLFS(sdl, \"schema/*.graphql\"), all...)\n}\n")
 	return w.String()
+}
+
+// emitGroup renders one group as a single file. Args, the Resolver interface
+// and the bindings all live in the same package, so splitting them across
+// three files only multiplied the file count: what the compiler rebuilds is
+// decided by the package, not the file.
+func (b *builder) emitGroup(pkg, group string, withResolver bool) string {
+	parts := []string{b.emitArgs(group)}
+	if withResolver {
+		parts = append(parts, b.emitResolver(group))
+	}
+	parts = append(parts, b.emitBindings(group, withResolver))
+
+	var body strings.Builder
+	for _, p := range parts {
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		body.WriteString(p)
+		if !strings.HasSuffix(p, "\n\n") {
+			body.WriteString("\n")
+		}
+	}
+	s := body.String()
+	if strings.TrimSpace(s) == "" {
+		return ""
+	}
+	return b.header(pkg) + b.importBlock(s, "") + s
 }
