@@ -3,6 +3,7 @@ package graphql
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -369,4 +370,158 @@ func TestAutoFieldCount(t *testing.T) {
 	if len(fields) != 2 {
 		t.Fatalf("auto fields = %d, want 2 (embed.Tag + Name)", len(fields))
 	}
+}
+
+// --- literal argument coercion ------------------------------------------
+
+type coerceColor string
+
+type coerceIn struct {
+	S      Omittable[*string]
+	Block  *string
+	I      *int
+	F      *float64
+	B      *bool
+	C      *coerceColor
+	Nil    Omittable[*string]
+	List   []int
+	Nested *coerceIn
+}
+
+type coerceArgs struct{ In coerceIn }
+
+func renderCoerce(in *coerceIn) string {
+	if in == nil {
+		return "<nil>"
+	}
+	var b strings.Builder
+	writeOpt := func(name string, o Omittable[*string]) {
+		v, ok := o.ValueOK()
+		switch {
+		case !ok:
+			fmt.Fprintf(&b, "%s=absent ", name)
+		case v == nil:
+			fmt.Fprintf(&b, "%s=null ", name)
+		default:
+			fmt.Fprintf(&b, "%s=%q ", name, *v)
+		}
+	}
+	writeOpt("s", in.S)
+	writeOpt("nil", in.Nil)
+	if in.Block != nil {
+		fmt.Fprintf(&b, "block=%q ", *in.Block)
+	}
+	if in.I != nil {
+		fmt.Fprintf(&b, "i=%d ", *in.I)
+	}
+	if in.F != nil {
+		fmt.Fprintf(&b, "f=%v ", *in.F)
+	}
+	if in.B != nil {
+		fmt.Fprintf(&b, "b=%v ", *in.B)
+	}
+	if in.C != nil {
+		fmt.Fprintf(&b, "c=%s ", string(*in.C))
+	}
+	if in.List != nil {
+		fmt.Fprintf(&b, "list=%v ", in.List)
+	}
+	if in.Nested != nil {
+		fmt.Fprintf(&b, "nested=(%s) ", strings.TrimSpace(renderCoerce(in.Nested)))
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func newCoerceExecutor(t *testing.T) *Executor {
+	t.Helper()
+	s, err := NewSchema(SDL(`
+		enum Color { RED GREEN }
+		input CoerceIn {
+			s: String
+			block: String
+			i: Int
+			f: Float
+			b: Boolean
+			c: Color
+			nil: String
+			list: [Int!]
+			nested: CoerceIn
+		}
+		type Query { echo(in: CoerceIn!): String! }
+	`),
+		Enum[coerceColor]("Color", map[coerceColor]string{"RED": "RED", "GREEN": "GREEN"}),
+		Input[coerceIn]("CoerceIn"),
+		Args[coerceArgs](),
+		Query(ResolveArgs("echo", func(_ context.Context, _ Root, a coerceArgs) (string, error) {
+			return renderCoerce(&a.In), nil
+		})),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return NewExecutor(s)
+}
+
+// TestLiteralArgumentKinds walks every ast.Value kind astJSON decodes: ints,
+// floats, strings, block strings, enums, booleans, null, lists and nested
+// objects, as literals rather than variables.
+func TestLiteralArgumentKinds(t *testing.T) {
+	e := newCoerceExecutor(t)
+	resp := run(t, e, `{ echo(in: {
+		s: "x"
+		block: """line"""
+		i: 7
+		f: 1.5
+		b: true
+		c: GREEN
+		nil: null
+		list: [1, 2, 3]
+		nested: { s: "inner", i: 9 }
+	}) }`, "")
+	expectData(t, resp,
+		`{"echo":"s=\"x\" nil=null block=\"line\" i=7 f=1.5 b=true c=GREEN list=[1 2 3] nested=(s=\"inner\" nil=absent i=9)"}`)
+}
+
+// TestLiteralObjectOmitsAbsentVariable pins the specification rule that makes
+// Omittable meaningful: an input object field whose value is a variable that
+// was not supplied is left out entirely, rather than coerced to null.
+func TestLiteralObjectOmitsAbsentVariable(t *testing.T) {
+	e := newCoerceExecutor(t)
+
+	resp := run(t, e, `query ($v: String) { echo(in: { s: $v }) }`, "")
+	expectData(t, resp, `{"echo":"s=absent nil=absent"}`)
+
+	resp = run(t, e, `query ($v: String) { echo(in: { s: $v }) }`, `{"v":null}`)
+	expectData(t, resp, `{"echo":"s=null nil=absent"}`)
+
+	resp = run(t, e, `query ($v: String) { echo(in: { s: $v }) }`, `{"v":"given"}`)
+	expectData(t, resp, `{"echo":"s=\"given\" nil=absent"}`)
+}
+
+// TestLiteralListOfObjects covers list values whose elements are objects,
+// which recurse through astJSON twice.
+func TestLiteralListOfObjects(t *testing.T) {
+	e := newCoerceExecutor(t)
+	resp := run(t, e, `{ echo(in: { nested: { nested: { i: 1 } } }) }`, "")
+	expectData(t, resp, `{"echo":"s=absent nil=absent nested=(s=absent nil=absent nested=(s=absent nil=absent i=1))"}`)
+}
+
+// TestVariableDefaultKinds covers astJSON, which decodes default values
+// rather than field arguments: a variable default carrying every literal
+// kind, none of them supplied by the caller.
+func TestVariableDefaultKinds(t *testing.T) {
+	e := newCoerceExecutor(t)
+	resp := run(t, e, `query ($in: CoerceIn = {
+		s: "def"
+		block: """blk"""
+		i: 1
+		f: 2.5
+		b: false
+		c: RED
+		nil: null
+		list: [4, 5]
+		nested: { i: 2 }
+	}) { echo(in: $in) }`, "")
+	expectData(t, resp,
+		`{"echo":"s=\"def\" nil=null block=\"blk\" i=1 f=2.5 b=false c=RED list=[4 5] nested=(s=absent nil=absent i=2)"}`)
 }
