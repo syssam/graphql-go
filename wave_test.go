@@ -1,8 +1,9 @@
 package graphql
 
 import (
+	"sync/atomic"
 	"testing"
-	"time"
+	"testing/synctest"
 )
 
 // TestWaveCoordinatorNilIsInert pins the documented contract that a nil
@@ -76,21 +77,20 @@ func TestWaveCoordinatorWaitsForLateTask(t *testing.T) {
 // TestWaveCoordinatorScheduleFallback covers Park outside any announced wave,
 // such as a sequential Load: there is no wave to complete, so dispatch has to
 // happen on the next scheduler tick instead.
+//
+// synctest runs the dispatch goroutine in a bubble, so Wait returns once it
+// has finished rather than after a real timeout.
 func TestWaveCoordinatorScheduleFallback(t *testing.T) {
-	w := newWaveCoordinator()
-	done := make(chan struct{}, 1)
-	w.OnReady(func() {
-		select {
-		case done <- struct{}{}:
-		default:
+	synctest.Test(t, func(t *testing.T) {
+		w := newWaveCoordinator()
+		var flushes atomic.Int32
+		w.OnReady(func() { flushes.Add(1) })
+
+		w.Park()
+		synctest.Wait()
+
+		if got := flushes.Load(); got != 1 {
+			t.Fatalf("flushes = %d, want 1 after the fallback tick", got)
 		}
 	})
-
-	w.Park()
-
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Park outside a wave never dispatched")
-	}
 }

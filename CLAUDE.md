@@ -29,6 +29,23 @@ cd examples/basic && go generate    # go run ../../cmd/gqlc -config gqlc.yaml
 `codegen` tests write a temp module, run `go build`/`go test` in it, and take ~20s; they
 honour `-short`.
 
+**`-race` is not optional.** The DataLoader N+1 race was caught 4 times in 40 runs with
+`-race` and 0 times in 40 without it: the detector perturbs scheduling enough to hit the
+interleaving. Dropping `-race` to save time silently disables the only thing that finds
+this bug class. `testing/synctest` does not help here and makes it worse — its
+deterministic scheduling hid the same bug in 20 of 20 runs. Use synctest for tests that
+would otherwise wait on real time (see `wave_test.go`), not to find races.
+
+Comparing performance between two versions goes through `benchstat`, not by eye:
+
+```sh
+go test -count=10 -run '^$' -bench . -benchmem > old.txt   # before
+go test -count=10 -run '^$' -bench . -benchmem > new.txt   # after
+benchstat old.txt new.txt                                  # golang.org/x/perf/cmd/benchstat
+```
+
+Single samples on this codebase have been wrong by 20-77% when the machine was warm.
+
 ## Architecture
 
 Schema-first runtime with a code-first binding API. SDL is the contract; Go bindings are

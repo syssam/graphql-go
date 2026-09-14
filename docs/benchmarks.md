@@ -54,6 +54,18 @@ go test -run '^$' -bench . -benchmem -count=5
 go generate   # only if schema.graphql or gqlgen.yml changed
 ```
 
+Compare two versions with `benchstat` rather than by reading medians. It reports a
+confidence interval and says whether a difference is significant, which matters here:
+a warm machine has moved these numbers by 20-77%, in both directions.
+
+```sh
+go test -count=10 -run '^$' -bench . -benchmem > old.txt
+go test -count=10 -run '^$' -bench . -benchmem > new.txt
+benchstat old.txt new.txt
+```
+
+Allocation counts are deterministic and are the figure to trust when timings are noisy.
+
 ---
 
 # Build cost: gqlc vs gqlgen
