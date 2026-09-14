@@ -3,6 +3,7 @@ package graphql
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -270,5 +271,102 @@ func TestArgsValidation(t *testing.T) {
 	)
 	if err == nil || !strings.Contains(err.Error(), "the field has none") {
 		t.Fatalf("args binding on argument-less field should fail, got %v", err)
+	}
+}
+
+func TestExportedToGraphQL(t *testing.T) {
+	cases := map[string]string{
+		"ID":        "id",
+		"Name":      "name",
+		"AuthorID":  "authorId",
+		"URL":       "url",
+		"HomeURL":   "homeUrl",
+		"firstName": "firstName",
+	}
+	for in, want := range cases {
+		if got := exportedToGraphQL(in); got != want {
+			t.Errorf("exportedToGraphQL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+type autoArgs struct {
+	AuthorID ID
+	First    *int
+	Hidden   string `graphql:"-"`
+	Renamed  string `graphql:"term"`
+}
+
+func TestAutoArgsAndInput(t *testing.T) {
+	const sdl = `
+		input Filter { authorId: ID, first: Int = 2 }
+		type Query { search(authorId: ID!, first: Int = 2, term: String!): String! }
+	`
+	type filter struct {
+		AuthorID *ID
+		First    *int
+	}
+	s, err := NewSchema(SDL(sdl),
+		Input[filter]("Filter"),
+		Args[autoArgs](),
+		Query(FieldArgs("search", func(_ Root, a autoArgs) string {
+			return string(a.AuthorID) + ":" + a.Renamed
+		})),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := NewExecutor(s)
+	resp := run(t, e, `{ search(authorId: "1", term: "go") }`, "")
+	expectData(t, resp, `{"search":"1:go"}`)
+
+	dec := s.reg.inputsByName["Filter"]
+	v, err := dec.decode(map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *v.(*filter).First != 2 {
+		t.Fatalf("precomputed default first = %v", v.(*filter).First)
+	}
+}
+
+func TestAutoOmittable(t *testing.T) {
+	const sdl = `input Patch { title: String } type Query { p(in: Patch!): String! }`
+	type patch struct {
+		Title Omittable[*string]
+	}
+	type args struct{ In patch }
+	s, err := NewSchema(SDL(sdl),
+		Input[patch]("Patch"),
+		Args[args](),
+		Query(ResolveArgs("p", func(_ context.Context, _ Root, a args) (string, error) {
+			if !a.In.Title.IsSet() {
+				return "absent", nil
+			}
+			if a.In.Title.Value() == nil {
+				return "null", nil
+			}
+			return *a.In.Title.Value(), nil
+		})),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := NewExecutor(s)
+	expectData(t, run(t, e, `{ p(in: {}) }`, ""), `{"p":"absent"}`)
+	expectData(t, run(t, e, `{ p(in: {title: null}) }`, ""), `{"p":"null"}`)
+	expectData(t, run(t, e, `{ p(in: {title: "Hi"}) }`, ""), `{"p":"Hi"}`)
+}
+
+func TestAutoFieldCount(t *testing.T) {
+	type embed struct{ Tag string }
+	type wrapped struct {
+		embed
+		Name string
+		skip string
+	}
+	fields := autoInputFields(reflect.TypeFor[wrapped]())
+	if len(fields) != 2 {
+		t.Fatalf("auto fields = %d, want 2 (embed.Tag + Name)", len(fields))
 	}
 }

@@ -25,6 +25,11 @@ const (
 	CodeBadUserInput        = "BAD_USER_INPUT"
 	CodeOperationResolution = "OPERATION_RESOLUTION_FAILURE"
 	CodeRequestCancelled    = "REQUEST_CANCELLED"
+	// CodeTooComplex is returned when static field count or query cost
+	// exceeds the executor limit (GitHub / Shopify style).
+	CodeTooComplex = "COMPLEXITY_LIMIT_EXCEEDED"
+	// CodeMaxDepth is returned when the selection nesting exceeds WithMaxDepth.
+	CodeMaxDepth = "MAX_DEPTH_EXCEEDED"
 )
 
 // Location is a line/column position in the request document.

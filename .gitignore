@@ -15,3 +15,6 @@ Thumbs.db
 # Go tooling
 /vendor/
 coverage.*
+
+# Vendored reference sources (not part of the module)
+/ref/

@@ -89,13 +89,19 @@ func checkOutputCompositeShape(s *Schema, goType reflect.Type, sdl *ast.Type) (*
 		if t.Kind() == reflect.Interface {
 			return nil, nil
 		}
-		obj := s.goTypes[t]
-		if obj == nil {
+		objs := s.goTypes[t]
+		if len(objs) == 0 {
 			return nil, fmt.Errorf("Go type %s returned for abstract type %s is not bound to any object type", t, def.Name)
 		}
 		if at := s.abstracts[def.Name]; at != nil {
-			if _, ok := at.possible[obj.name]; !ok {
-				return nil, fmt.Errorf("Go type %s is bound to %s, which is not a possible type of %s", t, obj.name, def.Name)
+			n := 0
+			for _, obj := range objs {
+				if _, ok := at.possible[obj.name]; ok {
+					n++
+				}
+			}
+			if n == 0 {
+				return nil, fmt.Errorf("Go type %s is bound to %s, which is not a possible type of %s", t, objs[0].name, def.Name)
 			}
 		}
 		return nil, nil

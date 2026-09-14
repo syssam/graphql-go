@@ -53,6 +53,42 @@ func TestSDLFS(t *testing.T) {
 	}
 }
 
+func TestSourcesCombinesFileSystems(t *testing.T) {
+	queryFS := fstest.MapFS{
+		"query.graphql": {Data: []byte(`type Query { a: A }`)},
+	}
+	typeFS := fstest.MapFS{
+		"a.graphql": {Data: []byte(`type A { id: ID! }`)},
+	}
+	type A struct{ ID string }
+	s, err := NewSchema(Sources(SDLFS(queryFS, "*.graphql"), SDLFS(typeFS, "*.graphql")),
+		Object[Root]("Query", Field("a", func(Root) *A { return nil })),
+		Object[A]("A", Field("id", func(a *A) string { return a.ID })),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.AST().Types["A"] == nil {
+		t.Fatal("type A from second file system missing")
+	}
+}
+
+func TestOptionsJoinsBindings(t *testing.T) {
+	type A struct{ ID string }
+	s, err := NewSchema(SDL(`type A { id: ID! } type Query { a: A }`),
+		Options(
+			Object[A]("A", Field("id", func(a *A) string { return a.ID })),
+			Query(Field("a", func(Root) *A { return &A{ID: "1"} })),
+		),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.objects["A"] == nil || s.query == nil {
+		t.Fatal("joined options did not bind types")
+	}
+}
+
 func TestPrintSDLRoundTrip(t *testing.T) {
 	s, err := NewSchema(SDL(`type Query { a: Int }`),
 		Object[Root]("Query", Field("a", func(Root) int { return 1 })),

@@ -3,6 +3,7 @@ package graphql
 import (
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/vektah/gqlparser/v2/ast"
 )
@@ -111,12 +112,32 @@ func (s *Schema) concreteType(at *abstractType, v any) (*objectType, error) {
 		}
 		return obj, nil
 	}
-	obj := s.goTypes[reflect.TypeOf(v)]
-	if obj == nil {
-		return nil, fmt.Errorf("abstract type %s must resolve to an object type at runtime; Go type %T is not bound", at.name, v)
+	return s.objectForGoType(at, reflect.TypeOf(v), v)
+}
+
+// objectForGoType picks the unique possible object bound to t. Several
+// GraphQL objects may share a Go type; that is only an error when more
+// than one of them is a possible type of at.
+func (s *Schema) objectForGoType(at *abstractType, t reflect.Type, v any) (*objectType, error) {
+	var matches []*objectType
+	for _, obj := range s.goTypes[t] {
+		if _, ok := at.possible[obj.name]; ok {
+			matches = append(matches, obj)
+		}
 	}
-	if _, ok := at.possible[obj.name]; !ok {
-		return nil, fmt.Errorf("abstract type %s must resolve to one of its possible types; got %s", at.name, obj.name)
+	switch len(matches) {
+	case 1:
+		return matches[0], nil
+	case 0:
+		if len(s.goTypes[t]) == 0 {
+			return nil, fmt.Errorf("abstract type %s must resolve to an object type at runtime; Go type %T is not bound", at.name, v)
+		}
+		return nil, fmt.Errorf("abstract type %s must resolve to one of its possible types; Go type %T is bound to %s", at.name, v, s.goTypes[t][0].name)
+	default:
+		names := make([]string, len(matches))
+		for i, obj := range matches {
+			names[i] = obj.name
+		}
+		return nil, fmt.Errorf("abstract type %s is ambiguous for Go type %T (bound to %s); set a TypeResolver", at.name, v, strings.Join(names, ", "))
 	}
-	return obj, nil
 }

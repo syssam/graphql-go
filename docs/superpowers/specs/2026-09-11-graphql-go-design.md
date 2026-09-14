@@ -2,8 +2,8 @@
 
 - **Date:** 2026-09-11
 - **Module:** `github.com/syssam/graphql-go`
-- **Status:** Approved design, pending implementation plan
-- **Minimum Go version:** 1.24
+- **Status:** Approved design; Phase 1 engine is implemented
+- **Minimum Go version:** 1.27
 
 ## 1. Background and Problem Statement
 
@@ -71,7 +71,7 @@ runtime performance and covering the full GraphQL specification.
 | Codegen engine | `github.com/dave/jennifer`, parallel per group, content-hash skip | Same approach that made Velox fast; auto-managed imports; streaming writes |
 | WebSocket library | `github.com/coder/websocket` | Context-aware, maintained, minimal API |
 | Type binding safety | Compile time for Go-expressible errors; `NewSchema` time for SDL-shape compatibility | Generated code is always shape-correct; hand-written code validates in one test |
-| Minimum Go | 1.24 | Aligns with Velox; needs generics and `reflect.TypeFor` |
+| Minimum Go | 1.27 | Generic methods (`Omittable.Or`, `Selection.Collect`); `reflect.TypeFor` |
 
 ## 4. Architecture Overview
 
@@ -101,10 +101,12 @@ runtime performance and covering the full GraphQL specification.
 
 ```
 github.com/syssam/graphql-go              package graphql — public core and engine
-  │   schema.go, registry.go, binding_*.go   binding API, type registry, shape validation
-  │   plan.go, plan_cache.go                 operation → Plan compiler, LRU cache
+  │   schema.go, source.go, registry.go      schema construction and type registry
+  │   scalar/enum/object/abstract/input.go   binding API and shape validation
+  │   plan.go                                operation → Plan compiler, LRU cache
   │   exec*.go                               executor: scheduling, null bubbling, errors
   │   introspection.go                       __schema / __type implemented with the public binding API
+  ├─ loader                               DataLoader over WaveCoordinator
   ├─ internal/jsonw                       allocation-free JSON writer
   ├─ codegen                              library: Config, Manifest, Generate
   │   └─ cmd/gqlc                         thin CLI over the library
@@ -137,7 +139,7 @@ only job is to write these calls from SDL plus Go type information.
 
 ```go
 sch, err := graphql.NewSchema(graphql.SDLFS(sdlFS, "schema/*.graphql"),
-    graphql.Object[*model.User]("User",
+    graphql.Object[model.User]("User",
         graphql.Field("id",  func(u *model.User) graphql.ID { return graphql.ID(u.ID) }),
         graphql.Field("bio", func(u *model.User) *string { return u.Bio }),
         graphql.ResolveArgs("posts",
@@ -145,7 +147,7 @@ sch, err := graphql.NewSchema(graphql.SDLFS(sdlFS, "schema/*.graphql"),
                 return r.Posts(ctx, u, a)
             }),
     ),
-    graphql.Object[graphql.Root]("Query",
+    graphql.Query(
         graphql.ResolveArgs("user", func(ctx context.Context, _ graphql.Root, a UserArgs) (*model.User, error) {
             return r.User(ctx, a.ID)
         }),
@@ -174,25 +176,28 @@ generated group packages); a duplicated field is an error.
 
 | Constructor | Signature | Semantics |
 |---|---|---|
-| `Object[T]` | `(name string, fields ...FieldOption) SchemaOption` | Binds GraphQL object `name` to Go type `T` (pointer types recommended). With `E` the non-pointer base of `T`, registers adapters for `E`, `*E`, `[]E`, `[]*E`. |
-| `Field[P, R]` | `(name, func(P) R, ...FieldOpt)` | **Pure** field: no context, no error, always executed inline, never scheduled on a goroutine. |
-| `FieldArgs[P, A, R]` | `(name, func(P, A) R, ...FieldOpt)` | Pure field with arguments. |
-| `Resolve[P, R]` | `(name, func(context.Context, P) (R, error), ...FieldOpt)` | **Resolver** field: may perform I/O; eligible for concurrent scheduling. |
-| `ResolveArgs[P, A, R]` | `(name, func(context.Context, P, A) (R, error), ...FieldOpt)` | Resolver with arguments. |
-| `Subscribe[P, R]`, `SubscribeArgs[P, A, R]` | `(name, func(ctx, P[, A]) (<-chan R, error))` | Subscription root fields. Each value on the channel is executed as an event. |
-| `Args[A]` | `(fields ...InputFieldOption) SchemaOption` | Registers the decoder for argument struct `A`, keyed by Go type. `ResolveArgs`/`FieldArgs` look it up by `A`. |
-| `Input[T]` | `(name string, fields ...InputFieldOption) SchemaOption` | Binds GraphQL input object `name` to struct `T` (non-pointer); registers decoders for `T`, `*T`, `[]T`, `[]*T`. |
-| `InputField[T, V]` | `(name string, set func(*T, V)) InputFieldOption` | Typed setter for one input field / argument. `V` must be shape-compatible with the SDL type. |
+| `Object[E]` | `(name string, fields ...FieldOption) SchemaOption` | Binds GraphQL object `name` to Go element type `E` (not `*E`). Values flow as `*E`. |
+| `Field[P, R]` | `(name, func(P) R, ...FieldSchedule)` | **Pure** field: no context, no error, always executed inline, never scheduled on a goroutine. |
+| `FieldArgs[P, A, R]` | `(name, func(P, A) R, ...FieldSchedule)` | Pure field with arguments. |
+| `Resolve[P, R]` | `(name, func(context.Context, P) (R, error), ...FieldSchedule)` | **Resolver** field: may perform I/O; eligible for concurrent scheduling. |
+| `ResolveArgs[P, A, R]` | `(name, func(context.Context, P, A) (R, error), ...FieldSchedule)` | Resolver with arguments. |
+| `Subscribe[P, R]`, `SubscribeArgs[P, A, R]` | `(name, func(ctx, P[, A]) (<-chan R, error))` | Subscription root fields (Phase 3). |
+| `Args[A]` | `(fields ...InputFieldOption) SchemaOption` | Decoder for argument struct `A`. Empty `Args[A]()` derives fields from struct tags. |
+| `Input[T]` | `(name string, fields ...InputFieldOption) SchemaOption` | Binds GraphQL input object `name` to struct `T`. Empty field list is Auto. |
+| `InputField[T, V]` | `(name string, set func(*T, V)) InputFieldOption` | Typed setter for one input field / argument. |
 | `OmittableField[T, V]` | `(name string, set func(*T, graphql.Omittable[V]))` | Setter that distinguishes "absent" from "null". |
-| `Enum[T comparable]` | `(name string, values map[T]string) SchemaOption` | Bidirectional mapping between Go values and GraphQL enum names. Registers `T`, `*T`, `[]T`, `[]*T`. |
-| `Scalar[T]` | `(name string, marshal func(*Writer, T) error, unmarshal func(any) (T, error)) SchemaOption` | Custom scalar. `marshal` may fail (for example an out-of-range `Int`), which is reported as a field error. Built-ins: `Int` (int, int32, int64), `Float` (float64, float32), `String`, `Boolean`, `ID` (`graphql.ID`, string, int64). |
-| `Interface[T]`, `Union[T]` | `(name string, opts ...AbstractOpt) SchemaOption` | `T` is a Go interface type. Concrete GraphQL type is resolved from the dynamic Go type via the registry; `graphql.TypeResolver(func(T) string)` overrides. |
-| `Directive[A]` | `(name string, func(next FieldFunc, args A) FieldFunc) SchemaOption` | Schema-directive middleware, applied once at `NewSchema`. Fields carrying a directive go through the `any`-typed `FieldFunc` path, like intercepted fields (Section 5.7). |
-| `Root` | `type Root struct{}` | Parent value for `Query`, `Mutation`, `Subscription` fields. |
+| `Enum[T comparable]` | `(name string, values map[T]string) SchemaOption` | Bidirectional mapping between Go values and GraphQL enum names. |
+| `Scalar[T]` | `(name string, marshal func(*Writer, T) error, unmarshal func(any) (T, error)) SchemaOption` | Custom scalar. |
+| `Interface[T]`, `Union[T]` | `(name string, opts ...AbstractOpt) SchemaOption` | Prefer a sealed interface for `T`. `TypeResolver` is required when one Go type backs several possible objects. |
+| `Directive` | `(name, func(next FieldFunc) FieldFunc)` | No-argument schema directive. `OBJECT` wraps every field of the type. |
+| `DirectiveArgs[A]` | `(name, func(next FieldFunc, args A) FieldFunc)` | Schema directive with an argument struct. |
+| `Query` / `Mutation` / `Subscription` | `(fields ...FieldOption)` | Bind the schema's declared root type name. |
+| `loader.New[K, V]` | `(BatchFunc[K, V], ...loader.Option)` | Per-request batch+cache, in `graphql-go/loader`. Concurrent `Load` calls in one executor wave share one batch. |
+| `Root` | `type Root struct{}` | Parent value for root fields. |
 
-`FieldOpt` values: `graphql.Inline()` (force a `Resolve` field to run
+`FieldSchedule` values: `graphql.Inline()` (force a `Resolve` field to run
 synchronously), `graphql.Concurrent()` (allow a `Field` with heavy CPU work to
-be scheduled).
+be scheduled). `FieldOpt` is an alias.
 
 ### 5.3 Type Registry and Shape Resolution
 
@@ -244,10 +249,12 @@ multi-error, with schema coordinates (`User.posts`) in each message. A
 
 ```go
 // Omittable distinguishes an absent input field from an explicit null.
-type Omittable[T any] struct{ value T; set bool }
+type Omittable[T any] struct{ /* unexported */ }
+func OmittableOf[T any](v T) Omittable[T]
 func (o Omittable[T]) IsSet() bool
 func (o Omittable[T]) Value() T
 func (o Omittable[T]) ValueOK() (T, bool)
+func (o Omittable[T]) Or(def T) T
 
 // Writer is the streaming JSON writer handed to scalar marshalers.
 type Writer struct{ /* pooled []byte */ }
@@ -262,7 +269,7 @@ type FieldFunc func(ctx context.Context, parent any, args any) (any, error)
 type Executor struct{ /* schema, plan cache, semaphore, interceptors */ }
 func NewExecutor(s *Schema, opts ...ExecutorOption) *Executor
 func (e *Executor) Execute(ctx context.Context, req *Request) *Response
-func (e *Executor) Subscribe(ctx context.Context, req *Request) (<-chan *Response, error)
+// Subscribe is Phase 3; Execute rejects subscription operations.
 
 type Error struct {
     Message    string
@@ -595,16 +602,22 @@ per operation). Supports queries, mutations and subscriptions.
 - `SchemaOption`: `graphql.DisableIntrospection()`; `graphql.PrintSDL(*Schema)`
   exports the schema as SDL.
 - `ExecutorOption`: `WithMaxConcurrency(n)`, `WithPlanCache(size)`,
-  `WithErrorPresenter(fn)`, `WithRecover(bool)`, `WithInterceptors(...)`.
+  `WithErrorPresenter(fn)`, `WithRecover(bool)`, `WithRequestInterceptor`,
+  `WithOperationInterceptor`, `WithFieldInterceptor`, `WithMaxComplexity(n)`,
+  `WithMaxDepth(n)`, `WithQueryCost(QueryCost)`.
 
-### 8.5 `ext/complexity`
+### 8.5 Query cost and depth (core)
 
-- Static complexity per plan (1 per field plus children by default) plus a
-  dynamic pass that multiplies list fields by `first`/`last`/`limit`-style
-  arguments, with per-coordinate estimator overrides
-  (`complexity.Rule("User.posts", fn)`).
-- Depth limit.
-- Both are enforced as an `OperationInterceptor` before execution begins.
+Enforced as an innermost `OperationInterceptor` before resolvers run, matching
+GitHub's node/complexity limits and Shopify's query cost:
+
+- Static complexity: 1 per selected field (aliases included).
+- Depth: maximum selection nesting.
+- Query cost: field weight (default 1, override via `FieldWeight["Type.field"]`)
+  plus child cost × list size. List size is `first`/`last` or `DefaultListSize`
+  (10). `Report: true` writes `extensions.cost`.
+- `ext/complexity` remains reserved for result-based *actual* cost after
+  execution (Shopify's `actualQueryCost`).
 
 ### 8.6 `ext/otel`
 
@@ -692,8 +705,9 @@ tests and a runnable example.
 3. **Subscriptions and streaming transports.** `Subscribe*` bindings,
    `Executor.Subscribe`, `transport/gqlws`, `transport/gqlsse`, APQ in
    `transport/gqlhttp`.
-4. **Production extensions and benchmarks.** `ext/complexity`, `ext/otel`,
-   synthetic schema generator, gqlgen baseline, `docs/benchmarks.md`.
+4. **Production extensions and benchmarks.** `ext/otel`, result-based actual
+   query cost, synthetic schema generator, gqlgen baseline, `docs/benchmarks.md`.
+   Static complexity, depth and requested query cost already live on `Executor`.
 
 ### Phase 1 Deviations
 
@@ -726,6 +740,94 @@ authoritative behaviour.
 - **`gqlhttp` returns 406** when the `Accept` header allows neither supported
   media type, and treats `*/*` and `application/*` as preferring
   `application/graphql-response+json`.
+- **Typed interceptors.** `WithInterceptors(...any)` is replaced by
+  `WithRequestInterceptor`, `WithOperationInterceptor` and
+  `WithFieldInterceptor`, matching `grpc.UnaryInterceptor` /
+  `grpc.ChainUnaryInterceptor`.
+- **`Directive` / `DirectiveArgs`.** A no-argument directive uses
+  `Directive(name, func(next FieldFunc) FieldFunc)`; arguments use
+  `DirectiveArgs[A]`. `OBJECT` locations wrap every field of the type
+  (outermost, after field directives).
+- **`Query` / `Mutation` / `Subscription`** bind the schema's declared root
+  type names (including `schema { query: RootQuery }`).
+- **One Go type, many GraphQL objects.** `User` and `UserSummary` may share
+  `*ent.User`. Abstract positions that then have more than one possible
+  type require a `TypeResolver`.
+- **Literal numbers are `json.Number`.** Custom scalars see the same raw
+  type for `{ echo(n: 42) }` and `query($n: Big!) { echo(n: $n) }`.
+- **Minimum Go version is 1.27**, so `Omittable.Or` and `Selection.Collect`
+  are generic methods.
+- **`Omittable` fields are unexported.** Auto bindings assign through an
+  internal method; application code uses `OmittableOf` / `IsSet` / `Value` /
+  `Or`.
+- **`Sources` concatenates independently.** Two `SDLFS` values from different
+  file systems are loaded in order; constructors do not panic.
+- **DataLoader ships as `graphql-go/loader`, not in the root package.**
+  `loader.New` / `loader.Loader[K, V]` / `loader.Option`. Cache and
+  in-flight batches are still scoped to the `OperationContext`. Sequential
+  `Load` calls in one resolver do not coalesce; use `LoadMany`.
+  It was originally `graphql.NewLoader`; the move puts it behind a package
+  boundary so its options cannot be confused with `ExecutorOption` — every
+  `graphql.With*` is now an `ExecutorOption`, and batch options are
+  `loader.WithMaxBatchSize` / `loader.WithoutCache`.
+- **Wave dispatch is an exported extension point.** The executor announces a
+  concurrent wave before launching sibling tasks, so batched work coalesces
+  the way Facebook DataLoader dispatches at the end of a tick. The
+  bookkeeping is `graphql.WaveCoordinator`, reached through
+  `OperationFrom(ctx).Waves()`: `OnReady` subscribes a flush callback,
+  `Park` / `Unpark` bracket a block on batched work. The loader package is
+  built on it, and it is the seam for any other request-scoped batching
+  extension. A nil `*WaveCoordinator` is valid and inert.
+- **`OperationContext.GetOrSet`** is the atomic form of `Get` then `Set`.
+  Request-scoped extensions must use it to install their per-operation
+  state: sibling resolvers reach their first `Load` simultaneously, and a
+  check-then-act pair lets each of them install its own state, so only the
+  last write survives while the rest keep using orphaned copies. That bug
+  made DataLoader degrade to N+1 nondeterministically and split the
+  per-request cache; `-race` does not catch it, because `Get` and `Set` are
+  individually mutex-protected.
+- **Complexity, depth and query cost are Executor options**, not a separate
+  `ext/complexity` package in v0.1. Over-limit operations fail before
+  resolvers with `COMPLEXITY_LIMIT_EXCEEDED` or `MAX_DEPTH_EXCEEDED`.
+- **`SetExtension` on `OperationContext`** copies into `Response.Extensions`
+  after the operation, for Netflix/Apollo-style trace and cost metadata.
+
+### Phase 2 Deviations
+
+The first codegen slice is SDL-only. `examples/basic` is regenerated from
+SDL; Time, `@upper` and the author DataLoader remain hand-written options
+passed to `graph.NewSchema`.
+
+- **`go/format` instead of Jennifer.** Generated files are concatenated
+  strings formatted with `go/format`. Content-equal skip (not a hash) avoids
+  rewriting unchanged files.
+- **Groups when there are two or more group names.** The default group is
+  the SDL file stem (`GroupFunc` overrides). `schema` remaps to `types` so
+  it does not collide with the embed directory; `model` and the output
+  package name get a `grp` suffix. A schema that resolves to a single group
+  stays flat in `Output` (`NewSchema(r Resolver)`). Multiple groups emit
+  `<group>/bindings.go` and `type Resolvers struct { User user.Resolver; ... }`.
+  Groups with only pure fields expose `Bindings()` and are omitted from
+  `Resolvers`. Root fields still use `graphql.Query` / `Mutation` /
+  `Subscription`, not `Object[graphql.Root]`. `model` is one package per group
+  (`model/<group>/models.go`) when there are two or more groups, so a
+  one-group schema edit does not invalidate every other group's compiled
+  package; a single group keeps the flat `model/models.go`. Generated
+  models hold only leaf fields, so object types never reference each other
+  and the split is acyclic; input objects can reference across groups, and
+  a cycle among them falls back to the single shared package.
+- **`Manifest` and `AutoBind` are not implemented.** There is no
+  `go/packages` loading.
+- **`Config.Models` is `map[string]string`.** A GraphQL type maps to a Go
+  type expression (`Time: time.Time`). Unmapped custom scalars become named
+  `string` types in `model`. Mapped scalars are omitted from `model` and
+  must still be bound with `graphql.Scalar`.
+- **`NullableInputOmittable` applies to input-object fields only.**
+  Field arguments stay pointers (`*int`, `*model.PostFilter`).
+- **Introspection fields on roots are ignored.** gqlparser injects
+  `__schema` / `__type`; they are not emitted as args or resolver methods.
+- **`cmd/gqlc` reads `gqlc.yaml` with `gopkg.in/yaml.v3`.** Paths in the
+  file are resolved relative to the config file's directory.
 
 ## 12. Risks and Mitigations
 

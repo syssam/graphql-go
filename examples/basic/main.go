@@ -1,6 +1,8 @@
 // Command basic serves the example blog schema on http://localhost:8080/graphql.
 package main
 
+//go:generate go run ../../cmd/gqlc -config gqlc.yaml
+
 import (
 	"context"
 	"errors"

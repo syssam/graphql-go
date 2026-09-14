@@ -52,7 +52,8 @@ func TestObjectBindingsCompose(t *testing.T) {
 	if !user.hasSchedulable || s.query.hasSchedulable != true {
 		t.Fatal("hasSchedulable flags not set")
 	}
-	if s.goTypes[user.shapes.ptr] != user || s.goTypes[user.shapes.elem] != user {
+	if len(s.goTypes[user.shapes.ptr]) != 1 || s.goTypes[user.shapes.ptr][0] != user ||
+		len(s.goTypes[user.shapes.elem]) != 1 || s.goTypes[user.shapes.elem][0] != user {
 		t.Fatal("goTypes must map both E and *E")
 	}
 }
@@ -146,8 +147,8 @@ func TestObjectSameGoTypeTwice(t *testing.T) {
 		Object[tUser]("B", Field("x", func(*tUser) int { return 0 })),
 		Object[Root]("Query", Field("a", func(Root) *tUser { return nil }), Field("b", func(Root) *tUser { return nil })),
 	)
-	if err == nil || !strings.Contains(err.Error(), "already bound") {
-		t.Fatalf("one Go type for two objects should fail, got %v", err)
+	if err != nil {
+		t.Fatalf("one Go type may back two objects, got %v", err)
 	}
 }
 

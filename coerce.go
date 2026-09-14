@@ -20,7 +20,7 @@ func (s *Schema) coerceVariables(op *ast.OperationDefinition, raw map[string]any
 		v, has := raw[vd.Variable]
 		if !has {
 			if vd.DefaultValue != nil {
-				dv, err := vd.DefaultValue.Value(nil)
+				dv, err := astJSON(vd.DefaultValue, nil)
 				if err != nil {
 					return nil, variableError(vd, "has an invalid default value: %v", err)
 				}
@@ -172,4 +172,91 @@ func valueHasVariables(v *ast.Value) bool {
 		}
 	}
 	return false
+}
+
+// astJSON evaluates an AST value the way a transport would have decoded
+// JSON: integers and floats become json.Number so custom scalars see the
+// same representation for literals and variables.
+func astJSON(v *ast.Value, vars map[string]any) (any, error) {
+	if v == nil {
+		return nil, nil
+	}
+	switch v.Kind {
+	case ast.Variable:
+		return v.Value(vars)
+	case ast.IntValue, ast.FloatValue:
+		return json.Number(v.Raw), nil
+	case ast.StringValue, ast.BlockValue, ast.EnumValue:
+		return v.Raw, nil
+	case ast.BooleanValue:
+		return strconv.ParseBool(v.Raw)
+	case ast.NullValue:
+		return nil, nil
+	case ast.ListValue:
+		out := make([]any, 0, len(v.Children))
+		for _, c := range v.Children {
+			elem, err := astJSON(c.Value, vars)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, elem)
+		}
+		return out, nil
+	case ast.ObjectValue:
+		out := make(map[string]any, len(v.Children))
+		for _, c := range v.Children {
+			if c.Value != nil && c.Value.Kind == ast.Variable {
+				if _, ok := vars[c.Value.Raw]; !ok {
+					continue
+				}
+			}
+			elem, err := astJSON(c.Value, vars)
+			if err != nil {
+				return nil, err
+			}
+			out[c.Name] = elem
+		}
+		return out, nil
+	default:
+		return v.Value(vars)
+	}
+}
+
+// asJSON rewrites numbers produced by gqlparser's Value/ArgumentMap into
+// json.Number so they match decodeVariables.
+func asJSON(v any) any {
+	switch x := v.(type) {
+	case int:
+		return json.Number(strconv.Itoa(x))
+	case int32:
+		return json.Number(strconv.FormatInt(int64(x), 10))
+	case int64:
+		return json.Number(strconv.FormatInt(x, 10))
+	case float32:
+		return json.Number(strconv.FormatFloat(float64(x), 'g', -1, 32))
+	case float64:
+		return json.Number(strconv.FormatFloat(x, 'g', -1, 64))
+	case []any:
+		for i, e := range x {
+			x[i] = asJSON(e)
+		}
+		return x
+	case map[string]any:
+		for k, e := range x {
+			x[k] = asJSON(e)
+		}
+		return x
+	default:
+		return v
+	}
+}
+
+// fieldArguments returns the field's arguments with defaults applied and
+// numbers normalised to json.Number.
+func fieldArguments(f *ast.Field, vars map[string]any) map[string]any {
+	raw := f.ArgumentMap(vars)
+	if raw == nil {
+		return nil
+	}
+	return asJSON(raw).(map[string]any)
 }

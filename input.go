@@ -3,6 +3,9 @@ package graphql
 import (
 	"fmt"
 	"reflect"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/vektah/gqlparser/v2/ast"
 )
@@ -43,10 +46,25 @@ type inputDecoder struct {
 
 // inputSetter decodes one input field or argument into its struct field.
 type inputSetter struct {
-	name         string
-	typ          *ast.Type
-	defaultValue *ast.Value
-	set          func(target, raw any) error
+	name       string
+	typ        *ast.Type
+	hasDefault bool
+	defaultRaw any
+	set        func(target, raw any) error
+}
+
+func newSetter(name string, typ *ast.Type, def *ast.Value, set func(target, raw any) error) (*inputSetter, error) {
+	st := &inputSetter{name: name, typ: typ, set: set}
+	if def == nil {
+		return st, nil
+	}
+	raw, err := astJSON(def, nil)
+	if err != nil {
+		return nil, fmt.Errorf("field %q: invalid default value: %w", name, err)
+	}
+	st.hasDefault = true
+	st.defaultRaw = raw
+	return st, nil
 }
 
 // decode applies every setter to a freshly allocated *T. Absent fields fall
@@ -57,17 +75,13 @@ func (d *inputDecoder) decode(m map[string]any) (any, error) {
 	for _, st := range d.setters {
 		raw, present := m[st.name]
 		if !present {
-			if st.defaultValue == nil {
+			if !st.hasDefault {
 				if st.typ.NonNull {
 					return nil, fmt.Errorf("field %q of required type %s was not provided", st.name, st.typ.String())
 				}
 				continue
 			}
-			v, err := st.defaultValue.Value(nil)
-			if err != nil {
-				return nil, fmt.Errorf("field %q: invalid default value: %w", st.name, err)
-			}
-			raw = v
+			raw = st.defaultRaw
 		}
 		if raw == nil && st.typ.NonNull {
 			return nil, fmt.Errorf("field %q of non-null type %s must not be null", st.name, st.typ.String())
@@ -98,6 +112,9 @@ func Input[T any](name string, fields ...InputFieldOption) SchemaOption {
 		}
 		dec := &inputDecoder{name: name, goType: tT, newValue: func() any { return new(T) }}
 		ib := &inputBinding{name: name, goType: tT, dec: dec}
+		if len(fields) == 0 {
+			fields = autoInputFields(tT)
+		}
 		for _, f := range fields {
 			f.applyInput(ib)
 		}
@@ -131,7 +148,7 @@ func registerInputShapes[T any](r *registry, name string, dec *inputDecoder) {
 	r.shapes[typeKey{name, tST}] = shapeInfo{depth: 1, nullable: []bool{true, false}}
 	r.shapes[typeKey{name, tSPT}] = shapeInfo{depth: 1, nullable: []bool{true, true}}
 
-	r.decoders[typeKey{name, tT}] = func(raw any, _ *ast.Type) (T, error) {
+	setDecoder(r, name, tT, func(raw any, _ *ast.Type) (T, error) {
 		if raw == nil {
 			var zero T
 			return zero, errNonNull
@@ -142,14 +159,14 @@ func registerInputShapes[T any](r *registry, name string, dec *inputDecoder) {
 			return zero, err
 		}
 		return *p, nil
-	}
-	r.decoders[typeKey{name, tPT}] = func(raw any, _ *ast.Type) (*T, error) {
+	})
+	setDecoder(r, name, tPT, func(raw any, _ *ast.Type) (*T, error) {
 		if raw == nil {
 			return nil, nil
 		}
 		return decodeOne(raw)
-	}
-	r.decoders[typeKey{name, tST}] = func(raw any, _ *ast.Type) ([]T, error) {
+	})
+	setDecoder(r, name, tST, func(raw any, _ *ast.Type) ([]T, error) {
 		if raw == nil {
 			return nil, nil
 		}
@@ -166,8 +183,8 @@ func registerInputShapes[T any](r *registry, name string, dec *inputDecoder) {
 			out[i] = *p
 		}
 		return out, nil
-	}
-	r.decoders[typeKey{name, tSPT}] = func(raw any, t *ast.Type) ([]*T, error) {
+	})
+	setDecoder(r, name, tSPT, func(raw any, t *ast.Type) ([]*T, error) {
 		if raw == nil {
 			return nil, nil
 		}
@@ -187,7 +204,7 @@ func registerInputShapes[T any](r *registry, name string, dec *inputDecoder) {
 			out[i] = p
 		}
 		return out, nil
-	}
+	})
 }
 
 // resolve completes the shared decoder of an Input binding once every
@@ -212,7 +229,12 @@ func (ib *inputBinding) resolve(b *schemaBuilder) {
 			b.errs = append(b.errs, fmt.Errorf("graphql: %w", err))
 			continue
 		}
-		ib.dec.setters = append(ib.dec.setters, &inputSetter{name: f.name, typ: fdef.Type, defaultValue: fdef.DefaultValue, set: set})
+		st, serr := newSetter(f.name, fdef.Type, fdef.DefaultValue, set)
+		if serr != nil {
+			b.errs = append(b.errs, fmt.Errorf("graphql: input %s: %w", coord, serr))
+			continue
+		}
+		ib.dec.setters = append(ib.dec.setters, st)
 	}
 	for _, fdef := range def.Fields {
 		if !seen[fdef.Name] {
@@ -235,6 +257,9 @@ func Args[A any](fields ...InputFieldOption) SchemaOption {
 			return
 		}
 		ib := &inputBinding{goType: tA}
+		if len(fields) == 0 {
+			fields = autoInputFields(tA)
+		}
 		for _, f := range fields {
 			f.applyInput(ib)
 		}
@@ -261,7 +286,11 @@ func (d *inputDecoder) build(b *schemaBuilder, args ast.ArgumentDefinitionList, 
 		if err != nil {
 			return nil, err
 		}
-		out.setters = append(out.setters, &inputSetter{name: f.name, typ: adef.Type, defaultValue: adef.DefaultValue, set: set})
+		st, serr := newSetter(f.name, adef.Type, adef.DefaultValue, set)
+		if serr != nil {
+			return nil, fmt.Errorf("field %s: %w", coord, serr)
+		}
+		out.setters = append(out.setters, st)
 	}
 	for _, adef := range args {
 		if !seen[adef.Name] {
@@ -312,7 +341,7 @@ func OmittableField[T, V any](name string, set func(*T, Omittable[V])) InputFiel
 				if err != nil {
 					return err
 				}
-				set(target.(*T), Omittable[V]{value: v, set: true})
+				set(target.(*T), OmittableOf(v))
 				return nil
 			}, nil
 		},
@@ -327,4 +356,111 @@ func inputDecoderFor[V any](r *registry, typ *ast.Type, coord string) (func(any,
 		return nil, fmt.Errorf("input %s: %w", coord, err)
 	}
 	return r.decoders[key].(func(any, *ast.Type) (V, error)), nil
+}
+
+var omittablePkg = reflect.TypeFor[Omittable[int]]().PkgPath()
+
+// autoInputFields derives InputField / OmittableField bindings from exported
+// struct fields. Names come from a `graphql` tag, else a `json` tag, else
+// a GraphQL-style lowerCamel conversion (AuthorID → authorId).
+func autoInputFields(t reflect.Type) []InputFieldOption {
+	var out []InputFieldOption
+	walkStructFields(t, nil, func(index []int, sf reflect.StructField) {
+		name, skip := graphqlNameOf(sf)
+		if skip || name == "" {
+			return
+		}
+		idx := append([]int(nil), index...)
+		elem, omittable := unwrapOmittable(sf.Type)
+		out = append(out, &inputFieldSpec{
+			name:      name,
+			valueType: elem,
+			resolve:   autoSetter(idx, elem, omittable),
+		})
+	})
+	return out
+}
+
+func autoSetter(index []int, valueType reflect.Type, omittable bool) func(*schemaBuilder, *ast.Type, string) (func(target, raw any) error, error) {
+	return func(b *schemaBuilder, typ *ast.Type, coord string) (func(target, raw any) error, error) {
+		key := typeKey{typ.Name(), valueType}
+		if err := checkInputShape(b.reg, key, typ); err != nil {
+			return nil, fmt.Errorf("input %s: %w", coord, err)
+		}
+		dec := b.reg.decodersAny[key]
+		if dec == nil {
+			return nil, fmt.Errorf("input %s: no decoder for %s as %s", coord, valueType, typ.Name())
+		}
+		return func(target, raw any) error {
+			v, err := dec(raw, typ)
+			if err != nil {
+				return err
+			}
+			fv := reflect.ValueOf(target).Elem().FieldByIndex(index)
+			if omittable {
+				slot := reflect.New(fv.Type())
+				slot.Interface().(omittableAssigner).assign(v, true)
+				fv.Set(slot.Elem())
+				return nil
+			}
+			if v == nil {
+				fv.SetZero()
+				return nil
+			}
+			fv.Set(reflect.ValueOf(v))
+			return nil
+		}, nil
+	}
+}
+
+func walkStructFields(t reflect.Type, prefix []int, yield func([]int, reflect.StructField)) {
+	for i := range t.NumField() {
+		sf := t.Field(i)
+		index := append(append([]int(nil), prefix...), i)
+		if sf.Anonymous {
+			et := sf.Type
+			if et.Kind() == reflect.Struct {
+				walkStructFields(et, index, yield)
+				continue
+			}
+		}
+		if sf.IsExported() {
+			yield(index, sf)
+		}
+	}
+}
+
+func graphqlNameOf(sf reflect.StructField) (name string, skip bool) {
+	if tag, ok := sf.Tag.Lookup("graphql"); ok {
+		if tag == "-" {
+			return "", true
+		}
+		name, _, _ = strings.Cut(tag, ",")
+		return name, name == ""
+	}
+	if tag, ok := sf.Tag.Lookup("json"); ok && tag != "-" {
+		name, opt, _ := strings.Cut(tag, ",")
+		if name != "" && name != "-" && !strings.Contains(opt, "inline") {
+			return name, false
+		}
+	}
+	return exportedToGraphQL(sf.Name), false
+}
+
+// exportedToGraphQL maps AuthorID → authorId and URL → url.
+func exportedToGraphQL(name string) string {
+	if name == "" {
+		return name
+	}
+	name = strings.ReplaceAll(name, "ID", "Id")
+	name = strings.ReplaceAll(name, "URL", "Url")
+	r, w := utf8.DecodeRuneInString(name)
+	return string(unicode.ToLower(r)) + name[w:]
+}
+
+func unwrapOmittable(t reflect.Type) (reflect.Type, bool) {
+	if t.PkgPath() == omittablePkg && strings.HasPrefix(t.Name(), "Omittable") {
+		return t.Field(0).Type, true
+	}
+	return t, false
 }

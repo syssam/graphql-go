@@ -15,16 +15,20 @@ type FieldOption interface {
 	applyField(*objectBinding)
 }
 
-// FieldOpt tunes a single field binding.
-type FieldOpt func(*fieldSpec)
+// FieldSchedule tunes whether a field runs inline or concurrently. The
+// name follows the gRPC CallOption style: it only affects scheduling.
+type FieldSchedule func(*fieldSpec)
+
+// FieldOpt is a synonym for FieldSchedule.
+type FieldOpt = FieldSchedule
 
 // Inline forces a Resolve field to run synchronously in the parent's
 // goroutine even when siblings are scheduled concurrently.
-func Inline() FieldOpt { return func(f *fieldSpec) { f.inline = true } }
+func Inline() FieldSchedule { return func(f *fieldSpec) { f.inline = true } }
 
 // Concurrent allows a Field, which is normally executed inline, to be
 // scheduled concurrently. Use it for pure fields that are CPU-heavy.
-func Concurrent() FieldOpt { return func(f *fieldSpec) { f.concurrent = true } }
+func Concurrent() FieldSchedule { return func(f *fieldSpec) { f.concurrent = true } }
 
 // objectBinding collects the field specifications registered for one
 // GraphQL object type across all Object calls that name it.
