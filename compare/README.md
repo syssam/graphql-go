@@ -74,6 +74,38 @@ That is the compiled-plan design, measured: the plan is built once for the
 operation, so what a request costs depends on the query rather than on how
 many types the schema happens to contain.
 
+## Over HTTP, which is what a server actually delivers
+
+The table above measures the engines in process. A request in production
+arrives over a socket, and transport is a fixed cost charged to both, so the
+in-process ratio is an upper bound rather than a forecast.
+
+Same schema, same queries, each engine behind its own `httptest` server —
+graphql-go under `gqlhttp.New`, gqlgen under its `handler.NewDefaultServer` —
+driven by a real client. Medians of five runs.
+
+| Operation | graphql-go | gqlgen | ratio | in process |
+|---|---:|---:|---:|---:|
+| Leaf fields | 70.2 us, 114 allocs | 182.7 us, 1 080 allocs | **2.6x** | 71x |
+| Owner | 70.1 us, 118 allocs | 171.3 us, 1 058 allocs | **2.4x** | 80x |
+| Nested connection | 265.5 us, 1 632 allocs | 806.4 us, 10 905 allocs | **3.0x** | 3.7x |
+
+**A 71x engine advantage becomes 2.6x once a socket is involved.** A loopback
+round trip costs roughly 70 us here, which dwarfs the 0.9 us graphql-go needs
+to execute a leaf query and still swamps gqlgen's 65 us. The larger the query,
+the more of the advantage survives: the nested connection keeps 3.0x of its
+3.7x, because there the engine is doing enough work to matter.
+
+Allocations compress far less — 114 against 1 080, still 9.5x — and that is
+the number to watch under load, because allocation drives GC pressure and tail
+latency rather than the mean.
+
+Two caveats. `handler.NewDefaultServer` is heavier than `gqlhttp.New`: it adds
+introspection, automatic persisted queries and a multipart transport, so some
+of the gap is gqlgen's default server rather than its engine. And these runs
+are sequential, one request at a time; they say nothing about behaviour under
+saturation, which is where the allocation difference would be expected to tell.
+
 ## The trade-off, stated plainly
 
 **graphql-go starts about 2 000x slower.** Building the schema takes 20.0 ms
@@ -94,7 +126,8 @@ entities (47x), against 0.37 us to 9.98 us (27x).
       internal/gen/       the generator: schema, shared structs, both engines
       engines.go          the two runners
       compare_test.go     both engines must return identical JSON
-      bench_test.go       the same operations against both
+      bench_test.go       the same operations against both, in process
+      http_test.go        the same operations through a real HTTP server
       schema/  shared/  gqlgen/  graphqlgo/     generated, git-ignored
 
 ## Caveats
