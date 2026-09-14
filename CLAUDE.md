@@ -110,7 +110,10 @@ live in the root package so generic constructors can produce engine values direc
   of building new schemas per test. `exec_conformance_test.go` is the spec-behaviour suite;
   `api_align_test.go` guards the public binding surface.
 - Request-scoped extension state goes in via `OperationContext.GetOrSet`, never
-  `Get` then `Set` — concurrent sibling resolvers hit their first `Load` together, and
+  `Get` then `Set` — `lint/` has an analyzer that catches this at compile time
+  (`cd lint && go build -o gqlvet ./cmd/gqlvet`, then `gqlvet ./...` from the repo
+  root). It finds the original bug instantly where the test found it 4 times in 40
+  runs, and only under `-race` — concurrent sibling resolvers hit their first `Load` together, and
   the check-then-act pair silently gives each one its own copy. `-race` will not catch
   it; the symptom is DataLoader batching intermittently degrading to N+1.
 - Package documentation lives in `doc.go`; `graphql.go` holds only the primitive public
