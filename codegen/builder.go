@@ -226,7 +226,22 @@ func (b *builder) resolverMethod(typeName, field string) string {
 // modelRef qualifies a generated model identifier for use outside the model
 // tree: typeName selects the package, ident is the type or a constant
 // declared beside it.
+//
+// A type mapped through Config.Models lives in the caller's package, not the
+// generated model package, so the mapping decides the qualifier here too.
+// Without this the object binding and its resolver receiver pointed at a
+// generated model while the field types pointed at the mapped one.
 func (b *builder) modelRef(typeName, ident string) string {
+	if expr, ok := b.cfg.Models[typeName]; ok {
+		_, ref := splitModelExpr(expr)
+		if ident == typeName {
+			return ref
+		}
+		if i := strings.LastIndex(ref, "."); i >= 0 {
+			return ref[:i+1] + ident
+		}
+		return ident
+	}
 	return b.modelPkgOf(typeName) + "." + ident
 }
 
@@ -265,4 +280,11 @@ func (b *builder) modelExprImports() map[string]string {
 		}
 	}
 	return out
+}
+
+// mapped reports whether a type is supplied by the caller through
+// Config.Models, in which case no model is generated for it.
+func (b *builder) mapped(graphqlName string) bool {
+	_, ok := b.cfg.Models[graphqlName]
+	return ok
 }

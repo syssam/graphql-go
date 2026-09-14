@@ -32,11 +32,11 @@ type User struct {
 }
 
 type PostFilter struct {
-	AuthorID graphql.Omittable[*graphql.ID]
-	Tag      graphql.Omittable[*string]
+	AuthorID graphql.Omittable[*graphql.ID] `graphql:"authorId"`
+	Tag      graphql.Omittable[*string]     `graphql:"tag"`
 }
 
 type UpdatePostInput struct {
-	Title graphql.Omittable[*string]
-	Body  graphql.Omittable[*string]
+	Title graphql.Omittable[*string] `graphql:"title"`
+	Body  graphql.Omittable[*string] `graphql:"body"`
 }

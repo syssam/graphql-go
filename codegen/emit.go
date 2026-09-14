@@ -108,7 +108,7 @@ func (b *builder) emitModel(group string) string {
 	}
 	var body strings.Builder
 	for _, name := range b.typeNames(ast.Enum) {
-		if !b.inGroup(name, group) {
+		if !b.inGroup(name, group) || b.mapped(name) {
 			continue
 		}
 		def := b.schema.Types[name]
@@ -129,7 +129,7 @@ func (b *builder) emitModel(group string) string {
 		body.WriteString("type " + name + " string\n\n")
 	}
 	for _, name := range b.typeNames(ast.Object) {
-		if b.isRoot(name) || !b.inGroup(name, group) {
+		if b.isRoot(name) || !b.inGroup(name, group) || b.mapped(name) {
 			continue
 		}
 		def := b.schema.Types[name]
@@ -146,13 +146,18 @@ func (b *builder) emitModel(group string) string {
 		body.WriteString("}\n\n")
 	}
 	for _, name := range b.typeNames(ast.InputObject) {
-		if !b.inGroup(name, group) {
+		if !b.inGroup(name, group) || b.mapped(name) {
 			continue
 		}
 		def := b.schema.Types[name]
 		body.WriteString("type " + name + " struct {\n")
 		for _, fd := range def.Fields {
-			body.WriteString("\t" + goIdent(fd.Name) + " " + b.goType(fd.Type, selfPkg, b.cfg.NullableInputOmittable) + "\n")
+			// The tag pins the SDL name. Deriving it back from the Go name is
+			// lossy: an SDL field named ownerID becomes OwnerID, which derives
+			// to ownerId, and the binding then fails to match the schema.
+			body.WriteString("\t" + goIdent(fd.Name) + " " +
+				b.goType(fd.Type, selfPkg, b.cfg.NullableInputOmittable) +
+				" `graphql:\"" + fd.Name + "\"`\n")
 		}
 		body.WriteString("}\n\n")
 	}
