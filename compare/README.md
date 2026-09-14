@@ -106,6 +106,46 @@ of the gap is gqlgen's default server rather than its engine. And these runs
 are sequential, one request at a time; they say nothing about behaviour under
 saturation, which is where the allocation difference would be expected to tell.
 
+## Under concurrent load, the advantage comes back
+
+The sequential HTTP numbers above are latency-bound: one request at a time, so
+a ~70us round trip dominates and compresses everything. A real server is
+throughput-bound, with many requests in flight, and there the round trips
+overlap and the engine decides the rate again.
+
+Same connection query on both, 200 entities:
+
+| Measurement | graphql-go | gqlgen | ratio |
+|---|---:|---:|---:|
+| In process | 25.0 us, 233 allocs | 164.5 us, 2 715 allocs | 6.6x |
+| HTTP, one at a time (leaf) | 70.2 us | 182.7 us | 2.6x |
+| **HTTP, GOMAXPROCS clients** | **13.7 us, 319 allocs** | **92.1 us, 2 766 allocs** | **6.7x** |
+| **Sustained, 32 clients** | **67 109 req/s** | **12 071 req/s** | **5.6x** |
+
+Two numbers were misleading in opposite directions. The in-process ratio is an
+upper bound that ignores transport. The sequential HTTP ratio is a lower bound
+that charges the whole round trip to a single request. **A loaded server sees
+something close to the in-process figure**, because once requests overlap the
+transport stops being the bottleneck and per-request CPU decides throughput --
+which is where 8.7x fewer allocations tells.
+
+Note that the per-request cost *falls* under parallelism for both engines
+(graphql-go 70.2us to 13.7us) as round trips overlap across cores. The ratio
+is the durable part; the absolute numbers depend on core count.
+
+### Why there are no latency percentiles here
+
+The obvious next measurement is p95 and p99, and it cannot be taken on this
+machine. Its monotonic clock has a granularity of about 522us: 99 999 of
+100 000 back-to-back `time.Since` calls return exactly zero. A request served
+in 70us cannot be timed individually at all, and the *faster* engine
+accumulates more unmeasurable samples than the slower one, which quietly
+biases any percentile in gqlgen's favour.
+
+Throughput is measured over thousands of clock ticks and is unaffected. Tail
+latency needs a platform with a finer clock, and any external load tool --
+k6, vegeta, bombardier -- inherits the same limit when it runs here.
+
 ## The trade-off, stated plainly
 
 **graphql-go starts about 2 000x slower.** Building the schema takes 20.0 ms
@@ -128,6 +168,7 @@ entities (47x), against 0.37 us to 9.98 us (27x).
       compare_test.go     both engines must return identical JSON
       bench_test.go       the same operations against both, in process
       http_test.go        the same operations through a real HTTP server
+      load_test.go        throughput under concurrent clients
       schema/  shared/  gqlgen/  graphqlgo/     generated, git-ignored
 
 ## Caveats
