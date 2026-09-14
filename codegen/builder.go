@@ -156,7 +156,8 @@ func (b *builder) modelImportOf(pkg string) string {
 // every file outside the model tree.
 func (b *builder) modelName(graphqlName, selfPkg string) string {
 	if expr, ok := b.cfg.Models[graphqlName]; ok {
-		return expr
+		_, ref := splitModelExpr(expr)
+		return ref
 	}
 	switch graphqlName {
 	case "String":
@@ -227,4 +228,41 @@ func (b *builder) resolverMethod(typeName, field string) string {
 // declared beside it.
 func (b *builder) modelRef(typeName, ident string) string {
 	return b.modelPkgOf(typeName) + "." + ident
+}
+
+// splitModelExpr separates a Config.Models entry into the package it must be
+// imported from and the reference to write in generated code:
+//
+//	"time.Time"                  -> "time",        "time.Time"
+//	"example.com/x/shop.Product" -> "example.com/x/shop", "shop.Product"
+//	"string"                     -> "",            "string"
+//
+// Without this the whole import path was written inline, which is not valid
+// Go, so any model outside a package the generator already imports failed.
+func splitModelExpr(expr string) (importPath, ref string) {
+	bare := strings.TrimLeft(expr, "*[]")
+	prefix := expr[:len(expr)-len(bare)]
+	slash := strings.LastIndex(bare, "/")
+	dot := strings.Index(bare[slash+1:], ".")
+	if dot < 0 {
+		return "", expr
+	}
+	pkgEnd := slash + 1 + dot
+	return bare[:pkgEnd], prefix + bare[slash+1:]
+}
+
+// modelExprImports maps the package qualifier used in generated code to the
+// path it comes from, for every Config.Models entry that needs an import.
+func (b *builder) modelExprImports() map[string]string {
+	out := map[string]string{}
+	for _, expr := range b.cfg.Models {
+		path, ref := splitModelExpr(expr)
+		if path == "" {
+			continue
+		}
+		if i := strings.Index(ref, "."); i >= 0 {
+			out[strings.TrimLeft(ref[:i], "*[]")] = path
+		}
+	}
+	return out
 }

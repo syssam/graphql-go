@@ -193,11 +193,19 @@ func (b *builder) importBlock(src, selfPkg string) string {
 	if strings.Contains(src, "context.") {
 		std = append(std, "\t\"context\"")
 	}
-	if strings.Contains(src, "time.") {
-		std = append(std, "\t\"time\"")
-	}
 	if strings.Contains(src, "graphql.") {
 		rest = append(rest, "\t\"github.com/syssam/graphql-go\"")
+	}
+	for qualifier, path := range b.modelExprImports() {
+		if !strings.Contains(src, qualifier+".") {
+			continue
+		}
+		line := "\t\"" + path + "\""
+		if strings.Contains(path, ".") {
+			rest = append(rest, line)
+		} else {
+			std = append(std, line)
+		}
 	}
 	for _, pkg := range b.modelPkgNames() {
 		if pkg == selfPkg {

@@ -623,3 +623,58 @@ extend type Query { beta(f: BetaFilter): Beta }
 		}
 	}
 }
+
+// TestModelsMapToExternalPackage covers a Config.Models entry whose Go type
+// lives in a package the generator does not already import. The whole import
+// path used to be written inline, which is not valid Go, so only types from
+// packages that happened to be imported already (time) worked.
+func TestModelsMapToExternalPackage(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "schema.graphql"), []byte(`
+type Product { id: ID! name: String! }
+type Query { product(id: ID!): Product }
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Generate(context.Background(), Config{
+		Dir:         dir,
+		SchemaGlobs: []string{"schema.graphql"},
+		Output:      "graph",
+		Package:     "hello/graph",
+		Models:      map[string]string{"Product": "example.com/x/shop.Product"},
+	}); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	for _, name := range []string{"bindings.go", "resolver.go"} {
+		b, err := os.ReadFile(filepath.Join(dir, "graph", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		src := string(b)
+		if strings.Contains(src, "*example.com/x/shop.Product") {
+			t.Errorf("%s writes the import path inline:\n%s", name, src)
+		}
+		if !strings.Contains(src, `"example.com/x/shop"`) {
+			t.Errorf("%s is missing the import for the mapped model:\n%s", name, src)
+		}
+		if !strings.Contains(src, "shop.Product") {
+			t.Errorf("%s does not reference shop.Product:\n%s", name, src)
+		}
+	}
+}
+
+func TestSplitModelExpr(t *testing.T) {
+	for _, tc := range []struct{ expr, path, ref string }{
+		{"time.Time", "time", "time.Time"},
+		{"example.com/x/shop.Product", "example.com/x/shop", "shop.Product"},
+		{"*example.com/x/shop.Product", "example.com/x/shop", "*shop.Product"},
+		{"string", "", "string"},
+		{"[]byte", "", "[]byte"},
+	} {
+		path, ref := splitModelExpr(tc.expr)
+		if path != tc.path || ref != tc.ref {
+			t.Errorf("splitModelExpr(%q) = (%q, %q), want (%q, %q)", tc.expr, path, ref, tc.path, tc.ref)
+		}
+	}
+}
