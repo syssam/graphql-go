@@ -2,6 +2,7 @@ package gen
 
 import (
 	"fmt"
+	"go/format"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,11 +66,21 @@ func objectTypes(n int) []string {
 	return out
 }
 
+// writeFile writes generated output, formatting Go source so the tree stays
+// gofmt-clean.
 func writeFile(path, body string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(body), 0o644)
+	out := []byte(body)
+	if strings.HasSuffix(path, ".go") {
+		formatted, err := format.Source(out)
+		if err != nil {
+			return fmt.Errorf("format %s: %w", path, err)
+		}
+		out = formatted
+	}
+	return os.WriteFile(path, out, 0o644)
 }
 
 func header(pkg string) string {

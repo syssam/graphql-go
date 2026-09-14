@@ -3,6 +3,7 @@ package gen
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -15,6 +16,11 @@ import (
 // the shared dataset. gqlgen's own resolver stub generation is left off, so
 // there are no panic bodies to patch.
 func writeGqlgen(root string, n int) error {
+	// Clear the tree first, for the same reason as graphqlgo: a smaller run
+	// must not inherit the previous one's generated packages.
+	if err := os.RemoveAll(filepath.Join(root, "gqlgen")); err != nil {
+		return err
+	}
 	if err := writeFile(filepath.Join(root, "gqlgen", "gqlgen.yml"), gqlgenConfig(n)); err != nil {
 		return err
 	}

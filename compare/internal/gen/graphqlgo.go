@@ -3,6 +3,7 @@ package gen
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -17,6 +18,13 @@ func writeGraphQLGo(root string, n int) error {
 	models := map[string]string{"Time": "time.Time", "ID": "string"}
 	for _, name := range objectTypes(n) {
 		models[name] = ModulePath + "/shared." + name
+	}
+
+	// Clear the tree first. Regenerating at a smaller entity count otherwise
+	// leaves the previous run's SDL and packages behind, and the schema then
+	// fails to build on types that no longer have bindings.
+	if err := os.RemoveAll(filepath.Join(root, "graphqlgo")); err != nil {
+		return err
 	}
 
 	if err := codegen.Generate(context.Background(), codegen.Config{
