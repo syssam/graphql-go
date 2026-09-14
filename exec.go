@@ -189,8 +189,7 @@ func (e *Executor) execute(ctx context.Context, req *Request) *Response {
 		return e.requestError(ctx, verr)
 	}
 
-	cacheHit := entry.plans != nil
-	p, perrs := entry.planFor(e.schema, e, op, vars)
+	p, cacheHit, perrs := entry.planFor(e.schema, e, op, vars)
 	if perrs != nil {
 		return e.requestError(ctx, perrs...)
 	}

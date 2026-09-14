@@ -433,13 +433,18 @@ func variantKey(condVars []string, vars map[string]any) (uint16, map[string]bool
 
 // planFor returns the plan for op under the given variables, compiling and
 // caching it on first use.
-func (d *docEntry) planFor(s *Schema, e *Executor, op *ast.OperationDefinition, vars map[string]any) (*plan, []*Error) {
+// planFor returns the plan for this operation and variant, reporting whether
+// it was already compiled. The caller must not inspect d.plans itself: it is
+// written under d.mu, and reading it unlocked is a data race that concurrent
+// requests for the same query will hit.
+func (d *docEntry) planFor(s *Schema, e *Executor, op *ast.OperationDefinition, vars map[string]any) (*plan, bool, []*Error) {
 	if len(d.condVars) > maxCondVars {
 		cond := make(map[string]bool, len(d.condVars))
 		for _, name := range d.condVars {
 			cond[name], _ = vars[name].(bool)
 		}
-		return compilePlan(s, e, d.doc, op, cond)
+		p, errs := compilePlan(s, e, d.doc, op, cond)
+		return p, false, errs
 	}
 	variant, cond := variantKey(d.condVars, vars)
 	key := planKey{op: op.Name, variant: variant}
@@ -447,17 +452,17 @@ func (d *docEntry) planFor(s *Schema, e *Executor, op *ast.OperationDefinition, 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if p, ok := d.plans[key]; ok {
-		return p, nil
+		return p, true, nil
 	}
 	p, errs := compilePlan(s, e, d.doc, op, cond)
 	if errs != nil {
-		return nil, errs
+		return nil, false, errs
 	}
 	if d.plans == nil {
 		d.plans = make(map[planKey]*plan, 1)
 	}
 	d.plans[key] = p
-	return p, nil
+	return p, false, nil
 }
 
 // planCache is an LRU of parsed documents keyed by a 64-bit hash of the query
