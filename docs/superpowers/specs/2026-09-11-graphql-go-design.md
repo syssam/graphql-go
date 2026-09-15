@@ -873,6 +873,26 @@ Phase 3 is complete: the subscription executor, both streaming transports and AP
   subscription sharing that connection. The operation context still gates
   whether a result is written at all, which narrows post-`complete` traffic to
   the one event already mid-write.
+
+  The tear-down is not a hazard to be avoided but the reason the rule works,
+  and the two facts only make sense together: a peer that cannot accept a
+  frame is gone, and dropping the connection is what frees every other
+  subscriber on that socket. What must not happen is dropping it because one
+  subscriber unsubscribed.
+
+  A consequence worth knowing before anyone tunes this: **writes on a
+  connection are serialized, so a peer that stops reading stalls every
+  subscription on that connection.** coder/websocket blocks concurrent writers
+  internally, so this has been true since `gqlws` shipped rather than being
+  introduced by any later locking, and the protocol ping does not rescue it —
+  the ping travels the same write path and parks on the same lock. Nothing
+  bounds the wait, because writes use the connection context and that context
+  has no deadline. A per-write deadline would bound it, and cancelling a write
+  is the correct response by the rule above; it is deliberately not derived
+  from the ping interval, which answers "is this peer alive" rather than "is
+  this peer accepting bytes" — a peer can acknowledge pings with a full
+  receive window. Not implemented: it is new public API on every driver, so it
+  belongs to whoever takes that decision rather than being slipped in.
 - **The init timeout closes the connection from a timer, not by bounding the
   read.** A read aborted by its own context leaves the library no way to emit a
   close frame, so the client would see an abnormal closure rather than 4408.
