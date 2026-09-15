@@ -98,6 +98,16 @@ and why field interceptors do not see that one field. A subscription root field 
 args structs, a `Resolver` interface and bindings that call the same public constructors as
 hand-written code. Each group emits a single `generated.go` holding its args, `Resolver`
 interface and bindings — one file per package, since that is the unit the compiler rebuilds.
+`Config.Manifest` binds types and fields outright instead of inferring them, which is the
+mode an external generator wants; it still loads no Go type information, so a method binding
+declares its own shape (`Context`, `Error`). Type bindings are folded into `cfg.Models` in
+`newBuilder`, so model references, imports and `mapped` keep working unchanged and only
+field kinds and group overrides are read from the manifest afterwards. **A method's
+arguments are spread into the call, not passed as the generated args struct** — passing the
+struct makes the bound type's package import the generated one, which already imports it for
+the model, and that is an import cycle. A type in the manifest gets no inference at all: an
+unlisted field is a resolver.
+
 One SDL group stays flat in `Output`; two or more become subpackages plus a `Resolvers` struct, with models split the same way (`model/<group>/`) so a one-group edit
 does not invalidate every other group's compiled package — except when two groups' input
 objects reference each other, which would be an import cycle and falls back to one shared
@@ -192,6 +202,6 @@ options, not an `ext/complexity` package; `Manifest`/`AutoBind` codegen are not 
 Read the deviations before trusting the prose. `docs/superpowers/plans/` holds the phase
 implementation plans; `docs/benchmarks.md` holds the gqlgen comparison.
 
-Status: phases 1-3 complete and merged to `main`; phase 4 in progress — `ext/otel` and
-result-based actual query cost are built. Not yet built: codegen auto-bind and manifest
-modes, APQ over WebSocket, subscription load testing.
+Status: phases 1-3 complete and merged to `main`; phase 4 in progress — `ext/otel`,
+result-based actual query cost and codegen manifest mode are built. Not yet built: codegen
+auto-bind, APQ over WebSocket, subscription load testing.

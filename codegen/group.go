@@ -19,6 +19,11 @@ func (b *builder) sdlFile(typeName string) string {
 }
 
 func (b *builder) groupOf(typeName string) string {
+	if b.manifest != nil {
+		if g, ok := b.manifest.groups[typeName]; ok {
+			return sanitizeGroup(g, b.pkgName)
+		}
+	}
 	file := b.sdlFile(typeName)
 	if b.cfg.GroupFunc != nil {
 		if g := b.cfg.GroupFunc(typeName, file); g != "" {

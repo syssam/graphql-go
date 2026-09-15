@@ -24,6 +24,11 @@ type builder struct {
 	// modelSplit emits one model package per group instead of a single
 	// shared one. Set by emit once the groups are known.
 	modelSplit bool
+
+	// manifest is nil unless Config.Manifest was given. Its type bindings are
+	// already folded into cfg.Models, so only field kinds and group overrides
+	// are read from here.
+	manifest *manifest
 }
 
 func newBuilder(dir string, cfg Config) (*builder, error) {
@@ -57,6 +62,15 @@ func newBuilder(dir string, cfg Config) (*builder, error) {
 	if i := strings.LastIndex(pkgName, "/"); i >= 0 {
 		pkgName = pkgName[i+1:]
 	}
+	// Folding the manifest's type bindings into cfg.Models here means model
+	// references, imports and the mapped check keep working unchanged; the
+	// manifest is only consulted afterwards for field kinds and groups.
+	man, models, err := newManifest(cfg.Manifest, sch, cfg.Models)
+	if err != nil {
+		return nil, fmt.Errorf("codegen: %w", err)
+	}
+	cfg.Models = models
+
 	return &builder{
 		cfg:      cfg,
 		dir:      dir,
@@ -64,6 +78,7 @@ func newBuilder(dir string, cfg Config) (*builder, error) {
 		sources:  srcs,
 		pkgName:  pkgName,
 		modelImp: cfg.Package + "/model",
+		manifest: man,
 	}, nil
 }
 
@@ -109,6 +124,16 @@ func (b *builder) fieldKind(typeName string, fd *ast.FieldDefinition) fieldKind 
 	if b.isRoot(typeName) {
 		return fieldResolve
 	}
+	// An explicit binding wins, and a type in the manifest gets no inference
+	// at all: its unlisted fields are resolvers, so an incomplete manifest
+	// surfaces as a missing resolver method rather than as generated access
+	// to a struct field that may not exist.
+	if b.manifest.bound(typeName) {
+		if fb, ok := b.manifest.binding(typeName, fd.Name); ok && fb.pure() {
+			return fieldPure
+		}
+		return fieldResolve
+	}
 	if len(fd.Arguments) > 0 {
 		return fieldResolve
 	}
@@ -143,6 +168,8 @@ func goIdent(name string) string {
 
 // modelPkgOf names the package a generated model type lives in: the single
 // "model" package, or the type's own group when models are split.
+// models returns the effective model map: Config.Models merged with the
+// manifest's type bindings.
 func (b *builder) modelPkgOf(graphqlName string) string {
 	if !b.modelSplit {
 		return "model"

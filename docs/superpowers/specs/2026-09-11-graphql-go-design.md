@@ -820,8 +820,8 @@ passed to `graph.NewSchema`.
   models hold only leaf fields, so object types never reference each other
   and the split is acyclic; input objects can reference across groups, and
   a cycle among them falls back to the single shared package.
-- **`Manifest` and `AutoBind` are not implemented.** There is no
-  `go/packages` loading.
+- **`AutoBind` is not implemented.** There is no `go/packages` loading.
+  `Manifest` is implemented; see the phase 4 deviations.
 - **`Config.Models` is `map[string]string`.** A GraphQL type maps to a Go
   type expression (`Time: time.Time`). Unmapped custom scalars become named
   `string` types in `model`. Mapped scalars are omitted from `model` and
@@ -928,6 +928,26 @@ Phase 3 is complete: the subscription executor, both streaming transports and AP
   switched off. A 32-bit counter packed against the existing flags measures
   zero. Overflow would need two billion resolved fields in one operation,
   which the complexity and cost caps exist to prevent.
+
+- **A manifest method's arguments are spread, not passed as the args
+  struct.** Section 7.3 leaves the call shape open. Passing
+  `ProductPriceWithTaxArgs` would make the bound type's package import the
+  generated package, which already imports it for the model: an import cycle,
+  and an ORM entity depending on GraphQL types. `v.PriceWithTax(a.Rate)` has
+  neither problem and is how the method would have been written anyway. The
+  compile-and-run test found this; nothing in the emitted text looked wrong.
+- **A manifest method declares its own shape.** `FieldBinding.Context` and
+  `Error` say whether the method takes a context and whether it can fail,
+  because manifest mode loads no type information and so cannot look it up.
+  Section 7.3's signature sniffing belongs to auto-bind mode.
+- **A type in the manifest gets no inference.** Section 7.2 says an absent
+  field falls through to discovery or `Resolver`; with no auto-bind that is
+  `Resolver`, which is also the safe answer — a resolver method can always be
+  written, where generated access to a struct field that does not exist is a
+  compile error in code the user did not write.
+- **Type bindings are folded into `Config.Models`.** A manifest `Go` binding
+  and a `Models` entry are the same fact in two spellings, so `newBuilder`
+  merges them and rejects a disagreement rather than silently preferring one.
 
 - **Metrics are recorded once, at the operation layer.** `ext/otel` hooks both
   the request and operation chains, and recording in both double-counts every
