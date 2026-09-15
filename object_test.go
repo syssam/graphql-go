@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"context"
+	"iter"
 	"strings"
 	"testing"
 )
@@ -167,5 +168,25 @@ func TestFieldOpts(t *testing.T) {
 	}
 	if s.query.fields["b"].schedulable {
 		t.Fatal("Inline() must keep a resolver inline")
+	}
+}
+
+func TestSeqShapeAcceptedAtBuild(t *testing.T) {
+	type post struct{ Title string }
+	s, err := NewSchema(SDL(`type Post { title: String! } type Query { posts: [Post!]! }`),
+		Object[post]("Post",
+			Field("title", func(v *post) string { return v.Title }),
+		),
+		Query(
+			Resolve("posts", func(ctx context.Context, _ Root) (iter.Seq[*post], error) {
+				return nil, nil
+			}),
+		),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema rejected an iter.Seq result: %v", err)
+	}
+	if s == nil {
+		t.Fatal("nil schema")
 	}
 }

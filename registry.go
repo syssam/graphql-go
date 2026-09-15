@@ -328,7 +328,7 @@ func (r *registry) shapeFor(t reflect.Type, sdl *ast.Type, obj *objectType) *val
 	s := &valueShape{isNil: r.nilChecks[t]}
 	if s.isNil == nil {
 		switch t.Kind() {
-		case reflect.Pointer, reflect.Slice, reflect.Interface, reflect.Map:
+		case reflect.Pointer, reflect.Slice, reflect.Interface, reflect.Map, reflect.Func:
 			s.isNil = reflectIsNil
 		}
 	}
@@ -341,9 +341,12 @@ func (r *registry) shapeFor(t reflect.Type, sdl *ast.Type, obj *objectType) *val
 			}
 			s.traverse = reflectTraverse
 		}
-		if t.Kind() == reflect.Slice || t.Kind() == reflect.Array {
+		switch e, isSeq := seqElem(t); {
+		case t.Kind() == reflect.Slice || t.Kind() == reflect.Array:
 			s.elem = r.shapeFor(t.Elem(), sdl.Elem, obj)
-		} else {
+		case isSeq:
+			s.elem = r.shapeFor(e, sdl.Elem, obj)
+		default:
 			s.elem = &valueShape{isNil: reflectIsNil}
 		}
 		return s
