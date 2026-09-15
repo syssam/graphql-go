@@ -250,6 +250,32 @@ func TestSliceOfSeqList(t *testing.T) {
 	expectData(t, run(t, NewExecutor(s), `{posts{title}}`, ""), `{"posts":[[{"title":"a"}]]}`)
 }
 
+// A seq has no length, so its traverser counts the element index itself. The
+// index reaches nothing in the response but the error path — writeList appends
+// in yield order regardless — so only this pins it.
+func TestSeqListErrorPathCarriesIndex(t *testing.T) {
+	type post struct{ Title *string }
+	a, b := "a", "b"
+	posts := []*post{{Title: &a}, {Title: &b}, {Title: nil}}
+	s, err := NewSchema(SDL(`type Post { title: String! } type Query { posts: [Post] }`),
+		Object[post]("Post", Field("title", func(v *post) *string { return v.Title })),
+		Query(Field("posts", func(_ Root) iter.Seq[*post] {
+			return func(yield func(*post) bool) {
+				for _, p := range posts {
+					if !yield(p) {
+						return
+					}
+				}
+			}
+		})),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	resp := run(t, NewExecutor(s), `{posts{title}}`, "")
+	expectError(t, resp, `{"posts":[{"title":"a"},{"title":"b"},null]}`, "posts[2].title", "")
+}
+
 // The seq and slice spellings of the same list must be indistinguishable in
 // the response, which is the whole contract of this feature.
 func TestSeqListMatchesSliceList(t *testing.T) {
