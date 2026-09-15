@@ -17,7 +17,7 @@ import (
 )
 
 const sdl = `
-type Message { id: ID! body: String! fail: String! }
+type Message { id: ID! body: String! fail: String! seq: Int! }
 type Query { ping: String! whoami: String! }
 type Mutation { touch: String! }
 type Subscription { messages: Message! failing: Message! countdown(from: Int!): Int! }
@@ -43,6 +43,20 @@ func newTestExecutor(t *testing.T) (*source, *graphql.Executor) {
 			graphql.Field("body", func(m *message) string { return m.Body }),
 			graphql.Resolve("fail", func(context.Context, *message) (string, error) {
 				return "", errors.New("boom")
+			}),
+			// seq reaches its operation only through the context, counts its runs
+			// there and republishes the count as an extension. Both halves fail
+			// visibly if events share one operation context.
+			graphql.Resolve("seq", func(ctx context.Context, _ *message) (int, error) {
+				oc := graphql.OperationFrom(ctx)
+				if oc == nil {
+					return 0, errors.New("no operation on the resolver context")
+				}
+				actual, _ := oc.GetOrSet("seq", new(int))
+				n := actual.(*int)
+				*n++
+				oc.SetExtension("seq", *n)
+				return *n, nil
 			}),
 		),
 		graphql.Args[fromArgs](graphql.InputField("from", func(a *fromArgs, v int) { a.From = v })),
@@ -555,5 +569,35 @@ func TestRejectsPlainHTTP(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusOK {
 		t.Fatal("a non-upgrade request should not succeed")
+	}
+}
+
+// TestEventContextIsPerEventOverTheWire is the WebSocket half of the same
+// guarantee: each event carries its own operation context, so request-scoped
+// resolver state does not leak between events and the extensions a resolver
+// sets reach that event's payload. A DataLoader depends on both.
+func TestEventContextIsPerEventOverTheWire(t *testing.T) {
+	src, e := newTestExecutor(t)
+	c := dial(t, e)
+	c.init("")
+
+	c.subscribe("s", `subscription { messages { id seq } }`)
+	go func() {
+		src.messages <- &message{ID: "1"}
+		src.messages <- &message{ID: "2"}
+		close(src.messages)
+	}()
+
+	for _, want := range []string{
+		`{"data":{"messages":{"id":"1","seq":1}},"extensions":{"seq":1}}`,
+		`{"data":{"messages":{"id":"2","seq":1}},"extensions":{"seq":1}}`,
+	} {
+		got := c.recv()
+		if got.Type != "next" || string(got.Payload) != want {
+			t.Fatalf("frame = %+v\nwant next %s\n(a seq above 1, or missing extensions, means the events shared one operation context)", got, want)
+		}
+	}
+	if got := c.recv(); got.Type != "complete" {
+		t.Fatalf("frame = %+v, want complete", got)
 	}
 }

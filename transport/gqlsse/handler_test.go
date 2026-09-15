@@ -3,6 +3,7 @@ package gqlsse_test
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,7 +18,7 @@ import (
 )
 
 const sdl = `
-type Message { id: ID! body: String! fail: String! }
+type Message { id: ID! body: String! fail: String! seq: Int! }
 type Query { ping: String! }
 type Mutation { touch: String! }
 type Subscription { messages: Message! failing: Message! countdown(from: Int!): Int! }
@@ -42,6 +43,20 @@ func newTestExecutor(t *testing.T) (*source, *graphql.Executor) {
 			graphql.Field("body", func(m *message) string { return m.Body }),
 			graphql.Resolve("fail", func(context.Context, *message) (string, error) {
 				return "", errBoom{}
+			}),
+			// seq reaches its operation only through the context, counts its runs
+			// there and republishes the count as an extension. Both halves fail
+			// visibly if events share one operation context.
+			graphql.Resolve("seq", func(ctx context.Context, _ *message) (int, error) {
+				oc := graphql.OperationFrom(ctx)
+				if oc == nil {
+					return 0, errors.New("no operation on the resolver context")
+				}
+				actual, _ := oc.GetOrSet("seq", new(int))
+				n := actual.(*int)
+				*n++
+				oc.SetExtension("seq", *n)
+				return *n, nil
 			}),
 		),
 		graphql.Args[fromArgs](graphql.InputField("from", func(a *fromArgs, v int) { a.From = v })),
@@ -486,5 +501,44 @@ func TestPersistedSubscription(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out reading the persisted subscription")
+	}
+}
+
+// TestEventContextIsPerEventOverTheWire checks end to end what
+// TestSubscribeEventStateIsPerEvent checks in process: each event carries its
+// own operation context, so a resolver's request-scoped state does not leak
+// into the next event and the extensions it sets reach that event's payload.
+// A DataLoader depends on both, and a subscription that shared one context
+// would serve its first event's cache for the life of the connection.
+func TestEventContextIsPerEventOverTheWire(t *testing.T) {
+	src, e := newTestExecutor(t)
+	srv, client := newServer(t, e, gqlsse.WithCSRFPrevention(false))
+
+	resp := post(t, client, srv.URL, `{"query":"subscription { messages { id seq } }"}`)
+	defer resp.Body.Close()
+
+	done := make(chan []event, 1)
+	go func() { done <- readEvents(t, resp.Body) }()
+	src.messages <- &message{ID: "1"}
+	src.messages <- &message{ID: "2"}
+	close(src.messages)
+
+	select {
+	case got := <-done:
+		want := []event{
+			{"next", `{"data":{"messages":{"id":"1","seq":1}},"extensions":{"seq":1}}`},
+			{"next", `{"data":{"messages":{"id":"2","seq":1}},"extensions":{"seq":1}}`},
+			{"complete", ""},
+		}
+		if len(got) != len(want) {
+			t.Fatalf("got %d events: %+v", len(got), got)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("event %d = %+v\nwant %+v\n(a seq above 1, or missing extensions, means the events shared one operation context)", i, got[i], want[i])
+			}
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out reading the stream")
 	}
 }
