@@ -190,3 +190,45 @@ func TestSeqShapeAcceptedAtBuild(t *testing.T) {
 		t.Fatal("nil schema")
 	}
 }
+
+// The seq and slice spellings of the same list must be indistinguishable in
+// the response, which is the whole contract of this feature.
+func TestSeqListMatchesSliceList(t *testing.T) {
+	_, e := newFixtureExecutor(t)
+	slice := run(t, e, `{users{id name}}`, "")
+	seq := run(t, e, `{usersSeq{id name}}`, "")
+	if len(seq.Errors) != 0 {
+		t.Fatalf("seq list errored: %v", seq.Errors)
+	}
+	want := strings.Replace(string(slice.Data), `"users"`, `"usersSeq"`, 1)
+	if got := string(seq.Data); got != want {
+		t.Fatalf("seq list = %s, want %s", got, want)
+	}
+}
+
+// The spec puts Field/FieldArgs in scope alongside Resolve. Shapes are
+// registered per Go type, not per constructor, so a pure field must accept a
+// seq too; this pins that rather than assuming it.
+func TestSeqListFromPureField(t *testing.T) {
+	type post struct{ Title string }
+	posts := []*post{{Title: "a"}, {Title: "b"}}
+	s, err := NewSchema(SDL(`type Post { title: String! } type Query { posts: [Post!]! }`),
+		Object[post]("Post", Field("title", func(v *post) string { return v.Title })),
+		Query(Field("posts", func(_ Root) iter.Seq[*post] {
+			return func(yield func(*post) bool) {
+				for _, p := range posts {
+					if !yield(p) {
+						return
+					}
+				}
+			}
+		})),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema rejected a pure seq field: %v", err)
+	}
+	resp := run(t, NewExecutor(s), `{posts{title}}`, "")
+	if got := string(resp.Data); got != `{"posts":[{"title":"a"},{"title":"b"}]}` {
+		t.Fatalf("data = %s", got)
+	}
+}

@@ -3,6 +3,7 @@ package graphql
 import (
 	"errors"
 	"fmt"
+	"iter"
 	"log/slog"
 	"reflect"
 	"sync"
@@ -280,6 +281,30 @@ func registerObjectShapes[E any](r *registry) objectShapes {
 			if !yield(i, e) {
 				return
 			}
+		}
+	}
+	tQE := reflect.TypeFor[iter.Seq[E]]()
+	tQPE := reflect.TypeFor[iter.Seq[*E]]()
+	r.nilChecks[tQE] = func(v any) bool { q, _ := v.(iter.Seq[E]); return q == nil }
+	r.nilChecks[tQPE] = func(v any) bool { q, _ := v.(iter.Seq[*E]); return q == nil }
+	// The executor's traverser contract carries an index for error paths and
+	// a seq does not, so it is counted here.
+	r.traversers[tQE] = func(v any, yield func(int, any) bool) {
+		i := 0
+		for e := range v.(iter.Seq[E]) {
+			if !yield(i, e) {
+				return
+			}
+			i++
+		}
+	}
+	r.traversers[tQPE] = func(v any, yield func(int, any) bool) {
+		i := 0
+		for e := range v.(iter.Seq[*E]) {
+			if !yield(i, e) {
+				return
+			}
+			i++
 		}
 	}
 	return objectShapes{

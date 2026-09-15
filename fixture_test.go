@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -38,6 +39,7 @@ type Query {
   me: User!
   user(id: ID!): User
   users(filter: Filter): [User!]!
+  usersSeq: [User!]!
   maybeUsers: [User]
   node(id: ID!): Node
   search(term: String!): [SearchResult!]!
@@ -206,6 +208,16 @@ func (f *fixture) options() []SchemaOption {
 					out = out[:*a.Filter.Limit]
 				}
 				return out, nil
+			}),
+			Resolve("usersSeq", func(context.Context, Root) (iter.Seq[*fUser], error) {
+				ids := []string{"1", "2", "3"}
+				return func(yield func(*fUser) bool) {
+					for _, id := range ids {
+						if !yield(f.users[id]) {
+							return
+						}
+					}
+				}, nil
 			}),
 			Resolve("maybeUsers", func(context.Context, Root) ([]*fUser, error) { return []*fUser{f.users["1"], nil}, nil }),
 			ResolveArgs("node", func(_ context.Context, _ Root, a idArgs) (any, error) {
