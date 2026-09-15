@@ -341,8 +341,14 @@ accounted for.
 Despite the name, `acquireWriter` pools nothing -- `releaseWriter` returns only
 a byte buffer -- so those 10 allocations are per-request garbage. **They exist
 solely to detect a `Flush` or a `Hijack`**, which is the same requirement that
-forces the goroutine. Two thirds of the adaptor's allocation overhead traces to
-one design decision, and a `gqlhttp` response streams nothing that needs it.
+forces the goroutine.
+
+Counting only rows above that a reader can point at: **10 of the 22 go to that
+machinery, 11 with the goroutine's own closure -- half the adaptor's allocation
+overhead, and the largest identifiable group in the table.** A `gqlhttp`
+response streams nothing that needs any of it. (The ~3 inferred allocations are
+deliberately not counted in: one of them is `r.WithContext`, which has nothing
+to do with `Flush` or `Hijack`.)
 
 ### Where the time goes, and why this is a range
 
@@ -383,12 +389,21 @@ belongs to the time residual only -- garbage collection cannot add to an
 allocation count, and the alloc and time residuals above are deliberately kept
 apart for that reason.
 
-So: the direction of the design claim holds decisively, its stated reason is
-one of at least three comparable costs, and the largest of them is the
-Flush/Hijack machinery the adaptor cannot opt out of. Recorded at this length
-because the reason is what a reader would otherwise generalise from, and
-because a plausible-looking attribution is exactly how someone ends up
-optimising the wrong thing.
+So: the direction of the design claim holds decisively, and its stated reason
+is one of at least three comparable costs. Beyond that, the two columns part
+company, and the conclusion should be read off the one that reproduces:
+
+- **Allocations** -- half the overhead (11 of 22) buys `Flush`/`Hijack`
+  detection that a GraphQL response never uses. Every input to that is a ±0%
+  count or a line of `acquireWriter`.
+- **Time** -- the residual outweighs both measured components in both runs, but
+  it is a mixture this benchmark does not separate: `acquireWriter`'s pipe and
+  channels are only one of its four listed contributors, and it should not be
+  given a single label.
+
+Recorded at this length because the reason is what a reader would otherwise
+generalise from, and because a plausible-looking attribution is exactly how
+someone ends up optimising the wrong thing.
 
 ### A behavioural divergence, not a performance one
 

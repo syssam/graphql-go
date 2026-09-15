@@ -6,13 +6,15 @@
 // response buffer.
 //
 // Routing a request through middleware/adaptor instead costs 22 allocations
-// per request, which end to end is the whole of what fasthttp was saving over
-// net/http. Rebuilding the synthetic *http.Request is only 8 of those; the
-// larger part is the io.Pipe, channels and goroutine the adaptor sets up per
-// request so that it can react to a Flush or a Hijack that a GraphQL response
-// never performs. The adaptor also cannot carry a WebSocket at all, and hands
-// the wrapped handler a request context that does not cancel when the client
-// disconnects. See docs/benchmarks.md for the measurement and its caveats.
+// per request in-process and 26 end to end -- very nearly the whole of what
+// fasthttp was saving over net/http, which is all 26 of it on a small response
+// and 26 of 30 on a 100-user list. Rebuilding the synthetic *http.Request
+// accounts for 8 of the 22; half of them are the io.Pipe, channels and
+// goroutine the adaptor sets up per request so that it can react to a Flush or
+// a Hijack that a GraphQL response never performs. The adaptor also cannot
+// carry a WebSocket at all, and hands the wrapped handler a request context
+// that does not cancel when the client disconnects. See docs/benchmarks.md for
+// the measurement and its caveats.
 package gqlfiber
 
 import (
