@@ -63,6 +63,12 @@ func checkOutputCompositeShape(s *Schema, goType reflect.Type, sdl *ast.Type) (*
 	t := goType
 	for sdlT := sdl; sdlT.Elem != nil; sdlT = sdlT.Elem {
 		if e, isSeq := seqElem(t); isSeq {
+			// Without a registered traverser the executor would fall back to the
+			// reflective one, which cannot index a func and panics after the
+			// resolver has already returned.
+			if _, ok := s.reg.traversers[t]; !ok {
+				return nil, fmt.Errorf("Go type %s cannot be traversed: iter.Seq is supported only as the innermost list level over a bound Go type", t)
+			}
 			t = e
 			continue
 		}

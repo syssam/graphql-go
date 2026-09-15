@@ -3,6 +3,7 @@ package graphql
 import (
 	"context"
 	"iter"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -189,6 +190,64 @@ func TestSeqShapeAcceptedAtBuild(t *testing.T) {
 	if s == nil {
 		t.Fatal("nil schema")
 	}
+}
+
+// Only the innermost seq shapes get a traverser registered. Any other seq
+// would reach the reflective traverser, which cannot index a func and would
+// panic in writeValue, after the resolver returned and outside the executor's
+// recovery — so these have to be build errors.
+func TestSeqWithoutTraverserRejectedAtBuild(t *testing.T) {
+	type post struct{ Title string }
+	build := func(q FieldOption) error {
+		_, err := NewSchema(SDL(`type Post { title: String! } type Query { posts: [[Post!]!]! }`),
+			Object[post]("Post", Field("title", func(v *post) string { return v.Title })),
+			Query(q),
+		)
+		return err
+	}
+	cases := []struct {
+		name string
+		opt  FieldOption
+		typ  reflect.Type
+	}{
+		{
+			"seq of slice",
+			Resolve("posts", func(context.Context, Root) (iter.Seq[[]*post], error) { return nil, nil }),
+			reflect.TypeFor[iter.Seq[[]*post]](),
+		},
+		{
+			"seq of seq",
+			Resolve("posts", func(context.Context, Root) (iter.Seq[iter.Seq[*post]], error) { return nil, nil }),
+			reflect.TypeFor[iter.Seq[iter.Seq[*post]]](),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := build(tc.opt)
+			if err == nil {
+				t.Fatalf("NewSchema accepted %s", tc.typ)
+			}
+			if !strings.Contains(err.Error(), tc.typ.String()) {
+				t.Fatalf("error does not name %s: %v", tc.typ, err)
+			}
+		})
+	}
+}
+
+// A seq as the innermost level under a slice does have a traverser, so the
+// build error above must not swallow it.
+func TestSliceOfSeqList(t *testing.T) {
+	type post struct{ Title string }
+	s, err := NewSchema(SDL(`type Post { title: String! } type Query { posts: [[Post!]!]! }`),
+		Object[post]("Post", Field("title", func(v *post) string { return v.Title })),
+		Query(Field("posts", func(_ Root) []iter.Seq[*post] {
+			return []iter.Seq[*post]{func(yield func(*post) bool) { yield(&post{Title: "a"}) }}
+		})),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema rejected []iter.Seq: %v", err)
+	}
+	expectData(t, run(t, NewExecutor(s), `{posts{title}}`, ""), `{"posts":[[{"title":"a"}]]}`)
 }
 
 // The seq and slice spellings of the same list must be indistinguishable in
