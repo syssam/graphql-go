@@ -101,14 +101,32 @@ split a mechanical change at the first tag rather than one that has to invent
 its own safety net. The trigger is the first tagged release; there is nothing
 to revisit before then.
 
-**One item does not wait for the split.** `codegen` imports
-`x/tools/go/packages` unconditionally, so `gqlc` links it whether or not
-`AutoBind` is used — 18 `x/tools` packages appear in `go list -deps ./cmd/gqlc`,
-which is what moved the figures in the table above and took generation memory
-from 105x to 56x better than gqlgen. (The binary measures 9.2 MB today; the
-table's 9.7 MB was a separate measurement.) That is a regression in the root module today and is fixable there: it
-is about an unconditional import, not about module boundaries. Splitting
-`codegen` out would hide it from consumers rather than fix it.
+**Where `x/tools` actually lands**, measured with `go list -deps`:
+
+| package | `x/tools` packages linked |
+|---|---:|
+| engine (root package) | 0 |
+| `codegen` | 18 |
+| `cmd/gqlc` | 18 |
+
+The engine does not link it, so no server pays for it at runtime. The two costs
+are the ones named above: every consumer resolves `x/tools` because the root
+`go.mod` requires it, and `gqlc` itself is 9.2 MB with 82 MB peak RSS.
+
+An earlier revision of this file claimed that was fixable inside the root module
+by making the import conditional, since `x/tools` enters through exactly one
+file (`codegen/autobind.go`) and `autoBind` returns nothing but a `*Manifest`.
+That is wrong, and the reason is worth keeping. Moving `autoBind` into its own
+package fixes neither number: `gqlc` offers `AutoBind`, so it still links the
+dependency, and the package would still live in the root module, so `go.mod`
+would still require it. This is a module-boundary problem, not an import one.
+
+What the thin coupling does buy is a better split. Because discovery's only
+output is a `Manifest`, and `Manifest` is already public configuration,
+`autobind` can become a module separate from `codegen` — so the `codegen`
+module does not require `x/tools` either, and only consumers who opt into
+discovery resolve the gopls tail. Add it to B's scope; it is the same
+"buys nothing today" reasoning that put the split at publication.
 
 ## What is not in question
 
