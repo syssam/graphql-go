@@ -61,8 +61,10 @@ splitting trades a dependency problem for a coverage problem.
 
 Secondary costs: users of `codegen` or `ext/otel` need a second `go get`;
 `cmd/gqlc` has to move into the codegen module or the root keeps `x/tools`
-through it; and `examples/basic`'s `//go:generate go run ../../cmd/gqlc` path
-changes. Import paths for library users do **not** change.
+through it; and the root `tool` directive that backs `go tool gqlc` has to
+point at whichever module `cmd/gqlc` ends up in, which also means
+`examples/basic` generates through a tool the root module no longer contains.
+Import paths for library users do **not** change.
 
 ## The options
 
