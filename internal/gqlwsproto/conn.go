@@ -325,6 +325,15 @@ func (c *conn) forget(id string) {
 	c.mu.Unlock()
 }
 
+// cancelAll is deliberately redundant with c.cancel: every subscription's
+// context is already derived from c.ctx (see subscribe), so cancelling the
+// connection alone frees them all. This loop cancels each one explicitly too,
+// so that either mechanism failing on its own still leaves the other to
+// release every subscription. That redundancy is invisible to the test
+// suite: breaking just this loop, or just the context derivation, still
+// passes every existing test, because the other half compensates. Only
+// breaking both leaks. Do not remove this loop on the grounds that c.cancel()
+// already covers it -- that grounds is exactly what makes the removal unsafe.
 func (c *conn) cancelAll() {
 	c.mu.Lock()
 	cancels := make([]context.CancelFunc, 0, len(c.subs))

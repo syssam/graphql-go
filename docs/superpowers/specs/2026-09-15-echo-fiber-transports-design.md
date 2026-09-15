@@ -19,10 +19,14 @@ positions:
   handler signature, error mapping into Echo's error handler, and any test
   proving the combination behaves.
 - **Fiber is fasthttp.** There is no `http.ResponseWriter` anywhere in a Fiber
-  request. The only route today is `adaptor.HTTPHandler`, which rebuilds a
-  synthetic `*http.Request` and buffers the response per call. WebSocket
-  subscriptions do not work that way at all: `coder/websocket` requires
-  `http.Hijacker`, which fasthttp does not provide.
+  request. The only route today is `adaptor.HTTPHandler`, which runs the
+  wrapped `net/http` handler on a fresh goroutine per call and blocks the
+  caller on a channel so it can react to a `Flush` or `Hijack` it cannot see
+  in advance; rebuilding a synthetic `*http.Request` to hand that handler is
+  part of the cost but not the larger part (see `docs/benchmarks.md`, where
+  it measures at 8 of 22 extra allocations against 11 for the goroutine-handoff
+  machinery). WebSocket subscriptions do not work that way at all:
+  `coder/websocket` requires `http.Hijacker`, which fasthttp does not provide.
 
 This specification adds first-class support for both, and treats the
 performance claim as something to be measured rather than asserted.
