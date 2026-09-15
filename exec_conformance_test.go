@@ -410,3 +410,51 @@ func BenchmarkExecuteConcurrentList(b *testing.B) {
 		resp.Release()
 	}
 }
+
+// TestExecOneOfInputObjects walks the coercion table in specification
+// section 3.10.1. The literal rows are enforced by the validator; the
+// variable rows are request errors raised while coercing variables.
+func TestExecOneOfInputObjects(t *testing.T) {
+	_, e := newFixtureExecutor(t)
+	cases := []struct {
+		name     string
+		query    string
+		vars     string
+		wantData string
+		wantErr  string
+	}{
+		{"literal single member", `{choose(c:{name:"abc"})}`, "", `{"choose":"name=abc"}`, ""},
+		{"literal other member", `{choose(c:{score:123})}`, "", `{"choose":"score=123"}`, ""},
+		{"variable single member", `query($v:Choice!){choose(c:$v)}`, `{"v":{"name":"abc"}}`, `{"choose":"name=abc"}`, ""},
+		{"literal null member", `{choose(c:{name:null})}`, "", "", "must be non-null"},
+		{"variable null member", `query($v:Choice!){choose(c:$v)}`, `{"v":{"name":null}}`, "", "must be non-null"},
+		{"literal two members", `{choose(c:{name:"abc",score:123})}`, "", "", "exactly one key"},
+		{"literal two members one null", `{choose(c:{name:"abc",score:null})}`, "", "", "exactly one key"},
+		{"literal two members wrong types", `{choose(c:{name:456,score:"xyz"})}`, "", "", "exactly one key"},
+		{"literal member plus absent variable", `query($s:Int){choose(c:{name:"abc",score:$s})}`, `{}`, "", "exactly one key"},
+		{"literal no members", `{choose(c:{})}`, "", "", "exactly one key"},
+		{"variable two members", `query($v:Choice!){choose(c:$v)}`, `{"v":{"name":"abc","score":123}}`, "", "exactly one key"},
+		{"variable no members", `query($v:Choice!){choose(c:$v)}`, `{"v":{}}`, "", "exactly one key"},
+		{"member from nullable variable", `query($n:String){choose(c:{name:$n})}`, `{}`, "", "OneOf"},
+		{"two members from variables", `query($n:String,$s:Int){choose(c:{name:$n,score:$s})}`, `{"n":"abc"}`, "", "exactly one key"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := run(t, e, tc.query, tc.vars)
+			if tc.wantErr == "" {
+				expectData(t, resp, tc.wantData)
+				return
+			}
+			if got := string(resp.Data); got != tc.wantData {
+				t.Fatalf("data = %s, want %q", got, tc.wantData)
+			}
+			if len(resp.Errors) == 0 {
+				t.Fatalf("want an error containing %q, got none", tc.wantErr)
+			}
+			if !strings.Contains(errorsJSON(resp.Errors), tc.wantErr) {
+				t.Fatalf("errors lack %q: %s", tc.wantErr, errorsJSON(resp.Errors))
+			}
+		})
+	}
+}
+

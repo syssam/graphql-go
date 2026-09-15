@@ -34,6 +34,7 @@ type Post implements Node { id: ID! title: String! author: User! }
 union SearchResult = User | Post
 enum Role { ADMIN USER }
 input Filter { name: String, limit: Int = 10 }
+input Choice @oneOf { name: String, score: Int }
 type Query {
   me: User!
   user(id: ID!): User
@@ -50,6 +51,7 @@ type Query {
   echo(v: Int, s: String = "d", f: Float, b: Boolean, list: [Int!]): String!
   ctxPath: String!
   selection: [String!]!
+  choose(c: Choice!): String!
 }
 type Mutation { inc: Int! reset: Boolean! }
 `
@@ -90,6 +92,13 @@ type filterArgs struct {
 	Name  *string
 	Limit *int
 }
+
+type choiceIn struct {
+	Name  *string
+	Score *int
+}
+
+type chooseArgs struct{ C choiceIn }
 
 type usersArgs struct{ Filter *filterArgs }
 type idArgs struct{ ID string }
@@ -178,6 +187,11 @@ func (f *fixture) options() []SchemaOption {
 			InputField("name", func(a *filterArgs, v *string) { a.Name = v }),
 			InputField("limit", func(a *filterArgs, v *int) { a.Limit = v }),
 		),
+		Input[choiceIn]("Choice",
+			InputField("name", func(a *choiceIn, v *string) { a.Name = v }),
+			InputField("score", func(a *choiceIn, v *int) { a.Score = v }),
+		),
+		Args[chooseArgs](InputField("c", func(a *chooseArgs, v choiceIn) { a.C = v })),
 		Args[usersArgs](InputField("filter", func(a *usersArgs, v *filterArgs) { a.Filter = v })),
 		Args[idArgs](InputField("id", func(a *idArgs, v string) { a.ID = v })),
 		Args[termArgs](InputField("term", func(a *termArgs, v string) { a.Term = v })),
@@ -236,6 +250,15 @@ func (f *fixture) options() []SchemaOption {
 			ResolveArgs("echo", func(_ context.Context, _ Root, a echoArgs) (string, error) {
 				b, _ := json.Marshal(a)
 				return string(b), nil
+			}),
+			FieldArgs("choose", func(_ Root, a chooseArgs) string {
+				switch {
+				case a.C.Name != nil:
+					return "name=" + *a.C.Name
+				case a.C.Score != nil:
+					return "score=" + strconv.Itoa(*a.C.Score)
+				}
+				return "empty"
 			}),
 			Resolve("ctxPath", func(ctx context.Context, _ Root) (string, error) { return PathFrom(ctx).String(), nil }),
 			Resolve("selection", func(ctx context.Context, _ Root) ([]string, error) {

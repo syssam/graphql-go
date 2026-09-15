@@ -103,6 +103,18 @@ func (s *Schema) validateInput(t *ast.Type, v any, path string) error {
 		if !ok {
 			return fmt.Errorf("Expected type %q to be an object at %s.", def.Name, path)
 		}
+		// A OneOf Input Object arriving whole from a variable is never seen by
+		// the validator, which only inspects literals.
+		if def.Directives.ForName("oneOf") != nil {
+			if len(m) != 1 {
+				return fmt.Errorf("OneOf Input Object %q must specify exactly one key at %s.", def.Name, path)
+			}
+			for name, fv := range m {
+				if fv == nil {
+					return fmt.Errorf("Field %q must be non-null at %s.", def.Name+"."+name, path)
+				}
+			}
+		}
 		for name := range m {
 			if def.Fields.ForName(name) == nil {
 				return fmt.Errorf("Field %q is not defined by type %q at %s.", name, def.Name, path)
