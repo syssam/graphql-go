@@ -6,6 +6,7 @@ package gqlhttp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	"github.com/vektah/gqlparser/v2/ast"
 
 	"github.com/syssam/graphql-go"
+	"github.com/syssam/graphql-go/ext/apq"
 	"github.com/syssam/graphql-go/internal/httpreq"
 )
 
@@ -39,6 +41,7 @@ type Handler struct {
 	batchMax    int
 	csrf        bool
 	csrfHeaders []string
+	apq         apq.Cache
 	logger      *slog.Logger
 }
 
@@ -64,6 +67,10 @@ func WithCSRFPrevention(enabled bool, headers ...string) Option {
 		}
 	}
 }
+
+// WithPersistedQueries enables automatic persisted queries backed by cache,
+// for example apq.NewCache(1000). Disabled by default.
+func WithPersistedQueries(cache apq.Cache) Option { return func(h *Handler) { h.apq = cache } }
 
 // WithLogger sets the logger for transport-level failures such as write
 // errors. The default is slog.Default.
@@ -112,9 +119,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	)
 	switch r.Method {
 	case http.MethodGet:
-		req, err := httpreq.ParseGET(r)
+		req, err := httpreq.ParseGET(r, h.apq != nil)
 		if err != nil {
 			h.writeError(w, mediaType, http.StatusBadRequest, "%v", err)
+			return
+		}
+		if resp := h.resolvePersisted(req); resp != nil {
+			h.writeGraphQLError(w, mediaType, resp)
+			return
+		}
+		if req.Query == "" {
+			h.writeError(w, mediaType, http.StatusBadRequest, "%v", httpreq.ErrMissingQueryParam)
 			return
 		}
 		kind, kerr := h.exec.OperationKind(req.Query, req.OperationName)
@@ -135,7 +150,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	if !batch {
-		resp := h.exec.Execute(ctx, reqs[0])
+		resp := h.execute(ctx, reqs[0])
 		status := http.StatusOK
 		if mediaType == MediaTypeGraphQLResponse && resp.HasRequestErrors() {
 			status = http.StatusBadRequest
@@ -159,7 +174,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					return err
 				}
 			}
-			resp := h.exec.Execute(ctx, req)
+			resp := h.execute(ctx, req)
 			_, err := resp.WriteTo(out)
 			resp.Release()
 			if err != nil {
@@ -167,6 +182,39 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		_, err := io.WriteString(out, "]")
+		return err
+	})
+}
+
+// execute resolves a persisted query, if enabled, and runs the request.
+func (h *Handler) execute(ctx context.Context, req *graphql.Request) *graphql.Response {
+	if resp := h.resolvePersisted(req); resp != nil {
+		return resp
+	}
+	if req.Query == "" {
+		return &graphql.Response{Errors: []*graphql.Error{graphql.Errorf("%v", httpreq.ErrMissingQuery)}}
+	}
+	return h.exec.Execute(ctx, req)
+}
+
+func (h *Handler) resolvePersisted(req *graphql.Request) *graphql.Response {
+	if h.apq == nil {
+		return nil
+	}
+	return apq.Resolve(h.apq, req)
+}
+
+// writeGraphQLError sends a response carrying only errors, with the status the
+// negotiated media type calls for. A client sending application/json gets 200,
+// which is what a persisted-query client expects before it retries with the
+// query text.
+func (h *Handler) writeGraphQLError(w http.ResponseWriter, mediaType string, resp *graphql.Response) {
+	status := http.StatusOK
+	if mediaType == MediaTypeGraphQLResponse && resp.HasRequestErrors() {
+		status = http.StatusBadRequest
+	}
+	h.writeResponse(w, mediaType, status, func(out io.Writer) error {
+		_, err := resp.WriteTo(out)
 		return err
 	})
 }
@@ -197,7 +245,7 @@ func (h *Handler) parsePOST(w http.ResponseWriter, r *http.Request) (reqs []*gra
 		}
 		reqs = make([]*graphql.Request, 0, len(items))
 		for i, item := range items {
-			req, err := httpreq.Decode(item)
+			req, err := httpreq.Decode(item, h.apq != nil)
 			if err != nil {
 				return nil, false, http.StatusBadRequest, fmt.Errorf("batch entry %d: %v", i, err)
 			}
@@ -206,7 +254,7 @@ func (h *Handler) parsePOST(w http.ResponseWriter, r *http.Request) (reqs []*gra
 		return reqs, true, 0, nil
 	}
 
-	req, err := httpreq.Decode(trimmed)
+	req, err := httpreq.Decode(trimmed, h.apq != nil)
 	if err != nil {
 		return nil, false, http.StatusBadRequest, err
 	}

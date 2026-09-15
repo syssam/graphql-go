@@ -172,8 +172,9 @@ built: `transport/gqlsse` over Server-Sent Events and `transport/gqlws` over
 `OnConnect` hook whose context parents every operation on the connection, an
 init timeout and a per-connection operation cap. Both serve queries and
 mutations too -- one `next` then `complete` -- so a client needs only one
-endpoint. Still to come: codegen auto-bind, automatic persisted queries and
-OpenTelemetry.
+endpoint. Automatic persisted queries are in `ext/apq`, opt-in on either HTTP transport
+with `WithPersistedQueries(apq.NewCache(1000))`. Still to come: codegen
+auto-bind and OpenTelemetry.
 
 ## Development
 

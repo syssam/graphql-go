@@ -835,7 +835,7 @@ passed to `graph.NewSchema`.
 
 ### Phase 3 Deviations
 
-The subscription executor and both streaming transports are built; APQ is not.
+Phase 3 is complete: the subscription executor, both streaming transports and APQ.
 
 - **`Subscribe` returns a channel, not an iterator.** `iter.Seq2[R, error]`
   reads better but cannot be selected against `ctx.Done()` without a wrapping
@@ -885,6 +885,21 @@ The subscription executor and both streaming transports are built; APQ is not.
   is where cookie credentials are — a browser cannot set headers on a WebSocket
   — and it is deliberately not available to later operations, where the request
   is finished and reading it would race.
+
+- **APQ is `ext/apq` and resolves during parsing.** Section 8.1 places it in
+  `gqlhttp`; putting the logic in an extension package lets `gqlsse` use the
+  same code, and a shared `Cache` interface means a fleet can warm one Redis
+  rather than each instance learning hashes separately. Resolution has to run
+  before a transport decides what the operation is: a request carrying only a
+  hash has no query text, so the GET mutation guard would have nothing to
+  inspect. Registration verifies the hash rather than trusting it, since a
+  server that stored whatever text arrived alongside a hash would let one
+  client choose what every later client's hash executes.
+- **PersistedQueryNotFound takes its status from the negotiated media type.**
+  `application/json` gets 200, which is what a persisted-query client expects
+  before retrying with the text; `application/graphql-response+json` gets 400,
+  which is what the GraphQL over HTTP specification calls for. No extra rule
+  was needed: it falls out of how the handler already chooses a status.
 
 - **The HTTP transports share `internal/httpreq`.** Query-parameter and body
   decoding, the body limit and the CSRF check live there rather than being

@@ -21,6 +21,12 @@ import (
 // MediaTypeJSON is the only body type the transports accept on POST.
 const MediaTypeJSON = "application/json"
 
+// Errors reported when a request carries no query and none could be supplied.
+var (
+	ErrMissingQuery      = errors.New(`request is missing the "query" member.`)
+	ErrMissingQueryParam = errors.New(`missing "query" parameter`)
+)
+
 // DefaultCSRFHeaders are the headers whose presence marks a request as one
 // that required a CORS preflight. Any of them satisfies the CSRF check.
 var DefaultCSRFHeaders = []string{"GraphQL-Require-Preflight", "X-Requested-With"}
@@ -46,11 +52,15 @@ func Forgeable(r *http.Request, headers []string) bool {
 }
 
 // ParseGET builds a request from the query parameters.
-func ParseGET(r *http.Request) (*graphql.Request, error) {
+//
+// queryOptional lets a request arrive without query text, which is only valid
+// when something downstream can supply it -- automatic persisted queries send
+// a hash alone. The caller must then check for itself that a query was found.
+func ParseGET(r *http.Request, queryOptional bool) (*graphql.Request, error) {
 	q := r.URL.Query()
 	req := &graphql.Request{Query: q.Get("query"), OperationName: q.Get("operationName")}
-	if req.Query == "" {
-		return nil, errors.New(`missing "query" parameter`)
+	if req.Query == "" && !queryOptional {
+		return nil, ErrMissingQueryParam
 	}
 	if v := q.Get("variables"); v != "" {
 		if !IsJSONObject(v) {
@@ -89,8 +99,9 @@ func ReadBody(w http.ResponseWriter, r *http.Request, max int64) ([]byte, int, e
 	return body, 0, nil
 }
 
-// Decode turns one JSON request object into a graphql.Request.
-func Decode(body []byte) (*graphql.Request, error) {
+// Decode turns one JSON request object into a graphql.Request. See ParseGET
+// for queryOptional.
+func Decode(body []byte, queryOptional bool) (*graphql.Request, error) {
 	if len(body) == 0 {
 		return nil, errors.New("request body is empty.")
 	}
@@ -101,8 +112,8 @@ func Decode(body []byte) (*graphql.Request, error) {
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, fmt.Errorf("invalid JSON body: %v", err)
 	}
-	if req.Query == "" {
-		return nil, errors.New(`request is missing the "query" member.`)
+	if req.Query == "" && !queryOptional {
+		return nil, ErrMissingQuery
 	}
 	if len(req.Variables) > 0 && !IsJSONObject(string(req.Variables)) {
 		return nil, errors.New(`"variables" must be a JSON object or null.`)

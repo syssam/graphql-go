@@ -111,6 +111,14 @@ query or mutation is one `next` then `complete` — so a client needs one endpoi
 HTTP transports parse requests through `internal/httpreq`, so a request one rejects as
 forgeable or oversized is rejected by the other; drift there is visible to clients.
 
+`ext/apq` is automatic persisted queries, opt-in through `WithPersistedQueries` on either
+HTTP transport. **Resolution happens during parsing, not at execution**: a request carrying
+only a hash has no query text, so the "mutations are not allowed over GET" guard would have
+nothing to inspect and would wave a persisted mutation through. Registration verifies
+`sha256(query) == hash` — storing whatever text arrived would let one client choose what
+every later client's hash executes. `httpreq` takes a `queryOptional` flag so that with APQ
+off the missing-query errors are byte-identical to before.
+
 In `gqlws`, **writes use the connection context, never the operation's**: coder/websocket
 tears down the whole connection when a write context is cancelled mid-frame, so writing a
 `next` under the operation context would let one client's unsubscribe drop every other
@@ -160,6 +168,6 @@ options, not an `ext/complexity` package; `Manifest`/`AutoBind` codegen are not 
 Read the deviations before trusting the prose. `docs/superpowers/plans/` holds the phase
 implementation plans; `docs/benchmarks.md` holds the gqlgen comparison.
 
-Status: phases 1 and 2 complete and merged to `main`; phase 3 in progress — the subscription
-executor and both streaming transports are built. Not yet built: APQ, OpenTelemetry,
-codegen auto-bind and manifest modes.
+Status: phases 1 and 2 complete and merged to `main`; phase 3 complete on
+`phase3-subscriptions` — subscription executor, `transport/gqlsse`, `transport/gqlws` and
+`ext/apq`. Not yet built: OpenTelemetry, codegen auto-bind and manifest modes.

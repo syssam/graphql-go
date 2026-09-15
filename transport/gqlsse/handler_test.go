@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/syssam/graphql-go"
+	"github.com/syssam/graphql-go/ext/apq"
 	"github.com/syssam/graphql-go/transport/gqlsse"
 )
 
@@ -443,3 +444,47 @@ func TestTransportGuards(t *testing.T) {
 
 // url escapes a query for the GET form.
 func url(q string) string { return neturl.QueryEscape(q) }
+
+// TestPersistedSubscription checks that a subscription can be persisted too:
+// the hash is resolved before the handler decides the operation is a
+// subscription, so the stream opens exactly as it would with the text.
+func TestPersistedSubscription(t *testing.T) {
+	src, e := newTestExecutor(t)
+	cache := apq.NewCache(10)
+	srv, client := newServer(t, e,
+		gqlsse.WithCSRFPrevention(false), gqlsse.WithPersistedQueries(cache))
+
+	const query = `subscription { messages { id } }`
+	hash := apq.Hash(query)
+	ext := `{"persistedQuery":{"version":1,"sha256Hash":"` + hash + `"}}`
+
+	// Unknown hash: no stream, and a body the client can act on.
+	miss := post(t, client, srv.URL, `{"extensions":`+ext+`}`)
+	body, _ := io.ReadAll(miss.Body)
+	miss.Body.Close()
+	if !strings.Contains(string(body), "PersistedQueryNotFound") {
+		t.Fatalf("body = %s", body)
+	}
+
+	cache.Set(hash, query)
+	resp := post(t, client, srv.URL, `{"extensions":`+ext+`}`)
+	defer resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("Content-Type = %q, want a stream", ct)
+	}
+
+	done := make(chan []event, 1)
+	go func() { done <- readEvents(t, resp.Body) }()
+	src.messages <- &message{ID: "1"}
+	close(src.messages)
+
+	select {
+	case got := <-done:
+		want := []event{{"next", `{"data":{"messages":{"id":"1"}}}`}, {"complete", ""}}
+		if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+			t.Fatalf("events = %+v, want %+v", got, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out reading the persisted subscription")
+	}
+}

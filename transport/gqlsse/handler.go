@@ -21,6 +21,7 @@ import (
 	"github.com/vektah/gqlparser/v2/ast"
 
 	"github.com/syssam/graphql-go"
+	"github.com/syssam/graphql-go/ext/apq"
 	"github.com/syssam/graphql-go/internal/httpreq"
 )
 
@@ -41,6 +42,7 @@ type Handler struct {
 	csrf        bool
 	csrfHeaders []string
 	keepAlive   time.Duration
+	apq         apq.Cache
 	logger      *slog.Logger
 }
 
@@ -67,6 +69,10 @@ func WithCSRFPrevention(enabled bool, headers ...string) Option {
 // that proxies and load balancers do not treat a quiet subscription as a dead
 // connection. The default is 15s; zero disables it.
 func WithKeepAlive(d time.Duration) Option { return func(h *Handler) { h.keepAlive = d } }
+
+// WithPersistedQueries enables automatic persisted queries backed by cache,
+// for example apq.NewCache(1000). Disabled by default.
+func WithPersistedQueries(cache apq.Cache) Option { return func(h *Handler) { h.apq = cache } }
 
 // WithLogger sets the logger for transport-level failures such as write
 // errors. The default is slog.Default.
@@ -113,6 +119,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolution comes first: a request carrying only a hash has no query
+	// text, so the checks below would have nothing to inspect.
+	if h.apq != nil {
+		if resp := apq.Resolve(h.apq, req); resp != nil {
+			h.writeResponse(w, http.StatusOK, resp)
+			return
+		}
+		if req.Query == "" {
+			h.writeError(w, http.StatusBadRequest, "%v", httpreq.ErrMissingQuery)
+			return
+		}
+	}
+
 	// A mutation changes state, so it must not be reachable by a URL a
 	// browser can be led to open. Unknown kinds fall through and surface as
 	// a request error from the executor.
@@ -131,7 +150,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) parse(w http.ResponseWriter, r *http.Request) (*graphql.Request, int, error) {
 	if r.Method == http.MethodGet {
-		req, err := httpreq.ParseGET(r)
+		req, err := httpreq.ParseGET(r, h.apq != nil)
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
@@ -144,7 +163,7 @@ func (h *Handler) parse(w http.ResponseWriter, r *http.Request) (*graphql.Reques
 	if err != nil {
 		return nil, status, err
 	}
-	req, err := httpreq.Decode(body)
+	req, err := httpreq.Decode(body, h.apq != nil)
 	if err != nil {
 		return nil, http.StatusBadRequest, err
 	}
