@@ -187,3 +187,170 @@ The split layout did not compile at all until 2026-09-14: root fields with no
 arguments were emitted as pure field accessors on a `model.Query` /
 `model.Mutation` that is never generated. Found by this benchmark, fixed in
 `codegen.fieldKind`, regression test in `codegen/generate_test.go`.
+
+---
+
+# Transport cost: net/http, Echo, Fiber native, Fiber adaptor
+
+Measured on 2026-09-15, Windows, Go 1.27.1, 12th Gen Intel Core i7-12700,
+Echo v5.3.1, Fiber v3.5.0.
+Re-run with `cd benchmarks && go test -run '^$' -bench BenchmarkTransport -benchmem -count=10`.
+
+This section exists to test one claim `transport/gqlfiber`'s package
+documentation makes for itself: that implementing the transport natively on
+fasthttp earns its complexity over wrapping `gqlhttp` in Fiber's
+`middleware/adaptor`. The `FiberAdaptor` row is the falsifier.
+
+## What is compared
+
+Four transports over the same executor, the same schema and the same query:
+
+| Row | What |
+|---|---|
+| `NetHTTP` | `gqlhttp` on a `net/http` `ServeMux` |
+| `Echo` | `gqlecho` on Echo v5 |
+| `FiberNative` | `gqlfiber` on Fiber v3 |
+| `FiberAdaptor` | `gqlhttp` wrapped in `adaptor.HTTPHandler`, on Fiber v3 |
+
+Two harnesses, because they do not measure the same thing:
+
+- **in-process** invokes each handler against a response object reused across
+  iterations (a `bytes.Buffer` behind an `http.ResponseWriter`, a
+  `fasthttp.RequestCtx` for the Fiber rows), so the allocations reported are
+  the transport's and not the harness's.
+- **loopback** drives a real listener per framework through one shared
+  `http.Client`, serially over one kept-alive connection. Connection and
+  header handling -- the part fasthttp exists for -- happens only here.
+
+Two payload sizes, because per-request transport overhead is a fixed cost that
+a large response hides:
+
+- **Tiny** -- `{ __typename }`, a 30-byte response.
+- **List** -- `{ users { id name email } }`, 100 objects, the same query the
+  engine comparison above calls *Shallow*.
+
+`TestTransportRowsAgree` asserts all four rows return byte-identical response
+bodies, so no row is cheaper for having done less.
+
+## Results: allocations per operation
+
+Allocation counts were identical across two full `-count=10` runs, to the unit,
+in every cell but one (loopback Tiny/Echo moved between 111 and 112). They are
+the figure to read.
+
+| Harness | Query | NetHTTP | Echo | FiberNative | FiberAdaptor |
+|---|---|---:|---:|---:|---:|
+| in-process | Tiny | 20 | 21 | **18** | 40 |
+| in-process | List | 127 | 128 | **125** | 147 |
+| loopback | Tiny | 110 | 112 | **84** | 110 |
+| loopback | List | 222 | 224 | **192** | 218 |
+
+The loopback rows include the client's own allocations, identical for every
+row, so only the differences between rows mean anything there.
+
+**The adaptor costs a flat +22 allocations per request in-process, +26 end to
+end, at both payload sizes.** End to end this is exactly what fasthttp was
+saving: `FiberNative` is 26 allocations per request cheaper than `NetHTTP`
+(84 against 110), and `FiberAdaptor` gives all of it back (110 against 110;
+218 against 222 on the larger payload).
+
+**Echo's passthrough costs one to two allocations per request** -- 21 against
+20, 128 against 127 -- most of which is the `statusRecorder` `gqlecho.serve`
+wraps the writer in. There is nothing else in that transport.
+
+## Results: bytes and time, in-process
+
+| Query | Row | sec/op | B/op |
+|---|---|---:|---:|
+| Tiny | NetHTTP | 2.016µ ± 96% | 1.396Ki |
+| Tiny | Echo | 2.550µ ± 9% | 1.422Ki |
+| Tiny | FiberNative | 2.110µ ± 7% | 893 |
+| Tiny | FiberAdaptor | 8.875µ ± 11% | 4.090Ki |
+| List | NetHTTP | 20.48µ ± 16% | 6.451Ki |
+| List | Echo | 19.56µ ± 7% | 6.482Ki |
+| List | FiberNative | 21.08µ ± 14% | 5.931Ki |
+| List | FiberAdaptor | 29.60µ ± 5% | 9.336Ki |
+
+As ratios, native against adaptor: **4.2x time and 4.7x bytes on the tiny
+response, 1.4x and 1.6x on the 100-user one.** The absolute nanoseconds are
+not portable -- see the noise section below -- but both runs agreed on the
+ratio to within a few per cent.
+
+The spread between payload sizes is the whole point of running two: the
+adaptor's cost is fixed per request, so it dominates a small response and is
+diluted by a large one. On a realistic list query the native path is worth
+about 1.2x the allocations and 1.4x the time; on a small or errored response
+it is worth four times.
+
+## Why: the mechanism, measured
+
+The claim in `gqlfiber`'s package comment is that the adaptor "would rebuild a
+synthetic `*http.Request` per call". That is true, and it is not the largest
+cost. `BenchmarkTransportAdaptorOverhead` splits it:
+
+| | sec/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| `ConvertRequest` (build the synthetic request) | 869.4n | 674 | 8 |
+| `GoroutineHandoff` (empty child goroutine) | 591.6n | 16 | 1 |
+| `HandlerOnGoroutine` (the NetHTTP row's own work, moved to a fresh goroutine) | 4.235µ | 1.430Ki | 21 |
+
+`fasthttpadaptor.NewFastHTTPHandler` runs the `net/http` handler **on a new
+goroutine per request** and blocks the caller on a channel until it reports
+back, which is how it can react to a `Flush` or a `Hijack` it cannot know
+about in advance. Moving nothing but that goroutine boundary around the
+`NetHTTP` row costs 4.235µs against its 2.016µs in the matrix: **+2.2µs, more
+than twice what `ConvertRequest` costs.** The empty-child measurement (592ns)
+understates it by a factor of four, because a child that does real work parks
+its parent for real time and outgrows its initial stack.
+
+Against the tiny-payload gap of 6.8µs and 22 allocations, that accounts for:
+
+- 8 allocations and 0.87µs -- rebuilding the request,
+- 1 allocation and ~2.2µs -- the goroutine handoff around real work,
+- the remaining 13 allocations and ~3.7µs -- copying the synthetic writer's
+  headers and body back into the fasthttp response, `r.WithContext`, and the
+  garbage collector's share of 4.7x the bytes.
+
+So the direction of the design claim holds decisively and its stated reason is
+only part of the story. Recorded here because the reason is what a reader
+would otherwise generalise from.
+
+## What the loopback timings could not settle
+
+Loopback `ns/op` on this machine cannot rank these transports. Two identical
+`-count=10` runs, back to back, no code change:
+
+| Row (loopback) | run A | run B | benchstat |
+|---|---:|---:|---|
+| Tiny/NetHTTP | 109.46µ ± 15% | 93.97µ ± 14% | -14.15% (p=0.009) |
+| Tiny/Echo | 126.19µ ± 4% | 89.39µ ± 2% | -29.16% (p=0.000) |
+| Tiny/FiberNative | 91.74µ ± 14% | 81.62µ ± 4% | -11.02% (p=0.023) |
+| Tiny/FiberAdaptor | 108.73µ ± 25% | 87.98µ ± 8% | -19.09% (p=0.000) |
+| List/NetHTTP | 180.5µ ± 9% | 128.9µ ± 7% | -28.56% (p=0.000) |
+| List/Echo | 239.3µ ± 24% | 128.3µ ± 10% | -46.40% (p=0.000) |
+| List/FiberNative | 164.0µ ± 30% | 110.7µ ± 6% | -32.48% (p=0.000) |
+| List/FiberAdaptor | 153.7µ ± 13% | 121.7µ ± 4% | -20.83% (p=0.000) |
+
+Every row "improved significantly" between two runs of the same binary. The
+row ordering flipped too: on the List payload run A put `FiberAdaptor` ahead
+of `FiberNative`, run B reversed it. A round trip costs 80-240µs here and the
+transport difference is single-digit microseconds inside it, so the signal is
+below the machine's drift. `FiberNative` was fastest in three of the four
+loopback cases, which is suggestive and nothing more.
+
+The allocation columns of the same two runs were bit-identical. That asymmetry
+is the reason this section leads with allocations.
+
+## Caveats
+
+- The in-process harness gives the Fiber rows a `fasthttp.RequestCtx` and the
+  net/http rows a `ResponseWriter` over a reused buffer. They are as close as
+  two different stacks can be made, but they are not the same object, so read
+  `FiberNative` against `NetHTTP` in-process as indicative. `FiberNative`
+  against `FiberAdaptor` shares a harness exactly, and that is the comparison
+  this section exists for.
+- The loopback harness is serial over one kept-alive connection. It does not
+  exercise connection acceptance or concurrency, where fasthttp's remaining
+  advantages are.
+- This measures only the performance half of `gqlfiber`'s rationale. The other
+  half -- that the adaptor cannot carry a WebSocket at all -- is not a number.

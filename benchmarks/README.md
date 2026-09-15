@@ -1,7 +1,9 @@
 # benchmarks
 
 Steady-state runtime comparison of this module against
-[gqlgen](https://github.com/99designs/gqlgen) on one shared schema.
+[gqlgen](https://github.com/99designs/gqlgen) on one shared schema, plus a
+matrix of what each HTTP transport costs on top of the same executor
+(`transport_bench_test.go`).
 
 See [docs/benchmarks.md](../docs/benchmarks.md) for the latest numbers and
 methodology.
