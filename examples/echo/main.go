@@ -1,9 +1,9 @@
 // Command echo serves the example note-board schema through Echo v5, on
 // every transport:
 //
-//	POST /graphql         queries and mutations
-//	POST /graphql/stream  Server-Sent Events
-//	GET  /graphql/ws      graphql-transport-ws
+//	/graphql         queries and mutations
+//	/graphql/stream  Server-Sent Events
+//	/graphql/ws      graphql-transport-ws
 //
 // Subscribe to noteCreated on either streaming endpoint, then run the
 // createNote mutation against /graphql to see the event arrive.
@@ -39,9 +39,23 @@ func main() {
 	exec := graphql.NewExecutor(s)
 
 	e := echo.New()
-	e.POST("/graphql", gqlecho.New(exec))
-	e.POST("/graphql/stream", gqlecho.SSE(exec))
-	e.GET("/graphql/ws", gqlecho.WS(exec))
+
+	// Each handler serves more than one method itself (gqlhttp and gqlsse
+	// both accept GET and POST; gqlws answers any non-upgrade request with
+	// its own 426) and rejects the rest with its own GraphQL-aware error, so
+	// every route is registered for every method with Any: Echo's router
+	// must never intercept a method the handler would have accepted, or
+	// answer one it would have rejected with more than a bare 405. See
+	// transport/equivalence_test.go's "Echo is registered the same way,
+	// through e.Any, for the same reason".
+	e.Any("/graphql", gqlecho.New(exec))
+	e.Any("/graphql/stream", gqlecho.SSE(exec))
+	// WS refuses a cross-origin upgrade unless the handler is configured
+	// with origin patterns; a request with no Origin header (curl,
+	// websocat, same-origin pages) is always accepted. gqlws.New's default
+	// is left as-is here rather than loosened with
+	// WithInsecureSkipOriginCheck, matching the Fiber example.
+	e.Any("/graphql/ws", gqlecho.WS(exec))
 
 	srv := &http.Server{
 		Addr:              *addr,

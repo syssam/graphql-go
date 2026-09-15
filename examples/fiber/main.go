@@ -1,9 +1,9 @@
 // Command fiber serves the example note-board schema through Fiber v3, on
 // every transport:
 //
-//	POST /graphql         queries and mutations
-//	POST /graphql/stream  Server-Sent Events
-//	GET  /graphql/ws      graphql-transport-ws
+//	/graphql         queries and mutations
+//	/graphql/stream  Server-Sent Events
+//	/graphql/ws      graphql-transport-ws
 //
 // Subscribe to noteCreated on either streaming endpoint, then run the
 // createNote mutation against /graphql to see the event arrive.
@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 
@@ -37,26 +38,34 @@ func main() {
 
 	app := fiber.New()
 
-	// gqlfiber.New serves GET and POST itself and answers every other method
-	// with its own GraphQL error envelope; registering it with Post alone
-	// would let Fiber's router answer a DELETE with a bare 405 instead. All
-	// routes every method to the handler so it stays the one place that
-	// decides.
+	// Each handler serves more than one method itself (gqlfiber's GraphQL
+	// and SSE handlers both accept GET and POST; its WS handler answers any
+	// non-upgrade request with its own 426) and rejects the rest with its
+	// own GraphQL-aware error, so every route is registered for every
+	// method with All: Fiber's router must never intercept a method the
+	// handler would have accepted, or answer one it would have rejected
+	// with more than a bare 405. Registering /graphql with Post alone, for
+	// example, would let Fiber's router answer a DELETE with a bare 405
+	// instead of the handler's envelope.
 	app.All("/graphql", gqlfiber.New(exec))
-	app.Post("/graphql/stream", gqlfiber.SSE(exec))
+	app.All("/graphql/stream", gqlfiber.SSE(exec))
 
 	// WS refuses a cross-origin upgrade unless WithOriginPatterns names it;
 	// a request with no Origin header (curl, websocat, same-origin pages) is
 	// always accepted. That default is left as-is here rather than loosened
 	// with WithInsecureSkipOriginCheck, which would only teach a copy of
 	// this example to disable the one browser-facing check it has.
-	app.Get("/graphql/ws", gqlfiber.WS(exec))
+	app.All("/graphql/ws", gqlfiber.WS(exec))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() {
 		<-ctx.Done()
-		if err := app.ShutdownWithContext(context.Background()); err != nil {
+		// A bare context.Background() here would never force-close: Fiber
+		// only forces a shutdown once the context's deadline passes, so an
+		// open SSE or WebSocket subscription -- exactly what this example
+		// exists to demonstrate -- would hold the process open forever.
+		if err := app.ShutdownWithTimeout(5 * time.Second); err != nil {
 			slog.Error("shutdown", "error", err)
 		}
 	}()
