@@ -128,6 +128,8 @@ func Object[E any](name string, fields ...FieldOption) SchemaOption {
 
 // Field binds a pure field: fn reads data from the parent without I/O. Pure
 // fields are executed inline and never scheduled on their own goroutine.
+// A composite list result may be spelled iter.Seq[E] or iter.Seq[*E] wherever
+// it may be spelled []E or []*E.
 func Field[P, R any](name string, fn func(P) R, opts ...FieldOpt) FieldOption {
 	return newFieldSpec[P, R](name, nil, true, opts, func(_ context.Context, p P, _ any) (R, error) {
 		return fn(p), nil
@@ -142,7 +144,8 @@ func FieldArgs[P, A, R any](name string, fn func(P, A) R, opts ...FieldOpt) Fiel
 }
 
 // Resolve binds a resolver field that may perform I/O. Resolver fields are
-// eligible for concurrent scheduling.
+// eligible for concurrent scheduling. A composite list result may be spelled
+// iter.Seq[E] or iter.Seq[*E] wherever it may be spelled []E or []*E.
 func Resolve[P, R any](name string, fn func(context.Context, P) (R, error), opts ...FieldOpt) FieldOption {
 	return newFieldSpec[P, R](name, nil, false, opts, func(ctx context.Context, p P, _ any) (R, error) {
 		return fn(ctx, p)

@@ -40,8 +40,13 @@ first. This is not an implementation gap to engineer around later; it is the
 batching contract. **No part of this design may make `pushWave` take an
 estimate.**
 
-The existing code already drains into `[]any` before announcing, so it stays
-correct with a seq traverser and needs no change.
+The existing code already drains into `[]any` before announcing, so the
+announced count stays exact with a seq traverser. It did need one change:
+when the drained list turns out to be shorter than two elements the
+concurrent path declines it, and the sequential path used to traverse the
+value a second time — which a single-pass seq answers with nothing. So
+`writeListConcurrent` now hands the drained elements back to its caller, which
+writes them instead of re-traversing.
 
 What each list kind gets:
 
