@@ -132,3 +132,56 @@ func TestNewSchemaAggregatesErrors(t *testing.T) {
 		}
 	}
 }
+
+type depArgs struct{ A int32 }
+type depNullArgs struct{ A *int32 }
+type depIn struct{ A int32 }
+type depInArgs struct{ I depIn }
+
+// TestNewSchemaRejectsDeprecatedRequiredInputs covers specification section
+// 3.13.2: @deprecated must not appear on a required argument or input field,
+// because a client has no way to stop supplying one.
+func TestNewSchemaRejectsDeprecatedRequiredInputs(t *testing.T) {
+	reqArg := []SchemaOption{
+		Args[depArgs](InputField("a", func(x *depArgs, v int32) { x.A = v })),
+		Query(FieldArgs("f", func(Root, depArgs) string { return "" })),
+	}
+	nullArg := []SchemaOption{
+		Args[depNullArgs](InputField("a", func(x *depNullArgs, v *int32) { x.A = v })),
+		Query(FieldArgs("f", func(Root, depNullArgs) string { return "" })),
+	}
+	inField := []SchemaOption{
+		Input[depIn]("I", InputField("a", func(x *depIn, v int32) { x.A = v })),
+		Args[depInArgs](InputField("i", func(x *depInArgs, v depIn) { x.I = v })),
+		Query(FieldArgs("f", func(Root, depInArgs) string { return "" })),
+	}
+	cases := []struct {
+		name string
+		sdl  string
+		opts []SchemaOption
+		want string // substring of the expected error; empty means must build
+	}{
+		{"required argument", `type Query { f(a: Int! @deprecated): String! }`, reqArg, "Query.f(a:)"},
+		{"required input field", `input I { a: Int! @deprecated } type Query { f(i: I!): String! }`, inField, "I.a"},
+		{"non-null argument with a default", `type Query { f(a: Int! = 1 @deprecated): String! }`, reqArg, ""},
+		{"nullable argument", `type Query { f(a: Int @deprecated): String! }`, nullArg, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewSchema(SDL(tc.sdl), tc.opts...)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("schema must build: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected an error mentioning %q", tc.want)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, tc.want) || !strings.Contains(msg, "@deprecated") {
+				t.Fatalf("error should mention %q and @deprecated:\n%s", tc.want, msg)
+			}
+		})
+	}
+}
