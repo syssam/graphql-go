@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"errors"
+	"iter"
 	"reflect"
 	"testing"
 
@@ -227,5 +228,41 @@ func TestShapeForReflectionFallback(t *testing.T) {
 	})
 	if n != 6 {
 		t.Fatalf("sum = %d, want 6", n)
+	}
+}
+
+func TestSeqElem(t *testing.T) {
+	type post struct{ ID string }
+	cases := []struct {
+		name string
+		typ  reflect.Type
+		want reflect.Type
+	}{
+		{"seq of pointer", reflect.TypeFor[iter.Seq[*post]](), reflect.TypeFor[*post]()},
+		{"seq of value", reflect.TypeFor[iter.Seq[post]](), reflect.TypeFor[post]()},
+		{"seq of string", reflect.TypeFor[iter.Seq[string]](), reflect.TypeFor[string]()},
+		{"slice is not a seq", reflect.TypeFor[[]*post](), nil},
+		{"seq2 is not a seq", reflect.TypeFor[iter.Seq2[int, *post]](), nil},
+		{"func returning bool", reflect.TypeFor[func() bool](), nil},
+		{"yield returning nothing", reflect.TypeFor[func(func(*post))](), nil},
+		{"yield returning non-bool", reflect.TypeFor[func(func(*post) error)](), nil},
+		{"variadic", reflect.TypeFor[func(...func(*post) bool)](), nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := seqElem(tc.typ)
+			if tc.want == nil {
+				if ok {
+					t.Fatalf("seqElem(%s) matched %s, want no match", tc.typ, got)
+				}
+				return
+			}
+			if !ok {
+				t.Fatalf("seqElem(%s) did not match, want %s", tc.typ, tc.want)
+			}
+			if got != tc.want {
+				t.Fatalf("seqElem(%s) = %s, want %s", tc.typ, got, tc.want)
+			}
+		})
 	}
 }

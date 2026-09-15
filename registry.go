@@ -366,6 +366,24 @@ func reflectIsNil(v any) bool {
 	return false
 }
 
+// seqElem reports the element type of an iter.Seq-shaped function type,
+// func(yield func(E) bool). Matching is structural rather than on iter's
+// package path: a caller's own equivalent behaves identically and there is
+// no reason to reject it. Schema build time only.
+func seqElem(t reflect.Type) (reflect.Type, bool) {
+	if t.Kind() != reflect.Func || t.IsVariadic() || t.NumIn() != 1 || t.NumOut() != 0 {
+		return nil, false
+	}
+	y := t.In(0)
+	if y.Kind() != reflect.Func || y.IsVariadic() || y.NumIn() != 1 || y.NumOut() != 1 {
+		return nil, false
+	}
+	if y.Out(0).Kind() != reflect.Bool {
+		return nil, false
+	}
+	return y.In(0), true
+}
+
 func reflectTraverse(v any, yield func(int, any) bool) {
 	rv := reflect.ValueOf(v)
 	for i := range rv.Len() {
