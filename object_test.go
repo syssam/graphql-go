@@ -287,3 +287,28 @@ func TestSeqStopsWhenConsumerStops(t *testing.T) {
 		t.Fatalf("producer yielded %d times after the consumer stopped", yielded)
 	}
 }
+
+// BenchmarkListResultsSlice and BenchmarkListResultsSeq are a matched pair:
+// same fixture, same field selection, differing only in whether the query
+// hits the slice-backed "users" resolver or the seq-backed "usersSeq" one.
+// Run them together with -benchmem so a benchstat comparison of the pair
+// measures the seq path's allocation claim rather than two unrelated numbers.
+func BenchmarkListResultsSlice(b *testing.B) {
+	_, e := newFixtureExecutor(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		resp := run(b, e, `{users{id name}}`, "")
+		resp.Release()
+	}
+}
+
+func BenchmarkListResultsSeq(b *testing.B) {
+	_, e := newFixtureExecutor(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		resp := run(b, e, `{usersSeq{id name}}`, "")
+		resp.Release()
+	}
+}

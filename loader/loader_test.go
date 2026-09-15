@@ -3,6 +3,7 @@ package loader_test
 import (
 	"context"
 	"encoding/json"
+	"iter"
 	"strconv"
 	"strings"
 	"sync"
@@ -56,6 +57,69 @@ func TestLoaderBatchesConcurrentResolvers(t *testing.T) {
 	})
 
 	e := newLoaderSchema(t, ld, []*loadItem{{"1"}, {"2"}, {"1"}})
+	resp := run(t, e, `{ items { owner { name } } }`, "")
+	expectData(t, resp, `{"items":[{"owner":{"name":"u1"}},{"owner":{"name":"u2"}},{"owner":{"name":"u1"}}]}`)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(batches) != 1 {
+		t.Fatalf("batches = %d, want 1 (N+1 not coalesced): %v", len(batches), batches)
+	}
+	if len(batches[0]) != 2 {
+		t.Fatalf("batch keys = %v, want 2 unique ids", batches[0])
+	}
+}
+
+func newLoaderSeqSchema(t *testing.T, ld *loader.Loader[graphql.ID, *loadOwner], items []*loadItem) *graphql.Executor {
+	t.Helper()
+	s, err := graphql.NewSchema(graphql.SDL(`
+		type User { name: String! }
+		type Item { owner: User! }
+		type Query { items: [Item!]! }
+	`),
+		graphql.Object[loadOwner]("User",
+			graphql.Field("name", func(u *loadOwner) string { return u.Name }),
+		),
+		graphql.Object[loadItem]("Item",
+			graphql.Resolve("owner", func(ctx context.Context, it *loadItem) (*loadOwner, error) {
+				return ld.Load(ctx, it.OwnerID)
+			}),
+		),
+		graphql.Query(graphql.Resolve("items", func(context.Context, graphql.Root) (iter.Seq[*loadItem], error) {
+			return func(yield func(*loadItem) bool) {
+				for _, it := range items {
+					if !yield(it) {
+						return
+					}
+				}
+			}, nil
+		})),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return graphql.NewExecutor(s)
+}
+
+// A seq list whose element has a resolver must still batch. The concurrent
+// path drains the seq before announcing the wave, and that drain is what
+// keeps batching intact. Two batches here means something began streaming
+// into pushWave, which is the N+1 regression this engine exists to avoid.
+func TestLoaderBatchesSeqList(t *testing.T) {
+	var mu sync.Mutex
+	var batches [][]graphql.ID
+	ld := loader.New(func(_ context.Context, keys []graphql.ID) (map[graphql.ID]*loadOwner, error) {
+		mu.Lock()
+		batches = append(batches, append([]graphql.ID(nil), keys...))
+		mu.Unlock()
+		out := make(map[graphql.ID]*loadOwner, len(keys))
+		for _, k := range keys {
+			out[k] = &loadOwner{Name: "u" + string(k)}
+		}
+		return out, nil
+	})
+
+	e := newLoaderSeqSchema(t, ld, []*loadItem{{"1"}, {"2"}, {"1"}})
 	resp := run(t, e, `{ items { owner { name } } }`, "")
 	expectData(t, resp, `{"items":[{"owner":{"name":"u1"}},{"owner":{"name":"u2"}},{"owner":{"name":"u1"}}]}`)
 

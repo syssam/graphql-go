@@ -331,6 +331,19 @@ func registerAbstractShapes[T any](r *registry) {
 			}
 		}
 	}
+	tQT := reflect.TypeFor[iter.Seq[T]]()
+	r.nilChecks[tQT] = func(v any) bool { q, _ := v.(iter.Seq[T]); return q == nil }
+	// See registerObjectShapes: the seq has no length, so the index is counted
+	// here to satisfy the traverser contract's error-path requirement.
+	r.traversers[tQT] = func(v any, yield func(int, any) bool) {
+		i := 0
+		for e := range v.(iter.Seq[T]) {
+			if !yield(i, e) {
+				return
+			}
+			i++
+		}
+	}
 }
 
 // valueShape describes how the executor inspects a composite result whose

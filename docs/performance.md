@@ -69,6 +69,46 @@ tested, and only the idle one is decisive — writes use the connection context,
 so a subscription with an event pending is reclaimed by that write failing
 whether or not cancellation works at all.
 
+## List results
+
+`iter.Seq[E]` list fields were added so a resolver can hand the executor
+elements one at a time instead of building a `[]E` first. Measured whether
+that shows up as fewer allocations per request: `BenchmarkListResultsSlice`
+(`{users{id name}}`) against `BenchmarkListResultsSeq` (`{usersSeq{id name}}`),
+same fixture, same field selection, `benchstat`, `n=10`, both benchmarks run
+in one process so machine state is shared:
+
+| | slice (`users`) | seq (`usersSeq`) | delta |
+|---|---:|---:|---:|
+| B/op | 1.064Ki | 1.188Ki | +11.65% (p=0.000) |
+| allocs/op | 20.00 | 23.00 | +15.00% (p=0.000) |
+
+**The seq path does not allocate less here — it allocates measurably more**,
+both by bytes and by count, with p=0.000 across 10 runs each side. This is the
+opposite of the feature's original allocation claim, and the honest result to
+report rather than the hoped-for one.
+
+The extra 3 allocations match `usersSeq`'s shape: it still builds an `ids`
+slice up front and closes over it in the yield func, so the executor pays for
+a slice *and* a closure plus the range-over-func state machine the compiler
+generates to drive `iter.Seq`, where the plain `users` resolver pays for the
+slice alone. `iter.Seq` only wins the allocation argument for a resolver that
+would otherwise have to materialize a full `[]E` before it can start
+returning results — a paginated store read, a database cursor, a
+generator — not for a resolver, like this fixture's, that already holds a
+slice and merely wraps it in a yield loop. The feature's value there is API
+shape (streaming without a slice type), not fewer allocations.
+
+Reproduce (benchstat compares same-named benchmarks across files, so split the
+combined output in two, renaming both to a shared name):
+
+```sh
+go test -run '^$' -bench 'BenchmarkListResultsSlice|BenchmarkListResultsSeq' -benchmem -count=10 . > raw.txt
+grep -E '^(goos|goarch|pkg|cpu|BenchmarkListResultsSlice)' raw.txt | sed 's/Slice//' > slice.txt
+grep -E '^(goos|goarch|pkg|cpu|BenchmarkListResultsSeq)' raw.txt | sed 's/Seq//' > seq.txt
+benchstat slice.txt seq.txt
+```
+
 ## Reproducing
 
 ```sh

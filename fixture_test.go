@@ -43,6 +43,7 @@ type Query {
   maybeUsers: [User]
   node(id: ID!): Node
   search(term: String!): [SearchResult!]!
+  searchSeq(term: String!): [SearchResult!]!
   fail: String!
   failNullable: String
   panics: Int
@@ -232,6 +233,16 @@ func (f *fixture) options() []SchemaOption {
 			ResolveArgs("search", func(_ context.Context, _ Root, a termArgs) ([]any, error) {
 				return []any{f.users["1"], f.posts["p1"]}, nil
 			}),
+			ResolveArgs("searchSeq", func(_ context.Context, _ Root, a termArgs) (iter.Seq[any], error) {
+				hits := []any{f.users["1"], f.posts["p1"]}
+				return func(yield func(any) bool) {
+					for _, h := range hits {
+						if !yield(h) {
+							return
+						}
+					}
+				}, nil
+			}),
 			Resolve("fail", func(context.Context, Root) (string, error) { return "", errBoom }),
 			Resolve("failNullable", func(context.Context, Root) (*string, error) { return nil, errBoom }),
 			Resolve("panics", func(context.Context, Root) (*int, error) { panic("kaboom") }),
@@ -273,7 +284,7 @@ func (f *fixture) options() []SchemaOption {
 	}
 }
 
-func newFixtureExecutor(t *testing.T, opts ...ExecutorOption) (*fixture, *Executor) {
+func newFixtureExecutor(t testing.TB, opts ...ExecutorOption) (*fixture, *Executor) {
 	t.Helper()
 	f := newFixture()
 	s, err := NewSchema(SDL(fixtureSDL), f.options()...)
@@ -284,7 +295,7 @@ func newFixtureExecutor(t *testing.T, opts ...ExecutorOption) (*fixture, *Execut
 }
 
 // run executes a query with optional JSON variables.
-func run(t *testing.T, e *Executor, query string, vars string) *Response {
+func run(t testing.TB, e *Executor, query string, vars string) *Response {
 	t.Helper()
 	req := &Request{Query: query}
 	if vars != "" {
@@ -294,7 +305,7 @@ func run(t *testing.T, e *Executor, query string, vars string) *Response {
 }
 
 // expectData asserts the exact data payload and no errors.
-func expectData(t *testing.T, resp *Response, want string) {
+func expectData(t testing.TB, resp *Response, want string) {
 	t.Helper()
 	if len(resp.Errors) > 0 {
 		t.Fatalf("unexpected errors: %s", errorsJSON(resp.Errors))
