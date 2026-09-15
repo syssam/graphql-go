@@ -109,6 +109,65 @@ grep -E '^(goos|goarch|pkg|cpu|BenchmarkListResultsSeq)' raw.txt | sed 's/Seq//'
 benchstat slice.txt seq.txt
 ```
 
+### A resolver that never materializes
+
+`usersSeq` above wraps a slice it already built, which measures wrapping
+overhead, not the design doc's actual claim — a resolver that "stops building
+a slice it only ever hands to the writer once", motivated by a database
+cursor or paginated API that would otherwise force a `[]E` into existence
+just to satisfy the return type. `BenchmarkLazySeqSlice` and
+`BenchmarkLazySeqLazy` isolate that claim: both generate the same 1000
+elements with the same per-element work (`newLazyItem`, an allocation plus an
+`Itoa`), against a `LazyItem` type with only pure `Field` bindings so the list
+takes `writeList`'s sequential path — the only path where streaming actually
+happens, since the concurrent path drains a seq into a `[]any` up front by
+design. `BenchmarkLazySeqSlice` builds a `[]*lazyItem` of all 1000 before
+returning it; `BenchmarkLazySeqLazy` yields each element as it is generated
+and never holds a backing array. 1000 elements is large enough that a
+1000-pointer backing array (8 bytes each, ~8 KiB) is not lost in the noise of
+schema lookup, plan-cache hit and JSON encoding that every iteration also
+pays for. `TestLazySeqBenchmarkUsesSequentialPath` in `bench_lazyseq_test.go`
+checks the sequential-path assumption directly, by failing a non-null element
+partway through and confirming the generator stops within a couple of
+elements rather than running to completion — the signature of the concurrent
+path's eager drain.
+
+`benchstat`, `n=10`, both benchmarks run in one process:
+
+| | slice (materializes) | lazy (never materializes) | delta |
+|---|---:|---:|---:|
+| B/op | 94.12Ki | 86.20Ki | -8.41% (p=0.000) |
+| allocs/op | 3.914k | 3.915k | +0.03% (p=0.000) |
+| sec/op | 181.0µ ± 17% | 195.6µ ± 4% | ~ (p=0.063, not significant) |
+
+**Here the saving is real, and it is exactly the backing array**: dropping a
+1000-element `[]*lazyItem` saves ~7.9 KiB, which is what 1000 eight-byte
+pointers plus a slice header costs, and nothing else changes since both sides
+build the same 1000 `*lazyItem` values. But it shows up only in bytes, not in
+allocation count: the lazy side spends the array's one allocation on the
+`iter.Seq` closure and range-over-func state instead, netting +1 alloc
+(3915 vs 3914) — a wash on the count that this project's CLAUDE.md says to
+trust over timing. The timing delta is not significant (p=0.063) and should
+not be read as a conclusion either way.
+
+So both measurements are true at once, for different resolver shapes: a
+resolver that already holds a slice pays more to wrap it in `iter.Seq` (the
+first benchmark), and a resolver that would otherwise have to build a slice
+purely to satisfy the return type saves that slice's bytes, though not a
+whole allocation, by not building it (this one). `iter.Seq` is worth reaching
+for when the source is genuinely incremental — a cursor, a paginated fetch, a
+generator that cannot produce a length up front — not as a reflexive
+replacement for a resolver that already has a `[]E` in hand.
+
+Reproduce:
+
+```sh
+go test -run '^$' -bench 'BenchmarkLazySeqSlice|BenchmarkLazySeqLazy' -benchmem -count=10 . > raw.txt
+grep -E '^(goos|goarch|pkg|cpu|BenchmarkLazySeqSlice)' raw.txt | sed 's/LazySeqSlice/LazySeq/' > slice.txt
+grep -E '^(goos|goarch|pkg|cpu|BenchmarkLazySeqLazy)' raw.txt | sed 's/LazySeqLazy/LazySeq/' > lazy.txt
+benchstat slice.txt lazy.txt
+```
+
 ## Reproducing
 
 ```sh
