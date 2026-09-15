@@ -1,11 +1,17 @@
 // This file proves, from a client's point of view, the claim internal/httpreq
 // makes for itself: the CSRF check, the body limit and JSON-body decoding
 // cannot drift apart between transports. It drives real HTTP requests
-// through all four HTTP-carrying transports -- gqlhttp, gqlsse, gqlecho and
-// gqlfiber -- over real listeners, and asserts identical status and body.
+// through all six HTTP-carrying handlers -- gqlhttp, gqlsse, gqlecho.New,
+// gqlecho.SSE, gqlfiber.New and gqlfiber.SSE -- over real listeners, and
+// asserts identical status and body.
+//
+// The SSE handlers are rows here because gqlfiber's is a third hand-written
+// copy of the check order with its messages retyped, and establishing that it
+// still answers what gqlsse answers by reading the two files is exactly the
+// inspection this file exists to replace.
 //
 // Every transport is driven the same way, over a real loopback listener,
-// rather than mixing httptest.NewRecorder (in-process) for three of them
+// rather than mixing httptest.NewRecorder (in-process) for the net/http ones
 // with a socket only for Fiber: a real listener is the only way to drive
 // Fiber at all (see startFiberEquiv), and using one uniformly means no
 // transport gets a different code path than the others just because the
@@ -52,7 +58,7 @@ type Mutation { bump: String! }
 // mirroring transport/gqlfiber's own startFiber test helper: gqlfiber.New
 // returns a fiber.Handler, not an http.Handler, so app.Test (an in-memory
 // fake connection) is the only alternative, and it would put Fiber on a
-// different code path than the other three transports' real listeners.
+// different code path than the other transports' real listeners.
 func startFiberEquiv(t *testing.T, app *fiber.App) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -90,21 +96,53 @@ func newEquivServers(t *testing.T, httpOpts []gqlhttp.Option, sseOpts []gqlsse.O
 	echoSrv := httptest.NewServer(e)
 	t.Cleanup(echoSrv.Close)
 
+	eSSE := echo.New()
+	eSSE.Any("/graphql", gqlecho.SSE(newEquivExecutor(t), sseOpts...))
+	echoSSESrv := httptest.NewServer(eSSE)
+	t.Cleanup(echoSSESrv.Close)
+
 	app := fiber.New()
 	app.All("/graphql", gqlfiber.New(newEquivExecutor(t), fiberOpts...))
 	fiberURL := startFiberEquiv(t, app)
 
+	appSSE := fiber.New()
+	appSSE.All("/graphql", gqlfiber.SSE(newEquivExecutor(t), fiberOpts...))
+	fiberSSEURL := startFiberEquiv(t, appSSE)
+
 	return map[string]string{
-		"gqlhttp":  httpSrv.URL,
-		"gqlsse":   sseSrv.URL,
-		"gqlecho":  echoSrv.URL,
-		"gqlfiber": fiberURL,
+		"gqlhttp":      httpSrv.URL,
+		"gqlsse":       sseSrv.URL,
+		"gqlecho":      echoSrv.URL,
+		"gqlecho.SSE":  echoSSESrv.URL,
+		"gqlfiber":     fiberURL,
+		"gqlfiber.SSE": fiberSSEURL,
 	}
 }
 
 // transportNames fixes iteration order so a failing subtest is reported
 // under a stable, predictable name instead of Go's randomised map order.
-var transportNames = []string{"gqlhttp", "gqlsse", "gqlecho", "gqlfiber"}
+var transportNames = []string{"gqlhttp", "gqlsse", "gqlecho", "gqlecho.SSE", "gqlfiber", "gqlfiber.SSE"}
+
+// The two families a handful of rows split along. A rejection composed by the
+// transport itself rather than by internal/httpreq -- "mutations are not
+// allowed over GET", the unacceptable-Accept message -- is worded per
+// protocol, and the split is between GraphQL-over-HTTP and graphql-sse, not
+// between one implementation and another. A row that splits must still assert
+// every handler on both sides of it, or a third wording could hide there.
+var (
+	httpFamily = []string{"gqlhttp", "gqlecho", "gqlfiber"}
+	sseFamily  = []string{"gqlsse", "gqlecho.SSE", "gqlfiber.SSE"}
+)
+
+// equivClient bounds the wait for a response head. Every case in this file is
+// a rejection, answered in full before Do returns; a handler that instead
+// opened a stream, or answered nothing, would otherwise hang until the whole
+// package's ten-minute timeout dumped every goroutine in the process, rather
+// than failing in seconds and naming the transport.
+var equivClient = &http.Client{
+	Transport: &http.Transport{ResponseHeaderTimeout: 5 * time.Second},
+	Timeout:   10 * time.Second,
+}
 
 // doRequest sends one request to base+path and returns the status and the
 // trimmed body.
@@ -121,7 +159,7 @@ func doRequest(t *testing.T, base, method, path string, headers map[string]strin
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := equivClient.Do(req)
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
@@ -133,14 +171,14 @@ func doRequest(t *testing.T, base, method, path string, headers map[string]strin
 	return resp.StatusCode, strings.TrimSpace(string(b))
 }
 
-// assertAllEqual drives the same request through every transport in
-// servers and asserts each one answers with wantStatus and wantBody
-// literally -- not merely with each other, so a bug shared by all four
-// still fails the test. Each transport runs as its own subtest, so a
-// mismatch names exactly which transport diverged.
-func assertAllEqual(t *testing.T, servers map[string]string, method, path string, headers map[string]string, body string, wantStatus int, wantBody string) {
+// assertEqualAcross drives the same request through each named transport and
+// asserts each one answers with wantStatus and wantBody literally -- not
+// merely with each other, so a bug shared by all of them still fails the
+// test. Each transport runs as its own subtest, so a mismatch names exactly
+// which transport diverged.
+func assertEqualAcross(t *testing.T, servers map[string]string, names []string, method, path string, headers map[string]string, body string, wantStatus int, wantBody string) {
 	t.Helper()
-	for _, name := range transportNames {
+	for _, name := range names {
 		base, ok := servers[name]
 		if !ok {
 			t.Fatalf("no server registered for transport %q", name)
@@ -157,8 +195,14 @@ func assertAllEqual(t *testing.T, servers map[string]string, method, path string
 	}
 }
 
-// TestEquivalence drives one table of requests through all four HTTP-carrying
-// transports and asserts identical status and identical body, proving that
+// assertAllEqual asserts the same answer from every transport in the table.
+func assertAllEqual(t *testing.T, servers map[string]string, method, path string, headers map[string]string, body string, wantStatus int, wantBody string) {
+	t.Helper()
+	assertEqualAcross(t, servers, transportNames, method, path, headers, body, wantStatus, wantBody)
+}
+
+// TestEquivalence drives one table of requests through all six HTTP-carrying
+// handlers and asserts identical status and identical body, proving that
 // internal/httpreq's shared rules produce a shared client-visible result.
 func TestEquivalence(t *testing.T) {
 	t.Run("over-long body", func(t *testing.T) {
@@ -188,51 +232,74 @@ func TestEquivalence(t *testing.T) {
 			map[string]string{"Content-Type": "text/xml"}, `{"query":"{hello}"}`, http.StatusUnsupportedMediaType, want)
 	})
 
-	// gqlsse's rejection message for this case is asserted separately from
-	// the other three: see the comment beside wantSSEBody below for why that
-	// is a legitimate difference rather than a bug being papered over.
+	// The Accept check runs before everything else in both families, so this
+	// row needs no valid request behind it. The wording splits: a
+	// GraphQL-over-HTTP handler names the two types it negotiates between, an
+	// SSE handler names the one it streams.
+	t.Run("unacceptable Accept", func(t *testing.T) {
+		servers := newEquivServers(t, nil, nil, nil)
+		headers := map[string]string{"Content-Type": "application/json", "Accept": "application/xml"}
+		const body = `{"query":"{hello}"}`
+
+		const wantHTTP = `{"errors":[{"message":"Accept header does not allow ` +
+			`application/graphql-response+json or application/json."}]}`
+		assertEqualAcross(t, servers, httpFamily, http.MethodPost, "/graphql", headers, body, http.StatusNotAcceptable, wantHTTP)
+
+		const wantSSE = `{"errors":[{"message":"Accept header does not allow text/event-stream."}]}`
+		assertEqualAcross(t, servers, sseFamily, http.MethodPost, "/graphql", headers, body, http.StatusNotAcceptable, wantSSE)
+	})
+
+	// The negotiated media type is client-visible twice: it names the response
+	// Content-Type, and it decides whether a request error is 200 or 400. This
+	// Accept header exercises the tie-break inside httpreq.Negotiate -- an
+	// explicit application/json outranks a wildcard at equal q -- through the
+	// status, so a wildcard that won instead would answer 400 here.
+	//
+	// The SSE family negotiates nothing: its Accept handling is the
+	// all-or-nothing check above, and a request error is always 400 on the
+	// media type it uses before a stream opens. Asserting that here is what
+	// keeps the difference deliberate.
+	t.Run("Accept wildcard tie-break", func(t *testing.T) {
+		servers := newEquivServers(t, nil, nil, nil)
+		headers := map[string]string{
+			"Content-Type": "application/json",
+			"Accept":       "application/json;q=0.9, */*;q=0.9",
+		}
+		const body = `{"query":"{nope}"}`
+		const want = `{"errors":[{"message":"Cannot query field \"nope\" on type \"Query\".",` +
+			`"locations":[{"line":1,"column":2}],"extensions":{"code":"GRAPHQL_VALIDATION_FAILED"}}]}`
+
+		assertEqualAcross(t, servers, httpFamily, http.MethodPost, "/graphql", headers, body, http.StatusOK, want)
+		assertEqualAcross(t, servers, sseFamily, http.MethodPost, "/graphql", headers, body, http.StatusBadRequest, want)
+	})
+
+	// The SSE family's rejection message for this case is asserted separately
+	// from the plain-HTTP family's: see the comment below for why that is a
+	// legitimate difference rather than a bug being papered over.
 	t.Run("mutation over GET", func(t *testing.T) {
 		servers := newEquivServers(t, nil, nil, nil)
 		headers := map[string]string{"GraphQL-Require-Preflight": "1"}
 		const path = "/graphql?query=mutation%7Bbump%7D"
 
-		const wantBody = `{"errors":[{"message":"mutation operations (mutations are not allowed over GET); use POST."}]}`
-		for _, name := range []string{"gqlhttp", "gqlecho", "gqlfiber"} {
-			t.Run(name, func(t *testing.T) {
-				status, got := doRequest(t, servers[name], http.MethodGet, path, headers, "")
-				if status != http.StatusMethodNotAllowed {
-					t.Errorf("%s: status = %d, want 405 (body: %s)", name, status, got)
-				}
-				if got != wantBody {
-					t.Errorf("%s: body = %s, want %s", name, got, wantBody)
-				}
-			})
-		}
+		const wantHTTP = `{"errors":[{"message":"mutation operations (mutations are not allowed over GET); use POST."}]}`
+		assertEqualAcross(t, servers, httpFamily, http.MethodGet, path, headers, "", http.StatusMethodNotAllowed, wantHTTP)
 
-		// gqlsse composes this rejection itself rather than through
-		// internal/httpreq -- unlike the CSRF check, the body limit and JSON
-		// decoding, "mutations are not allowed over GET" is not part of the
-		// contract httpreq's package doc makes ("gqlhttp and gqlsse cannot
-		// drift apart on rules a client can tell the difference between");
-		// it is independently implemented per transport. gqlsse's wording
-		// here ("Mutations are not allowed over GET; use POST.") matches the
-		// wording gqlfiber's own SSE handler independently chose
-		// (transport/gqlfiber/sse.go), i.e. SSE-family transports share one
-		// wording and plain-HTTP transports share another -- a real,
-		// consistent split along transport kind, not a one-off drift. Status
-		// is still required to match; the brief's table gives only "405" for
-		// this row (unlike every other row, which gives literal text),
-		// which is consistent with that split.
-		t.Run("gqlsse", func(t *testing.T) {
-			status, got := doRequest(t, servers["gqlsse"], http.MethodGet, path, headers, "")
-			if status != http.StatusMethodNotAllowed {
-				t.Errorf("status = %d, want 405 (body: %s)", status, got)
-			}
-			const wantSSEBody = `{"errors":[{"message":"Mutations are not allowed over GET; use POST."}]}`
-			if got != wantSSEBody {
-				t.Errorf("body = %s, want %s", got, wantSSEBody)
-			}
-		})
+		// The SSE handlers compose this rejection themselves rather than
+		// through internal/httpreq -- unlike the CSRF check, the body limit
+		// and JSON decoding, "mutations are not allowed over GET" is not part
+		// of the contract httpreq's package doc makes ("the HTTP transports
+		// cannot drift apart on rules a client can tell the difference
+		// between"); it is independently implemented per transport. The
+		// wording gqlsse chose ("Mutations are not allowed over GET; use
+		// POST.") is the wording gqlfiber's own SSE handler independently
+		// chose, and gqlecho.SSE inherits gqlsse's -- i.e. SSE-family
+		// transports share one wording and plain-HTTP transports share
+		// another, a real, consistent split along transport kind rather than
+		// a one-off drift. Status is still required to match; the brief's
+		// table gives only "405" for this row (unlike every other row, which
+		// gives literal text), which is consistent with that split.
+		const wantSSE = `{"errors":[{"message":"Mutations are not allowed over GET; use POST."}]}`
+		assertEqualAcross(t, servers, sseFamily, http.MethodGet, path, headers, "", http.StatusMethodNotAllowed, wantSSE)
 	})
 
 	t.Run("missing query, APQ off", func(t *testing.T) {
