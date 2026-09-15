@@ -23,6 +23,25 @@ sh scripts/gate.sh -short     # skip the slow subprocess and load tests
 Use it before claiming a change is clean. During one audit the three outside modules were
 very nearly missed, and they had a root API change in them at the time.
 
+**Watch for measurements that succeed while covering less than they look.** A red build is
+easy; a command that used to be complete, quietly stopped being, and still prints success is
+not. Four instances in one session, all found by asking what a passing result would look
+like if the thing under test were broken:
+
+- `go test ./...` printed `ok` for every package it knew about, and had silently stopped
+  reaching three modules as they were added.
+- A subscription leak test passed against a deliberately broken release path, because a
+  second redundant path still freed everything. It only failed when both were broken.
+- A fan-out benchmark reported 45ns per subscriber because it timed a `publish` that drops
+  into a full buffer. Counting receipts put it at 4us — the events it was "measuring" had
+  reached nobody.
+- Generated code that read correctly and did not compile, twice: a method taking the
+  generated args struct (import cycle) and `ID!` bound to a `string` field. Both were found
+  by compiling the output, neither by reading it.
+
+The habit that catches these is breaking the thing on purpose and requiring the test to
+fail. If it still passes, the test was agreeing with the code rather than checking it.
+
 `benchmarks/` is a separate module (with a `replace` back to the root) because it
 depends on gqlgen:
 
