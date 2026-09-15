@@ -16,10 +16,18 @@ import (
 func (b *builder) manifestFieldCall(typeName string, fd *ast.FieldDefinition, fb FieldBinding, goRet string) string {
 	recv := "*" + b.modelRef(typeName, typeName)
 	name := fb.goName(fd.Name)
+	// wrap converts the value to the type the field needs, for a binding whose
+	// Go side is a different named type over the same basic kind.
+	wrap := func(expr string) string {
+		if !fb.Convert {
+			return expr
+		}
+		return goRet + "(" + expr + ")"
+	}
 
 	if fb.Kind == FieldStruct {
-		return fmt.Sprintf("\t\t\tgraphql.Field(%q, func(v %s) %s { return v.%s }),\n",
-			fd.Name, recv, goRet, name)
+		return fmt.Sprintf("\t\t\tgraphql.Field(%q, func(v %s) %s { return %s }),\n",
+			fd.Name, recv, goRet, wrap("v."+name))
 	}
 
 	hasArgs := len(fd.Arguments) > 0
@@ -41,11 +49,12 @@ func (b *builder) manifestFieldCall(typeName string, fd *ast.FieldDefinition, fb
 	// and runs inline like struct access.
 	if fb.pure() {
 		if hasArgs {
-			return fmt.Sprintf("\t\t\tgraphql.FieldArgs(%q, func(v %s, a %s) %s { return v.%s(%s) }),\n",
-				fd.Name, recv, b.argsName(typeName, fd.Name), goRet, name, spread)
+			return fmt.Sprintf("\t\t\tgraphql.FieldArgs(%q, func(v %s, a %s) %s { return %s }),\n",
+				fd.Name, recv, b.argsName(typeName, fd.Name), goRet,
+				wrap(fmt.Sprintf("v.%s(%s)", name, spread)))
 		}
-		return fmt.Sprintf("\t\t\tgraphql.Field(%q, func(v %s) %s { return v.%s() }),\n",
-			fd.Name, recv, goRet, name)
+		return fmt.Sprintf("\t\t\tgraphql.Field(%q, func(v %s) %s { return %s }),\n",
+			fd.Name, recv, goRet, wrap("v."+name+"()"))
 	}
 
 	// Anything else goes through Resolve, which always supplies a context

@@ -62,24 +62,40 @@ func newBuilder(dir string, cfg Config) (*builder, error) {
 	if i := strings.LastIndex(pkgName, "/"); i >= 0 {
 		pkgName = pkgName[i+1:]
 	}
-	// Folding the manifest's type bindings into cfg.Models here means model
-	// references, imports and the mapped check keep working unchanged; the
-	// manifest is only consulted afterwards for field kinds and groups.
-	man, models, err := newManifest(cfg.Manifest, sch, cfg.Models)
-	if err != nil {
-		return nil, fmt.Errorf("codegen: %w", err)
-	}
-	cfg.Models = models
-
-	return &builder{
+	b := &builder{
 		cfg:      cfg,
 		dir:      dir,
 		schema:   sch,
 		sources:  srcs,
 		pkgName:  pkgName,
 		modelImp: cfg.Package + "/model",
-		manifest: man,
-	}, nil
+	}
+
+	// Discovery produces a manifest and then stops, so everything downstream
+	// is the manifest path. It runs against the builder as it stands, because
+	// deciding whether a Go field can answer a GraphQL field means knowing
+	// what Go type that field needs, which only goType can say. Discovery only
+	// ever adds object-type mappings, so the leaf types it asks about are
+	// already settled.
+	explicit := cfg.Manifest
+	if len(cfg.AutoBind) > 0 {
+		discovered, aerr := autoBind(dir, cfg.AutoBind, sch, b.goType)
+		if aerr != nil {
+			return nil, aerr
+		}
+		explicit = mergeManifests(discovered, explicit)
+	}
+
+	// Folding the manifest's type bindings into cfg.Models here means model
+	// references, imports and the mapped check keep working unchanged; the
+	// manifest is only consulted afterwards for field kinds and groups.
+	man, models, err := newManifest(explicit, sch, cfg.Models)
+	if err != nil {
+		return nil, fmt.Errorf("codegen: %w", err)
+	}
+	b.cfg.Models = models
+	b.manifest = man
+	return b, nil
 }
 
 func (b *builder) typeNames(kind ast.DefinitionKind) []string {

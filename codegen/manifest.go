@@ -82,6 +82,11 @@ type FieldBinding struct {
 	// Error makes a method return (T, error) rather than T. Ignored for
 	// other kinds.
 	Error bool
+	// Convert wraps the value in a conversion to the Go type the field needs.
+	// An ORM that stores an id as a plain string still answers an ID! field,
+	// but graphql.ID is a distinct named type and Go will not assign one to
+	// the other.
+	Convert bool
 }
 
 // pure reports whether the binding can be read without I/O, and so be bound

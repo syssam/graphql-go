@@ -183,7 +183,9 @@ the requested one, summed from the fields really resolved rather than from
 assumed list sizes. `codegen.Config.Manifest` binds GraphQL types and fields
 to Go types outright instead of inferring them, still without loading any Go
 type information, which is the mode an external generator such as an ORM
-wants. Still to come: codegen auto-bind and APQ over WebSocket.
+wants, and `AutoBind` discovers the same bindings from named packages,
+loading only their export data rather than a whole module. Still to come: APQ
+over WebSocket.
 
 ## Development
 

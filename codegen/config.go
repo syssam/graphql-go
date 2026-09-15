@@ -35,6 +35,10 @@ type Config struct {
 	// the generator infer them. It loads no Go type information; see the
 	// Manifest documentation.
 	Manifest *Manifest
+	// AutoBind names package patterns to discover bindings from. Only those
+	// packages are loaded, and only their export data: no syntax trees and no
+	// function bodies. A Manifest entry overrides discovery field by field.
+	AutoBind []string
 	// NullableInputOmittable uses graphql.Omittable[*T] for nullable
 	// input-object fields so PATCH-style inputs distinguish absent from
 	// null. Field arguments stay pointers.

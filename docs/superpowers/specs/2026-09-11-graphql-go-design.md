@@ -820,8 +820,8 @@ passed to `graph.NewSchema`.
   models hold only leaf fields, so object types never reference each other
   and the split is acyclic; input objects can reference across groups, and
   a cycle among them falls back to the single shared package.
-- **`AutoBind` is not implemented.** There is no `go/packages` loading.
-  `Manifest` is implemented; see the phase 4 deviations.
+- **`Manifest` and `AutoBind` are implemented in phase 4, not phase 2.** See
+  the phase 4 deviations.
 - **`Config.Models` is `map[string]string`.** A GraphQL type maps to a Go
   type expression (`Time: time.Time`). Unmapped custom scalars become named
   `string` types in `model`. Mapped scalars are omitted from `model` and
@@ -948,6 +948,25 @@ Phase 3 is complete: the subscription executor, both streaming transports and AP
   switched off. A 32-bit counter packed against the existing flags measures
   zero. Overflow would need two billion resolved fields in one operation,
   which the complexity and cost caps exist to prevent.
+
+- **Auto-bind produces a Manifest and stops.** Section 7.3 describes
+  discovery as its own path; making it emit a manifest instead means the
+  emission, validation and grouping it needs were already built and tested by
+  manifest mode, and discovery is the only new behaviour to get wrong.
+- **A Go type over the same basic kind is bound with a conversion.** Section
+  7.3 matches by name and says nothing about types. Binding `ID!` to a field
+  declared `string` fails to compile, and refusing it sends the commonest
+  field in any schema through a resolver, so the generator emits
+  `graphql.ID(v.ID)`. The conversion is only emitted when both sides bottom
+  out in the same basic kind, where it can neither lose information nor
+  reinterpret one thing as another; anything else falls through to the
+  resolver. The compile-and-run test found this too — the emitted text read
+  correctly and did not compile.
+- **Signature sniffing is conservative.** A method binds only when its shape
+  is `(ctx?, args...) (R)` or `(R, error)` with the argument count matching
+  the field's. Variadics, a context anywhere but first, and any other result
+  shape fall through to the resolver rather than generating a call that will
+  not compile.
 
 - **A manifest method's arguments are spread, not passed as the args
   struct.** Section 7.3 leaves the call shape open. Passing

@@ -108,6 +108,18 @@ struct makes the bound type's package import the generated one, which already im
 the model, and that is an import cycle. A type in the manifest gets no inference at all: an
 unlisted field is a resolver.
 
+`Config.AutoBind` discovers bindings from named packages instead of being told them, and
+produces a `Manifest` — so discovery is the only new behaviour and everything downstream is
+the manifest path. **Only export data is loaded** (`NeedName | NeedTypes | NeedImports |
+NeedDeps`): adding `NeedSyntax` or `NeedTypesInfo` would parse every file of every package,
+which is the cost this project exists to avoid, so treat either as a regression. Matching is
+json tag, then case-insensitive name, then a method whose shape the generator can call;
+anything else falls through to `Resolver`, because a resolver method can always be written
+where a bad guess is a compile error in code the user did not write. A Go type over the same
+basic kind gets a conversion (`graphql.ID(v.ID)`), since an ORM storing an id as a `string`
+still answers `ID!` and refusing would send the commonest field in any schema through a
+resolver.
+
 One SDL group stays flat in `Output`; two or more become subpackages plus a `Resolvers` struct, with models split the same way (`model/<group>/`) so a one-group edit
 does not invalidate every other group's compiled package — except when two groups' input
 objects reference each other, which would be an import cycle and falls back to one shared
@@ -203,5 +215,5 @@ Read the deviations before trusting the prose. `docs/superpowers/plans/` holds t
 implementation plans; `docs/benchmarks.md` holds the gqlgen comparison.
 
 Status: phases 1-3 complete and merged to `main`; phase 4 in progress — `ext/otel`,
-result-based actual query cost and codegen manifest mode are built. Not yet built: codegen
-auto-bind, APQ over WebSocket, subscription load testing.
+result-based actual query cost and both codegen binding modes are built. Not yet built: APQ
+over WebSocket, subscription load testing.
