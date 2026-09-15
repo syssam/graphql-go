@@ -1,0 +1,960 @@
+diff --git a/ast/definition.go b/ast/definition.go
+index a8760c1..5d15a68 100644
+--- a/ast/definition.go
++++ b/ast/definition.go
+@@ -104,6 +104,7 @@ type DirectiveDefinition struct {
+ 	Description  string
+ 	Name         string
+ 	Arguments    ArgumentDefinitionList
++	Directives   DirectiveList
+ 	Locations    []DirectiveLocation
+ 	IsRepeatable bool
+ 	Position     *Position `dump:"-" json:"-"`
+diff --git a/ast/directive.go b/ast/directive.go
+index de8d984..57397c6 100644
+--- a/ast/directive.go
++++ b/ast/directive.go
+@@ -24,6 +24,7 @@ const (
+ 	LocationEnumValue            DirectiveLocation = `ENUM_VALUE`
+ 	LocationInputObject          DirectiveLocation = `INPUT_OBJECT`
+ 	LocationInputFieldDefinition DirectiveLocation = `INPUT_FIELD_DEFINITION`
++	LocationDirectiveDefinition  DirectiveLocation = `DIRECTIVE_DEFINITION`
+ 	LocationVariableDefinition   DirectiveLocation = `VARIABLE_DEFINITION`
+ )
+ 
+diff --git a/ast/document.go b/ast/document.go
+index 66d55b4..94a9524 100644
+--- a/ast/document.go
++++ b/ast/document.go
+@@ -11,16 +11,20 @@ type SchemaDocument struct {
+ 	Schema          SchemaDefinitionList
+ 	SchemaExtension SchemaDefinitionList
+ 	Directives      DirectiveDefinitionList
+-	Definitions     DefinitionList
+-	Extensions      DefinitionList
+-	Position        *Position `dump:"-" json:"-"`
+-	Comment         *CommentGroup
++	// DirectiveExtensions holds `extend directive @name @applied` nodes; each
++	// carries only a Name and Directives.
++	DirectiveExtensions DirectiveDefinitionList
++	Definitions         DefinitionList
++	Extensions          DefinitionList
++	Position            *Position `dump:"-" json:"-"`
++	Comment             *CommentGroup
+ }
+ 
+ func (d *SchemaDocument) Merge(other *SchemaDocument) {
+ 	d.Schema = append(d.Schema, other.Schema...)
+ 	d.SchemaExtension = append(d.SchemaExtension, other.SchemaExtension...)
+ 	d.Directives = append(d.Directives, other.Directives...)
++	d.DirectiveExtensions = append(d.DirectiveExtensions, other.DirectiveExtensions...)
+ 	d.Definitions = append(d.Definitions, other.Definitions...)
+ 	d.Extensions = append(d.Extensions, other.Extensions...)
+ }
+diff --git a/formatter/formatter.go b/formatter/formatter.go
+index 72d4b2c..82a5a3b 100644
+--- a/formatter/formatter.go
++++ b/formatter/formatter.go
+@@ -498,6 +498,8 @@ func (f *formatter) FormatDirectiveDefinition(def *ast.DirectiveDefinition) {
+ 		f.FormatArgumentDefinitionList(def.Arguments)
+ 	}
+ 
++	f.FormatDirectiveList(def.Directives)
++
+ 	if def.IsRepeatable {
+ 		f.WriteWord("repeatable")
+ 	}
+diff --git a/formatter/testdata/baseline/FormatSchema/builtin/comment.graphql b/formatter/testdata/baseline/FormatSchema/builtin/comment.graphql
+index 160de1b..77126b4 100644
+--- a/formatter/testdata/baseline/FormatSchema/builtin/comment.graphql
++++ b/formatter/testdata/baseline/FormatSchema/builtin/comment.graphql
+@@ -20,7 +20,7 @@ directive @deprecated(
+ 	Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
+ 	"""
+ 	reason: String = "No longer supported"
+-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
++) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+ """
+ Directs the executor to include this field or fragment only when the `if` argument is true.
+ """
+@@ -83,6 +83,8 @@ type __Directive {
+ 	isRepeatable: Boolean!
+ 	locations: [__DirectiveLocation!]!
+ 	args(includeDeprecated: Boolean = false): [__InputValue!]!
++	isDeprecated: Boolean!
++	deprecationReason: String
+ }
+ """
+ A Directive can be adjacent to many parts of the GraphQL language, a __DirectiveLocation describes one such possible adjacencies.
+@@ -164,6 +166,10 @@ enum __DirectiveLocation {
+ 	Location adjacent to an input object field definition.
+ 	"""
+ 	INPUT_FIELD_DEFINITION
++	"""
++	Location adjacent to a directive definition.
++	"""
++	DIRECTIVE_DEFINITION
+ }
+ """
+ One possible value for a given Enum. Enum values are unique values, not a placeholder for a string or numeric value. However an Enum value is returned in a JSON response as a string.
+@@ -223,7 +229,7 @@ type __Schema {
+ 	"""
+ 	A list of all directives supported by this server.
+ 	"""
+-	directives: [__Directive!]!
++	directives(includeDeprecated: Boolean = false): [__Directive!]!
+ }
+ """
+ The fundamental unit of any GraphQL Schema is the type. There are many kinds of types in GraphQL as represented by the `__TypeKind` enum.
+diff --git a/formatter/testdata/baseline/FormatSchema/builtin/definition.graphql b/formatter/testdata/baseline/FormatSchema/builtin/definition.graphql
+index 694558a..4b000ff 100644
+--- a/formatter/testdata/baseline/FormatSchema/builtin/definition.graphql
++++ b/formatter/testdata/baseline/FormatSchema/builtin/definition.graphql
+@@ -20,7 +20,7 @@ directive @deprecated(
+ 	Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
+ 	"""
+ 	reason: String = "No longer supported"
+-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
++) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+ """
+ Directs the executor to include this field or fragment only when the `if` argument is true.
+ """
+@@ -110,6 +110,8 @@ type __Directive {
+ 	isRepeatable: Boolean!
+ 	locations: [__DirectiveLocation!]!
+ 	args(includeDeprecated: Boolean = false): [__InputValue!]!
++	isDeprecated: Boolean!
++	deprecationReason: String
+ }
+ """
+ A Directive can be adjacent to many parts of the GraphQL language, a __DirectiveLocation describes one such possible adjacencies.
+@@ -191,6 +193,10 @@ enum __DirectiveLocation {
+ 	Location adjacent to an input object field definition.
+ 	"""
+ 	INPUT_FIELD_DEFINITION
++	"""
++	Location adjacent to a directive definition.
++	"""
++	DIRECTIVE_DEFINITION
+ }
+ """
+ One possible value for a given Enum. Enum values are unique values, not a placeholder for a string or numeric value. However an Enum value is returned in a JSON response as a string.
+@@ -250,7 +256,7 @@ type __Schema {
+ 	"""
+ 	A list of all directives supported by this server.
+ 	"""
+-	directives: [__Directive!]!
++	directives(includeDeprecated: Boolean = false): [__Directive!]!
+ }
+ """
+ The fundamental unit of any GraphQL Schema is the type. There are many kinds of types in GraphQL as represented by the `__TypeKind` enum.
+diff --git a/formatter/testdata/baseline/FormatSchema/builtin/description.graphql b/formatter/testdata/baseline/FormatSchema/builtin/description.graphql
+index 07d533d..ec770e9 100644
+--- a/formatter/testdata/baseline/FormatSchema/builtin/description.graphql
++++ b/formatter/testdata/baseline/FormatSchema/builtin/description.graphql
+@@ -20,7 +20,7 @@ directive @deprecated(
+ 	Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
+ 	"""
+ 	reason: String = "No longer supported"
+-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
++) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+ """
+ Directs the executor to include this field or fragment only when the `if` argument is true.
+ """
+@@ -97,6 +97,8 @@ type __Directive {
+ 	isRepeatable: Boolean!
+ 	locations: [__DirectiveLocation!]!
+ 	args(includeDeprecated: Boolean = false): [__InputValue!]!
++	isDeprecated: Boolean!
++	deprecationReason: String
+ }
+ """
+ A Directive can be adjacent to many parts of the GraphQL language, a __DirectiveLocation describes one such possible adjacencies.
+@@ -178,6 +180,10 @@ enum __DirectiveLocation {
+ 	Location adjacent to an input object field definition.
+ 	"""
+ 	INPUT_FIELD_DEFINITION
++	"""
++	Location adjacent to a directive definition.
++	"""
++	DIRECTIVE_DEFINITION
+ }
+ """
+ One possible value for a given Enum. Enum values are unique values, not a placeholder for a string or numeric value. However an Enum value is returned in a JSON response as a string.
+@@ -237,7 +243,7 @@ type __Schema {
+ 	"""
+ 	A list of all directives supported by this server.
+ 	"""
+-	directives: [__Directive!]!
++	directives(includeDeprecated: Boolean = false): [__Directive!]!
+ }
+ """
+ The fundamental unit of any GraphQL Schema is the type. There are many kinds of types in GraphQL as represented by the `__TypeKind` enum.
+diff --git a/formatter/testdata/baseline/FormatSchema/builtin/directive.graphql b/formatter/testdata/baseline/FormatSchema/builtin/directive.graphql
+index 4eecbdb..c62dbc8 100644
+--- a/formatter/testdata/baseline/FormatSchema/builtin/directive.graphql
++++ b/formatter/testdata/baseline/FormatSchema/builtin/directive.graphql
+@@ -21,7 +21,7 @@ directive @deprecated(
+ 	Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
+ 	"""
+ 	reason: String = "No longer supported"
+-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
++) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+ directive @foo on FIELD | OBJECT
+ """
+ Directs the executor to include this field or fragment only when the `if` argument is true.
+@@ -85,6 +85,8 @@ type __Directive {
+ 	isRepeatable: Boolean!
+ 	locations: [__DirectiveLocation!]!
+ 	args(includeDeprecated: Boolean = false): [__InputValue!]!
++	isDeprecated: Boolean!
++	deprecationReason: String
+ }
+ """
+ A Directive can be adjacent to many parts of the GraphQL language, a __DirectiveLocation describes one such possible adjacencies.
+@@ -166,6 +168,10 @@ enum __DirectiveLocation {
+ 	Location adjacent to an input object field definition.
+ 	"""
+ 	INPUT_FIELD_DEFINITION
++	"""
++	Location adjacent to a directive definition.
++	"""
++	DIRECTIVE_DEFINITION
+ }
+ """
+ One possible value for a given Enum. Enum values are unique values, not a placeholder for a string or numeric value. However an Enum value is returned in a JSON response as a string.
+@@ -225,7 +231,7 @@ type __Schema {
+ 	"""
+ 	A list of all directives supported by this server.
+ 	"""
+-	directives: [__Directive!]!
++	directives(includeDeprecated: Boolean = false): [__Directive!]!
+ }
+ """
+ The fundamental unit of any GraphQL Schema is the type. There are many kinds of types in GraphQL as represented by the `__TypeKind` enum.
+diff --git a/formatter/testdata/baseline/FormatSchema/builtin/directive_locations.graphql b/formatter/testdata/baseline/FormatSchema/builtin/directive_locations.graphql
+index 082c9d8..9d93fc3 100644
+--- a/formatter/testdata/baseline/FormatSchema/builtin/directive_locations.graphql
++++ b/formatter/testdata/baseline/FormatSchema/builtin/directive_locations.graphql
+@@ -20,7 +20,7 @@ directive @deprecated(
+ 	Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
+ 	"""
+ 	reason: String = "No longer supported"
+-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
++) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+ directive @foo on OBJECT | UNION | ENUM
+ """
+ Directs the executor to include this field or fragment only when the `if` argument is true.
+@@ -96,6 +96,8 @@ type __Directive {
+ 	isRepeatable: Boolean!
+ 	locations: [__DirectiveLocation!]!
+ 	args(includeDeprecated: Boolean = false): [__InputValue!]!
++	isDeprecated: Boolean!
++	deprecationReason: String
+ }
+ """
+ A Directive can be adjacent to many parts of the GraphQL language, a __DirectiveLocation describes one such possible adjacencies.
+@@ -177,6 +179,10 @@ enum __DirectiveLocation {
+ 	Location adjacent to an input object field definition.
+ 	"""
+ 	INPUT_FIELD_DEFINITION
++	"""
++	Location adjacent to a directive definition.
++	"""
++	DIRECTIVE_DEFINITION
+ }
+ """
+ One possible value for a given Enum. Enum values are unique values, not a placeholder for a string or numeric value. However an Enum value is returned in a JSON response as a string.
+@@ -236,7 +242,7 @@ type __Schema {
+ 	"""
+ 	A list of all directives supported by this server.
+ 	"""
+-	directives: [__Directive!]!
++	directives(includeDeprecated: Boolean = false): [__Directive!]!
+ }
+ """
+ The fundamental unit of any GraphQL Schema is the type. There are many kinds of types in GraphQL as represented by the `__TypeKind` enum.
+diff --git a/formatter/testdata/baseline/FormatSchema/builtin/extensions.graphql b/formatter/testdata/baseline/FormatSchema/builtin/extensions.graphql
+index 6f609e5..1b4f84f 100644
+--- a/formatter/testdata/baseline/FormatSchema/builtin/extensions.graphql
++++ b/formatter/testdata/baseline/FormatSchema/builtin/extensions.graphql
+@@ -20,7 +20,7 @@ directive @deprecated(
+ 	Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
+ 	"""
+ 	reason: String = "No longer supported"
+-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
++) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+ directive @extends on OBJECT
+ """
+ Directs the executor to include this field or fragment only when the `if` argument is true.
+@@ -101,6 +101,8 @@ type __Directive {
+ 	isRepeatable: Boolean!
+ 	locations: [__DirectiveLocation!]!
+ 	args(includeDeprecated: Boolean = false): [__InputValue!]!
++	isDeprecated: Boolean!
++	deprecationReason: String
+ }
+ """
+ A Directive can be adjacent to many parts of the GraphQL language, a __DirectiveLocation describes one such possible adjacencies.
+@@ -182,6 +184,10 @@ enum __DirectiveLocation {
+ 	Location adjacent to an input object field definition.
+ 	"""
+ 	INPUT_FIELD_DEFINITION
++	"""
++	Location adjacent to a directive definition.
++	"""
++	DIRECTIVE_DEFINITION
+ }
+ """
+ One possible value for a given Enum. Enum values are unique values, not a placeholder for a string or numeric value. However an Enum value is returned in a JSON response as a string.
+@@ -241,7 +247,7 @@ type __Schema {
+ 	"""
+ 	A list of all directives supported by this server.
+ 	"""
+-	directives: [__Directive!]!
++	directives(includeDeprecated: Boolean = false): [__Directive!]!
+ }
+ """
+ The fundamental unit of any GraphQL Schema is the type. There are many kinds of types in GraphQL as represented by the `__TypeKind` enum.
+diff --git a/formatter/testdata/baseline/FormatSchema/builtin/field_definition.graphql b/formatter/testdata/baseline/FormatSchema/builtin/field_definition.graphql
+index 485635f..348bb0a 100644
+--- a/formatter/testdata/baseline/FormatSchema/builtin/field_definition.graphql
++++ b/formatter/testdata/baseline/FormatSchema/builtin/field_definition.graphql
+@@ -20,7 +20,7 @@ directive @deprecated(
+ 	Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
+ 	"""
+ 	reason: String = "No longer supported"
+-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
++) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+ """
+ Directs the executor to include this field or fragment only when the `if` argument is true.
+ """
+@@ -86,6 +86,8 @@ type __Directive {
+ 	isRepeatable: Boolean!
+ 	locations: [__DirectiveLocation!]!
+ 	args(includeDeprecated: Boolean = false): [__InputValue!]!
++	isDeprecated: Boolean!
++	deprecationReason: String
+ }
+ """
+ A Directive can be adjacent to many parts of the GraphQL language, a __DirectiveLocation describes one such possible adjacencies.
+@@ -167,6 +169,10 @@ enum __DirectiveLocation {
+ 	Location adjacent to an input object field definition.
+ 	"""
+ 	INPUT_FIELD_DEFINITION
++	"""
++	Location adjacent to a directive definition.
++	"""
++	DIRECTIVE_DEFINITION
+ }
+ """
+ One possible value for a given Enum. Enum values are unique values, not a placeholder for a string or numeric value. However an Enum value is returned in a JSON response as a string.
+@@ -226,7 +232,7 @@ type __Schema {
+ 	"""
+ 	A list of all directives supported by this server.
+ 	"""
+-	directives: [__Directive!]!
++	directives(includeDeprecated: Boolean = false): [__Directive!]!
+ }
+ """
+ The fundamental unit of any GraphQL Schema is the type. There are many kinds of types in GraphQL as represented by the `__TypeKind` enum.
+diff --git a/formatter/testdata/baseline/FormatSchema/builtin/root-operation-types.graphql b/formatter/testdata/baseline/FormatSchema/builtin/root-operation-types.graphql
+index 7ff0c48..8cd043e 100644
+--- a/formatter/testdata/baseline/FormatSchema/builtin/root-operation-types.graphql
++++ b/formatter/testdata/baseline/FormatSchema/builtin/root-operation-types.graphql
+@@ -24,7 +24,7 @@ directive @deprecated(
+ 	Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
+ 	"""
+ 	reason: String = "No longer supported"
+-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
++) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+ """
+ Directs the executor to include this field or fragment only when the `if` argument is true.
+ """
+@@ -139,6 +139,8 @@ type __Directive {
+ 	isRepeatable: Boolean!
+ 	locations: [__DirectiveLocation!]!
+ 	args(includeDeprecated: Boolean = false): [__InputValue!]!
++	isDeprecated: Boolean!
++	deprecationReason: String
+ }
+ """
+ A Directive can be adjacent to many parts of the GraphQL language, a __DirectiveLocation describes one such possible adjacencies.
+@@ -220,6 +222,10 @@ enum __DirectiveLocation {
+ 	Location adjacent to an input object field definition.
+ 	"""
+ 	INPUT_FIELD_DEFINITION
++	"""
++	Location adjacent to a directive definition.
++	"""
++	DIRECTIVE_DEFINITION
+ }
+ """
+ One possible value for a given Enum. Enum values are unique values, not a placeholder for a string or numeric value. However an Enum value is returned in a JSON response as a string.
+@@ -279,7 +285,7 @@ type __Schema {
+ 	"""
+ 	A list of all directives supported by this server.
+ 	"""
+-	directives: [__Directive!]!
++	directives(includeDeprecated: Boolean = false): [__Directive!]!
+ }
+ """
+ The fundamental unit of any GraphQL Schema is the type. There are many kinds of types in GraphQL as represented by the `__TypeKind` enum.
+diff --git a/formatter/testdata/baseline/FormatSchema/builtin/schema-directive-with-empty-schema.graphql b/formatter/testdata/baseline/FormatSchema/builtin/schema-directive-with-empty-schema.graphql
+index c0d93c7..e773b2a 100644
+--- a/formatter/testdata/baseline/FormatSchema/builtin/schema-directive-with-empty-schema.graphql
++++ b/formatter/testdata/baseline/FormatSchema/builtin/schema-directive-with-empty-schema.graphql
+@@ -21,7 +21,7 @@ directive @deprecated(
+ 	Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
+ 	"""
+ 	reason: String = "No longer supported"
+-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
++) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+ """
+ Directs the executor to include this field or fragment only when the `if` argument is true.
+ """
+@@ -90,6 +90,8 @@ type __Directive {
+ 	isRepeatable: Boolean!
+ 	locations: [__DirectiveLocation!]!
+ 	args(includeDeprecated: Boolean = false): [__InputValue!]!
++	isDeprecated: Boolean!
++	deprecationReason: String
+ }
+ """
+ A Directive can be adjacent to many parts of the GraphQL language, a __DirectiveLocation describes one such possible adjacencies.
+@@ -171,6 +173,10 @@ enum __DirectiveLocation {
+ 	Location adjacent to an input object field definition.
+ 	"""
+ 	INPUT_FIELD_DEFINITION
++	"""
++	Location adjacent to a directive definition.
++	"""
++	DIRECTIVE_DEFINITION
+ }
+ """
+ One possible value for a given Enum. Enum values are unique values, not a placeholder for a string or numeric value. However an Enum value is returned in a JSON response as a string.
+@@ -230,7 +236,7 @@ type __Schema {
+ 	"""
+ 	A list of all directives supported by this server.
+ 	"""
+-	directives: [__Directive!]!
++	directives(includeDeprecated: Boolean = false): [__Directive!]!
+ }
+ """
+ The fundamental unit of any GraphQL Schema is the type. There are many kinds of types in GraphQL as represented by the `__TypeKind` enum.
+diff --git a/formatter/testdata/baseline/FormatSchema/builtin/schema-directives.graphql b/formatter/testdata/baseline/FormatSchema/builtin/schema-directives.graphql
+index 7148e02..16887ea 100644
+--- a/formatter/testdata/baseline/FormatSchema/builtin/schema-directives.graphql
++++ b/formatter/testdata/baseline/FormatSchema/builtin/schema-directives.graphql
+@@ -24,7 +24,7 @@ directive @deprecated(
+ 	Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
+ 	"""
+ 	reason: String = "No longer supported"
+-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
++) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+ """
+ Directs the executor to include this field or fragment only when the `if` argument is true.
+ """
+@@ -96,6 +96,8 @@ type __Directive {
+ 	isRepeatable: Boolean!
+ 	locations: [__DirectiveLocation!]!
+ 	args(includeDeprecated: Boolean = false): [__InputValue!]!
++	isDeprecated: Boolean!
++	deprecationReason: String
+ }
+ """
+ A Directive can be adjacent to many parts of the GraphQL language, a __DirectiveLocation describes one such possible adjacencies.
+@@ -177,6 +179,10 @@ enum __DirectiveLocation {
+ 	Location adjacent to an input object field definition.
+ 	"""
+ 	INPUT_FIELD_DEFINITION
++	"""
++	Location adjacent to a directive definition.
++	"""
++	DIRECTIVE_DEFINITION
+ }
+ """
+ One possible value for a given Enum. Enum values are unique values, not a placeholder for a string or numeric value. However an Enum value is returned in a JSON response as a string.
+@@ -236,7 +242,7 @@ type __Schema {
+ 	"""
+ 	A list of all directives supported by this server.
+ 	"""
+-	directives: [__Directive!]!
++	directives(includeDeprecated: Boolean = false): [__Directive!]!
+ }
+ """
+ The fundamental unit of any GraphQL Schema is the type. There are many kinds of types in GraphQL as represented by the `__TypeKind` enum.
+diff --git a/formatter/testdata/baseline/FormatSchema/builtin/schema.graphql b/formatter/testdata/baseline/FormatSchema/builtin/schema.graphql
+index 76f3324..272b637 100644
+--- a/formatter/testdata/baseline/FormatSchema/builtin/schema.graphql
++++ b/formatter/testdata/baseline/FormatSchema/builtin/schema.graphql
+@@ -25,7 +25,7 @@ directive @deprecated(
+ 	Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
+ 	"""
+ 	reason: String = "No longer supported"
+-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
++) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+ """
+ Directs the executor to include this field or fragment only when the `if` argument is true.
+ """
+@@ -140,6 +140,8 @@ type __Directive {
+ 	isRepeatable: Boolean!
+ 	locations: [__DirectiveLocation!]!
+ 	args(includeDeprecated: Boolean = false): [__InputValue!]!
++	isDeprecated: Boolean!
++	deprecationReason: String
+ }
+ """
+ A Directive can be adjacent to many parts of the GraphQL language, a __DirectiveLocation describes one such possible adjacencies.
+@@ -221,6 +223,10 @@ enum __DirectiveLocation {
+ 	Location adjacent to an input object field definition.
+ 	"""
+ 	INPUT_FIELD_DEFINITION
++	"""
++	Location adjacent to a directive definition.
++	"""
++	DIRECTIVE_DEFINITION
+ }
+ """
+ One possible value for a given Enum. Enum values are unique values, not a placeholder for a string or numeric value. However an Enum value is returned in a JSON response as a string.
+@@ -280,7 +286,7 @@ type __Schema {
+ 	"""
+ 	A list of all directives supported by this server.
+ 	"""
+-	directives: [__Directive!]!
++	directives(includeDeprecated: Boolean = false): [__Directive!]!
+ }
+ """
+ The fundamental unit of any GraphQL Schema is the type. There are many kinds of types in GraphQL as represented by the `__TypeKind` enum.
+diff --git a/formatter/testdata/baseline/FormatSchema/builtin/swapi.graphql b/formatter/testdata/baseline/FormatSchema/builtin/swapi.graphql
+index 01f0819..aa6ec27 100644
+--- a/formatter/testdata/baseline/FormatSchema/builtin/swapi.graphql
++++ b/formatter/testdata/baseline/FormatSchema/builtin/swapi.graphql
+@@ -20,7 +20,7 @@ directive @deprecated(
+ 	Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
+ 	"""
+ 	reason: String = "No longer supported"
+-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
++) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+ """
+ Directs the executor to include this field or fragment only when the `if` argument is true.
+ """
+@@ -172,6 +172,8 @@ type __Directive {
+ 	isRepeatable: Boolean!
+ 	locations: [__DirectiveLocation!]!
+ 	args(includeDeprecated: Boolean = false): [__InputValue!]!
++	isDeprecated: Boolean!
++	deprecationReason: String
+ }
+ """
+ A Directive can be adjacent to many parts of the GraphQL language, a __DirectiveLocation describes one such possible adjacencies.
+@@ -253,6 +255,10 @@ enum __DirectiveLocation {
+ 	Location adjacent to an input object field definition.
+ 	"""
+ 	INPUT_FIELD_DEFINITION
++	"""
++	Location adjacent to a directive definition.
++	"""
++	DIRECTIVE_DEFINITION
+ }
+ """
+ One possible value for a given Enum. Enum values are unique values, not a placeholder for a string or numeric value. However an Enum value is returned in a JSON response as a string.
+@@ -312,7 +318,7 @@ type __Schema {
+ 	"""
+ 	A list of all directives supported by this server.
+ 	"""
+-	directives: [__Directive!]!
++	directives(includeDeprecated: Boolean = false): [__Directive!]!
+ }
+ """
+ The fundamental unit of any GraphQL Schema is the type. There are many kinds of types in GraphQL as represented by the `__TypeKind` enum.
+diff --git a/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/comment.graphql b/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/comment.graphql
+index d4d2c9a..202656c 100644
+--- a/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/comment.graphql
++++ b/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/comment.graphql
+@@ -20,7 +20,7 @@ directive @deprecated(
+ 	Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
+ 	"""
+ 	reason: String = "No longer supported"
+-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
++) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+ """
+ Directs the executor to include this field or fragment only when the `if` argument is true.
+ """
+diff --git a/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/definition.graphql b/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/definition.graphql
+index f34c14e..401b161 100644
+--- a/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/definition.graphql
++++ b/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/definition.graphql
+@@ -20,7 +20,7 @@ directive @deprecated(
+ 	Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
+ 	"""
+ 	reason: String = "No longer supported"
+-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
++) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+ """
+ Directs the executor to include this field or fragment only when the `if` argument is true.
+ """
+diff --git a/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/description.graphql b/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/description.graphql
+index 2708da7..cb27b74 100644
+--- a/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/description.graphql
++++ b/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/description.graphql
+@@ -20,7 +20,7 @@ directive @deprecated(
+ 	Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
+ 	"""
+ 	reason: String = "No longer supported"
+-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
++) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+ """
+ Directs the executor to include this field or fragment only when the `if` argument is true.
+ """
+diff --git a/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/directive.graphql b/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/directive.graphql
+index 1e8c9f9..230c480 100644
+--- a/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/directive.graphql
++++ b/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/directive.graphql
+@@ -21,7 +21,7 @@ directive @deprecated(
+ 	Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
+ 	"""
+ 	reason: String = "No longer supported"
+-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
++) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+ directive @foo on FIELD | OBJECT
+ """
+ Directs the executor to include this field or fragment only when the `if` argument is true.
+diff --git a/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/directive_locations.graphql b/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/directive_locations.graphql
+index 0ebce1e..568baad 100644
+--- a/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/directive_locations.graphql
++++ b/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/directive_locations.graphql
+@@ -20,7 +20,7 @@ directive @deprecated(
+ 	Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
+ 	"""
+ 	reason: String = "No longer supported"
+-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
++) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+ directive @foo on OBJECT | UNION | ENUM
+ """
+ Directs the executor to include this field or fragment only when the `if` argument is true.
+diff --git a/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/extensions.graphql b/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/extensions.graphql
+index 6ed4e37..f586b1e 100644
+--- a/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/extensions.graphql
++++ b/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/extensions.graphql
+@@ -20,7 +20,7 @@ directive @deprecated(
+ 	Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
+ 	"""
+ 	reason: String = "No longer supported"
+-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
++) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+ directive @extends on OBJECT
+ """
+ Directs the executor to include this field or fragment only when the `if` argument is true.
+diff --git a/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/field_definition.graphql b/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/field_definition.graphql
+index 8f534f1..e201d35 100644
+--- a/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/field_definition.graphql
++++ b/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/field_definition.graphql
+@@ -20,7 +20,7 @@ directive @deprecated(
+ 	Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
+ 	"""
+ 	reason: String = "No longer supported"
+-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
++) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+ """
+ Directs the executor to include this field or fragment only when the `if` argument is true.
+ """
+diff --git a/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/root-operation-types.graphql b/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/root-operation-types.graphql
+index 0fc5905..08770b3 100644
+--- a/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/root-operation-types.graphql
++++ b/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/root-operation-types.graphql
+@@ -24,7 +24,7 @@ directive @deprecated(
+ 	Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
+ 	"""
+ 	reason: String = "No longer supported"
+-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
++) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+ """
+ Directs the executor to include this field or fragment only when the `if` argument is true.
+ """
+diff --git a/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/schema-directive-with-empty-schema.graphql b/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/schema-directive-with-empty-schema.graphql
+index 63bab52..1e43281 100644
+--- a/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/schema-directive-with-empty-schema.graphql
++++ b/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/schema-directive-with-empty-schema.graphql
+@@ -21,7 +21,7 @@ directive @deprecated(
+ 	Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
+ 	"""
+ 	reason: String = "No longer supported"
+-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
++) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+ """
+ Directs the executor to include this field or fragment only when the `if` argument is true.
+ """
+diff --git a/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/schema-directives.graphql b/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/schema-directives.graphql
+index dc9ae50..1ca2af4 100644
+--- a/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/schema-directives.graphql
++++ b/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/schema-directives.graphql
+@@ -24,7 +24,7 @@ directive @deprecated(
+ 	Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
+ 	"""
+ 	reason: String = "No longer supported"
+-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
++) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+ """
+ Directs the executor to include this field or fragment only when the `if` argument is true.
+ """
+diff --git a/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/schema.graphql b/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/schema.graphql
+index d5e2a89..172a725 100644
+--- a/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/schema.graphql
++++ b/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/schema.graphql
+@@ -25,7 +25,7 @@ directive @deprecated(
+ 	Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
+ 	"""
+ 	reason: String = "No longer supported"
+-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
++) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+ """
+ Directs the executor to include this field or fragment only when the `if` argument is true.
+ """
+diff --git a/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/swapi.graphql b/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/swapi.graphql
+index c3ad0d1..93a864a 100644
+--- a/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/swapi.graphql
++++ b/formatter/testdata/baseline/FormatSchema/non_introspection_builtin/swapi.graphql
+@@ -20,7 +20,7 @@ directive @deprecated(
+ 	Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
+ 	"""
+ 	reason: String = "No longer supported"
+-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
++) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+ """
+ Directs the executor to include this field or fragment only when the `if` argument is true.
+ """
+diff --git a/parser/schema.go b/parser/schema.go
+index 7152963..14a4a8c 100644
+--- a/parser/schema.go
++++ b/parser/schema.go
+@@ -432,11 +432,34 @@ func (p *parser) parseTypeSystemExtension(doc *SchemaDocument) {
+ 		doc.Extensions = append(doc.Extensions, p.parseEnumTypeExtension(comment))
+ 	case "input":
+ 		doc.Extensions = append(doc.Extensions, p.parseInputObjectTypeExtension(comment))
++	case "directive":
++		doc.DirectiveExtensions = append(doc.DirectiveExtensions, p.parseDirectiveExtension(comment))
+ 	default:
+ 		p.unexpectedError()
+ 	}
+ }
+ 
++// parseDirectiveExtension reads DirectiveExtension:
++//
++//	extend directive @ Name Directives[Const]
++//
++// The extension carries nothing but the applied directives; arguments,
++// locations and repeatability stay with the original definition.
++func (p *parser) parseDirectiveExtension(comment *CommentGroup) *DirectiveDefinition {
++	p.expectKeyword("directive")
++	p.expect(lexer.At)
++
++	var def DirectiveDefinition
++	def.Position = p.peekPos()
++	def.AfterDescriptionComment = comment
++	def.Name = p.parseName()
++	def.Directives = p.parseDirectives(true)
++	if len(def.Directives) == 0 {
++		p.unexpectedError()
++	}
++	return &def
++}
++
+ func (p *parser) parseSchemaExtension(comment *CommentGroup) *SchemaDefinition {
+ 	p.expectKeyword("schema")
+ 
+@@ -561,6 +584,7 @@ func (p *parser) parseDirectiveDefinition(description descriptionWithComment) *D
+ 	def.AfterDescriptionComment = comment
+ 	def.Name = p.parseName()
+ 	def.Arguments = p.parseArgumentDefs()
++	def.Directives = p.parseDirectives(true)
+ 
+ 	if peek := p.peek(); peek.Kind == lexer.Name && peek.Value == "repeatable" {
+ 		def.IsRepeatable = true
+@@ -626,6 +650,8 @@ func (p *parser) parseDirectiveLocation() DirectiveLocation {
+ 		return LocationInputObject
+ 	case `INPUT_FIELD_DEFINITION`:
+ 		return LocationInputFieldDefinition
++	case `DIRECTIVE_DEFINITION`:
++		return LocationDirectiveDefinition
+ 	}
+ 
+ 	p.unexpectedToken(name)
+diff --git a/parser/schema_test.yml b/parser/schema_test.yml
+index 705514a..95091f2 100644
+--- a/parser/schema_test.yml
++++ b/parser/schema_test.yml
+@@ -747,6 +747,50 @@ directives:
+       message: 'Unexpected Name "INCORRECT_LOCATION"'
+       locations: [{ line: 1, column: 27 }]
+ 
++  - name: on a directive definition
++    input: directive @meta on DIRECTIVE_DEFINITION
++    ast: |
++      <SchemaDocument>
++        Directives: [DirectiveDefinition]
++        - <DirectiveDefinition>
++            Name: "meta"
++            Locations: [DirectiveLocation]
++            - DirectiveLocation("DIRECTIVE_DEFINITION")
++            IsRepeatable: false
++
++  - name: applied to a directive definition
++    input: directive @old @meta on FIELD_DEFINITION
++    ast: |
++      <SchemaDocument>
++        Directives: [DirectiveDefinition]
++        - <DirectiveDefinition>
++            Name: "old"
++            Directives: [Directive]
++            - <Directive>
++                Name: "meta"
++            Locations: [DirectiveLocation]
++            - DirectiveLocation("FIELD_DEFINITION")
++            IsRepeatable: false
++
++  - name: directive extension
++    input: extend directive @old @meta
++    ast: |
++      <SchemaDocument>
++        DirectiveExtensions: [DirectiveDefinition]
++        - <DirectiveDefinition>
++            Name: "old"
++            Directives: [Directive]
++            - <Directive>
++                Name: "meta"
++            IsRepeatable: false
++
++  - name: directive extension must apply something
++    input: extend directive @old
++    error:
++      message: 'Unexpected <EOF>'
++      locations: [{ line: 1, column: 22 }]
++
++
+ fuzzer:
+   - name: 1
+     input: "type o{d(g:["
+diff --git a/validator/imported/prelude.graphql b/validator/imported/prelude.graphql
+index 8be3d2f..f1ec1b3 100644
+--- a/validator/imported/prelude.graphql
++++ b/validator/imported/prelude.graphql
+@@ -45,7 +45,7 @@ directive @deprecated(
+   Explains why this element was deprecated, usually also including a suggestion for how to access supported similar data. Formatted using the Markdown syntax, as specified by [CommonMark](https://commonmark.org/).
+   """
+   reason: String = "No longer supported"
+-) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
++) on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+ 
+ """Exposes a URL that specifies the behavior of this scalar."""
+ directive @specifiedBy(
+@@ -81,7 +81,7 @@ type __Schema {
+   subscriptionType: __Type
+ 
+   """A list of all directives supported by this server."""
+-  directives: [__Directive!]!
++  directives(includeDeprecated: Boolean = false): [__Directive!]!
+ }
+ 
+ """
+@@ -185,6 +185,8 @@ type __Directive {
+   isRepeatable: Boolean!
+   locations: [__DirectiveLocation!]!
+   args(includeDeprecated: Boolean = false): [__InputValue!]!
++  isDeprecated: Boolean!
++  deprecationReason: String
+ }
+ 
+ """
+@@ -247,4 +249,7 @@ enum __DirectiveLocation {
+ 
+   """Location adjacent to an input object field definition."""
+   INPUT_FIELD_DEFINITION
++
++  """Location adjacent to a directive definition."""
++  DIRECTIVE_DEFINITION
+ }
+\ No newline at end of file
+diff --git a/validator/schema.go b/validator/schema.go
+index 3a0d137..be29cae 100644
+--- a/validator/schema.go
++++ b/validator/schema.go
+@@ -113,6 +113,18 @@ func ValidateSchemaDocument(sd *SchemaDocument) (*Schema, error) {
+ 		schema.Directives[dir.Name] = sd.Directives[i]
+ 	}
+ 
++	for _, ext := range sd.DirectiveExtensions {
++		def := schema.Directives[ext.Name]
++		if def == nil {
++			return nil, gqlerror.ErrorPosf(
++				ext.Position,
++				"Cannot extend directive %s because it is not defined.",
++				ext.Name,
++			)
++		}
++		def.Directives = append(def.Directives, ext.Directives...)
++	}
++
+ 	if len(sd.Schema) > 1 {
+ 		return nil, gqlerror.ErrorPosf(
+ 			sd.Schema[1].Position,
+@@ -339,6 +351,10 @@ func validateDirective(schema *Schema, def *DirectiveDefinition) *gqlerror.Error
+ 		return err
+ 	}
+ 
++	if err := validateDirectives(schema, def.Directives, LocationDirectiveDefinition, def, false); err != nil {
++		return err
++	}
++
+ 	return validateArgs(schema, def.Arguments, def)
+ }
+ 
+diff --git a/validator/schema_test.yml b/validator/schema_test.yml
+index 589df95..1a8faff 100644
+--- a/validator/schema_test.yml
++++ b/validator/schema_test.yml
+@@ -732,6 +732,44 @@ directives:
+       message: "Directive A cannot refer to itself."
+       locations: [{line: 1, column: 25}]
+ 
++
++  - name: applied to a directive definition
++    input: |
++      directive @meta on DIRECTIVE_DEFINITION
++      directive @old @meta on FIELD_DEFINITION
++
++  - name: deprecating a directive
++    input: |
++      directive @old @deprecated(reason: "use @new") on FIELD_DEFINITION
++
++  - name: extended with a directive
++    input: |
++      directive @meta on DIRECTIVE_DEFINITION
++      directive @old on FIELD_DEFINITION
++      extend directive @old @meta
++
++  - name: cannot be self-referential when applied
++    input: |
++      directive @loop @loop on DIRECTIVE_DEFINITION
++    error:
++      message: "Directive loop cannot refer to itself."
++      locations: [{line: 1, column: 18}]
++
++  - name: applied directive must allow the location
++    input: |
++      directive @meta on FIELD
++      directive @old @meta on FIELD_DEFINITION
++    error:
++      message: "Directive meta is not applicable on DIRECTIVE_DEFINITION."
++      locations: [{line: 2, column: 17}]
++
++  - name: cannot extend an undefined directive
++    input: |
++      directive @meta on DIRECTIVE_DEFINITION
++      extend directive @nope @meta
++    error:
++      message: "Cannot extend directive nope because it is not defined."
++      locations: [{line: 2, column: 19}]
+   - name: non-repeatable directive cannot be used more than once per location
+     input: |
+       directive @A on FIELD_DEFINITION

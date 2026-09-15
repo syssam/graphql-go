@@ -78,8 +78,21 @@ The *introspection* half is implemented here (`patchPrelude` in
 `__Schema.directives(includeDeprecated:)` and
 `__DirectiveLocation.DIRECTIVE_DEFINITION` all exist and answer correctly. They
 report `false` and `null` because no schema can yet contain a deprecated
-directive — which is exactly what the specification requires of a service with
+directive -- which is exactly what the specification requires of a service with
 none.
+
+**A patch is ready to submit:**
+[`docs/upstream/0003-gqlparser-directives-on-directive-definitions.patch`](upstream/0003-gqlparser-directives-on-directive-definitions.patch).
+It adds the location, parses applied directives on a directive definition and
+the `extend directive` form, applies extensions and validates them (self
+reference, allowed location, extending something undefined), emits them from
+the formatter in grammar order, and brings gqlparser's own prelude up to the
+same revision. Ten cases across `schema_test.yml` in the parser and validator.
+
+When that lands, `introDirective.directives` in `introspection.go` should
+return `d.def.Directives` instead of `nil`, at which point a deprecated
+directive actually reports as one. Until then the AST has nowhere to hold them
+and the honest answer is the one the code gives.
 
 ## Deliberate deviations
 
