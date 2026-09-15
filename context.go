@@ -23,6 +23,10 @@ type OperationContext struct {
 	entry *docEntry
 	hub   *WaveCoordinator
 
+	// event is set only while executing one event of a subscription, and is
+	// what routes the operation chain to the per-event writer.
+	event *subEvent
+
 	costOK    bool
 	costValue int
 

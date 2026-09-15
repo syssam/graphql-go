@@ -75,6 +75,10 @@ type fieldDef struct {
 
 	// anyResolve is the type-erased form used by directives and interceptors.
 	anyResolve FieldFunc
+
+	// subscribe opens the source event stream; set on subscription root
+	// fields only, by Subscribe and SubscribeArgs.
+	subscribe subscribeFunc
 }
 
 // wrap replaces the field's executor with wrapper(previous), switching the

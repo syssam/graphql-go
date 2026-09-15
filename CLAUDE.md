@@ -84,6 +84,16 @@ the bounded semaphore; `Inline()`/`Concurrent()` override per field. `loader.Loa
 coalesces `Load` calls within one concurrent wave — the executor announces a wave before
 launching sibling tasks (`pushWave`), which is what makes DataLoader batching work.
 
+**Subscriptions (`subscription.go`).** `Subscribe`/`SubscribeArgs` bind a subscription root
+field to a function returning `<-chan R`; `Executor.Subscribe` plans the operation, opens
+the stream and returns `<-chan *Response`, one per event, closed when the source closes or
+ctx is cancelled. Each event builds its own `OperationContext` and runs the whole operation
+chain, so a DataLoader cache cannot outlive the event that filled it. The per-event writer
+substitutes the root field's executor with one that yields the event and then calls the
+ordinary `writeObject`, which is why null bubbling and error paths need no special case —
+and why field interceptors do not see that one field. A subscription root field bound with
+`Field` or `Resolve` is rejected at `NewSchema`.
+
 **Codegen (`codegen/`, `cmd/gqlc`).** SDL-only: it never loads Go packages. It emits models,
 args structs, a `Resolver` interface and bindings that call the same public constructors as
 hand-written code. Each group emits a single `generated.go` holding its args, `Resolver`
@@ -134,5 +144,6 @@ options, not an `ext/complexity` package; `Manifest`/`AutoBind` codegen are not 
 Read the deviations before trusting the prose. `docs/superpowers/plans/` holds the phase
 implementation plans; `docs/benchmarks.md` holds the gqlgen comparison.
 
-Status: phase 1 complete, phase 2 (codegen) in progress. Not yet built: subscriptions over
-WebSocket/SSE, APQ, OpenTelemetry, codegen auto-bind and manifest modes.
+Status: phases 1 and 2 complete and merged to `main`; phase 3 in progress — the subscription
+executor is built, the streaming transports are not. Not yet built: `transport/gqlws`,
+`transport/gqlsse`, APQ, OpenTelemetry, codegen auto-bind and manifest modes.

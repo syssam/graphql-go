@@ -334,20 +334,9 @@ func TestExecPathAndSelectionHelpers(t *testing.T) {
 	expectData(t, resp, `{"me":{"friends":[{"id":"2"},{"id":"3"}]}}`)
 }
 
-func TestExecSubscriptionRejected(t *testing.T) {
-	s, err := NewSchema(SDL(`type Query { a: Int } type Subscription { s: Int }`),
-		Object[Root]("Query", Field("a", func(Root) *int { return nil })),
-		Object[Root]("Subscription", Field("s", func(Root) *int { return nil })),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	e := NewExecutor(s)
-	resp := run(t, e, `subscription { s }`, "")
-	if !resp.HasRequestErrors() || !strings.Contains(resp.Errors[0].Message, "not supported") {
-		t.Fatalf("expected subscription rejection, got %s", errorsJSON(resp.Errors))
-	}
-}
+// Executing a subscription is rejected by TestExecuteRejectsSubscription in
+// subscription_test.go, against a schema whose subscription root is bound the
+// way the schema builder now requires.
 
 func TestExecIntrospectionDisabled(t *testing.T) {
 	f := newFixture()

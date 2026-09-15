@@ -268,6 +268,27 @@ func (b *schemaBuilder) validateCoverage(s *Schema) {
 			}
 		}
 	}
+	b.validateSubscriptionRoot(s)
+}
+
+// validateSubscriptionRoot requires every subscription root field to carry a
+// source stream. Field or Resolve there would compose cleanly and then have
+// nothing to subscribe to, so the failure belongs at NewSchema.
+func (b *schemaBuilder) validateSubscriptionRoot(s *Schema) {
+	def := b.ast.Subscription
+	if def == nil {
+		return
+	}
+	obj := s.objects[def.Name]
+	if obj == nil {
+		return
+	}
+	for _, f := range def.Fields {
+		fd, ok := obj.fields[f.Name]
+		if ok && fd.subscribe == nil {
+			b.errorf("field %s must be bound with Subscribe or SubscribeArgs, not Field or Resolve", coordinate(def.Name, f.Name))
+		}
+	}
 }
 
 // isLeaf reports whether a named SDL type is a scalar or an enum.

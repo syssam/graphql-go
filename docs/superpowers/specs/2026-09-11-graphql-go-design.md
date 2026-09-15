@@ -833,6 +833,38 @@ passed to `graph.NewSchema`.
 - **`cmd/gqlc` reads `gqlc.yaml` with `gopkg.in/yaml.v3`.** Paths in the
   file are resolved relative to the config file's directory.
 
+### Phase 3 Deviations
+
+The first subscription slice is the executor only; `transport/gqlws` and
+`transport/gqlsse` are not built yet, and neither is APQ.
+
+- **`Subscribe` returns a channel, not an iterator.** `iter.Seq2[R, error]`
+  reads better but cannot be selected against `ctx.Done()` without a wrapping
+  goroutine, which reintroduces the allocation and a cancellation path that
+  can leak. A channel is also what the source usually already is. The
+  consequence is that a source cannot report an error mid-stream: an error
+  from the binding prevents the subscription from starting, and after that a
+  source that can fail must carry the failure in its event type.
+- **Request errors come back as `*SubscribeError`, not a `*Response`.**
+  `Subscribe` returns `(<-chan *Response, error)`; on failure the channel is
+  nil and the error carries the `*Response` to send, because the streaming
+  protocols deliver a failed start as a protocol error rather than as a
+  payload.
+- **Every event is its own operation.** Each event gets a fresh
+  `OperationContext`, wave coordinator and value map, and runs the whole
+  operation interceptor chain including limits and cost. Sharing one context
+  across events would let a DataLoader cache from the first event serve stale
+  data for the life of the subscription.
+- **The subscription root field is written from the event, not resolved.**
+  The per-event writer substitutes the root field's executor, so field
+  interceptors and field directives do not observe that one field. They still
+  observe every field beneath it. Everything else — null bubbling, error
+  paths, abstract types, concurrency — is the ordinary object writer.
+- **Subscription root fields must be bound with `Subscribe`.** `Field` or
+  `Resolve` there composes cleanly and then has no stream, so it is rejected
+  at `NewSchema` rather than at request time. Codegen emits
+  `Subscribe`/`SubscribeArgs` and a `<-chan T` resolver signature to match.
+
 ## 12. Risks and Mitigations
 
 | Risk | Mitigation |

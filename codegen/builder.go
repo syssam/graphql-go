@@ -88,6 +88,13 @@ func (b *builder) isRoot(name string) bool {
 		(s.Subscription != nil && s.Subscription.Name == name)
 }
 
+// isSubscriptionRoot reports whether name is the subscription root, whose
+// fields bind to a source stream rather than to a resolver.
+func (b *builder) isSubscriptionRoot(name string) bool {
+	s := b.schema
+	return s.Subscription != nil && s.Subscription.Name == name
+}
+
 func (b *builder) named(t *ast.Type) *ast.Definition {
 	if t == nil {
 		return nil

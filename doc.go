@@ -21,4 +21,10 @@
 // request through WaveCoordinator;
 // WithMaxComplexity, WithMaxDepth and WithQueryCost reject expensive
 // operations before they run.
+//
+// Subscriptions are bound with Subscribe and SubscribeArgs, which return the
+// source channel for a subscription root field. Executor.Subscribe runs one
+// such operation and yields a Response per event, executing the field's
+// sub-selection against the event exactly as a query would be executed
+// against a resolver's result.
 package graphql

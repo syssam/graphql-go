@@ -177,7 +177,7 @@ func (e *Executor) execute(ctx context.Context, req *Request) *Response {
 		return e.requestError(ctx, oerr)
 	}
 	if op.Operation == ast.Subscription {
-		return e.requestError(ctx, Errorf("subscriptions are not supported").WithCode(CodeOperationResolution))
+		return e.requestError(ctx, Errorf("Subscription operations must be run with Subscribe over a streaming transport, not Execute.").WithCode(CodeOperationResolution))
 	}
 
 	rawVars, err := decodeVariables(req.Variables)
@@ -217,8 +217,13 @@ func (e *Executor) requestError(ctx context.Context, errs ...*Error) *Response {
 	return resp
 }
 
-// runOperation executes a planned operation and produces the response.
+// runOperation executes a planned operation and produces the response. It is
+// the bottom of the operation chain for one query or mutation, and for one
+// event of a subscription.
 func (e *Executor) runOperation(ctx context.Context, oc *OperationContext) *Response {
+	if oc.event != nil {
+		return e.runSubscriptionEvent(ctx, oc)
+	}
 	p := oc.plan
 	w := jsonw.Get()
 	st := &execState{e: e, s: e.schema, vars: oc.Variables}
@@ -227,6 +232,12 @@ func (e *Executor) runOperation(ctx context.Context, oc *OperationContext) *Resp
 		w.Reset()
 		w.Null()
 	}
+	return e.finishResponse(oc, w, st)
+}
+
+// finishResponse packages a written buffer and the collected errors, taking
+// over ownership of w so the caller must not touch it again.
+func (e *Executor) finishResponse(oc *OperationContext, w *jsonw.Writer, st *execState) *Response {
 	resp := &Response{Data: w.Bytes(), Errors: st.errs, buf: w}
 	oc.mu.Lock()
 	if len(oc.extensions) > 0 {
