@@ -232,3 +232,58 @@ func TestSeqListFromPureField(t *testing.T) {
 		t.Fatalf("data = %s", got)
 	}
 }
+
+// A nil seq is null, not a call into a nil func.
+func TestNilSeqWritesNull(t *testing.T) {
+	type post struct{ Title string }
+	s, err := NewSchema(SDL(`type Post { title: String! } type Query { posts: [Post!] }`),
+		Object[post]("Post", Field("title", func(v *post) string { return v.Title })),
+		Query(Resolve("posts", func(ctx context.Context, _ Root) (iter.Seq[*post], error) {
+			return nil, nil
+		})),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	resp := run(t, NewExecutor(s), `{posts{title}}`, "")
+	if len(resp.Errors) != 0 {
+		t.Fatalf("nil seq errored: %v", resp.Errors)
+	}
+	if got := string(resp.Data); got != `{"posts":null}` {
+		t.Fatalf("data = %s, want {\"posts\":null}", got)
+	}
+}
+
+// A consumer that stops must stop the producer. A seq that keeps yielding
+// after a non-null element fails would do unbounded work for a dead list.
+func TestSeqStopsWhenConsumerStops(t *testing.T) {
+	type post struct{ Title string }
+	yielded := 0
+	s, err := NewSchema(SDL(`type Post { title: String! } type Query { posts: [Post!]! }`),
+		Object[post]("Post", Field("title", func(v *post) string { return v.Title })),
+		Query(Resolve("posts", func(ctx context.Context, _ Root) (iter.Seq[*post], error) {
+			return func(yield func(*post) bool) {
+				for i := 0; i < 100; i++ {
+					yielded++
+					var p *post // nil fails the non-null element position
+					if i != 3 {
+						p = &post{Title: "t"}
+					}
+					if !yield(p) {
+						return
+					}
+				}
+			}, nil
+		})),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	resp := run(t, NewExecutor(s), `{posts{title}}`, "")
+	if len(resp.Errors) == 0 {
+		t.Fatal("want an error for a null element in a non-null position")
+	}
+	if yielded > 5 {
+		t.Fatalf("producer yielded %d times after the consumer stopped", yielded)
+	}
+}
