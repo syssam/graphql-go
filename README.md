@@ -91,9 +91,41 @@ curl -s localhost:8080/graphql -H 'content-type: application/json' \
 # {"data":{"user":{"id":"1","name":"Ada"}}}
 ```
 
+## Subscriptions
+
+`Subscribe` binds a subscription root field to a channel. Each value received
+becomes one response, with the field's sub-selection executed against it:
+
+```go
+graphql.Subscription(
+	graphql.Subscribe("postCreated", func(ctx context.Context) (<-chan *Post, error) {
+		return blog.PostsCreated(ctx), nil
+	}),
+)
+```
+
+Serve them over either streaming transport; both also serve queries and
+mutations, so a client needs only one endpoint:
+
+```go
+mux.Handle("/graphql", gqlhttp.New(exec))
+mux.Handle("/graphql/stream", gqlsse.New(exec))   // Server-Sent Events
+mux.Handle("/graphql/ws", gqlws.New(exec))        // graphql-transport-ws
+```
+
+```sh
+curl -N localhost:8080/graphql/stream -H 'content-type: application/json'   -H 'accept: text/event-stream'   -d '{"query":"subscription { postCreated { title } }"}'
+# event: next
+# data: {"data":{"postCreated":{"title":"Live"}}}
+```
+
+Closing the connection unsubscribes: the source channel's context is cancelled,
+so a broker can drop the subscriber and stop producing.
+
 A fuller example with interfaces, unions, enums, custom scalars, input objects,
-`Omittable` PATCH semantics, a schema directive and a DataLoader for
-`Post.author` lives in [`examples/basic`](examples/basic).
+`Omittable` PATCH semantics, a schema directive, a DataLoader for `Post.author`
+and a subscription fed by the `createPost` mutation lives in
+[`examples/basic`](examples/basic).
 
 ## Concepts
 
@@ -108,6 +140,7 @@ A fuller example with interfaces, unions, enums, custom scalars, input objects,
 | `Interface`, `Union`, `TypeResolver` | Abstract types resolved from the dynamic Go type or an explicit function. |
 | `Directive` / `DirectiveArgs[A]` | Schema-directive middleware on `FIELD_DEFINITION` and `OBJECT`. |
 | `Query` / `Mutation` / `Subscription` | Bind the schema's root types without repeating their names. |
+| `Subscribe` / `SubscribeArgs` | Bind a subscription root field to a `<-chan R` source. `Executor.Subscribe` yields one response per event. |
 | `loader.New` | Per-request batch+cache (Facebook DataLoader) in `graphql-go/loader`. `Load` coalesces concurrent Resolve fields in one execution wave, driven by `graphql.WaveCoordinator`. |
 
 Resolvers can read their context with `graphql.FieldFrom`, `graphql.PathFrom`
@@ -127,12 +160,21 @@ that struct to fully explicit setters; the two modes do not mix.
 
 ## Status
 
-Phase 1 of the [design](docs/superpowers/specs/2026-09-11-graphql-go-design.md)
-is complete. Phase 2 codegen is started: `cmd/gqlc` emits models, args, a
-`Resolver` interface and bindings from SDL, splitting into per-group
-packages when more than one group is present. [`examples/basic`](examples/basic)
-uses the generated package. Upcoming work adds auto-bind, then subscriptions
-over WebSocket and SSE, automatic persisted queries and OpenTelemetry.
+Phases 1 and 2 of the
+[design](docs/superpowers/specs/2026-09-11-graphql-go-design.md) are complete:
+`cmd/gqlc` emits models, args, a `Resolver` interface and bindings from SDL,
+splitting into per-group packages when more than one group is present, and
+[`examples/basic`](examples/basic) uses the generated package.
+
+Phase 3 is under way. Subscriptions execute, and both streaming transports are
+built: `transport/gqlsse` over Server-Sent Events and `transport/gqlws` over
+`graphql-transport-ws`, with `connection_init`/`ack`, `ping`/`pong`, an
+`OnConnect` hook whose context parents every operation on the connection, an
+init timeout and a per-connection operation cap. Both serve queries and
+mutations too -- one `next` then `complete` -- so a client needs only one
+endpoint. Automatic persisted queries are in `ext/apq`, opt-in on either HTTP transport
+with `WithPersistedQueries(apq.NewCache(1000))`. Still to come: codegen
+auto-bind and OpenTelemetry.
 
 ## Development
 

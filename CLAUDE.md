@@ -84,6 +84,16 @@ the bounded semaphore; `Inline()`/`Concurrent()` override per field. `loader.Loa
 coalesces `Load` calls within one concurrent wave — the executor announces a wave before
 launching sibling tasks (`pushWave`), which is what makes DataLoader batching work.
 
+**Subscriptions (`subscription.go`).** `Subscribe`/`SubscribeArgs` bind a subscription root
+field to a function returning `<-chan R`; `Executor.Subscribe` plans the operation, opens
+the stream and returns `<-chan *Response`, one per event, closed when the source closes or
+ctx is cancelled. Each event builds its own `OperationContext` and runs the whole operation
+chain, so a DataLoader cache cannot outlive the event that filled it. The per-event writer
+substitutes the root field's executor with one that yields the event and then calls the
+ordinary `writeObject`, which is why null bubbling and error paths need no special case —
+and why field interceptors do not see that one field. A subscription root field bound with
+`Field` or `Resolve` is rejected at `NewSchema`.
+
 **Codegen (`codegen/`, `cmd/gqlc`).** SDL-only: it never loads Go packages. It emits models,
 args structs, a `Resolver` interface and bindings that call the same public constructors as
 hand-written code. Each group emits a single `generated.go` holding its args, `Resolver`
@@ -94,14 +104,38 @@ objects reference each other, which would be an import cycle and falls back to o
 `model` package (`modelGroupsAcyclic`). Generated files are strings run through `go/format` (not Jennifer), and
 content-equal files are not rewritten.
 
-`transport/gqlhttp` is the GraphQL-over-HTTP handler; `internal/jsonw` is the only internal
-package (it has no dependency on engine types — the plan compiler and executor deliberately
-live in the root package so generic constructors can produce engine values directly).
+**Transports.** `transport/gqlhttp` is the GraphQL-over-HTTP handler; `transport/gqlsse`
+streams over Server-Sent Events (distinct connections mode); `transport/gqlws` speaks
+`graphql-transport-ws` over `coder/websocket`. All three serve every operation kind — a
+query or mutation is one `next` then `complete` — so a client needs one endpoint. The two
+HTTP transports parse requests through `internal/httpreq`, so a request one rejects as
+forgeable or oversized is rejected by the other; drift there is visible to clients.
+
+`ext/apq` is automatic persisted queries, opt-in through `WithPersistedQueries` on either
+HTTP transport. **Resolution happens during parsing, not at execution**: a request carrying
+only a hash has no query text, so the "mutations are not allowed over GET" guard would have
+nothing to inspect and would wave a persisted mutation through. Registration verifies
+`sha256(query) == hash` — storing whatever text arrived would let one client choose what
+every later client's hash executes. `httpreq` takes a `queryOptional` flag so that with APQ
+off the missing-query errors are byte-identical to before.
+
+In `gqlws`, **writes use the connection context, never the operation's**: coder/websocket
+tears down the whole connection when a write context is cancelled mid-frame, so writing a
+`next` under the operation context would let one client's unsubscribe drop every other
+subscription on that connection. The init timeout likewise closes the connection from a
+timer rather than bounding the read, because a read aborted by its own context leaves no
+way to send the 4408 close frame.
+
+`internal/jsonw` is the output writer and has no dependency on engine types — the plan
+compiler and executor deliberately live in the root package so generic constructors can
+produce engine values directly.
 
 ## Conventions
 
 - **Root package may depend only on `gqlparser/v2` and the standard library.** Transports,
-  codegen and extensions keep their dependencies in sub-packages.
+  codegen and extensions keep their dependencies in sub-packages. `go.mod` therefore also
+  carries `yaml.v3` (for `cmd/gqlc`) and `coder/websocket` (for `transport/gqlws`); the rule
+  is about what the root package imports, not about module purity.
 - **No reflection on the request hot path.** Reflection is allowed at `NewSchema`, in
   `Args[T]`/`Input[T]` decode, and in the one documented composite nested-list traverser
   (which logs `slog.Warn` at start-up). Adding reflection to the write path is a regression.
@@ -134,5 +168,6 @@ options, not an `ext/complexity` package; `Manifest`/`AutoBind` codegen are not 
 Read the deviations before trusting the prose. `docs/superpowers/plans/` holds the phase
 implementation plans; `docs/benchmarks.md` holds the gqlgen comparison.
 
-Status: phase 1 complete, phase 2 (codegen) in progress. Not yet built: subscriptions over
-WebSocket/SSE, APQ, OpenTelemetry, codegen auto-bind and manifest modes.
+Status: phases 1 and 2 complete and merged to `main`; phase 3 complete on
+`phase3-subscriptions` — subscription executor, `transport/gqlsse`, `transport/gqlws` and
+`ext/apq`. Not yet built: OpenTelemetry, codegen auto-bind and manifest modes.

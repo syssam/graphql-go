@@ -2,6 +2,7 @@
 schema {
   query: Query
   mutation: Mutation
+  subscription: Subscription
 }
 
 """An RFC 3339 timestamp."""
@@ -59,6 +60,14 @@ type Query {
 }
 
 type Mutation {
-  createPost(authorId: ID!, title: String!, body: String!): Post!
+  createPost(authorId: ID!, title: String!, body: String!, tags: [String!]): Post!
   updatePost(id: ID!, input: UpdatePostInput!): Post!
+}
+
+type Subscription {
+  """Emits every post as it is created."""
+  postCreated: Post!
+
+  """Emits created posts carrying the given tag."""
+  postCreatedWithTag(tag: String!): Post!
 }

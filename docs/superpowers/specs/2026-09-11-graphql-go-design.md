@@ -833,6 +833,84 @@ passed to `graph.NewSchema`.
 - **`cmd/gqlc` reads `gqlc.yaml` with `gopkg.in/yaml.v3`.** Paths in the
   file are resolved relative to the config file's directory.
 
+### Phase 3 Deviations
+
+Phase 3 is complete: the subscription executor, both streaming transports and APQ.
+
+- **`Subscribe` returns a channel, not an iterator.** `iter.Seq2[R, error]`
+  reads better but cannot be selected against `ctx.Done()` without a wrapping
+  goroutine, which reintroduces the allocation and a cancellation path that
+  can leak. A channel is also what the source usually already is. The
+  consequence is that a source cannot report an error mid-stream: an error
+  from the binding prevents the subscription from starting, and after that a
+  source that can fail must carry the failure in its event type.
+- **Request errors come back as `*SubscribeError`, not a `*Response`.**
+  `Subscribe` returns `(<-chan *Response, error)`; on failure the channel is
+  nil and the error carries the `*Response` to send, because the streaming
+  protocols deliver a failed start as a protocol error rather than as a
+  payload.
+- **Every event is its own operation.** Each event gets a fresh
+  `OperationContext`, wave coordinator and value map, and runs the whole
+  operation interceptor chain including limits and cost. Sharing one context
+  across events would let a DataLoader cache from the first event serve stale
+  data for the life of the subscription.
+- **The subscription root field is written from the event, not resolved.**
+  The per-event writer substitutes the root field's executor, so field
+  interceptors and field directives do not observe that one field. They still
+  observe every field beneath it. Everything else — null bubbling, error
+  paths, abstract types, concurrency — is the ordinary object writer.
+- **`gqlsse` serves all three operation types.** Section 8.3 scopes it to
+  distinct connections mode, which it is, but a query or mutation is streamed
+  the same way — a single `next` followed by `complete` — so one endpoint
+  covers everything and a client needs no second URL. An error raised before
+  the stream opens is an ordinary HTTP error with a
+  `application/graphql-response+json` body, matching `gqlhttp`, rather than a
+  `next` event on an opened stream.
+- **`gqlws` writes under the connection context, never the operation's.**
+  coder/websocket tears the whole connection down when a write context is
+  cancelled mid-frame, so framing a `next` under the operation context would
+  let one client unsubscribing at the wrong moment drop every other
+  subscription sharing that connection. The operation context still gates
+  whether a result is written at all, which narrows post-`complete` traffic to
+  the one event already mid-write.
+- **The init timeout closes the connection from a timer, not by bounding the
+  read.** A read aborted by its own context leaves the library no way to emit a
+  close frame, so the client would see an abnormal closure rather than 4408.
+- **Exceeding the operation cap does not close the connection.** The protocol
+  defines no close code for it, and one client asking for too much at once is a
+  fault of that operation: the server answers that id with an `error` message
+  and leaves the other subscriptions running.
+- **`OnConnect` keeps its two-argument shape.** The upgrade request reaches it
+  through `gqlws.RequestFrom(ctx)` instead of a third parameter, because that
+  is where cookie credentials are — a browser cannot set headers on a WebSocket
+  — and it is deliberately not available to later operations, where the request
+  is finished and reading it would race.
+
+- **APQ is `ext/apq` and resolves during parsing.** Section 8.1 places it in
+  `gqlhttp`; putting the logic in an extension package lets `gqlsse` use the
+  same code, and a shared `Cache` interface means a fleet can warm one Redis
+  rather than each instance learning hashes separately. Resolution has to run
+  before a transport decides what the operation is: a request carrying only a
+  hash has no query text, so the GET mutation guard would have nothing to
+  inspect. Registration verifies the hash rather than trusting it, since a
+  server that stored whatever text arrived alongside a hash would let one
+  client choose what every later client's hash executes.
+- **PersistedQueryNotFound takes its status from the negotiated media type.**
+  `application/json` gets 200, which is what a persisted-query client expects
+  before retrying with the text; `application/graphql-response+json` gets 400,
+  which is what the GraphQL over HTTP specification calls for. No extra rule
+  was needed: it falls out of how the handler already chooses a status.
+
+- **The HTTP transports share `internal/httpreq`.** Query-parameter and body
+  decoding, the body limit and the CSRF check live there rather than being
+  copied, because two transports that disagree about which requests are
+  forgeable is a difference clients can see.
+
+- **Subscription root fields must be bound with `Subscribe`.** `Field` or
+  `Resolve` there composes cleanly and then has no stream, so it is rejected
+  at `NewSchema` rather than at request time. Codegen emits
+  `Subscribe`/`SubscribeArgs` and a `<-chan T` resolver signature to match.
+
 ## 12. Risks and Mitigations
 
 | Risk | Mitigation |

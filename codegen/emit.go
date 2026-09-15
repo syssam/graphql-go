@@ -237,6 +237,9 @@ func (b *builder) emitResolver(group string) string {
 			ret := b.goType(fd.Type, "", false)
 			meth := b.resolverMethod(name, fd.Name)
 			if b.isRoot(name) {
+				if b.isSubscriptionRoot(name) {
+					ret = "<-chan " + ret
+				}
 				if len(fd.Arguments) > 0 {
 					fmt.Fprintf(&body, "\t%s(ctx context.Context, args %s) (%s, error)\n", meth, b.argsName(name, fd.Name), ret)
 				} else {
@@ -371,6 +374,13 @@ func (b *builder) emitBindings(group string, withResolver bool) string {
 func (b *builder) fieldCall(typeName string, fd *ast.FieldDefinition, root bool) string {
 	goRet := b.goType(fd.Type, "", false)
 	switch {
+	case b.isSubscriptionRoot(typeName):
+		meth := b.resolverMethod(typeName, fd.Name)
+		if len(fd.Arguments) > 0 {
+			an := b.argsName(typeName, fd.Name)
+			return fmt.Sprintf("\t\t\tgraphql.SubscribeArgs(%q, func(ctx context.Context, a %s) (<-chan %s, error) { return r.%s(ctx, a) }),\n", fd.Name, an, goRet, meth)
+		}
+		return fmt.Sprintf("\t\t\tgraphql.Subscribe(%q, func(ctx context.Context) (<-chan %s, error) { return r.%s(ctx) }),\n", fd.Name, goRet, meth)
 	case b.fieldKind(typeName, fd) == fieldPure:
 		recv := "*" + b.modelRef(typeName, typeName)
 		ident := goIdent(fd.Name)

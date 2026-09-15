@@ -6,6 +6,7 @@ package gqlhttp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,17 +20,19 @@ import (
 	"github.com/vektah/gqlparser/v2/ast"
 
 	"github.com/syssam/graphql-go"
+	"github.com/syssam/graphql-go/ext/apq"
+	"github.com/syssam/graphql-go/internal/httpreq"
 )
 
 // Media types negotiated by the handler.
 const (
 	MediaTypeGraphQLResponse = "application/graphql-response+json"
-	MediaTypeJSON            = "application/json"
+	MediaTypeJSON            = httpreq.MediaTypeJSON
 )
 
 // DefaultCSRFHeaders are the headers whose presence marks a request as one
 // that required a CORS preflight. Any of them satisfies the CSRF check.
-var DefaultCSRFHeaders = []string{"GraphQL-Require-Preflight", "X-Requested-With"}
+var DefaultCSRFHeaders = httpreq.DefaultCSRFHeaders
 
 // Handler serves GraphQL requests over HTTP.
 type Handler struct {
@@ -38,6 +41,7 @@ type Handler struct {
 	batchMax    int
 	csrf        bool
 	csrfHeaders []string
+	apq         apq.Cache
 	logger      *slog.Logger
 }
 
@@ -63,6 +67,10 @@ func WithCSRFPrevention(enabled bool, headers ...string) Option {
 		}
 	}
 }
+
+// WithPersistedQueries enables automatic persisted queries backed by cache,
+// for example apq.NewCache(1000). Disabled by default.
+func WithPersistedQueries(cache apq.Cache) Option { return func(h *Handler) { h.apq = cache } }
 
 // WithLogger sets the logger for transport-level failures such as write
 // errors. The default is slog.Default.
@@ -99,7 +107,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.csrf && h.forgeable(r) {
+	if h.csrf && httpreq.Forgeable(r, h.csrfHeaders) {
 		h.writeError(w, mediaType, http.StatusForbidden,
 			"This request could be forged cross-site. Send a non-simple Content-Type or one of the headers %s.", strings.Join(h.csrfHeaders, ", "))
 		return
@@ -111,9 +119,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	)
 	switch r.Method {
 	case http.MethodGet:
-		req, err := parseGET(r)
+		req, err := httpreq.ParseGET(r, h.apq != nil)
 		if err != nil {
 			h.writeError(w, mediaType, http.StatusBadRequest, "%v", err)
+			return
+		}
+		if resp := h.resolvePersisted(req); resp != nil {
+			h.writeGraphQLError(w, mediaType, resp)
+			return
+		}
+		if req.Query == "" {
+			h.writeError(w, mediaType, http.StatusBadRequest, "%v", httpreq.ErrMissingQueryParam)
 			return
 		}
 		kind, kerr := h.exec.OperationKind(req.Query, req.OperationName)
@@ -134,7 +150,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	if !batch {
-		resp := h.exec.Execute(ctx, reqs[0])
+		resp := h.execute(ctx, reqs[0])
 		status := http.StatusOK
 		if mediaType == MediaTypeGraphQLResponse && resp.HasRequestErrors() {
 			status = http.StatusBadRequest
@@ -158,7 +174,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					return err
 				}
 			}
-			resp := h.exec.Execute(ctx, req)
+			resp := h.execute(ctx, req)
 			_, err := resp.WriteTo(out)
 			resp.Release()
 			if err != nil {
@@ -170,61 +186,49 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// forgeable reports whether a browser could have sent r cross-origin without
-// a preflight: no Content-Type or one of the CORS "simple" types, and none
-// of the preflight-forcing headers.
-func (h *Handler) forgeable(r *http.Request) bool {
-	for _, name := range h.csrfHeaders {
-		if r.Header.Get(name) != "" {
-			return false
-		}
+// execute resolves a persisted query, if enabled, and runs the request.
+func (h *Handler) execute(ctx context.Context, req *graphql.Request) *graphql.Response {
+	if resp := h.resolvePersisted(req); resp != nil {
+		return resp
 	}
-	ct, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil {
-		return true
+	if req.Query == "" {
+		return &graphql.Response{Errors: []*graphql.Error{graphql.Errorf("%v", httpreq.ErrMissingQuery)}}
 	}
-	switch ct {
-	case "", "text/plain", "application/x-www-form-urlencoded", "multipart/form-data":
-		return true
-	}
-	return false
+	return h.exec.Execute(ctx, req)
 }
 
-func parseGET(r *http.Request) (*graphql.Request, error) {
-	q := r.URL.Query()
-	req := &graphql.Request{Query: q.Get("query"), OperationName: q.Get("operationName")}
-	if req.Query == "" {
-		return nil, errors.New(`missing "query" parameter`)
+func (h *Handler) resolvePersisted(req *graphql.Request) *graphql.Response {
+	if h.apq == nil {
+		return nil
 	}
-	if v := q.Get("variables"); v != "" {
-		if !isJSONObject(v) {
-			return nil, errors.New(`"variables" must be a JSON object`)
-		}
-		req.Variables = json.RawMessage(v)
+	return apq.Resolve(h.apq, req)
+}
+
+// writeGraphQLError sends a response carrying only errors, with the status the
+// negotiated media type calls for. A client sending application/json gets 200,
+// which is what a persisted-query client expects before it retries with the
+// query text.
+func (h *Handler) writeGraphQLError(w http.ResponseWriter, mediaType string, resp *graphql.Response) {
+	status := http.StatusOK
+	if mediaType == MediaTypeGraphQLResponse && resp.HasRequestErrors() {
+		status = http.StatusBadRequest
 	}
-	if e := q.Get("extensions"); e != "" {
-		if err := json.Unmarshal([]byte(e), &req.Extensions); err != nil {
-			return nil, fmt.Errorf(`"extensions" must be a JSON object: %v`, err)
-		}
-	}
-	return req, nil
+	h.writeResponse(w, mediaType, status, func(out io.Writer) error {
+		_, err := resp.WriteTo(out)
+		return err
+	})
 }
 
 // parsePOST reads and decodes the body. The returned status applies when err
 // is non-nil.
 func (h *Handler) parsePOST(w http.ResponseWriter, r *http.Request) (reqs []*graphql.Request, batch bool, status int, err error) {
-	ct, _, perr := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if perr != nil || ct != MediaTypeJSON {
-		return nil, false, http.StatusUnsupportedMediaType, fmt.Errorf("Content-Type must be %s.", MediaTypeJSON)
+	if err := httpreq.RequireJSONBody(r); err != nil {
+		return nil, false, http.StatusUnsupportedMediaType, err
 	}
 
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, h.maxBody))
+	body, status, err := httpreq.ReadBody(w, r, h.maxBody)
 	if err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			return nil, false, http.StatusRequestEntityTooLarge, fmt.Errorf("request body exceeds %d bytes.", h.maxBody)
-		}
-		return nil, false, http.StatusBadRequest, fmt.Errorf("reading request body: %v", err)
+		return nil, false, status, err
 	}
 
 	trimmed := bytes.TrimLeft(body, " \t\r\n")
@@ -241,7 +245,7 @@ func (h *Handler) parsePOST(w http.ResponseWriter, r *http.Request) (reqs []*gra
 		}
 		reqs = make([]*graphql.Request, 0, len(items))
 		for i, item := range items {
-			req, err := decodeRequest(item)
+			req, err := httpreq.Decode(item, h.apq != nil)
 			if err != nil {
 				return nil, false, http.StatusBadRequest, fmt.Errorf("batch entry %d: %v", i, err)
 			}
@@ -250,37 +254,11 @@ func (h *Handler) parsePOST(w http.ResponseWriter, r *http.Request) (reqs []*gra
 		return reqs, true, 0, nil
 	}
 
-	req, err := decodeRequest(trimmed)
+	req, err := httpreq.Decode(trimmed, h.apq != nil)
 	if err != nil {
 		return nil, false, http.StatusBadRequest, err
 	}
 	return []*graphql.Request{req}, false, 0, nil
-}
-
-func decodeRequest(body []byte) (*graphql.Request, error) {
-	if len(body) == 0 {
-		return nil, errors.New("request body is empty.")
-	}
-	if body[0] != '{' {
-		return nil, errors.New("request body must be a JSON object.")
-	}
-	var req graphql.Request
-	if err := json.Unmarshal(body, &req); err != nil {
-		return nil, fmt.Errorf("invalid JSON body: %v", err)
-	}
-	if req.Query == "" {
-		return nil, errors.New(`request is missing the "query" member.`)
-	}
-	if len(req.Variables) > 0 && !isJSONObject(string(req.Variables)) {
-		return nil, errors.New(`"variables" must be a JSON object or null.`)
-	}
-	return &req, nil
-}
-
-// isJSONObject accepts an object or the literal null.
-func isJSONObject(s string) bool {
-	s = strings.TrimSpace(s)
-	return s == "null" || (len(s) > 0 && s[0] == '{')
 }
 
 // negotiate chooses the response media type from an Accept header. The
