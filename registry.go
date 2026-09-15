@@ -49,6 +49,7 @@ type registry struct {
 	leafWriters    map[typeKey]any // func(*jsonw.Writer, V, *ast.Type) error
 	leafWritersAny map[typeKey]func(*jsonw.Writer, any, *ast.Type) error
 	decoders       map[typeKey]any // func(raw any, t *ast.Type) (V, error)
+	decodersAny    map[typeKey]func(any, *ast.Type) (any, error)
 	shapes         map[typeKey]shapeInfo
 	leafValidators map[string]func(any) error
 	leafKinds      map[string]ast.DefinitionKind
@@ -65,6 +66,7 @@ func newRegistry() *registry {
 		leafWriters:    make(map[typeKey]any),
 		leafWritersAny: make(map[typeKey]func(*jsonw.Writer, any, *ast.Type) error),
 		decoders:       make(map[typeKey]any),
+		decodersAny:    make(map[typeKey]func(any, *ast.Type) (any, error)),
 		shapes:         make(map[typeKey]shapeInfo),
 		leafValidators: make(map[string]func(any) error),
 		leafKinds:      make(map[string]ast.DefinitionKind),
@@ -145,7 +147,7 @@ func registerLeafShape[V any](r *registry, name string, nullable []bool, write f
 	key := typeKey{name, tV}
 	r.shapes[key] = shapeInfo{depth: len(nullable) - 1, nullable: nullable}
 	setLeafWriter(r, name, tV, write)
-	r.decoders[key] = decode
+	setDecoder(r, name, tV, decode)
 	if nullable[0] {
 		r.nilChecks[tV] = func(v any) bool {
 			tv, ok := v.(V)
@@ -213,6 +215,13 @@ func listDecoder[V any](elem func(any, *ast.Type) (V, error)) func(any, *ast.Typ
 			out[i] = v
 		}
 		return out, nil
+	}
+}
+
+func setDecoder[V any](r *registry, name string, t reflect.Type, dec func(any, *ast.Type) (V, error)) {
+	r.decoders[typeKey{name, t}] = dec
+	r.decodersAny[typeKey{name, t}] = func(raw any, at *ast.Type) (any, error) {
+		return dec(raw, at)
 	}
 }
 

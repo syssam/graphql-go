@@ -344,7 +344,7 @@ func TestExecSubscriptionRejected(t *testing.T) {
 	}
 	e := NewExecutor(s)
 	resp := run(t, e, `subscription { s }`, "")
-	if !resp.HasRequestErrors() || !strings.Contains(resp.Errors[0].Message, "Subscribe") {
+	if !resp.HasRequestErrors() || !strings.Contains(resp.Errors[0].Message, "not supported") {
 		t.Fatalf("expected subscription rejection, got %s", errorsJSON(resp.Errors))
 	}
 }
@@ -372,6 +372,45 @@ func BenchmarkExecuteUsers(b *testing.B) {
 	}
 	e := NewExecutor(s)
 	req := &Request{Query: `{ users { id name nick tags role } }`}
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		resp := e.Execute(ctx, req)
+		if len(resp.Errors) > 0 {
+			b.Fatal(resp.Errors[0])
+		}
+		resp.Release()
+	}
+}
+
+// BenchmarkExecuteConcurrentList covers the scheduled list path: a Resolve
+// field beneath a list makes the selection deeply schedulable, so elements
+// are written by concurrent tasks rather than inline. BenchmarkExecuteUsers
+// does not reach it, because pure fields never schedule.
+func BenchmarkExecuteConcurrentList(b *testing.B) {
+	type row struct{ ID string }
+	const n = 100
+
+	rows := make([]*row, n)
+	for i := range rows {
+		rows[i] = &row{ID: itoa(int64(i))}
+	}
+
+	s, err := NewSchema(SDL(`
+		type Row { id: ID! label: String! }
+		type Query { rows: [Row!]! }
+	`),
+		Object[row]("Row",
+			Field("id", func(r *row) ID { return ID(r.ID) }),
+			Resolve("label", func(_ context.Context, r *row) (string, error) { return r.ID, nil }),
+		),
+		Query(Resolve("rows", func(context.Context, Root) ([]*row, error) { return rows, nil })),
+	)
+	if err != nil {
+		b.Fatal(err)
+	}
+	e := NewExecutor(s)
+	req := &Request{Query: `{ rows { id label } }`}
 	ctx := context.Background()
 	b.ReportAllocs()
 	for b.Loop() {

@@ -1,0 +1,64 @@
+"""A small blog: users write posts."""
+schema {
+  query: Query
+  mutation: Mutation
+}
+
+"""An RFC 3339 timestamp."""
+scalar Time @specifiedBy(url: "https://tools.ietf.org/html/rfc3339")
+
+"""Upper-cases the field's string result."""
+directive @upper on FIELD_DEFINITION
+
+interface Node {
+  id: ID!
+}
+
+enum Role {
+  ADMIN
+  USER
+}
+
+type User implements Node {
+  id: ID!
+  name: String! @upper
+  email: String!
+  role: Role!
+  posts(first: Int = 10): [Post!]!
+  createdAt: Time!
+}
+
+type Post implements Node {
+  id: ID!
+  title: String!
+  body: String!
+  author: User!
+  tags: [String!]!
+  publishedAt: Time
+}
+
+union SearchResult = User | Post
+
+input PostFilter {
+  authorId: ID
+  tag: String
+}
+
+"""Fields left out keep their current value; fields set to null are cleared."""
+input UpdatePostInput {
+  title: String
+  body: String
+}
+
+type Query {
+  node(id: ID!): Node
+  user(id: ID!): User
+  users: [User!]!
+  posts(filter: PostFilter): [Post!]!
+  search(term: String!): [SearchResult!]!
+}
+
+type Mutation {
+  createPost(authorId: ID!, title: String!, body: String!): Post!
+  updatePost(id: ID!, input: UpdatePostInput!): Post!
+}

@@ -13,17 +13,21 @@ straight into a pooled JSON buffer.
 - **Small generated surface.** Bindings are plain calls to generic
   constructors (`Object`, `Field`, `Resolve`, `Input`, `Enum`, `Scalar`).
   Nothing is emitted per field beyond a one-line closure, so a 200-entity
-  schema compiles in seconds, not minutes.
-- **No reflection on the hot path.** Go types are matched to SDL types once in
-  `NewSchema`; after that, resolvers, scalar writers and input decoders are
-  typed function values.
+  schema generates in under a second using 44 MB, where gqlgen needs 31 s and
+  4.6 GB. See [`docs/benchmarks.md`](docs/benchmarks.md) for what this does
+  and does not buy at compile time.
+- **Typed output path.** Go types are matched to SDL types once in
+  `NewSchema`. Resolvers, scalar writers and explicit `InputField` setters
+  are then ordinary function values. `Args[T]()` / `Input[T](name)` may
+  reflect once per input value; that is decode only.
 - **Specification complete.** Null bubbling, list element errors, fragments,
   `@skip`/`@include`, variable coercion, interfaces and unions, introspection
   (including `specifiedByURL`, `isOneOf`, deprecated arguments) and the GraphQL
   over HTTP protocol.
 - **Production behaviour by default.** Bounded resolver concurrency, panic
-  recovery, error masking hooks, request/operation/field interceptors, schema
-  directives, CSRF prevention and body limits in the HTTP transport.
+  recovery, error masking, gRPC-style interceptors, schema directives, CSRF
+  prevention, DataLoader batching, and GitHub/Shopify-style complexity, depth
+  and query-cost limits.
 
 ## Install
 
@@ -31,7 +35,7 @@ straight into a pooled JSON buffer.
 go get github.com/syssam/graphql-go
 ```
 
-Go 1.24 or newer.
+Go 1.27 or newer.
 
 ## Quick start
 
@@ -61,7 +65,7 @@ func main() {
 		type User { id: ID! name: String! }
 		type Query { user(id: ID!): User }
 	`),
-		graphql.Args[userArgs](graphql.InputField("id", func(a *userArgs, v graphql.ID) { a.ID = v })),
+		graphql.Args[userArgs](),
 		graphql.Object[User]("User",
 			graphql.Field("id", func(u *User) graphql.ID { return u.ID }),
 			graphql.Field("name", func(u *User) string { return u.Name }),
@@ -88,8 +92,8 @@ curl -s localhost:8080/graphql -H 'content-type: application/json' \
 ```
 
 A fuller example with interfaces, unions, enums, custom scalars, input objects,
-`Omittable` PATCH semantics and a schema directive lives in
-[`examples/basic`](examples/basic).
+`Omittable` PATCH semantics, a schema directive and a DataLoader for
+`Post.author` lives in [`examples/basic`](examples/basic).
 
 ## Concepts
 
@@ -98,26 +102,37 @@ A fuller example with interfaces, unions, enums, custom scalars, input objects,
 | `Object[E](name, fields...)` | Bind a GraphQL object type to Go struct `E`. Field functions receive `*E`. |
 | `Field` / `FieldArgs` | Pure data access; runs inline, never on its own goroutine. |
 | `Resolve` / `ResolveArgs` | May perform I/O; scheduled concurrently under a bounded semaphore. |
-| `Args[A](fields...)` | Decoder for an argument struct, looked up by Go type. |
-| `Input[T]`, `InputField`, `OmittableField` | Input objects; `Omittable` distinguishes absent from `null`. |
+| `Args[A]()` / `Input[T](name)` | Decoder from struct fields (`graphql` / `json` tags, or `AuthorID` → `authorId`). Explicit `InputField` stays the zero-reflect path. |
+| `InputField`, `OmittableField` | Hand-written setters when a name or type needs an override. |
 | `Enum`, `Scalar` | Leaf types; several Go types may back one GraphQL type. |
 | `Interface`, `Union`, `TypeResolver` | Abstract types resolved from the dynamic Go type or an explicit function. |
-| `Directive[A]` | Schema-directive middleware applied to field definitions. |
+| `Directive` / `DirectiveArgs[A]` | Schema-directive middleware on `FIELD_DEFINITION` and `OBJECT`. |
+| `Query` / `Mutation` / `Subscription` | Bind the schema's root types without repeating their names. |
+| `loader.New` | Per-request batch+cache (Facebook DataLoader) in `graphql-go/loader`. `Load` coalesces concurrent Resolve fields in one execution wave, driven by `graphql.WaveCoordinator`. |
 
 Resolvers can read their context with `graphql.FieldFrom`, `graphql.PathFrom`
 and `graphql.SelectionFrom`; `graphql.OperationFrom` exposes the operation,
-variables and plan complexity to interceptors.
+variables, complexity, depth and cost. `SetExtension` writes response-level
+metadata (tracing ids, rate-limit windows).
 
-Executor options: `WithMaxConcurrency`, `WithPlanCache`, `WithErrorPresenter`,
-`WithRecover`, `WithInterceptors`. Schema options: `DisableIntrospection`.
+Executor options follow the gRPC style: `WithMaxConcurrency`, `WithPlanCache`,
+`WithErrorPresenter`, `WithRecover`, typed interceptors, plus production
+limits `WithMaxComplexity`, `WithMaxDepth` and `WithQueryCost` (Shopify-style
+`first`/`last` multipliers and optional `extensions.cost`). Schema options:
+`DisableIntrospection`.
+
+Empty `Args[T]()` / `Input[T](name)` derive every field (`graphql` tag, else
+`json` tag, else `AuthorID` → `authorId`). Passing any `InputField` switches
+that struct to fully explicit setters; the two modes do not mix.
 
 ## Status
 
 Phase 1 of the [design](docs/superpowers/specs/2026-09-11-graphql-go-design.md)
-is complete: the runtime, binding API, plan compiler, executor, introspection
-and `transport/gqlhttp`. Upcoming phases add code generation (`cmd/gqlc`),
-subscriptions over WebSocket and SSE, automatic persisted queries, complexity
-limits and OpenTelemetry.
+is complete. Phase 2 codegen is started: `cmd/gqlc` emits models, args, a
+`Resolver` interface and bindings from SDL, splitting into per-group
+packages when more than one group is present. [`examples/basic`](examples/basic)
+uses the generated package. Upcoming work adds auto-bind, then subscriptions
+over WebSocket and SSE, automatic persisted queries and OpenTelemetry.
 
 ## Development
 
@@ -125,4 +140,13 @@ limits and OpenTelemetry.
 go vet ./... && go test -race -count=1 ./...
 go test -run xxx -bench . -benchmem .
 go test -run xxx -fuzz FuzzExecute -fuzztime 30s .
+cd benchmarks && go test -run '^$' -bench . -benchmem -count=5
 ```
+
+Measured performance and specification conformance are summarised in
+[`docs/performance.md`](docs/performance.md), which links the detail: query
+execution and memory in [`compare/`](compare), build cost in
+[`docs/benchmarks.md`](docs/benchmarks.md), and the official GraphQL over HTTP
+audit in [`docs/graphql-http-audit.md`](docs/graphql-http-audit.md) — 0 errors,
+all 13 MUST requirements met. Bindings can be generated from
+SDL with [`cmd/gqlc`](cmd/gqlc).

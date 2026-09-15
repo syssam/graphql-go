@@ -2,7 +2,6 @@ package graphql
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/syssam/graphql-go/internal/jsonw"
 )
@@ -18,6 +17,7 @@ type FieldHandler func(ctx context.Context) (any, error)
 
 // RequestInterceptor wraps the whole request, before parsing. Use it for
 // authentication, logging, persisted query lookups and response extensions.
+// The shape follows gRPC's UnaryServerInterceptor: observe, call next, observe.
 type RequestInterceptor interface {
 	InterceptRequest(ctx context.Context, req *Request, next RequestHandler) *Response
 }
@@ -56,31 +56,66 @@ func (f FieldInterceptorFunc) InterceptField(ctx context.Context, fc *FieldConte
 	return f(ctx, fc, next)
 }
 
-// WithInterceptors registers interceptors. Each value must implement at
-// least one of RequestInterceptor, OperationInterceptor or FieldInterceptor;
-// a value implementing several is registered for each. The first
-// interceptor is the outermost.
-func WithInterceptors(interceptors ...any) ExecutorOption {
-	return func(e *Executor) {
-		for _, i := range interceptors {
-			matched := false
-			if ri, ok := i.(RequestInterceptor); ok {
-				e.reqInterceptors = append(e.reqInterceptors, ri)
-				matched = true
-			}
-			if oi, ok := i.(OperationInterceptor); ok {
-				e.opInterceptors = append(e.opInterceptors, oi)
-				matched = true
-			}
-			if fi, ok := i.(FieldInterceptor); ok {
-				e.fieldInterceptors = append(e.fieldInterceptors, fi)
-				matched = true
-			}
-			if !matched {
-				panic(fmt.Sprintf("graphql: %T implements no interceptor interface", i))
+// WithRequestInterceptor registers request interceptors. The first is the
+// outermost, matching grpc.ChainUnaryInterceptor.
+func WithRequestInterceptor(is ...RequestInterceptor) ExecutorOption {
+	return func(e *Executor) { e.reqInterceptors = append(e.reqInterceptors, is...) }
+}
+
+// WithOperationInterceptor registers operation interceptors. The first is
+// the outermost.
+func WithOperationInterceptor(is ...OperationInterceptor) ExecutorOption {
+	return func(e *Executor) { e.opInterceptors = append(e.opInterceptors, is...) }
+}
+
+// WithFieldInterceptor registers field interceptors. The first is the
+// outermost. Field interceptors force every field through the type-erased
+// path; register them only when observation is worth that cost.
+func WithFieldInterceptor(is ...FieldInterceptor) ExecutorOption {
+	return func(e *Executor) { e.fieldInterceptors = append(e.fieldInterceptors, is...) }
+}
+
+// ChainRequestInterceptors composes interceptors so that the first is
+// outermost. A nil or empty list is a no-op interceptor.
+func ChainRequestInterceptors(is ...RequestInterceptor) RequestInterceptor {
+	switch len(is) {
+	case 0:
+		return RequestInterceptorFunc(func(ctx context.Context, req *Request, next RequestHandler) *Response {
+			return next(ctx, req)
+		})
+	case 1:
+		return is[0]
+	}
+	return RequestInterceptorFunc(func(ctx context.Context, req *Request, next RequestHandler) *Response {
+		h := next
+		for i := len(is) - 1; i >= 0; i-- {
+			inner, ri := h, is[i]
+			h = func(ctx context.Context, req *Request) *Response { return ri.InterceptRequest(ctx, req, inner) }
+		}
+		return h(ctx, req)
+	})
+}
+
+// ChainOperationInterceptors composes interceptors so that the first is outermost.
+func ChainOperationInterceptors(is ...OperationInterceptor) OperationInterceptor {
+	switch len(is) {
+	case 0:
+		return OperationInterceptorFunc(func(ctx context.Context, oc *OperationContext, next OperationHandler) *Response {
+			return next(ctx, oc)
+		})
+	case 1:
+		return is[0]
+	}
+	return OperationInterceptorFunc(func(ctx context.Context, oc *OperationContext, next OperationHandler) *Response {
+		h := next
+		for i := len(is) - 1; i >= 0; i-- {
+			inner, oi := h, is[i]
+			h = func(ctx context.Context, oc *OperationContext) *Response {
+				return oi.InterceptOperation(ctx, oc, inner)
 			}
 		}
-	}
+		return h(ctx, oc)
+	})
 }
 
 func (e *Executor) buildChains() {
@@ -92,6 +127,19 @@ func (e *Executor) buildChains() {
 		}
 	}
 	e.opChain = e.runOperation
+	if e.maxComplexity > 0 || e.maxDepth > 0 || e.cost != nil {
+		next := e.opChain
+		e.opChain = func(ctx context.Context, oc *OperationContext) *Response {
+			if err := e.rejectIfOverLimit(oc); err != nil {
+				resp := e.requestError(ctx, err)
+				e.attachCost(oc, resp)
+				return resp
+			}
+			resp := next(ctx, oc)
+			e.attachCost(oc, resp)
+			return resp
+		}
+	}
 	for i := len(e.opInterceptors) - 1; i >= 0; i-- {
 		next, oi := e.opChain, e.opInterceptors[i]
 		e.opChain = func(ctx context.Context, oc *OperationContext) *Response {

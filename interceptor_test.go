@@ -50,7 +50,11 @@ func (t tagged) InterceptField(ctx context.Context, fc *FieldContext, next Field
 
 func TestInterceptorOrder(t *testing.T) {
 	rec := &recorder{}
-	_, e := newFixtureExecutor(t, WithInterceptors(tagged{"a", rec}, tagged{"b", rec}))
+	_, e := newFixtureExecutor(t,
+		WithRequestInterceptor(tagged{"a", rec}, tagged{"b", rec}),
+		WithOperationInterceptor(tagged{"a", rec}, tagged{"b", rec}),
+		WithFieldInterceptor(tagged{"a", rec}, tagged{"b", rec}),
+	)
 	resp := run(t, e, `{ me { id } }`, "")
 	expectData(t, resp, `{"me":{"id":"1"}}`)
 	want := "req:a req:b op:a op:b field:a:me field:b:me field:a:me.id field:b:me.id req-done:b req-done:a"
@@ -71,7 +75,7 @@ func TestRequestInterceptorShortCircuitAndExtensions(t *testing.T) {
 		resp.Extensions["trace"] = "t1"
 		return resp
 	})
-	_, e := newFixtureExecutor(t, WithInterceptors(deny))
+	_, e := newFixtureExecutor(t, WithRequestInterceptor(deny))
 	resp := run(t, e, `{ fail }`, "")
 	if !resp.HasRequestErrors() || resp.Errors[0].Message != "denied" || resp.Errors[0].Extensions["code"] != "FORBIDDEN" {
 		t.Fatalf("got %s", errorsJSON(resp.Errors))
@@ -95,7 +99,7 @@ func TestOperationInterceptorComplexityLimit(t *testing.T) {
 		}
 		return resp
 	})
-	_, e := newFixtureExecutor(t, WithInterceptors(limit))
+	_, e := newFixtureExecutor(t, WithOperationInterceptor(limit))
 	resp := run(t, e, `{ me { id name } }`, "")
 	expectData(t, resp, `{"me":{"id":"1","name":"Alice"}}`)
 	resp = run(t, e, `{ me { id name nick tags } }`, "")
@@ -121,7 +125,7 @@ func TestFieldInterceptorObservesAndRewrites(t *testing.T) {
 		}
 		return v, err
 	})
-	_, e := newFixtureExecutor(t, WithInterceptors(obs))
+	_, e := newFixtureExecutor(t, WithFieldInterceptor(obs))
 	resp := run(t, e, `{ users { id name friends { name } } }`, "")
 	expectData(t, resp, `{"users":[{"id":"1","name":"ALICE","friends":[{"name":"BOB"},{"name":"CAROL"}]},{"id":"2","name":"BOB","friends":[{"name":"ALICE"}]},{"id":"3","name":"CAROL","friends":[]}]}`)
 	// users + 3×(id, name, friends) + 3 friend names.
@@ -137,7 +141,7 @@ func TestFieldInterceptorErrorAndArgs(t *testing.T) {
 		}
 		return next(ctx)
 	})
-	_, e := newFixtureExecutor(t, WithInterceptors(obs))
+	_, e := newFixtureExecutor(t, WithFieldInterceptor(obs))
 	resp := run(t, e, `{ user(id: "blocked") { id } }`, "")
 	expectError(t, resp, `{"user":null}`, "user", "blocked id")
 	if resp.Errors[0].Extensions["code"] != "BLOCKED" {
@@ -184,13 +188,13 @@ func TestSchemaDirectivesWrapFields(t *testing.T) {
 			InputField("with", func(a *prefixArgs, v string) { a.With = v }),
 			InputField("times", func(a *prefixArgs, v *int) { a.Times = v }),
 		),
-		Directive("upper", func(next FieldFunc, _ struct{}) FieldFunc {
+		Directive("upper", func(next FieldFunc) FieldFunc {
 			return func(ctx context.Context, parent, args any) (any, error) {
 				v, err := next(ctx, parent, args)
 				return upperValue(v), err
 			}
 		}),
-		Directive("prefix", func(next FieldFunc, a prefixArgs) FieldFunc {
+		DirectiveArgs("prefix", func(next FieldFunc, a prefixArgs) FieldFunc {
 			return func(ctx context.Context, parent, args any) (any, error) {
 				v, err := next(ctx, parent, args)
 				if err != nil {
@@ -219,8 +223,8 @@ func TestSchemaDirectivesWrapFields(t *testing.T) {
 
 func TestSchemaDirectiveErrors(t *testing.T) {
 	_, err := NewSchema(SDL(directiveSDL),
-		Directive("missing", func(next FieldFunc, _ struct{}) FieldFunc { return next }),
-		Directive("prefix", func(next FieldFunc, _ prefixArgs) FieldFunc { return next }),
+		Directive("missing", func(next FieldFunc) FieldFunc { return next }),
+		DirectiveArgs("prefix", func(next FieldFunc, _ prefixArgs) FieldFunc { return next }),
 		Object[dItem]("Item", Field("name", func(i *dItem) string { return i.Name }), Field("tags", func(i *dItem) []string { return i.Tags })),
 		Object[Root]("Query", Field("item", func(Root) *dItem { return nil }), Field("greeting", func(Root) string { return "" })),
 	)
@@ -231,6 +235,15 @@ func TestSchemaDirectiveErrors(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q lacks %q", err, want)
 		}
+	}
+
+	_, err = NewSchema(SDL(directiveSDL),
+		Directive("prefix", func(next FieldFunc) FieldFunc { return next }),
+		Object[dItem]("Item", Field("name", func(i *dItem) string { return i.Name }), Field("tags", func(i *dItem) []string { return i.Tags })),
+		Object[Root]("Query", Field("item", func(Root) *dItem { return nil }), Field("greeting", func(Root) string { return "" })),
+	)
+	if err == nil || !strings.Contains(err.Error(), "use DirectiveArgs") {
+		t.Fatalf("Directive on an argumented directive must fail, got %v", err)
 	}
 }
 

@@ -69,7 +69,7 @@ func (st *execState) writeFieldValue(ctx context.Context, w *jsonw.Writer, obj *
 	fd := f.def
 	args := f.args
 	if f.dynamicArgs {
-		v, err := fd.args.decode(f.ast.ArgumentMap(st.vars))
+		v, err := fd.args.decode(fieldArguments(f.ast, st.vars))
 		if err != nil {
 			st.fieldError(ctx, Errorf("Invalid argument for field %s: %v", coordinate(obj.name, fd.name), err).WithCode(CodeBadUserInput), path, f)
 			return false
@@ -238,12 +238,33 @@ type taskResult struct {
 // waiting goroutine.
 type taskGroup struct {
 	st       *execState
+	async    bool
 	wg       sync.WaitGroup
 	panicked atomic.Bool
 	panicVal any
 }
 
 func (g *taskGroup) run(task func()) {
+	if g.async {
+		g.wg.Add(1)
+		go func() {
+			defer g.wg.Done()
+			if g.st.e.sem != nil {
+				select {
+				case g.st.e.sem <- struct{}{}:
+					defer func() { <-g.st.e.sem }()
+				default:
+				}
+			}
+			defer func() {
+				if r := recover(); r != nil && g.panicked.CompareAndSwap(false, true) {
+					g.panicVal = r
+				}
+			}()
+			task()
+		}()
+		return
+	}
 	select {
 	case g.st.e.sem <- struct{}{}:
 		g.wg.Add(1)
@@ -283,12 +304,23 @@ func (st *execState) writeFieldsConcurrent(ctx context.Context, w *jsonw.Writer,
 		}
 	}()
 
-	g := taskGroup{st: st}
+	n := 0
+	for _, f := range fields {
+		if f.schedulable {
+			n++
+		}
+	}
+	endWave := st.pushWave(ctx, n)
+	defer endWave()
+
+	g := taskGroup{st: st, async: true}
 	for i, f := range fields {
 		if !f.schedulable {
 			continue
 		}
 		g.run(func() {
+			st.waveTaskBegin(ctx)
+			defer st.waveTaskEnd(ctx)
 			sub := jsonw.Get()
 			ok := st.writeFieldValue(ctx, sub, obj, f, parent, path)
 			results[i] = taskResult{buf: sub, ok: ok}
@@ -339,9 +371,14 @@ func (st *execState) writeListConcurrent(ctx context.Context, w *jsonw.Writer, v
 		}
 	}()
 
-	g := taskGroup{st: st}
+	endWave := st.pushWave(ctx, len(elems))
+	defer endWave()
+
+	g := taskGroup{st: st, async: true}
 	for i, e := range elems {
 		g.run(func() {
+			st.waveTaskBegin(ctx)
+			defer st.waveTaskEnd(ctx)
 			sub := jsonw.Get()
 			okElem := st.writeValue(ctx, sub, e, t.Elem, shape.elem, f, &pathNode{parent: path, index: i, isIndex: true})
 			results[i] = taskResult{buf: sub, ok: okElem}
@@ -364,6 +401,30 @@ func (st *execState) writeListConcurrent(ctx context.Context, w *jsonw.Writer, v
 	}
 	w.EndArray()
 	return true, true
+}
+
+func (st *execState) pushWave(ctx context.Context, n int) func() {
+	if n <= 0 {
+		return func() {}
+	}
+	oc := OperationFrom(ctx)
+	if oc == nil || oc.hub == nil {
+		return func() {}
+	}
+	oc.hub.push(n)
+	return oc.hub.pop
+}
+
+func (st *execState) waveTaskBegin(ctx context.Context) {
+	if oc := OperationFrom(ctx); oc != nil && oc.hub != nil {
+		oc.hub.taskBegin()
+	}
+}
+
+func (st *execState) waveTaskEnd(ctx context.Context) {
+	if oc := OperationFrom(ctx); oc != nil && oc.hub != nil {
+		oc.hub.taskEnd()
+	}
 }
 
 // recordCancellation adds a single error describing why execution stopped.

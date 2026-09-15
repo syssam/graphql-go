@@ -34,6 +34,15 @@ func TestOmittableOf(t *testing.T) {
 	}
 }
 
+func TestOmittableOr(t *testing.T) {
+	if got := (Omittable[string]{}).Or("def"); got != "def" {
+		t.Fatalf("unset Or = %q", got)
+	}
+	if got := OmittableOf("set").Or("def"); got != "set" {
+		t.Fatalf("set Or = %q", got)
+	}
+}
+
 func TestOmittableMarshalJSON(t *testing.T) {
 	var unset Omittable[string]
 	b, err := json.Marshal(unset)

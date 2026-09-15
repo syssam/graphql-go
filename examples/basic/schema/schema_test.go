@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/syssam/graphql-go"
+	"github.com/syssam/graphql-go/examples/basic/graph/model"
 )
 
 func newExecutor(t *testing.T) *graphql.Executor {
@@ -106,7 +107,8 @@ func TestIntrospectionSanity(t *testing.T) {
 
 func TestNonNullBubbling(t *testing.T) {
 	store := NewStore()
-	store.posts = append(store.posts, &Post{ID: "99", Title: "Orphan", AuthorID: "missing", Tags: []string{}})
+	store.posts = append(store.posts, &model.Post{ID: "99", Title: "Orphan", Tags: []string{}})
+	store.postAuthor["99"] = "missing"
 	s, err := NewSchema(store)
 	if err != nil {
 		t.Fatal(err)

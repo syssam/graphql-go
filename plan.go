@@ -1,14 +1,15 @@
 package graphql
 
 import (
+	"container/list"
 	"context"
+	"hash/maphash"
 	"slices"
 	"sort"
 	"sync"
 
-	"github.com/vektah/gqlparser/v2/ast"
-
 	"github.com/syssam/graphql-go/internal/jsonw"
+	"github.com/vektah/gqlparser/v2/ast"
 )
 
 // maxCondVars bounds the number of Boolean variables referenced by @skip and
@@ -37,6 +38,7 @@ type plan struct {
 	root       *objectType
 	sel        *selectionSet
 	complexity int
+	depth      int
 }
 
 // selectionSet is the flattened selection for a composite value. Concrete
@@ -113,6 +115,7 @@ func compilePlan(s *Schema, e *Executor, doc *ast.QueryDocument, op *ast.Operati
 		return nil, c.errs
 	}
 	p.complexity = complexityOf(p.sel)
+	p.depth = depthOf(p.sel)
 	return p, nil
 }
 
@@ -300,7 +303,7 @@ func (c *compiler) buildField(obj *objectType, g *fieldGroup) *planField {
 		if argsHaveVariables(first.Arguments) {
 			pf.dynamicArgs = true
 		} else {
-			v, err := fd.args.decode(first.ArgumentMap(nil))
+			v, err := fd.args.decode(fieldArguments(first, nil))
 			if err != nil {
 				c.errorf(first.Position, "Invalid argument for field %s: %v", coordinate(obj.name, fd.name), err)
 				return nil
@@ -430,13 +433,18 @@ func variantKey(condVars []string, vars map[string]any) (uint16, map[string]bool
 
 // planFor returns the plan for op under the given variables, compiling and
 // caching it on first use.
-func (d *docEntry) planFor(s *Schema, e *Executor, op *ast.OperationDefinition, vars map[string]any) (*plan, []*Error) {
+// planFor returns the plan for this operation and variant, reporting whether
+// it was already compiled. The caller must not inspect d.plans itself: it is
+// written under d.mu, and reading it unlocked is a data race that concurrent
+// requests for the same query will hit.
+func (d *docEntry) planFor(s *Schema, e *Executor, op *ast.OperationDefinition, vars map[string]any) (*plan, bool, []*Error) {
 	if len(d.condVars) > maxCondVars {
 		cond := make(map[string]bool, len(d.condVars))
 		for _, name := range d.condVars {
 			cond[name], _ = vars[name].(bool)
 		}
-		return compilePlan(s, e, d.doc, op, cond)
+		p, errs := compilePlan(s, e, d.doc, op, cond)
+		return p, false, errs
 	}
 	variant, cond := variantKey(d.condVars, vars)
 	key := planKey{op: op.Name, variant: variant}
@@ -444,15 +452,92 @@ func (d *docEntry) planFor(s *Schema, e *Executor, op *ast.OperationDefinition, 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if p, ok := d.plans[key]; ok {
-		return p, nil
+		return p, true, nil
 	}
 	p, errs := compilePlan(s, e, d.doc, op, cond)
 	if errs != nil {
-		return nil, errs
+		return nil, false, errs
 	}
 	if d.plans == nil {
 		d.plans = make(map[planKey]*plan, 1)
 	}
 	d.plans[key] = p
-	return p, nil
+	return p, false, nil
+}
+
+// planCache is an LRU of parsed documents keyed by a 64-bit hash of the query
+// text. Because two queries may hash alike, a hit is confirmed by comparing
+// the stored query string, so a collision degrades to a miss.
+type planCache struct {
+	mu    sync.Mutex
+	size  int
+	items map[uint64]*list.Element
+	lru   *list.List
+	hash  func(string) uint64
+}
+
+type cacheItem struct {
+	hash  uint64
+	entry *docEntry
+}
+
+func newPlanCache(size int) *planCache {
+	seed := maphash.MakeSeed()
+	return &planCache{
+		size:  size,
+		items: make(map[uint64]*list.Element, size),
+		lru:   list.New(),
+		hash:  func(s string) uint64 { return maphash.String(seed, s) },
+	}
+}
+
+// get returns the cached document for query, or nil.
+func (c *planCache) get(query string) *docEntry {
+	if c == nil || c.size <= 0 {
+		return nil
+	}
+	h := c.hash(query)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	el, ok := c.items[h]
+	if !ok {
+		return nil
+	}
+	item := el.Value.(*cacheItem)
+	if item.entry.query != query {
+		return nil
+	}
+	c.lru.MoveToFront(el)
+	return item.entry
+}
+
+// put stores entry, evicting the least recently used document when full.
+func (c *planCache) put(entry *docEntry) {
+	if c == nil || c.size <= 0 {
+		return
+	}
+	h := c.hash(entry.query)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if el, ok := c.items[h]; ok {
+		el.Value.(*cacheItem).entry = entry
+		c.lru.MoveToFront(el)
+		return
+	}
+	for c.lru.Len() >= c.size {
+		oldest := c.lru.Back()
+		c.lru.Remove(oldest)
+		delete(c.items, oldest.Value.(*cacheItem).hash)
+	}
+	c.items[h] = c.lru.PushFront(&cacheItem{hash: h, entry: entry})
+}
+
+// len reports the number of cached documents.
+func (c *planCache) len() int {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lru.Len()
 }

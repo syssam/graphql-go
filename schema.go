@@ -3,7 +3,6 @@ package graphql
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 	"reflect"
 	"strings"
 
@@ -11,69 +10,6 @@ import (
 	"github.com/vektah/gqlparser/v2/ast"
 	"github.com/vektah/gqlparser/v2/formatter"
 )
-
-// Source supplies SDL to NewSchema.
-type Source struct {
-	files    []*ast.Source
-	fsys     fs.FS
-	patterns []string
-}
-
-// SDL returns a Source holding one SDL document.
-func SDL(s string) Source {
-	return Source{files: []*ast.Source{{Name: "schema.graphql", Input: s}}}
-}
-
-// SDLBytes returns a Source holding one SDL document.
-func SDLBytes(b []byte) Source {
-	return SDL(string(b))
-}
-
-// SDLFS returns a Source that reads every file in fsys matching one of the
-// glob patterns. Files are read when NewSchema runs and keep their names for
-// error positions.
-func SDLFS(fsys fs.FS, patterns ...string) Source {
-	return Source{fsys: fsys, patterns: patterns}
-}
-
-// Sources concatenates several sources.
-func Sources(srcs ...Source) Source {
-	var out Source
-	for _, s := range srcs {
-		out.files = append(out.files, s.files...)
-		if s.fsys != nil {
-			if out.fsys != nil && out.fsys != s.fsys {
-				panic("graphql: Sources cannot combine more than one fs.FS; call SDLFS once with all patterns")
-			}
-			out.fsys = s.fsys
-			out.patterns = append(out.patterns, s.patterns...)
-		}
-	}
-	return out
-}
-
-func (s Source) load() ([]*ast.Source, error) {
-	out := append([]*ast.Source(nil), s.files...)
-	if s.fsys != nil {
-		for _, pattern := range s.patterns {
-			matches, err := fs.Glob(s.fsys, pattern)
-			if err != nil {
-				return nil, fmt.Errorf("graphql: glob %q: %w", pattern, err)
-			}
-			for _, name := range matches {
-				b, err := fs.ReadFile(s.fsys, name)
-				if err != nil {
-					return nil, fmt.Errorf("graphql: read %s: %w", name, err)
-				}
-				out = append(out, &ast.Source{Name: name, Input: string(b)})
-			}
-		}
-	}
-	if len(out) == 0 {
-		return nil, errors.New("graphql: no SDL sources provided")
-	}
-	return out, nil
-}
 
 // SchemaOption configures a Schema. All binding constructors return one.
 type SchemaOption interface {
@@ -84,19 +20,61 @@ type schemaOptionFunc func(*schemaBuilder)
 
 func (f schemaOptionFunc) applySchema(b *schemaBuilder) { f(b) }
 
+// Options combines schema options into one. Generated Bindings use it so a
+// group can return a single SchemaOption.
+func Options(opts ...SchemaOption) SchemaOption {
+	return schemaOptionFunc(func(b *schemaBuilder) {
+		for _, o := range opts {
+			if o != nil {
+				o.applySchema(b)
+			}
+		}
+	})
+}
+
 // DisableIntrospection rejects operations that select __schema or __type.
 // __typename remains available.
 func DisableIntrospection() SchemaOption {
 	return schemaOptionFunc(func(b *schemaBuilder) { b.introspection = false })
 }
 
+// Query binds fields of the schema's query root, which is named Query
+// unless the schema declaration says otherwise.
+func Query(fields ...FieldOption) SchemaOption {
+	return rootObject(func(b *schemaBuilder) *ast.Definition { return b.ast.Query }, "Query", fields)
+}
+
+// Mutation binds fields of the schema's mutation root.
+func Mutation(fields ...FieldOption) SchemaOption {
+	return rootObject(func(b *schemaBuilder) *ast.Definition { return b.ast.Mutation }, "Mutation", fields)
+}
+
+// Subscription binds fields of the schema's subscription root.
+func Subscription(fields ...FieldOption) SchemaOption {
+	return rootObject(func(b *schemaBuilder) *ast.Definition { return b.ast.Subscription }, "Subscription", fields)
+}
+
+func rootObject(root func(*schemaBuilder) *ast.Definition, fallback string, fields []FieldOption) SchemaOption {
+	return schemaOptionFunc(func(b *schemaBuilder) {
+		name := fallback
+		if def := root(b); def != nil {
+			name = def.Name
+		}
+		Object[Root](name, fields...).applySchema(b)
+	})
+}
+
 // Schema is a validated GraphQL schema with all bindings resolved. It is
 // immutable and safe for concurrent use.
 type Schema struct {
-	ast           *ast.Schema
-	reg           *registry
-	objects       map[string]*objectType
-	goTypes       map[reflect.Type]*objectType
+	ast     *ast.Schema
+	reg     *registry
+	objects map[string]*objectType
+	// goTypes maps a Go type to every object bound to it. The same Go
+	// type may back several GraphQL objects (for example User and
+	// UserSummary); abstract resolution then requires a TypeResolver
+	// when more than one of those objects is a possible type.
+	goTypes       map[reflect.Type][]*objectType
 	abstracts     map[string]*abstractType
 	introspection bool
 
@@ -188,7 +166,7 @@ func (b *schemaBuilder) build() *Schema {
 		ast:           b.ast,
 		reg:           b.reg,
 		objects:       make(map[string]*objectType, len(b.objects)),
-		goTypes:       make(map[reflect.Type]*objectType, len(b.objects)*2),
+		goTypes:       make(map[reflect.Type][]*objectType, len(b.objects)*2),
 		abstracts:     make(map[string]*abstractType),
 		introspection: b.introspection,
 	}
@@ -214,12 +192,8 @@ func (b *schemaBuilder) build() *Schema {
 		}
 		s.objects[name] = obj
 		if !obj.isRoot {
-			if prev, dup := s.goTypes[ob.shapes.elem]; dup {
-				b.errorf("Object %q: Go type %s is already bound to %s", name, ob.shapes.elem, prev.name)
-				continue
-			}
-			s.goTypes[ob.shapes.elem] = obj
-			s.goTypes[ob.shapes.ptr] = obj
+			s.goTypes[ob.shapes.elem] = append(s.goTypes[ob.shapes.elem], obj)
+			s.goTypes[ob.shapes.ptr] = append(s.goTypes[ob.shapes.ptr], obj)
 		}
 	}
 

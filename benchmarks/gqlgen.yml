@@ -1,0 +1,16 @@
+schema:
+  - schema.graphql
+exec:
+  filename: graph/generated.go
+  package: graph
+model:
+  filename: graph/models.go
+  package: graph
+resolver:
+  layout: follow-schema
+  dir: graph
+  package: graph
+models:
+  User:
+    model:
+      - github.com/syssam/graphql-go/benchmarks/internal/data.User

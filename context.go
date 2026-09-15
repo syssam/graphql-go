@@ -21,9 +21,14 @@ type OperationContext struct {
 
 	plan  *plan
 	entry *docEntry
+	hub   *WaveCoordinator
 
-	mu     sync.Mutex
-	values map[any]any
+	costOK    bool
+	costValue int
+
+	mu         sync.Mutex
+	values     map[any]any
+	extensions map[string]any
 }
 
 // OperationStats records timing and cache information for observability.
@@ -51,12 +56,65 @@ func (oc *OperationContext) Get(key any) (any, bool) {
 	return v, ok
 }
 
+// GetOrSet returns the existing value for key, or stores and returns value
+// when the key is absent; loaded reports which happened. It is the atomic
+// form of Get followed by Set.
+//
+// Request-scoped extensions must use it rather than Get-then-Set: concurrent
+// resolvers reach their first Load at the same time, and a check-then-act
+// pair lets every one of them install its own state, so only the last write
+// survives while the others keep using orphaned copies.
+func (oc *OperationContext) GetOrSet(key, value any) (actual any, loaded bool) {
+	oc.mu.Lock()
+	defer oc.mu.Unlock()
+	if v, ok := oc.values[key]; ok {
+		return v, true
+	}
+	if oc.values == nil {
+		oc.values = make(map[any]any)
+	}
+	oc.values[key] = value
+	return value, false
+}
+
 // Complexity returns the static field count of the compiled plan.
 func (oc *OperationContext) Complexity() int {
 	if oc.plan == nil {
 		return 0
 	}
 	return oc.plan.complexity
+}
+
+// Depth returns the maximum selection nesting of the compiled plan.
+func (oc *OperationContext) Depth() int {
+	if oc.plan == nil {
+		return 0
+	}
+	return oc.plan.depth
+}
+
+// Cost returns the Shopify-style query cost. Without WithQueryCost it uses
+// a default list size of 1 so callers can still observe a number.
+func (oc *OperationContext) Cost() int {
+	if oc.plan == nil {
+		return 0
+	}
+	if oc.costOK {
+		return oc.costValue
+	}
+	return queryCostOf(oc.plan.sel, oc.Variables, QueryCost{DefaultListSize: 1})
+}
+
+// SetExtension records a response-level extension (Netflix / Apollo
+// tracing, GitHub rate-limit metadata). Values are copied onto the
+// Response after the operation completes.
+func (oc *OperationContext) SetExtension(key string, value any) {
+	oc.mu.Lock()
+	defer oc.mu.Unlock()
+	if oc.extensions == nil {
+		oc.extensions = make(map[string]any, 1)
+	}
+	oc.extensions[key] = value
 }
 
 // FieldContext describes the field a resolver is executing. It is attached
@@ -187,6 +245,16 @@ func (s Selection) Fields() iter.Seq[SelectedField] {
 			}
 		}
 	}
+}
+
+// Collect builds a slice from the selected fields. It is a generic method
+// (Go 1.27) so callers write sel.Collect(func(f SelectedField) string { ... }).
+func (s Selection) Collect[T any](fn func(SelectedField) T) []T {
+	var out []T
+	for f := range s.Fields() {
+		out = append(out, fn(f))
+	}
+	return out
 }
 
 // Sub returns the selection beneath the named field. The second result is
