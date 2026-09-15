@@ -1,0 +1,218 @@
+package gqlfiber
+
+import (
+	"context"
+	"net/url"
+	"path"
+	"strings"
+	"sync"
+	"time"
+
+	// The v3 module. github.com/gofiber/contrib/websocket -- the path most
+	// documentation and search results point at -- is the Fiber v2 module: its
+	// go.mod pins fiber/v2 and it does not build against v3. The wrong path
+	// reads like the right one, so do not "normalise" it.
+	"github.com/gofiber/contrib/v3/websocket"
+	"github.com/gofiber/fiber/v3"
+
+	"github.com/syssam/graphql-go"
+	"github.com/syssam/graphql-go/internal/gqlwsproto"
+)
+
+// Subprotocol is the WebSocket subprotocol WS negotiates. A client that does
+// not offer it is closed with StatusSubprotocolNotAcceptable.
+const Subprotocol = gqlwsproto.Subprotocol
+
+// Close codes defined by the protocol, beyond the RFC 6455 range.
+const (
+	StatusSubprotocolNotAcceptable = gqlwsproto.StatusSubprotocolNotAcceptable
+	StatusBadRequest               = gqlwsproto.StatusBadRequest
+	StatusUnauthorized             = gqlwsproto.StatusUnauthorized
+	StatusForbidden                = gqlwsproto.StatusForbidden
+	StatusInitTimeout              = gqlwsproto.StatusInitTimeout
+	StatusSubscriberExists         = gqlwsproto.StatusSubscriberExists
+	StatusTooManyInitRequests      = gqlwsproto.StatusTooManyInitRequests
+)
+
+type connKey struct{}
+
+// ConnFrom returns the WebSocket connection that a ConnectFunc is
+// authenticating, or nil.
+//
+// It is the Fiber counterpart of gqlws.RequestFrom: a browser cannot set
+// headers on a WebSocket, so token auth arrives in the connection_init
+// payload while cookie auth arrives on the upgrade request. The connection
+// carries that request's headers, cookies, query arguments and locals, copied
+// before fasthttp recycled it. Only the context a ConnectFunc receives has
+// it; later operations do not, because reading the socket from a resolver
+// would race the protocol.
+func ConnFrom(ctx context.Context) *websocket.Conn {
+	c, _ := ctx.Value(connKey{}).(*websocket.Conn)
+	return c
+}
+
+// fastSocket drives the protocol over fasthttp/websocket.
+//
+// The library is a gorilla derivative, which differs from coder/websocket in
+// three ways that matter here. It has no per-message context, so cancellation
+// is replaced by deadlines; it does not serialize writes, which is why
+// gqlwsproto holds a lock across every Write; and it leaves the connection
+// open after a failed write, where coder/websocket tears it down.
+type fastSocket struct {
+	conn         *websocket.Conn
+	writeTimeout time.Duration
+
+	// mu serializes Close against an in-flight Write. gqlwsproto guarantees
+	// only that Writes do not overlap each other: Close may arrive from the
+	// init timer or from the read loop while operations are still streaming,
+	// and a close frame interleaved with a data frame corrupts the stream.
+	mu     sync.Mutex
+	closed bool
+}
+
+// Read blocks until a frame arrives or the connection errors. ctx is ignored
+// because ReadMessage cannot be interrupted; see WS for what that costs.
+func (s *fastSocket) Read(_ context.Context) ([]byte, error) {
+	typ, data, err := s.conn.ReadMessage()
+	if err != nil {
+		return nil, err
+	}
+	if typ != websocket.TextMessage {
+		return nil, gqlwsproto.ErrBinaryFrame
+	}
+	return data, nil
+}
+
+func (s *fastSocket) Write(_ context.Context, data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.conn.SetWriteDeadline(time.Now().Add(s.writeTimeout)); err != nil {
+		return err
+	}
+	if err := s.conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		// Nothing else would ever end this connection: the peer is not
+		// reading, so it will not send either, and the read loop is parked in
+		// ReadMessage where no context reaches it. coder/websocket closes on a
+		// failed write for the same reason.
+		_ = s.conn.Close()
+		return err
+	}
+	return nil
+}
+
+func (s *fastSocket) Close(code int, reason string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+	_ = s.conn.SetWriteDeadline(time.Now().Add(s.writeTimeout))
+	err := s.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(code, reason))
+	if cerr := s.conn.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+// WS returns a Fiber handler speaking graphql-transport-ws, serving every
+// operation kind: a query or mutation is one next followed by complete, a
+// subscription one next per event.
+//
+// # Origins
+//
+// Cross-origin connections are refused unless WithOriginPatterns authorizes
+// them; the request host is always authorized, so same-origin clients need no
+// configuration. A request with no Origin header is accepted, because it is
+// not a browser -- and it is browsers the check defends against: a page on
+// any site can open a WebSocket to this handler carrying the user's cookies,
+// and no CORS preflight stands in the way. WithInsecureSkipOriginCheck turns
+// the check off.
+//
+// # Deadlines
+//
+// fasthttp/websocket takes no context per message, so a peer that stops
+// reading is bounded by a write deadline instead: see WithWriteTimeout.
+// Reads have no such bound, deliberately. A read deadline would have to be
+// derived from the protocol ping interval, which would close a client that
+// answers pings late or not at all; the consequence is that a connection
+// whose peer vanished without closing its socket is held until the next
+// server write fails, which on an idle connection is the next ping.
+func WS(exec *graphql.Executor, opts ...Option) fiber.Handler {
+	cfg := newConfig(opts...)
+
+	upgrade := websocket.New(func(conn *websocket.Conn) {
+		sock := &fastSocket{conn: conn, writeTimeout: cfg.writeTimeout}
+		if conn.Subprotocol() != Subprotocol {
+			_ = sock.Close(StatusSubprotocolNotAcceptable, "Subprotocol not acceptable")
+			return
+		}
+		conn.SetReadLimit(cfg.readLimit)
+
+		// The connection is hijacked: this runs after the Fiber handler has
+		// returned and its Ctx has been recycled, so the connection gets a
+		// context of its own rather than anything derived from the request.
+		gqlwsproto.Serve(context.Background(), sock, gqlwsproto.Config{
+			Exec:         exec,
+			InitTimeout:  cfg.initTimeout,
+			PingInterval: cfg.pingInterval,
+			MaxSubs:      cfg.maxSubs,
+			OnConnect:    cfg.onConnect,
+			DecorateContext: func(ctx context.Context) context.Context {
+				return context.WithValue(ctx, connKey{}, conn)
+			},
+			Logger: cfg.logger,
+		})
+	}, websocket.Config{
+		Subprotocols: []string{Subprotocol},
+		// The upgrader's own Origins list cannot express "the request host is
+		// always authorized", nor patterns, so the check below replaces it
+		// rather than layering under it. Saying so explicitly keeps an empty
+		// list from reading as an oversight.
+		Origins:          []string{"*"},
+		AllowEmptyOrigin: true,
+		HandshakeTimeout: cfg.writeTimeout,
+	})
+
+	return func(c fiber.Ctx) error {
+		if !websocket.IsWebSocketUpgrade(c) {
+			return fiber.ErrUpgradeRequired
+		}
+		if !originAllowed(c, cfg) {
+			return fiber.NewError(fiber.StatusForbidden, "Origin not authorized")
+		}
+		return upgrade(c)
+	}
+}
+
+// originAllowed mirrors coder/websocket's check, so that the two WebSocket
+// transports authorize the same connections from the same configuration.
+func originAllowed(c fiber.Ctx, cfg *config) bool {
+	if cfg.insecureSkipOrigin {
+		return true
+	}
+	origin := c.Get(fiber.HeaderOrigin)
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	// Host honours a forwarded host only behind a trusted proxy, so an
+	// attacker cannot nominate the host its own Origin will be compared to.
+	if strings.EqualFold(u.Host, c.Host()) {
+		return true
+	}
+	for _, pattern := range cfg.originPatterns {
+		target := u.Host
+		if strings.Contains(pattern, "://") {
+			target = u.Scheme + "://" + u.Host
+		}
+		matched, err := path.Match(strings.ToLower(pattern), strings.ToLower(target))
+		if err == nil && matched {
+			return true
+		}
+	}
+	return false
+}

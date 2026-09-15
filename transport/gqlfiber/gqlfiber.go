@@ -43,7 +43,11 @@ type config struct {
 	pingInterval time.Duration
 	maxSubs      int
 	readLimit    int64
+	writeTimeout time.Duration
 	onConnect    ConnectFunc
+
+	originPatterns     []string
+	insecureSkipOrigin bool
 
 	logger *slog.Logger
 }
@@ -102,6 +106,35 @@ func WithMaxSubscriptions(n int) Option { return func(c *config) { c.maxSubs = n
 // default is 1 MiB.
 func WithReadLimit(n int64) Option { return func(c *config) { c.readLimit = n } }
 
+// WithWriteTimeout bounds how long one WebSocket write may take before the
+// connection is torn down. The default is 10s.
+//
+// It exists because fasthttp/websocket accepts no context per message, so a
+// deadline is the only bound available; coder/websocket, under the net/http
+// transports, takes a context instead. It is deliberately not derived from
+// WithPingInterval: a ping asks whether the peer is alive, a write deadline
+// whether it is accepting bytes, and a peer can answer pings while its
+// receive window stays full. Because gqlwsproto serializes writes, one peer
+// stalled here blocks every subscription sharing its connection.
+func WithWriteTimeout(d time.Duration) Option { return func(c *config) { c.writeTimeout = d } }
+
+// WithOriginPatterns authorizes cross-origin WebSocket connections from hosts
+// matching these patterns, which are matched with path.Match against the
+// Origin's host, case-insensitively; a pattern containing "://" is matched
+// against scheme and host instead. The request host is always authorized, so
+// same-origin clients need no configuration.
+func WithOriginPatterns(patterns ...string) Option {
+	return func(c *config) { c.originPatterns = patterns }
+}
+
+// WithInsecureSkipOriginCheck disables origin verification for WebSocket
+// upgrades. A browser can then open a connection from any site, carrying the
+// user's cookies, with no CORS preflight in the way; prefer
+// WithOriginPatterns.
+func WithInsecureSkipOriginCheck() Option {
+	return func(c *config) { c.insecureSkipOrigin = true }
+}
+
 // WithOnConnect registers the authentication hook run on connection_init.
 func WithOnConnect(fn ConnectFunc) Option { return func(c *config) { c.onConnect = fn } }
 
@@ -121,6 +154,7 @@ func newConfig(opts ...Option) *config {
 		pingInterval: 20 * time.Second,
 		maxSubs:      100,
 		readLimit:    1 << 20,
+		writeTimeout: 10 * time.Second,
 	}
 	for _, o := range opts {
 		o(c)
