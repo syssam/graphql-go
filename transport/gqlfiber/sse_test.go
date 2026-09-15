@@ -2,8 +2,10 @@ package gqlfiber
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -39,6 +41,22 @@ func (s *idleSource) stream(ctx context.Context) (<-chan int, error) {
 	return ch, nil
 }
 
+// streamClient bounds the wait for a response head without bounding the read
+// of the stream behind it.
+//
+// Every other wait in this file is bounded, and this one has to be too: these
+// tests subscribe to sources that produce nothing before Do returns, so Do
+// completes only because the handler flushes the response head immediately.
+// Lose that and an unbounded Do would hang until the whole run's timeout
+// dumped every goroutine in the process, instead of failing in five seconds
+// and naming the cause.
+func streamClient(t *testing.T) *http.Client {
+	t.Helper()
+	tr := &http.Transport{ResponseHeaderTimeout: 5 * time.Second}
+	t.Cleanup(tr.CloseIdleConnections)
+	return &http.Client{Transport: tr}
+}
+
 // A dropped SSE client must cancel the operation context. Fiber's context
 // never cancels and fasthttp reports no disconnect, so the only evidence the
 // stream gets is a write of its own failing -- which on an idle subscription
@@ -72,7 +90,7 @@ type Subscription { ticks: Int! }
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := streamClient(t).Do(req)
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
@@ -108,7 +126,7 @@ func TestSSEStreamsAQuery(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := streamClient(t).Do(req)
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
@@ -127,6 +145,26 @@ func TestSSEStreamsAQuery(t *testing.T) {
 	const want = "event: next\ndata: {\"data\":{\"hello\":\"world\"}}\n\nevent: complete\ndata:\n\n"
 	if got := string(body); got != want {
 		t.Fatalf("stream = %q, want %q", got, want)
+	}
+}
+
+// A keep-alive of zero stays disabled rather than being clamped, so that the
+// option means the same thing here as on gqlsse. But on Fiber it removes the
+// only way an idle stream can learn its client has gone, which is too much to
+// leave to a doc comment.
+func TestSSEWarnsWhenKeepAliveIsDisabled(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	SSE(newTestExecutor(t), WithKeepAlive(0), WithLogger(logger))
+	if !strings.Contains(buf.String(), "keep-alive is disabled") {
+		t.Fatalf("disabling keep-alive logged %q, want a warning about it", buf.String())
+	}
+
+	buf.Reset()
+	SSE(newTestExecutor(t), WithLogger(logger))
+	if buf.Len() != 0 {
+		t.Fatalf("the default keep-alive warned: %q", buf.String())
 	}
 }
 
@@ -173,7 +211,7 @@ func TestSSEStreamsSubscriptionEventsIncrementally(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := streamClient(t).Do(req)
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}

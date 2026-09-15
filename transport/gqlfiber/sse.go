@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -39,6 +40,13 @@ type sseHandler struct {
 // idle subscription is held until its source ends on its own.
 func SSE(exec *graphql.Executor, opts ...Option) fiber.Handler {
 	h := &sseHandler{exec: exec, config: newConfig(opts...)}
+	// Zero means disabled here as it does on gqlsse, rather than being
+	// clamped to a floor: one option name must not mean two things across
+	// transports. But on Fiber it costs the only liveness check there is, so
+	// it is said out loud at start-up rather than left in a doc comment.
+	if h.keepAlive <= 0 {
+		h.logger.Warn("gqlfiber: SSE keep-alive is disabled; an idle subscription cannot notice a departed client")
+	}
 	return h.serve
 }
 
@@ -176,20 +184,41 @@ func (h *sseHandler) subscribe(c fiber.Ctx, req *graphql.Request) error {
 	// The stream writer runs after this handler returns, on its own
 	// goroutine, and fiber has recycled the Ctx by then: nothing below may
 	// capture c.
-	return c.SendStreamWriter(func(w *bufio.Writer) {
+	//
+	// Its error is discarded rather than returned, because by now the
+	// response is committed to a stream: handing fiber an error would let
+	// the application's error handler write a second body over it.
+	_ = c.SendStreamWriter(func(w *bufio.Writer) {
 		defer func() {
 			// Leaving the stream writer is the end of the response however
 			// it came about -- the source closed, or a flush found nobody
 			// reading. Cancelling ends the executor's pump; draining
 			// releases what it has already produced and unblocks it if it
 			// is mid-send into the unbuffered channel.
+			//
+			// The drain therefore ends only if the subscription source
+			// honours cancellation. One that ignores its context holds this
+			// goroutine and its pooled writer for the process lifetime --
+			// the price of releasing responses the pump had already built,
+			// which gqlsse avoids only by abandoning them.
 			cancel()
 			for resp := range events {
 				resp.Release()
 			}
 		}()
+		defer func() {
+			// fasthttp runs this closure on a bare goroutine of its own with
+			// no recover, so a panic here would end the process. Under
+			// net/http the same panic costs gqlsse one connection, and a
+			// panic three transports survive must not kill the fourth.
+			if r := recover(); r != nil {
+				h.logger.Error("gqlfiber: panic while streaming",
+					"panic", r, "stack", string(debug.Stack()))
+			}
+		}()
 		h.stream(ctx, w, events)
 	})
+	return nil
 }
 
 // stream pumps events onto an open stream until the source ends, the context
