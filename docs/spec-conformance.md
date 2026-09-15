@@ -5,15 +5,18 @@ and the [working draft](https://spec.graphql.org/draft/) as of draft commit
 `2026-06-04`. Every claim below was produced by running a query against a real
 executor, not by reading code.
 
-The engine is conformant. The gaps that remain are all in the parser —
-`gqlparser/v2`, which the root package is restricted to — and none of them can
-be fixed here without forking it. `v2.5.37` is the newest release and carries
-all four.
+Four gaps remain, and every one of them is in the parser — `gqlparser/v2`,
+which the root package is restricted to — rather than in the engine. None can
+be fixed here without forking it, and `v2.5.37`, the newest release, carries
+all four. What was checked on the engine side is listed under *Verified
+conformant* below; that section is the extent of the claim, not a statement
+that nothing else could be wrong.
 
-Each has a patch in [`docs/upstream/`](upstream/) that applies to a clean
-gqlparser checkout and passes that project's suite; the three apply in any
-order and were verified together. They are not applied here — `go.mod` still
-points at the release — so these stay open until they land upstream.
+Three patches in [`docs/upstream/`](upstream/) close the four gaps — the two
+lexer gaps share one. Each applies to a clean gqlparser checkout and passes
+that project's suite; all three were also verified applied together, in any
+order. They are not applied here — `go.mod` still points at the release — so
+the gaps stay open until they land upstream.
 
 ## Known gaps
 
