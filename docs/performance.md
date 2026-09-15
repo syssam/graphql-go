@@ -8,9 +8,9 @@ none is estimated. Detail, method and caveats are in the linked documents.
 | Query execution | **3.6-89x** faster in process | [compare](../compare/README.md) |
 | Over HTTP, saturated | **4.5-5.6x** faster | [compare](../compare/README.md) |
 | Allocations per request | **9-61x** fewer | [compare](../compare/README.md) |
-| Code generation | **95x** faster, **105x** less memory | [benchmarks](benchmarks.md) |
+| Code generation | **95x** faster, **56x** less memory | [benchmarks](benchmarks.md) |
 | Compile time | roughly level | [benchmarks](benchmarks.md) |
-| Edit to rebuilt | **3.2x** faster | [benchmarks](benchmarks.md) |
+| Edit to rebuilt | **3.4x** faster | [benchmarks](benchmarks.md) |
 | **Schema build** | **2 180x slower** | [compare](../compare/README.md) |
 | **Memory retained** | **278x more** | [compare](../compare/README.md) |
 | Subscription broadcast | **36 allocs** per subscriber, flat 1→128 | [gqlws](../transport/gqlws/load_test.go) |
@@ -27,6 +27,10 @@ a 200-entity schema and 168 against a 2-entity one; graphql-go allocates 16
 either way. That is the compiled-plan design: the plan is built once per
 operation, so schema size stops mattering at request time. Under saturation
 this is 5.6x the throughput.
+
+Generation memory was 105x and is now 56x: `codegen` links
+`golang.org/x/tools/go/packages` for auto-bind, which every user of `gqlc`
+pays for whether or not they enable it.
 
 **What it costs.** Binding and validating the whole type graph at `NewSchema`
 takes 30 ms and retains 11 MB, where gqlgen did that work at code generation
