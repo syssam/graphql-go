@@ -9,13 +9,14 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/syssam/graphql-go"
+	"github.com/syssam/graphql-go/internal/gqlwsproto"
 )
 
 // ConnectFunc authenticates a connection from its connection_init payload.
 // The returned context is the parent of every operation on that connection,
 // so a token decoded here is available to every resolver. Returning an error
 // closes the connection with StatusForbidden.
-type ConnectFunc func(ctx context.Context, initPayload []byte) (context.Context, error)
+type ConnectFunc = gqlwsproto.ConnectFunc
 
 // Handler serves GraphQL operations over WebSocket.
 type Handler struct {
@@ -111,15 +112,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The connection outlives the HTTP request once the handshake is done, and
 	// coder/websocket documents the request context as unsafe to use past
 	// Accept, so the connection gets a context of its own.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	c := &conn{
-		h:      h,
-		ws:     ws,
-		ctx:    ctx,
-		cancel: cancel,
-		subs:   make(map[string]context.CancelFunc),
-	}
-	c.serve(r)
+	gqlwsproto.Serve(context.Background(), coderSocket{ws: ws}, gqlwsproto.Config{
+		Exec:         h.exec,
+		InitTimeout:  h.initTimeout,
+		PingInterval: h.pingInterval,
+		MaxSubs:      h.maxSubs,
+		OnConnect:    gqlwsproto.ConnectFunc(h.onConnect),
+		DecorateContext: func(ctx context.Context) context.Context {
+			return withRequest(ctx, r)
+		},
+		Logger: h.logger,
+	})
 }
