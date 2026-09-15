@@ -390,7 +390,7 @@ func TestOnConnectContextReachesResolvers(t *testing.T) {
 		if p.User == "" {
 			return nil, errors.New("missing user")
 		}
-		if RequestFromIsNil(ctx) {
+		if gqlws.RequestFrom(ctx) == nil {
 			return nil, errors.New("the upgrade request should be available to the hook")
 		}
 		return context.WithValue(ctx, userKey{}, p.User), nil
@@ -402,9 +402,6 @@ func TestOnConnectContextReachesResolvers(t *testing.T) {
 		t.Fatalf("frame = %+v", got)
 	}
 }
-
-// RequestFromIsNil keeps the assertion readable inside the hook.
-func RequestFromIsNil(ctx context.Context) bool { return gqlws.RequestFrom(ctx) == nil }
 
 func TestProtocolViolations(t *testing.T) {
 	_, e := newTestExecutor(t)

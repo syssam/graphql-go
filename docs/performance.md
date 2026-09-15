@@ -61,4 +61,7 @@ trust when timings are noisy.
   no load tool escapes this.
 - **Behaviour under a cgroup memory limit** with `GOMEMLIMIT`, which is how a
   container actually runs. Linux only.
-- **Subscriptions**, which are not implemented.
+- **Subscription throughput.** Subscriptions and both streaming transports
+  exist and are tested for behaviour, but nothing here measures events per
+  second or the cost of a long-lived connection. The figures above are all
+  request/response.

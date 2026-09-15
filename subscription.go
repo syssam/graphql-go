@@ -168,7 +168,10 @@ func (e *Executor) Subscribe(ctx context.Context, req *Request) (<-chan *Respons
 		Stats:         OperationStats{Start: start, CacheHit: cacheHit},
 		plan:          p,
 		entry:         entry,
+		hub:           newWaveCoordinator(),
 	}
+	// The stream opener runs under the base context; each event then gets its
+	// own, installed below.
 	ctx = withOperation(ctx, base)
 
 	args := f.args
@@ -198,7 +201,14 @@ func (e *Executor) pump(ctx context.Context, base *OperationContext, f *planFiel
 		if err != nil || !ok {
 			return
 		}
-		resp := e.opChain(ctx, e.eventContext(base, f, event))
+		// The per-event context goes into ctx as well as into the chain. A
+		// resolver reaches its operation through OperationFrom(ctx), so
+		// passing only the chain argument would leave every event resolving
+		// against the base: one shared DataLoader cache for the life of the
+		// subscription, no wave coordinator to batch into, and extensions
+		// written where no response ever reads them.
+		oc := e.eventContext(base, f, event)
+		resp := e.opChain(withOperation(ctx, oc), oc)
 		select {
 		case out <- resp:
 		case <-ctx.Done():

@@ -14,7 +14,7 @@ import (
 // file carries its own minimal schema instead, shared by all tests in it.
 
 const subSDL = `
-type Message { id: ID! body: String! fail: String! }
+type Message { id: ID! body: String! fail: String! seq: Int! }
 type Query { ping: String! }
 type Subscription {
   messages: Message!
@@ -57,6 +57,21 @@ func (s *subSource) options() []SchemaOption {
 			Field("id", func(m *subMessage) string { return m.ID }),
 			Field("body", func(m *subMessage) string { return m.Body }),
 			Resolve("fail", func(context.Context, *subMessage) (string, error) { return "", errSourceBoom }),
+			// seq reaches its operation through the context, which is the only
+			// way a resolver can, and records how many times it has run against
+			// the context it was given. A shared context would make the second
+			// event report the first event's count.
+			Resolve("seq", func(ctx context.Context, _ *subMessage) (int, error) {
+				oc := OperationFrom(ctx)
+				if oc == nil {
+					return 0, errors.New("no operation on the resolver context")
+				}
+				n := new(int)
+				actual, _ := oc.GetOrSet("seq", n)
+				*actual.(*int)++
+				oc.SetExtension("seq", *actual.(*int))
+				return *actual.(*int), nil
+			}),
 		),
 		Args[fromArgs](InputField("from", func(a *fromArgs, v int) { a.From = v })),
 		Query(
@@ -482,4 +497,43 @@ func TestSubscribeBindingErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSubscribeEventStateIsPerEvent is the guard on the whole per-event
+// isolation claim. A resolver reaches its operation through
+// OperationFrom(ctx), so installing the event's context only in the chain
+// argument and not in ctx would leave every event sharing the base: one
+// DataLoader cache for the life of the subscription, no wave coordinator to
+// batch into, and extensions written where no response reads them.
+func TestSubscribeEventStateIsPerEvent(t *testing.T) {
+	src, e := newSubExecutor(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	out, err := e.Subscribe(ctx, &Request{Query: `subscription { messages { id seq } }`})
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	go func() {
+		src.messages <- &subMessage{ID: "1"}
+		src.messages <- &subMessage{ID: "2"}
+		close(src.messages)
+	}()
+
+	for _, want := range []string{`{"messages":{"id":"1","seq":1}}`, `{"messages":{"id":"2","seq":1}}`} {
+		resp := nextResponse(t, out)
+		if len(resp.Errors) > 0 {
+			t.Fatalf("unexpected errors: %s", errorsJSON(resp.Errors))
+		}
+		if got := string(resp.Data); got != want {
+			t.Fatalf("data mismatch\n got: %s\nwant: %s\n(a count above 1 means the events shared one operation context)", got, want)
+		}
+		// Extensions are cloned from the event's own context, so a resolver
+		// writing to a different one would leave this empty.
+		if got, ok := resp.Extensions["seq"]; !ok || got != 1 {
+			t.Fatalf("extensions = %v, want seq 1 from this event", resp.Extensions)
+		}
+		resp.Release()
+	}
+	expectClosed(t, out)
 }
