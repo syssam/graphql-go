@@ -12,8 +12,19 @@ go test -run xxx -bench . -benchmem .          # microbenchmarks
 go test -run xxx -fuzz FuzzExecute -fuzztime 30s .
 ```
 
-`benchmarks/` is a **separate Go module** (with a `replace` back to the root) because it
-depends on gqlgen; `./...` from the root does not reach it:
+**`go test ./...` reaches one module and this repository has four.** `benchmarks/`,
+`compare/` and `lint/` are outside the root module, so the gate above does not test them:
+
+```sh
+sh scripts/gate.sh            # vet and test every module
+sh scripts/gate.sh -short     # skip the slow subprocess and load tests
+```
+
+Use it before claiming a change is clean. During one audit the three outside modules were
+very nearly missed, and they had a root API change in them at the time.
+
+`benchmarks/` is a separate module (with a `replace` back to the root) because it
+depends on gqlgen:
 
 ```sh
 cd benchmarks && go test -run '^$' -bench . -benchmem -count=5
