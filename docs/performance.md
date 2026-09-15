@@ -87,6 +87,45 @@ codebase have been wrong by 20-77% on a warm machine, in both directions.
 Allocation counts and retained heap are deterministic and are the figures to
 trust when timings are noisy.
 
+## Profile-guided optimization
+
+PGO cannot be shipped with this library. `go build` selects `default.pgo` from
+the directory of each *main package* and applies it to that binary's
+dependencies; a profile checked in here would be read only if someone built a
+main package inside this repository. The profile has to be collected from the
+consumer's own server and live beside their `main`.
+
+Measured on this machine, runs interleaved, `n=10`, profile collected from the
+root benchmarks themselves:
+
+| Benchmark | vs `-pgo=off` |
+|---|---|
+| `ExecuteUsers` | -11.96% (p=0.027) |
+| `ExecuteConcurrentList` | no change (p=0.853) |
+
+Allocation counts and bytes do not move at all: PGO changes inlining and
+devirtualization, not what gets allocated.
+
+The split is the useful part. `ExecuteUsers` is one goroutine walking a plan
+through indirect closure calls, which is exactly what PGO devirtualizes.
+`ExecuteConcurrentList` spends its time in `runtime.lock2`, `semasleep` and
+`semawakeup` under the bounded semaphore — scheduler contention that PGO cannot
+reach. Expect a gain on CPU-bound, resolver-light queries and nothing on queries
+dominated by concurrent fan-out.
+
+Treat -11.96% as an upper bound. The profile was collected from the same
+benchmarks it was then measured against, which flatters it; a profile taken from
+a real workload predicts that workload, not this one. The confidence intervals
+are also wide (+/-13% and +/-23%), which is the usual warning about this machine.
+
+To enable it, from the server's own main package:
+
+```sh
+curl -o cpu.prof 'http://localhost:6060/debug/pprof/profile?seconds=30'
+mv cpu.prof default.pgo   # beside main.go
+go build                  # -pgo=auto is already the default
+```
+
 ## What is not measured
 
 - **Latency percentiles.** This machine's monotonic clock has ~522 us
