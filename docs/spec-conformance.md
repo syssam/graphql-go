@@ -51,12 +51,20 @@ row of the table above correct and turns a lone surrogate into a parse error.
 ### 3. Descriptions on executable definitions are rejected (September 2025)
 
 ```graphql
-"Fetch the current user" query Me { me { name } }   # → Unexpected String
+"Fetch the current user" query Me { me { name } }   # -> Unexpected String
 ```
 
-`OperationDefinition : Description? OperationType ...` and the same for
-`FragmentDefinition`. This is the feature that lets a server hand an agent a
-described operation, so it matters most for MCP-style tooling.
+`OperationDefinition : Description? OperationType ...`, and the same for
+`FragmentDefinition`. This is what lets a server hand an agent a described
+operation, so it matters most for MCP-style tooling.
+
+**A patch is ready to submit:**
+[`docs/upstream/0002-gqlparser-executable-descriptions.patch`](upstream/0002-gqlparser-executable-descriptions.patch).
+It adds `Description` to both AST nodes, parses the optional description ahead
+of each executable definition, emits it from the formatter so documents round
+trip, and rejects a description on the shorthand `{ ... }` form, which has no
+description slot in the grammar. Six cases added to `query_test.yml`; the whole
+gqlparser suite passes.
 
 ### 4. Directives on directive definitions (draft only, not ratified)
 

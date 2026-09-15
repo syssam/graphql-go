@@ -21,5 +21,12 @@ git apply ../graphql-go/docs/upstream/0001-gqlparser-unicode-escapes.patch
 go test ./...
 ```
 
-To try it under this repository before it is merged, add a `replace` to
-`go.mod` pointing at the patched checkout. Do not commit that `replace`.
+## 0002-gqlparser-executable-descriptions.patch
+
+Fixes gap 3: `Description?` on `OperationDefinition` and `FragmentDefinition`.
+Independent of 0001 -- they touch different files and apply in either order.
+
+## Trying them before they merge
+
+Apply the patches to a checkout and point `go.mod` at it with a `replace`. Do
+not commit that `replace`.

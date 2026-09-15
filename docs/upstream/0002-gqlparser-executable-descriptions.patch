@@ -1,0 +1,205 @@
+diff --git a/ast/fragment.go b/ast/fragment.go
+index 05805e1..9457380 100644
+--- a/ast/fragment.go
++++ b/ast/fragment.go
+@@ -25,7 +25,8 @@ type InlineFragment struct {
+ }
+ 
+ type FragmentDefinition struct {
+-	Name string
++	Description string
++	Name        string
+ 	// Note: fragment variable definitions are experimental and may be changed
+ 	// or removed in the future.
+ 	VariableDefinition VariableDefinitionList
+diff --git a/ast/operation.go b/ast/operation.go
+index 2efed02..a95b98a 100644
+--- a/ast/operation.go
++++ b/ast/operation.go
+@@ -9,6 +9,7 @@ const (
+ )
+ 
+ type OperationDefinition struct {
++	Description         string
+ 	Operation           Operation
+ 	Name                string
+ 	VariableDefinitions VariableDefinitionList
+diff --git a/formatter/formatter.go b/formatter/formatter.go
+index 72d4b2c..bdbf97b 100644
+--- a/formatter/formatter.go
++++ b/formatter/formatter.go
+@@ -624,6 +624,7 @@ func (f *formatter) FormatOperationList(lists ast.OperationList) {
+ 
+ func (f *formatter) FormatOperationDefinition(def *ast.OperationDefinition) {
+ 	f.FormatCommentGroup(def.Comment)
++	f.WriteDescription(def.Description)
+ 
+ 	f.WriteWord(string(def.Operation))
+ 	if def.Name != "" {
+@@ -686,6 +687,7 @@ func (f *formatter) FormatFragmentDefinitionList(lists ast.FragmentDefinitionLis
+ 
+ func (f *formatter) FormatFragmentDefinition(def *ast.FragmentDefinition) {
+ 	f.FormatCommentGroup(def.Comment)
++	f.WriteDescription(def.Description)
+ 
+ 	f.WriteWord("fragment").WriteWord(def.Name)
+ 	f.FormatVariableDefinitionList(def.VariableDefinition)
+diff --git a/parser/query.go b/parser/query.go
+index 271a2ff..f4df610 100644
+--- a/parser/query.go
++++ b/parser/query.go
+@@ -28,18 +28,32 @@ func (p *parser) parseQueryDocument() *QueryDocument {
+ 			return &doc
+ 		}
+ 		doc.Position = p.peekPos()
++
++		// OperationDefinition and FragmentDefinition both begin with an
++		// optional Description.
++		var description descriptionWithComment
++		if kind := p.peek().Kind; kind == lexer.BlockString || kind == lexer.String {
++			description = p.parseDescription()
++		}
++
+ 		switch p.peek().Kind {
+ 		case lexer.Name:
+ 			switch p.peek().Value {
+ 			case "query", "mutation", "subscription":
+-				doc.Operations = append(doc.Operations, p.parseOperationDefinition())
++				doc.Operations = append(doc.Operations, p.parseOperationDefinition(description))
+ 			case "fragment":
+-				doc.Fragments = append(doc.Fragments, p.parseFragmentDefinition())
++				doc.Fragments = append(doc.Fragments, p.parseFragmentDefinition(description))
+ 			default:
+ 				p.unexpectedError()
+ 			}
+ 		case lexer.BraceL:
+-			doc.Operations = append(doc.Operations, p.parseOperationDefinition())
++			// Only the long form of OperationDefinition has a Description; the
++			// shorthand selection set has nowhere to put one.
++			if description.text != "" {
++				p.error(p.peek(), "Unexpected description on an anonymous operation; name the operation to describe it")
++				return &doc
++			}
++			doc.Operations = append(doc.Operations, p.parseOperationDefinition(description))
+ 		default:
+ 			p.unexpectedError()
+ 		}
+@@ -48,7 +62,7 @@ func (p *parser) parseQueryDocument() *QueryDocument {
+ 	return &doc
+ }
+ 
+-func (p *parser) parseOperationDefinition() *OperationDefinition {
++func (p *parser) parseOperationDefinition(description descriptionWithComment) *OperationDefinition {
+ 	if p.peek().Kind == lexer.BraceL {
+ 		return &OperationDefinition{
+ 			Position:     p.peekPos(),
+@@ -60,7 +74,8 @@ func (p *parser) parseOperationDefinition() *OperationDefinition {
+ 
+ 	var od OperationDefinition
+ 	od.Position = p.peekPos()
+-	od.Comment = p.comment
++	od.Comment = description.commentOr(p.comment)
++	od.Description = description.text
+ 	od.Operation = p.parseOperationType()
+ 
+ 	if p.peek().Kind == lexer.Name {
+@@ -218,10 +233,11 @@ func (p *parser) parseFragment() Selection {
+ 	return &def
+ }
+ 
+-func (p *parser) parseFragmentDefinition() *FragmentDefinition {
++func (p *parser) parseFragmentDefinition(description descriptionWithComment) *FragmentDefinition {
+ 	var def FragmentDefinition
+ 	def.Position = p.peekPos()
+-	def.Comment = p.comment
++	def.Comment = description.commentOr(p.comment)
++	def.Description = description.text
+ 	p.expectKeyword("fragment")
+ 
+ 	def.Name = p.parseFragmentName()
+diff --git a/parser/query_test.yml b/parser/query_test.yml
+index ec0580f..27af737 100644
+--- a/parser/query_test.yml
++++ b/parser/query_test.yml
+@@ -31,6 +31,12 @@ parser provides useful errors:
+       message: 'Unexpected ...'
+       locations: [{ line: 1, column: 1}]
+ 
++  - name: description on an anonymous operation
++    input: '"nope" { field }'
++    error:
++      message: 'Unexpected description on an anonymous operation; name the operation to describe it'
++      locations: [{ line: 1, column: 8 }]
++
+ variables:
+   - name: are allowed in args
+     input: '{ field(complex: { a: { b: [ $var ] } }) }'
+@@ -78,6 +84,10 @@ fragments:
+       message: 'Expected Name, found }'
+       locations: [{ line: 1, column: 9 }]
+ 
++  - name: can carry a description
++    input: '"A reusable piece" fragment F on Query { a }
++      { ...F }'
++
+ encoding:
+   - name: multibyte characters are supported
+     input: |
+@@ -144,6 +154,15 @@ operations:
+   - name: named subscription
+     input: 'subscription Foo { subscriptionField }'
+ 
++  - name: described query
++    input: '"Fetch a thing" query Foo { field }'
++
++  - name: described mutation with a block string
++    input: '"""Change a thing""" mutation Foo { mutationField }'
++
++  - name: described subscription
++    input: '"Watch a thing" subscription Foo { subscriptionField }'
++
+ 
+ ast:
+   - name: simple query
+@@ -219,6 +238,24 @@ ast:
+                     Value: $v
+ 
+ 
++  - name: described operation
++    input: |
++      "Fetch the current user"
++      query Me {
++        me
++      }
++    ast: |
++      <QueryDocument>
++        Operations: [OperationDefinition]
++        - <OperationDefinition>
++            Description: "Fetch the current user"
++            Operation: Operation("query")
++            Name: "Me"
++            SelectionSet: [Selection]
++            - <Field>
++                Alias: "me"
++                Name: "me"
++
+ values:
+   - name: null
+     input: '{ f(id: null) }'
+diff --git a/parser/schema.go b/parser/schema.go
+index 7152963..eb77d94 100644
+--- a/parser/schema.go
++++ b/parser/schema.go
+@@ -636,3 +636,12 @@ type descriptionWithComment struct {
+ 	text    string
+ 	comment *CommentGroup
+ }
++
++// commentOr returns the comment that preceded the description, falling back to
++// the parser's pending comment when there was no description.
++func (d descriptionWithComment) commentOr(fallback *CommentGroup) *CommentGroup {
++	if d.comment != nil {
++		return d.comment
++	}
++	return fallback
++}
