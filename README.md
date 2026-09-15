@@ -30,8 +30,8 @@ straight into a pooled JSON buffer.
   from literals and variables alike, interfaces and unions, introspection
   (including `specifiedByURL`, `isOneOf`, deprecated arguments and directive
   deprecation) and the GraphQL over HTTP protocol. The gaps that remain are all
-  in the parser rather than the engine, and are tracked with reproductions in
-  [`docs/spec-conformance.md`](docs/spec-conformance.md).
+  in the parser rather than the engine; each is tracked with a reproduction and
+  an upstream patch in [`docs/spec-conformance.md`](docs/spec-conformance.md).
 - **Production behaviour by default.** Bounded resolver concurrency, panic
   recovery, error masking, gRPC-style interceptors, schema directives, CSRF
   prevention, DataLoader batching, and GitHub/Shopify-style complexity, depth

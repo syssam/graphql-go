@@ -10,6 +10,11 @@ The engine is conformant. The gaps that remain are all in the parser —
 be fixed here without forking it. `v2.5.37` is the newest release and carries
 all four.
 
+Each has a patch in [`docs/upstream/`](upstream/) that applies to a clean
+gqlparser checkout and passes that project's suite; the three apply in any
+order and were verified together. They are not applied here — `go.mod` still
+points at the release — so these stay open until they land upstream.
+
 ## Known gaps
 
 ### 1. Surrogate escapes are silently corrupted (September 2025)
