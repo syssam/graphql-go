@@ -84,6 +84,15 @@ the bounded semaphore; `Inline()`/`Concurrent()` override per field. `loader.Loa
 coalesces `Load` calls within one concurrent wave — the executor announces a wave before
 launching sibling tasks (`pushWave`), which is what makes DataLoader batching work.
 
+`transport/gqlws/load_test.go` opens 150 concurrent subscriptions and requires both the
+source registrations and the goroutines back afterwards; it honours `-short`.
+`BenchmarkSubscriptionFanout` measures a broadcast reaching every subscriber by counting
+receipts, because `publish` drops rather than blocks and timing it alone reports a fan-out
+to 128 clients at 45ns each when the honest figure is 4us. **Releasing an operation is
+doubly redundant** — the operation context derives from the connection context, and
+`cancelAll` also calls each stored cancel — so breaking either leaves every test green and
+only breaking both leaks. Do not read a green suite as evidence that one of them is dead.
+
 **Subscriptions (`subscription.go`).** `Subscribe`/`SubscribeArgs` bind a subscription root
 field to a function returning `<-chan R`; `Executor.Subscribe` plans the operation, opens
 the stream and returns `<-chan *Response`, one per event, closed when the source closes or

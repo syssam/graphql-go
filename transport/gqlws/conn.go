@@ -300,6 +300,14 @@ func (c *conn) forget(id string) {
 	c.mu.Unlock()
 }
 
+// cancelAll releases every operation on the connection.
+//
+// This is deliberately redundant with the operation contexts themselves: each
+// derives from the connection context, so c.cancel alone would release them,
+// and each stored cancel alone would too. Load testing showed that breaking
+// either one leaves every test passing, including the leak tests -- only
+// breaking both leaks. Keep both, and do not take a green suite as evidence
+// that the one you removed was dead.
 func (c *conn) cancelAll() {
 	c.mu.Lock()
 	cancels := make([]context.CancelFunc, 0, len(c.subs))
