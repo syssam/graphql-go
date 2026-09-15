@@ -176,8 +176,14 @@ init timeout and a per-connection operation cap. Both serve queries and
 mutations too -- one `next` then `complete` -- so a client needs only one
 endpoint. Automatic persisted queries are in `ext/apq`, opt-in on either HTTP transport
 with `WithPersistedQueries(apq.NewCache(1000))`. OpenTelemetry traces and
-metrics are in `ext/otel`: `graphql.NewExecutor(s, otel.New()...)`. Still to
-come: codegen auto-bind, result-based query cost and APQ over WebSocket.
+metrics are in `ext/otel`: `graphql.NewExecutor(s, otel.New()...)`.
+
+Phase 4 is under way. `QueryCost.Actual` reports `actualQueryCost` alongside
+the requested one, summed from the fields really resolved rather than from
+assumed list sizes. `codegen.Config.Manifest` binds GraphQL types and fields
+to Go types outright instead of inferring them, still without loading any Go
+type information, which is the mode an external generator such as an ORM
+wants. Still to come: codegen auto-bind and APQ over WebSocket.
 
 ## Development
 
