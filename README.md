@@ -108,6 +108,7 @@ A fuller example with interfaces, unions, enums, custom scalars, input objects,
 | `Interface`, `Union`, `TypeResolver` | Abstract types resolved from the dynamic Go type or an explicit function. |
 | `Directive` / `DirectiveArgs[A]` | Schema-directive middleware on `FIELD_DEFINITION` and `OBJECT`. |
 | `Query` / `Mutation` / `Subscription` | Bind the schema's root types without repeating their names. |
+| `Subscribe` / `SubscribeArgs` | Bind a subscription root field to a `<-chan R` source. `Executor.Subscribe` yields one response per event. |
 | `loader.New` | Per-request batch+cache (Facebook DataLoader) in `graphql-go/loader`. `Load` coalesces concurrent Resolve fields in one execution wave, driven by `graphql.WaveCoordinator`. |
 
 Resolvers can read their context with `graphql.FieldFrom`, `graphql.PathFrom`
@@ -127,12 +128,17 @@ that struct to fully explicit setters; the two modes do not mix.
 
 ## Status
 
-Phase 1 of the [design](docs/superpowers/specs/2026-09-11-graphql-go-design.md)
-is complete. Phase 2 codegen is started: `cmd/gqlc` emits models, args, a
-`Resolver` interface and bindings from SDL, splitting into per-group
-packages when more than one group is present. [`examples/basic`](examples/basic)
-uses the generated package. Upcoming work adds auto-bind, then subscriptions
-over WebSocket and SSE, automatic persisted queries and OpenTelemetry.
+Phases 1 and 2 of the
+[design](docs/superpowers/specs/2026-09-11-graphql-go-design.md) are complete:
+`cmd/gqlc` emits models, args, a `Resolver` interface and bindings from SDL,
+splitting into per-group packages when more than one group is present, and
+[`examples/basic`](examples/basic) uses the generated package.
+
+Phase 3 is under way. Subscriptions execute, and `transport/gqlsse` streams
+them over Server-Sent Events -- one HTTP request per operation, `next` events
+terminated by `complete`, with queries and mutations served the same way so a
+client needs only one endpoint. Still to come: `transport/gqlws`, codegen
+auto-bind, automatic persisted queries and OpenTelemetry.
 
 ## Development
 

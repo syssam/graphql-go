@@ -835,8 +835,8 @@ passed to `graph.NewSchema`.
 
 ### Phase 3 Deviations
 
-The first subscription slice is the executor only; `transport/gqlws` and
-`transport/gqlsse` are not built yet, and neither is APQ.
+The subscription executor and `transport/gqlsse` are built; `transport/gqlws`
+and APQ are not.
 
 - **`Subscribe` returns a channel, not an iterator.** `iter.Seq2[R, error]`
   reads better but cannot be selected against `ctx.Done()` without a wrapping
@@ -860,6 +860,18 @@ The first subscription slice is the executor only; `transport/gqlws` and
   interceptors and field directives do not observe that one field. They still
   observe every field beneath it. Everything else — null bubbling, error
   paths, abstract types, concurrency — is the ordinary object writer.
+- **`gqlsse` serves all three operation types.** Section 8.3 scopes it to
+  distinct connections mode, which it is, but a query or mutation is streamed
+  the same way — a single `next` followed by `complete` — so one endpoint
+  covers everything and a client needs no second URL. An error raised before
+  the stream opens is an ordinary HTTP error with a
+  `application/graphql-response+json` body, matching `gqlhttp`, rather than a
+  `next` event on an opened stream.
+- **The HTTP transports share `internal/httpreq`.** Query-parameter and body
+  decoding, the body limit and the CSRF check live there rather than being
+  copied, because two transports that disagree about which requests are
+  forgeable is a difference clients can see.
+
 - **Subscription root fields must be bound with `Subscribe`.** `Field` or
   `Resolve` there composes cleanly and then has no stream, so it is rejected
   at `NewSchema` rather than at request time. Codegen emits

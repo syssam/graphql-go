@@ -104,9 +104,13 @@ objects reference each other, which would be an import cycle and falls back to o
 `model` package (`modelGroupsAcyclic`). Generated files are strings run through `go/format` (not Jennifer), and
 content-equal files are not rewritten.
 
-`transport/gqlhttp` is the GraphQL-over-HTTP handler; `internal/jsonw` is the only internal
-package (it has no dependency on engine types — the plan compiler and executor deliberately
-live in the root package so generic constructors can produce engine values directly).
+`transport/gqlhttp` is the GraphQL-over-HTTP handler and `transport/gqlsse` streams over
+Server-Sent Events (distinct connections mode: one request per operation, `next` events
+terminated by `complete`, queries and mutations included). Both parse requests through
+`internal/httpreq`, so a request one transport rejects as forgeable or oversized is rejected
+by the other; drift there is visible to clients. `internal/jsonw` is the output writer and
+has no dependency on engine types — the plan compiler and executor deliberately live in the
+root package so generic constructors can produce engine values directly.
 
 ## Conventions
 
@@ -145,5 +149,5 @@ Read the deviations before trusting the prose. `docs/superpowers/plans/` holds t
 implementation plans; `docs/benchmarks.md` holds the gqlgen comparison.
 
 Status: phases 1 and 2 complete and merged to `main`; phase 3 in progress — the subscription
-executor is built, the streaming transports are not. Not yet built: `transport/gqlws`,
-`transport/gqlsse`, APQ, OpenTelemetry, codegen auto-bind and manifest modes.
+executor and `transport/gqlsse` are built. Not yet built: `transport/gqlws`, APQ,
+OpenTelemetry, codegen auto-bind and manifest modes.
