@@ -104,18 +104,30 @@ objects reference each other, which would be an import cycle and falls back to o
 `model` package (`modelGroupsAcyclic`). Generated files are strings run through `go/format` (not Jennifer), and
 content-equal files are not rewritten.
 
-`transport/gqlhttp` is the GraphQL-over-HTTP handler and `transport/gqlsse` streams over
-Server-Sent Events (distinct connections mode: one request per operation, `next` events
-terminated by `complete`, queries and mutations included). Both parse requests through
-`internal/httpreq`, so a request one transport rejects as forgeable or oversized is rejected
-by the other; drift there is visible to clients. `internal/jsonw` is the output writer and
-has no dependency on engine types — the plan compiler and executor deliberately live in the
-root package so generic constructors can produce engine values directly.
+**Transports.** `transport/gqlhttp` is the GraphQL-over-HTTP handler; `transport/gqlsse`
+streams over Server-Sent Events (distinct connections mode); `transport/gqlws` speaks
+`graphql-transport-ws` over `coder/websocket`. All three serve every operation kind — a
+query or mutation is one `next` then `complete` — so a client needs one endpoint. The two
+HTTP transports parse requests through `internal/httpreq`, so a request one rejects as
+forgeable or oversized is rejected by the other; drift there is visible to clients.
+
+In `gqlws`, **writes use the connection context, never the operation's**: coder/websocket
+tears down the whole connection when a write context is cancelled mid-frame, so writing a
+`next` under the operation context would let one client's unsubscribe drop every other
+subscription on that connection. The init timeout likewise closes the connection from a
+timer rather than bounding the read, because a read aborted by its own context leaves no
+way to send the 4408 close frame.
+
+`internal/jsonw` is the output writer and has no dependency on engine types — the plan
+compiler and executor deliberately live in the root package so generic constructors can
+produce engine values directly.
 
 ## Conventions
 
 - **Root package may depend only on `gqlparser/v2` and the standard library.** Transports,
-  codegen and extensions keep their dependencies in sub-packages.
+  codegen and extensions keep their dependencies in sub-packages. `go.mod` therefore also
+  carries `yaml.v3` (for `cmd/gqlc`) and `coder/websocket` (for `transport/gqlws`); the rule
+  is about what the root package imports, not about module purity.
 - **No reflection on the request hot path.** Reflection is allowed at `NewSchema`, in
   `Args[T]`/`Input[T]` decode, and in the one documented composite nested-list traverser
   (which logs `slog.Warn` at start-up). Adding reflection to the write path is a regression.
@@ -149,5 +161,5 @@ Read the deviations before trusting the prose. `docs/superpowers/plans/` holds t
 implementation plans; `docs/benchmarks.md` holds the gqlgen comparison.
 
 Status: phases 1 and 2 complete and merged to `main`; phase 3 in progress — the subscription
-executor and `transport/gqlsse` are built. Not yet built: `transport/gqlws`, APQ,
-OpenTelemetry, codegen auto-bind and manifest modes.
+executor and both streaming transports are built. Not yet built: APQ, OpenTelemetry,
+codegen auto-bind and manifest modes.

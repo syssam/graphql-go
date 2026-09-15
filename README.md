@@ -134,11 +134,14 @@ Phases 1 and 2 of the
 splitting into per-group packages when more than one group is present, and
 [`examples/basic`](examples/basic) uses the generated package.
 
-Phase 3 is under way. Subscriptions execute, and `transport/gqlsse` streams
-them over Server-Sent Events -- one HTTP request per operation, `next` events
-terminated by `complete`, with queries and mutations served the same way so a
-client needs only one endpoint. Still to come: `transport/gqlws`, codegen
-auto-bind, automatic persisted queries and OpenTelemetry.
+Phase 3 is under way. Subscriptions execute, and both streaming transports are
+built: `transport/gqlsse` over Server-Sent Events and `transport/gqlws` over
+`graphql-transport-ws`, with `connection_init`/`ack`, `ping`/`pong`, an
+`OnConnect` hook whose context parents every operation on the connection, an
+init timeout and a per-connection operation cap. Both serve queries and
+mutations too -- one `next` then `complete` -- so a client needs only one
+endpoint. Still to come: codegen auto-bind, automatic persisted queries and
+OpenTelemetry.
 
 ## Development
 

@@ -835,8 +835,7 @@ passed to `graph.NewSchema`.
 
 ### Phase 3 Deviations
 
-The subscription executor and `transport/gqlsse` are built; `transport/gqlws`
-and APQ are not.
+The subscription executor and both streaming transports are built; APQ is not.
 
 - **`Subscribe` returns a channel, not an iterator.** `iter.Seq2[R, error]`
   reads better but cannot be selected against `ctx.Done()` without a wrapping
@@ -867,6 +866,26 @@ and APQ are not.
   the stream opens is an ordinary HTTP error with a
   `application/graphql-response+json` body, matching `gqlhttp`, rather than a
   `next` event on an opened stream.
+- **`gqlws` writes under the connection context, never the operation's.**
+  coder/websocket tears the whole connection down when a write context is
+  cancelled mid-frame, so framing a `next` under the operation context would
+  let one client unsubscribing at the wrong moment drop every other
+  subscription sharing that connection. The operation context still gates
+  whether a result is written at all, which narrows post-`complete` traffic to
+  the one event already mid-write.
+- **The init timeout closes the connection from a timer, not by bounding the
+  read.** A read aborted by its own context leaves the library no way to emit a
+  close frame, so the client would see an abnormal closure rather than 4408.
+- **Exceeding the operation cap does not close the connection.** The protocol
+  defines no close code for it, and one client asking for too much at once is a
+  fault of that operation: the server answers that id with an `error` message
+  and leaves the other subscriptions running.
+- **`OnConnect` keeps its two-argument shape.** The upgrade request reaches it
+  through `gqlws.RequestFrom(ctx)` instead of a third parameter, because that
+  is where cookie credentials are — a browser cannot set headers on a WebSocket
+  — and it is deliberately not available to later operations, where the request
+  is finished and reading it would race.
+
 - **The HTTP transports share `internal/httpreq`.** Query-parameter and body
   decoding, the body limit and the CSRF check live there rather than being
   copied, because two transports that disagree about which requests are
