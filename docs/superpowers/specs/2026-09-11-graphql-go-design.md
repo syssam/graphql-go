@@ -911,6 +911,30 @@ Phase 3 is complete: the subscription executor, both streaming transports and AP
   at `NewSchema` rather than at request time. Codegen emits
   `Subscribe`/`SubscribeArgs` and a `<-chan T` resolver signature to match.
 
+### Phase 4 Deviations
+
+- **Metrics are recorded once, at the operation layer.** `ext/otel` hooks both
+  the request and operation chains, and recording in both double-counts every
+  request. The operation layer owns it, because that is where the operation
+  type is known; the request layer records only when the operation chain never
+  ran, which is how a parse failure is still counted exactly once. A flag on
+  the context, not a response inspection, decides which — a complexity
+  rejection also produces a request-error response from inside the operation
+  chain, and inspecting the response would double-count that case.
+- **The query document is not recorded on spans by default.** Inline arguments
+  can carry data, and traces are usually retained longer and read more widely
+  than logs. `WithDocument(true)` opts in.
+- **A subscription event is its own span.** `Executor.Subscribe` does not run
+  the request chain and the operation chain runs per event, so the operation
+  interceptor creates its own span when it finds none. That is the useful
+  shape anyway: an event is the unit of work, and a subscription open for a
+  day should not be a single span.
+- **`ext/otel` lives in the root module.** The OpenTelemetry SDK is test-only
+  here but still lands in every consumer's module graph as a direct require.
+  While the project is unpublished a separate module would add a versioning
+  problem for a benefit that only matters after release, and the import path
+  is the same either way, so splitting it is deferred rather than rejected.
+
 ## 12. Risks and Mitigations
 
 | Risk | Mitigation |

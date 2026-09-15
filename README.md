@@ -173,8 +173,9 @@ built: `transport/gqlsse` over Server-Sent Events and `transport/gqlws` over
 init timeout and a per-connection operation cap. Both serve queries and
 mutations too -- one `next` then `complete` -- so a client needs only one
 endpoint. Automatic persisted queries are in `ext/apq`, opt-in on either HTTP transport
-with `WithPersistedQueries(apq.NewCache(1000))`. Still to come: codegen
-auto-bind and OpenTelemetry.
+with `WithPersistedQueries(apq.NewCache(1000))`. OpenTelemetry traces and
+metrics are in `ext/otel`: `graphql.NewExecutor(s, otel.New()...)`. Still to
+come: codegen auto-bind, result-based query cost and APQ over WebSocket.
 
 ## Development
 

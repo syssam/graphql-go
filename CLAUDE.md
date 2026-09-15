@@ -111,6 +111,14 @@ query or mutation is one `next` then `complete` — so a client needs one endpoi
 HTTP transports parse requests through `internal/httpreq`, so a request one rejects as
 forgeable or oversized is rejected by the other; drift there is visible to clients.
 
+`ext/otel` instruments an executor with OpenTelemetry: `graphql.NewExecutor(s, otel.New()...)`.
+One span per request, started before parsing so a parse failure still produces one and
+renamed once the operation is known. **Metrics are recorded at the operation layer and at
+the request layer only when the operation chain never ran** — recording at both double-counts
+every request, which the metric test caught. Field spans are opt-in and cost more than they
+look: a field interceptor routes every field through the type-erased path, pure ones
+included.
+
 `ext/apq` is automatic persisted queries, opt-in through `WithPersistedQueries` on either
 HTTP transport. **Resolution happens during parsing, not at execution**: a request carrying
 only a hash has no query text, so the "mutations are not allowed over GET" guard would have
@@ -134,8 +142,11 @@ produce engine values directly.
 
 - **Root package may depend only on `gqlparser/v2` and the standard library.** Transports,
   codegen and extensions keep their dependencies in sub-packages. `go.mod` therefore also
-  carries `yaml.v3` (for `cmd/gqlc`) and `coder/websocket` (for `transport/gqlws`); the rule
-  is about what the root package imports, not about module purity.
+  carries `yaml.v3` (for `cmd/gqlc`), `coder/websocket` (for `transport/gqlws`) and the
+  OpenTelemetry API and SDK (for `ext/otel`, the SDK only in its tests); the rule is about
+  what the root package imports, not about module purity. `ext/otel` is the obvious
+  candidate to split into its own module at publication time, so that the SDK leaves every
+  consumer's module graph.
 - **No reflection on the request hot path.** Reflection is allowed at `NewSchema`, in
   `Args[T]`/`Input[T]` decode, and in the one documented composite nested-list traverser
   (which logs `slog.Warn` at start-up). Adding reflection to the write path is a regression.
@@ -168,6 +179,6 @@ options, not an `ext/complexity` package; `Manifest`/`AutoBind` codegen are not 
 Read the deviations before trusting the prose. `docs/superpowers/plans/` holds the phase
 implementation plans; `docs/benchmarks.md` holds the gqlgen comparison.
 
-Status: phases 1 and 2 complete and merged to `main`; phase 3 complete on
-`phase3-subscriptions` — subscription executor, `transport/gqlsse`, `transport/gqlws` and
-`ext/apq`. Not yet built: OpenTelemetry, codegen auto-bind and manifest modes.
+Status: phases 1-3 complete and merged to `main`; phase 4 in progress — `ext/otel` is
+built. Not yet built: result-based actual query cost, codegen auto-bind and manifest modes,
+APQ over WebSocket.
