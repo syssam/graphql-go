@@ -288,6 +288,64 @@ func TestSeqStopsWhenConsumerStops(t *testing.T) {
 	}
 }
 
+// A single-pass seq (a cursor, a channel, a paginated read) cannot be
+// replayed, so a list value must be traversed exactly once whichever path
+// handles it. Lists shorter than two elements are declined by the concurrent
+// path, which is where a second traversal would silently write an empty list.
+func TestSinglePassSeqTraversedOnce(t *testing.T) {
+	type post struct{ Title string }
+	newExec := func(items []*post, calls *int) *Executor {
+		s, err := NewSchema(SDL(`type Post { title: String! author: String! } type Query { posts: [Post!]! }`),
+			Object[post]("Post",
+				Field("title", func(v *post) string { return v.Title }),
+				// A resolver field makes the element selection deeply
+				// schedulable, so the concurrent list path is attempted.
+				Resolve("author", func(context.Context, *post) (string, error) { return "a", nil }),
+			),
+			Query(Resolve("posts", func(context.Context, Root) (iter.Seq[*post], error) {
+				return func(yield func(*post) bool) {
+					*calls++
+					if *calls > 1 {
+						return
+					}
+					for _, p := range items {
+						if !yield(p) {
+							return
+						}
+					}
+				}, nil
+			})),
+		)
+		if err != nil {
+			t.Fatalf("NewSchema: %v", err)
+		}
+		return NewExecutor(s)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		items []*post
+		want  string
+	}{
+		{"one element", []*post{{Title: "a"}}, `{"posts":[{"title":"a","author":"a"}]}`},
+		{"zero elements", nil, `{"posts":[]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			resp := run(t, newExec(tc.items, &calls), `{posts{title author}}`, "")
+			if len(resp.Errors) != 0 {
+				t.Fatalf("errors: %v", resp.Errors)
+			}
+			if got := string(resp.Data); got != tc.want {
+				t.Fatalf("data = %s, want %s", got, tc.want)
+			}
+			if calls != 1 {
+				t.Fatalf("producer called %d times, want 1", calls)
+			}
+		})
+	}
+}
+
 // BenchmarkListResultsSlice and BenchmarkListResultsSeq are a matched pair:
 // same fixture, same field selection, differing only in whether the query
 // hits the slice-backed "users" resolver or the seq-backed "usersSeq" one.
