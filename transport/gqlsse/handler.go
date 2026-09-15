@@ -107,13 +107,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusMethodNotAllowed, "Method %s is not allowed; use GET or POST.", r.Method)
 		return
 	}
-	if h.csrf && httpreq.Forgeable(r, h.csrfHeaders) {
+	src := httpreq.FromRequest(w, r)
+
+	if h.csrf && httpreq.Forgeable(src, h.csrfHeaders) {
 		h.writeError(w, http.StatusForbidden,
 			"This request could be forged cross-site. Send a non-simple Content-Type or one of the headers %s.", strings.Join(h.csrfHeaders, ", "))
 		return
 	}
 
-	req, status, err := h.parse(w, r)
+	req, status, err := h.parse(src)
 	if err != nil {
 		h.writeError(w, status, "%v", err)
 		return
@@ -148,18 +150,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.single(w, r, req)
 }
 
-func (h *Handler) parse(w http.ResponseWriter, r *http.Request) (*graphql.Request, int, error) {
-	if r.Method == http.MethodGet {
-		req, err := httpreq.ParseGET(r, h.apq != nil)
+func (h *Handler) parse(src httpreq.Source) (*graphql.Request, int, error) {
+	if src.Method() == http.MethodGet {
+		req, err := httpreq.ParseGET(src, h.apq != nil)
 		if err != nil {
 			return nil, http.StatusBadRequest, err
 		}
 		return req, 0, nil
 	}
-	if err := httpreq.RequireJSONBody(r); err != nil {
+	if err := httpreq.RequireJSONBody(src); err != nil {
 		return nil, http.StatusUnsupportedMediaType, err
 	}
-	body, status, err := httpreq.ReadBody(w, r, h.maxBody)
+	body, status, err := httpreq.ReadBody(src, h.maxBody)
 	if err != nil {
 		return nil, status, err
 	}

@@ -107,7 +107,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.csrf && httpreq.Forgeable(r, h.csrfHeaders) {
+	src := httpreq.FromRequest(w, r)
+
+	if h.csrf && httpreq.Forgeable(src, h.csrfHeaders) {
 		h.writeError(w, mediaType, http.StatusForbidden,
 			"This request could be forged cross-site. Send a non-simple Content-Type or one of the headers %s.", strings.Join(h.csrfHeaders, ", "))
 		return
@@ -119,7 +121,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	)
 	switch r.Method {
 	case http.MethodGet:
-		req, err := httpreq.ParseGET(r, h.apq != nil)
+		req, err := httpreq.ParseGET(src, h.apq != nil)
 		if err != nil {
 			h.writeError(w, mediaType, http.StatusBadRequest, "%v", err)
 			return
@@ -141,7 +143,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		var status int
 		var err error
-		reqs, batch, status, err = h.parsePOST(w, r)
+		reqs, batch, status, err = h.parsePOST(src)
 		if err != nil {
 			h.writeError(w, mediaType, status, "%v", err)
 			return
@@ -221,12 +223,12 @@ func (h *Handler) writeGraphQLError(w http.ResponseWriter, mediaType string, res
 
 // parsePOST reads and decodes the body. The returned status applies when err
 // is non-nil.
-func (h *Handler) parsePOST(w http.ResponseWriter, r *http.Request) (reqs []*graphql.Request, batch bool, status int, err error) {
-	if err := httpreq.RequireJSONBody(r); err != nil {
+func (h *Handler) parsePOST(src httpreq.Source) (reqs []*graphql.Request, batch bool, status int, err error) {
+	if err := httpreq.RequireJSONBody(src); err != nil {
 		return nil, false, http.StatusUnsupportedMediaType, err
 	}
 
-	body, status, err := httpreq.ReadBody(w, r, h.maxBody)
+	body, status, err := httpreq.ReadBody(src, h.maxBody)
 	if err != nil {
 		return nil, false, status, err
 	}
