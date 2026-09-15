@@ -3,6 +3,7 @@ package schema
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -67,7 +68,7 @@ func (r *resolver) Search(_ context.Context, a graph.SearchArgs) ([]any, error) 
 }
 
 func (r *resolver) CreatePost(_ context.Context, a graph.CreatePostArgs) (*model.Post, error) {
-	return r.store.CreatePost(a.AuthorID, a.Title, a.Body)
+	return r.store.CreatePost(a.AuthorID, a.Title, a.Body, a.Tags)
 }
 
 func (r *resolver) UpdatePost(_ context.Context, a graph.UpdatePostArgs) (*model.Post, error) {
@@ -92,6 +93,33 @@ func (r *resolver) PostAuthor(ctx context.Context, p *model.Post) (*model.User, 
 		return nil, fmt.Errorf("author %q of post %q is missing", authorID, p.ID)
 	}
 	return u, nil
+}
+
+// PostCreated streams posts as CreatePost stores them.
+func (r *resolver) PostCreated(ctx context.Context) (<-chan *model.Post, error) {
+	return r.store.PostsCreated(ctx), nil
+}
+
+// PostCreatedWithTag is the filtered form. The filter runs in a goroutine
+// between the source and the subscriber rather than inside the broker, so one
+// client's predicate cannot slow down publishing to the others.
+func (r *resolver) PostCreatedWithTag(ctx context.Context, a graph.PostCreatedWithTagArgs) (<-chan *model.Post, error) {
+	src := r.store.PostsCreated(ctx)
+	out := make(chan *model.Post)
+	go func() {
+		defer close(out)
+		for p := range src {
+			if !slices.Contains(p.Tags, a.Tag) {
+				continue
+			}
+			select {
+			case out <- p:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out, nil
 }
 
 func marshalTime(w *graphql.Writer, t time.Time) error {

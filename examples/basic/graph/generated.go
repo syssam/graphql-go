@@ -14,6 +14,7 @@ type CreatePostArgs struct {
 	AuthorID graphql.ID
 	Title    string
 	Body     string
+	Tags     []string
 }
 
 type UpdatePostArgs struct {
@@ -37,6 +38,10 @@ type SearchArgs struct {
 	Term string
 }
 
+type PostCreatedWithTagArgs struct {
+	Tag string
+}
+
 type UserPostsArgs struct {
 	First *int
 }
@@ -51,6 +56,8 @@ type Resolver interface {
 	Users(ctx context.Context) ([]*model.User, error)
 	Posts(ctx context.Context, args PostsArgs) ([]*model.Post, error)
 	Search(ctx context.Context, args SearchArgs) ([]any, error)
+	PostCreated(ctx context.Context) (<-chan *model.Post, error)
+	PostCreatedWithTag(ctx context.Context, args PostCreatedWithTagArgs) (<-chan *model.Post, error)
 	UserPosts(ctx context.Context, obj *model.User, args UserPostsArgs) ([]*model.Post, error)
 }
 
@@ -97,12 +104,19 @@ func Bindings(r Resolver) graphql.SchemaOption {
 				return r.UpdatePost(ctx, a)
 			}),
 		),
+		graphql.Subscription(
+			graphql.Subscribe("postCreated", func(ctx context.Context) (<-chan *model.Post, error) { return r.PostCreated(ctx) }),
+			graphql.SubscribeArgs("postCreatedWithTag", func(ctx context.Context, a PostCreatedWithTagArgs) (<-chan *model.Post, error) {
+				return r.PostCreatedWithTag(ctx, a)
+			}),
+		),
 		graphql.Args[CreatePostArgs](),
 		graphql.Args[UpdatePostArgs](),
 		graphql.Args[NodeArgs](),
 		graphql.Args[UserArgs](),
 		graphql.Args[PostsArgs](),
 		graphql.Args[SearchArgs](),
+		graphql.Args[PostCreatedWithTagArgs](),
 		graphql.Args[UserPostsArgs](),
 	)
 }

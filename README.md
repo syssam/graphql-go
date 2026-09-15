@@ -91,9 +91,41 @@ curl -s localhost:8080/graphql -H 'content-type: application/json' \
 # {"data":{"user":{"id":"1","name":"Ada"}}}
 ```
 
+## Subscriptions
+
+`Subscribe` binds a subscription root field to a channel. Each value received
+becomes one response, with the field's sub-selection executed against it:
+
+```go
+graphql.Subscription(
+	graphql.Subscribe("postCreated", func(ctx context.Context) (<-chan *Post, error) {
+		return blog.PostsCreated(ctx), nil
+	}),
+)
+```
+
+Serve them over either streaming transport; both also serve queries and
+mutations, so a client needs only one endpoint:
+
+```go
+mux.Handle("/graphql", gqlhttp.New(exec))
+mux.Handle("/graphql/stream", gqlsse.New(exec))   // Server-Sent Events
+mux.Handle("/graphql/ws", gqlws.New(exec))        // graphql-transport-ws
+```
+
+```sh
+curl -N localhost:8080/graphql/stream -H 'content-type: application/json'   -H 'accept: text/event-stream'   -d '{"query":"subscription { postCreated { title } }"}'
+# event: next
+# data: {"data":{"postCreated":{"title":"Live"}}}
+```
+
+Closing the connection unsubscribes: the source channel's context is cancelled,
+so a broker can drop the subscriber and stop producing.
+
 A fuller example with interfaces, unions, enums, custom scalars, input objects,
-`Omittable` PATCH semantics, a schema directive and a DataLoader for
-`Post.author` lives in [`examples/basic`](examples/basic).
+`Omittable` PATCH semantics, a schema directive, a DataLoader for `Post.author`
+and a subscription fed by the `createPost` mutation lives in
+[`examples/basic`](examples/basic).
 
 ## Concepts
 

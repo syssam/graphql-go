@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strconv"
@@ -21,6 +22,8 @@ type Store struct {
 	posts      []*model.Post
 	postAuthor map[graphql.ID]graphql.ID
 	nextID     int
+
+	created broker
 }
 
 // NewStore returns a seeded store.
@@ -143,18 +146,28 @@ func (s *Store) Search(term string) []any {
 	return out
 }
 
-// CreatePost stores a new unpublished post.
-func (s *Store) CreatePost(authorID graphql.ID, title, body string) (*model.Post, error) {
+// CreatePost stores a new unpublished post. Nil tags become an empty slice
+// because Post.tags is non-null.
+func (s *Store) CreatePost(authorID graphql.ID, title, body string, tags []string) (*model.Post, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.users[authorID] == nil {
 		return nil, fmt.Errorf("author %q does not exist", authorID)
 	}
-	p := &model.Post{ID: graphql.ID(strconv.Itoa(s.nextID)), Title: title, Body: body, Tags: []string{}}
+	if tags == nil {
+		tags = []string{}
+	}
+	p := &model.Post{ID: graphql.ID(strconv.Itoa(s.nextID)), Title: title, Body: body, Tags: tags}
 	s.nextID++
 	s.posts = append(s.posts, p)
 	s.postAuthor[p.ID] = authorID
+	s.created.publish(p)
 	return p, nil
+}
+
+// PostsCreated returns a stream of posts created from now on.
+func (s *Store) PostsCreated(ctx context.Context) <-chan *model.Post {
+	return s.created.subscribe(ctx)
 }
 
 // UpdatePost applies a partial update. Unset fields are left untouched; a
