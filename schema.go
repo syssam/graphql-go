@@ -135,6 +135,7 @@ func NewSchema(src Source, opts ...SchemaOption) (*Schema, error) {
 	if err != nil {
 		return nil, fmt.Errorf("graphql: load schema: %w", err)
 	}
+	patchPrelude(parsed)
 
 	b := &schemaBuilder{
 		ast:           parsed,

@@ -458,3 +458,41 @@ func TestExecOneOfInputObjects(t *testing.T) {
 	}
 }
 
+// TestExecRejectsDefer keeps the validated schema and the introspected schema
+// telling clients the same story. gqlparser's prelude declares @defer, but
+// incremental delivery is not implemented and not in the specification, so
+// accepting it would hand a client a complete response where it asked for a
+// streamed one.
+func TestExecRejectsDefer(t *testing.T) {
+	_, e := newFixtureExecutor(t)
+	resp := run(t, e, `{me{name ... @defer {nick}}}`, "")
+	if len(resp.Errors) == 0 {
+		t.Fatalf("@defer must be rejected, got data %s", resp.Data)
+	}
+	if !strings.Contains(errorsJSON(resp.Errors), "defer") {
+		t.Fatalf("error should name the directive: %s", errorsJSON(resp.Errors))
+	}
+}
+
+// TestExecKeepsUserDeclaredDefer guards the blast radius of removing the
+// prelude's @defer: only gqlparser's declaration goes. A schema that defines
+// a @defer of its own keeps it, because what that directive means there is
+// the schema author's business, not ours.
+func TestExecKeepsUserDeclaredDefer(t *testing.T) {
+	s, err := NewSchema(SDL(`directive @defer(label: String) on FIELD
+type Query { ok: String! }`),
+		Query(Field("ok", func(Root) string { return "ok" })),
+	)
+	if err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	e := NewExecutor(s)
+
+	resp := run(t, e, `{ok @defer}`, "")
+	expectData(t, resp, `{"ok":"ok"}`)
+
+	data := introQuery(t, e, `{__schema{directives{name}}}`)
+	if got := names(get(data, "__schema", "directives")); !strings.Contains(","+got+",", ",defer,") {
+		t.Errorf("a schema-declared @defer must stay visible: %s", got)
+	}
+}

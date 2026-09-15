@@ -292,3 +292,44 @@ func TestIntrospectionTypenameOnMetaTypes(t *testing.T) {
 	resp := run(t, e, `{ thing { matrix } }`, "")
 	expectData(t, resp, `{"thing":{"matrix":[[1,2],[3]]}}`)
 }
+
+// TestIntrospectionDirectiveDeprecation covers the introspection half of the
+// draft's directives-on-directive-definitions change: __Directive carries a
+// deprecation state, __Schema.directives filters on it, and
+// DIRECTIVE_DEFINITION is a valid __DirectiveLocation value.
+func TestIntrospectionDirectiveDeprecation(t *testing.T) {
+	e := newIntrospectionExecutor(t)
+	data := introQuery(t, e, `{
+	  __schema { directives(includeDeprecated: true) { name isDeprecated deprecationReason } }
+	  __type(name: "__DirectiveLocation") { enumValues { name } }
+	}`)
+
+	dirs, _ := get(data, "__schema", "directives").([]any)
+	if len(dirs) == 0 {
+		t.Fatal("no directives returned")
+	}
+	for _, d := range dirs {
+		name := get(d, "name")
+		if got := get(d, "isDeprecated"); got != false {
+			t.Errorf("directive %v: isDeprecated = %v, want false", name, got)
+		}
+		if got := get(d, "deprecationReason"); got != nil {
+			t.Errorf("directive %v: deprecationReason = %v, want null", name, got)
+		}
+	}
+
+	locs := names(get(data, "__type", "enumValues"))
+	if !strings.Contains(","+locs+",", ",DIRECTIVE_DEFINITION,") {
+		t.Errorf("__DirectiveLocation lacks DIRECTIVE_DEFINITION: %s", locs)
+	}
+}
+
+// TestIntrospectionDirectivesDefaultsToVisible keeps the no-argument form of
+// __Schema.directives working once the argument exists.
+func TestIntrospectionDirectivesDefaultsToVisible(t *testing.T) {
+	e := newIntrospectionExecutor(t)
+	data := introQuery(t, e, `{__schema{directives{name}}}`)
+	if got := names(get(data, "__schema", "directives")); !strings.Contains(got, "tag") {
+		t.Errorf("directives = %s, want it to include tag", got)
+	}
+}

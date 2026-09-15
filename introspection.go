@@ -43,6 +43,11 @@ var introTypeKinds = map[introTypeKind]string{
 	kindEnum: "ENUM", kindInputObject: "INPUT_OBJECT", kindList: "LIST", kindNonNull: "NON_NULL",
 }
 
+// locationDirectiveDefinition is the DIRECTIVE_DEFINITION directive location.
+// gqlparser declares no constant for it because its parser cannot yet read
+// one, but introspection must still offer the value.
+const locationDirectiveDefinition ast.DirectiveLocation = "DIRECTIVE_DEFINITION"
+
 var introDirectiveLocations = func() map[ast.DirectiveLocation]string {
 	all := []ast.DirectiveLocation{
 		ast.LocationQuery, ast.LocationMutation, ast.LocationSubscription, ast.LocationField,
@@ -50,7 +55,7 @@ var introDirectiveLocations = func() map[ast.DirectiveLocation]string {
 		ast.LocationVariableDefinition, ast.LocationSchema, ast.LocationScalar, ast.LocationObject,
 		ast.LocationFieldDefinition, ast.LocationArgumentDefinition, ast.LocationInterface,
 		ast.LocationUnion, ast.LocationEnum, ast.LocationEnumValue, ast.LocationInputObject,
-		ast.LocationInputFieldDefinition,
+		ast.LocationInputFieldDefinition, locationDirectiveDefinition,
 	}
 	m := make(map[ast.DirectiveLocation]string, len(all))
 	for _, l := range all {
@@ -58,6 +63,52 @@ var introDirectiveLocations = func() map[ast.DirectiveLocation]string {
 	}
 	return m
 }()
+
+// patchPrelude brings gqlparser's introspection schema up to the current
+// specification. The prelude predates directive deprecation, so the fields
+// below are absent from every schema it loads; a client that asks for them
+// gets a validation error rather than the {false, null} the specification
+// requires. gqlparser cannot yet parse DIRECTIVE_DEFINITION as a location,
+// so nothing can actually be deprecated -- but the shape must still be there.
+func patchPrelude(s *ast.Schema) {
+	if d := s.Types["__Directive"]; d != nil {
+		if d.Fields.ForName("isDeprecated") == nil {
+			d.Fields = append(d.Fields,
+				&ast.FieldDefinition{Name: "isDeprecated", Type: ast.NonNullNamedType("Boolean", nil)},
+				&ast.FieldDefinition{Name: "deprecationReason", Type: ast.NamedType("String", nil)},
+			)
+		}
+	}
+	if loc := s.Types["__DirectiveLocation"]; loc != nil {
+		if loc.EnumValues.ForName(string(locationDirectiveDefinition)) == nil {
+			loc.EnumValues = append(loc.EnumValues, &ast.EnumValueDefinition{Name: string(locationDirectiveDefinition)})
+		}
+	}
+	// The prelude also declares @defer, which is neither implemented here nor
+	// part of the specification. Dropping it makes the validator agree with
+	// what introspection already advertises, so a client asking for
+	// incremental delivery is told no instead of silently getting a whole
+	// response. Only the prelude's declaration goes: a schema is free to
+	// define a @defer of its own, and that one is the author's business.
+	if d := s.Directives["defer"]; d != nil && isBuiltInDefinition(d.Position) {
+		delete(s.Directives, "defer")
+	}
+	if sc := s.Types["__Schema"]; sc != nil {
+		if f := sc.Fields.ForName("directives"); f != nil && f.Arguments.ForName("includeDeprecated") == nil {
+			f.Arguments = append(f.Arguments, &ast.ArgumentDefinition{
+				Name:         "includeDeprecated",
+				Type:         ast.NamedType("Boolean", nil),
+				DefaultValue: &ast.Value{Raw: "false", Kind: ast.BooleanValue},
+			})
+		}
+	}
+}
+
+// isBuiltInDefinition reports whether a definition came from gqlparser's
+// prelude rather than from the caller's SDL.
+func isBuiltInDefinition(pos *ast.Position) bool {
+	return pos != nil && pos.Src != nil && pos.Src.BuiltIn
+}
 
 // introSchema backs __Schema.
 type introSchema struct{ s *ast.Schema }
@@ -297,22 +348,29 @@ func (s *introSchema) types() []*introType {
 	return out
 }
 
-func (s *introSchema) directives() []*introDirective {
+// directives returns the schema's directives. gqlparser has no place to hang
+// directives applied to a directive definition, so none is ever deprecated and
+// includeDeprecated cannot yet change the result.
+func (s *introSchema) directives(a includeDeprecatedArgs) []*introDirective {
 	names := make([]string, 0, len(s.s.Directives))
 	for name := range s.s.Directives {
-		// @defer is declared by gqlparser's prelude but not executed yet, so
-		// it is not advertised to clients.
-		if name != "defer" {
-			names = append(names, name)
-		}
+		names = append(names, name)
 	}
 	slices.Sort(names)
 	out := make([]*introDirective, 0, len(names))
 	for _, name := range names {
-		out = append(out, &introDirective{s: s.s, def: s.s.Directives[name]})
+		d := &introDirective{s: s.s, def: s.s.Directives[name]}
+		if !a.include() && isDeprecated(d.directives()) {
+			continue
+		}
+		out = append(out, d)
 	}
 	return out
 }
+
+// directives returns the directives applied to this directive definition.
+// gqlparser's AST has no field for them yet, so the list is always empty.
+func (d *introDirective) directives() ast.DirectiveList { return nil }
 
 func (v *introInputValue) defaultValueString() *string {
 	if v.defaultValue == nil {
@@ -338,7 +396,7 @@ func introspectionOptions(b *schemaBuilder) []SchemaOption {
 			Field("queryType", func(s *introSchema) *introType { return namedType(s.s, s.s.Query) }),
 			Field("mutationType", func(s *introSchema) *introType { return namedType(s.s, s.s.Mutation) }),
 			Field("subscriptionType", func(s *introSchema) *introType { return namedType(s.s, s.s.Subscription) }),
-			Field("directives", (*introSchema).directives),
+			FieldArgs("directives", (*introSchema).directives),
 		),
 		Object[introType]("__Type",
 			Field("kind", func(t *introType) introTypeKind { return t.kind }),
@@ -385,6 +443,8 @@ func introspectionOptions(b *schemaBuilder) []SchemaOption {
 			FieldArgs("args", func(d *introDirective, a includeDeprecatedArgs) []*introInputValue {
 				return inputValuesOf(d.s, d.def.Arguments, a.include())
 			}),
+			Field("isDeprecated", func(d *introDirective) bool { return isDeprecated(d.directives()) }),
+			Field("deprecationReason", func(d *introDirective) *string { _, r := deprecation(d.directives()); return r }),
 		),
 	}
 
