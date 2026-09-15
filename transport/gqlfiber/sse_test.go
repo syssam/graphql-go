@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -165,6 +166,134 @@ func TestSSEWarnsWhenKeepAliveIsDisabled(t *testing.T) {
 	SSE(newTestExecutor(t), WithLogger(logger))
 	if buf.Len() != 0 {
 		t.Fatalf("the default keep-alive warned: %q", buf.String())
+	}
+}
+
+// panicOnFlushWarning is a logger that panics the first time the stream
+// reports a failed flush, and records everything else.
+//
+// Injecting through the logger is not arbitrary: it is the only reach a test
+// has into the stream-writer goroutine. Everything else that runs there is
+// fasthttp's own buffer and the engine's serialisation, and a panicking
+// resolver does not help -- the executor runs bindings on its own pump
+// goroutine, so its panic never reaches this closure. A slog handler that
+// panics is also a real hazard in its own right.
+type panicOnFlushWarning struct {
+	mu       sync.Mutex
+	injected bool
+	messages []string
+}
+
+func (h *panicOnFlushWarning) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *panicOnFlushWarning) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.injected && strings.Contains(r.Message, "flushing stream") {
+		h.injected = true
+		panic("gqlfiber test: panic injected into the stream writer")
+	}
+	h.messages = append(h.messages, r.Message)
+	return nil
+}
+
+func (h *panicOnFlushWarning) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *panicOnFlushWarning) WithGroup(string) slog.Handler      { return h }
+
+func (h *panicOnFlushWarning) didInject() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.injected
+}
+
+func (h *panicOnFlushWarning) logged(substr string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, m := range h.messages {
+		if strings.Contains(m, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// A panic on the stream-writer goroutine must cost one connection, not the
+// process, and must not strand the subscription behind it.
+//
+// fasthttp runs that closure on a bare goroutine with no recover of its own,
+// so without the recover this test does not fail -- it takes the whole test
+// binary down with it. With the recover but without the cleanup defer running
+// during unwinding, the process survives and the subscription is held
+// forever, which is what the registration count below catches.
+func TestSSERecoversPanicAndReleasesSubscription(t *testing.T) {
+	src := newIdleSource()
+	const sdl = `
+type Query { hello: String! }
+type Subscription { ticks: Int! }
+`
+	s, err := graphql.NewSchema(graphql.SDL(sdl),
+		graphql.Query(graphql.Field("hello", func(graphql.Root) string { return "world" })),
+		graphql.Subscription(graphql.Subscribe("ticks", src.stream)),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+
+	logs := &panicOnFlushWarning{}
+	app := fiber.New()
+	app.Post("/graphql", SSE(graphql.NewExecutor(s),
+		WithKeepAlive(20*time.Millisecond), WithLogger(slog.New(logs))))
+	base := startFiber(t, app)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/graphql",
+		strings.NewReader(`{"query":"subscription{ticks}"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := streamClient(t).Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got := src.live.Load(); got != 1 {
+		resp.Body.Close()
+		t.Fatalf("live subscriptions = %d, want 1", got)
+	}
+
+	// Drop the client, so the keep-alive tick fails its flush and the panic
+	// goes off inside the stream writer.
+	cancel()
+	resp.Body.Close()
+
+	select {
+	case <-src.released:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%d subscription(s) still held 5s after a panic on the stream writer", src.live.Load())
+	}
+
+	// Asserted after the wait, because a run where the flush never failed
+	// would release the subscription for an unrelated reason and prove
+	// nothing about the panic path.
+	if !logs.didInject() {
+		t.Fatal("no panic was ever injected -- the flush never failed, so this test proved nothing")
+	}
+	// Polled rather than read once: the recover and the release run in the
+	// same unwinding, and which lands first is a detail of how the two
+	// deferred funcs are ordered. Asserting it without a bound would make
+	// this test pass or fail on scheduling.
+	deadline := time.Now().Add(2 * time.Second)
+	for !logs.logged("panic while streaming") {
+		if time.Now().After(deadline) {
+			t.Fatal("the panic was not logged; nothing shows recover ran rather than the process dying")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
