@@ -133,11 +133,18 @@ func newConfig(opts ...Option) *config {
 
 // requestContext derives a cancellable context for one request.
 //
-// Fiber's Ctx documents itself as a context that can never be cancelled, and
-// Context() is empty unless the application set one. The executor uses
-// cancellation for teardown -- Subscribe's channel closes on it, and
-// in-flight resolvers unwind through it -- so passing Fiber's own context
-// would leave every subscription running after the client has gone.
+// Fiber's Ctx documents itself as a context that can never be cancelled: its
+// Done() is always nil. The executor uses cancellation for teardown --
+// Subscribe's channel closes on it, and in-flight resolvers unwind through it
+// -- so handing it Fiber's own context would leave a cancelled operation's
+// goroutines with nothing to unwind them.
+//
+// What this cancels on is the handler returning, not the client
+// disconnecting: Context() is context.Background() unless a middleware set
+// one, so it carries no disconnect signal. A streaming transport learns the
+// client left from its own read or write failing, and calls cancel then; this
+// helper only guarantees that the operation is torn down by the time the
+// handler is done.
 //
 // The parent is Context() rather than RequestCtx() so that values a
 // middleware attached with SetContext reach the resolvers, and so that

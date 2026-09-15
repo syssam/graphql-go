@@ -14,9 +14,10 @@ import (
 
 type ctxKey struct{}
 
-// Fiber's own Ctx can never be cancelled, which would leave a subscription
-// running after the client has gone. The derived context must cancel while
-// still carrying whatever an application put on the request context.
+// Fiber's own Ctx can never be cancelled, so the executor would have nothing
+// to unwind an operation through. The derived context must cancel once the
+// handler returns -- not on client disconnect, which Context() cannot see --
+// while still carrying whatever an application put on the request context.
 func TestRequestContextCancelsAndInheritsValues(t *testing.T) {
 	var (
 		got  context.Context
