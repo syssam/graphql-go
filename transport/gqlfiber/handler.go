@@ -7,9 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/gofiber/fiber/v3"
@@ -22,7 +20,7 @@ import (
 
 // Media types negotiated by the handler.
 const (
-	MediaTypeGraphQLResponse = "application/graphql-response+json"
+	MediaTypeGraphQLResponse = httpreq.MediaTypeGraphQLResponse
 	MediaTypeJSON            = httpreq.MediaTypeJSON
 )
 
@@ -45,7 +43,7 @@ func New(exec *graphql.Executor, opts ...Option) fiber.Handler {
 // because the response is already written -- handing Fiber an error would let
 // the application's error handler replace a GraphQL envelope with its own.
 func (h *handler) serve(c fiber.Ctx) error {
-	mediaType, ok := negotiate(c.Get("Accept"))
+	mediaType, ok := httpreq.Negotiate(c.Get("Accept"))
 	if !ok {
 		h.writeError(c, mediaType, http.StatusNotAcceptable, "Accept header does not allow %s or %s.", MediaTypeGraphQLResponse, MediaTypeJSON)
 		return nil
@@ -215,50 +213,6 @@ func (h *handler) parsePOST(src httpreq.Source) (reqs []*graphql.Request, batch 
 		return nil, false, http.StatusBadRequest, err
 	}
 	return []*graphql.Request{req}, false, 0, nil
-}
-
-// negotiate chooses the response media type from an Accept header. The
-// second result is false when the client accepts neither supported type.
-func negotiate(accept string) (string, bool) {
-	if strings.TrimSpace(accept) == "" {
-		return MediaTypeGraphQLResponse, true
-	}
-	best, bestQ := "", -1.0
-	consider := func(mt string, q float64) {
-		// Ties favour the specification's preferred type.
-		if q > bestQ || (q == bestQ && mt == MediaTypeGraphQLResponse) {
-			best, bestQ = mt, q
-		}
-	}
-	for _, part := range strings.Split(accept, ",") {
-		mt, params, err := mime.ParseMediaType(strings.TrimSpace(part))
-		if err != nil {
-			continue
-		}
-		q := 1.0
-		if qs, ok := params["q"]; ok {
-			if parsed, err := strconv.ParseFloat(qs, 64); err == nil {
-				q = parsed
-			}
-		}
-		if q <= 0 {
-			continue
-		}
-		switch mt {
-		case MediaTypeGraphQLResponse, MediaTypeJSON:
-			consider(mt, q)
-		case "*/*", "application/*":
-			// Wildcards match both; the preferred type wins the tie, but an
-			// explicit application/json still outranks a wildcard at equal q.
-			if q > bestQ {
-				best, bestQ = MediaTypeGraphQLResponse, q
-			}
-		}
-	}
-	if best == "" {
-		return MediaTypeGraphQLResponse, false
-	}
-	return best, true
 }
 
 // writeResponse writes straight into the fasthttp response buffer: fiber.Ctx
