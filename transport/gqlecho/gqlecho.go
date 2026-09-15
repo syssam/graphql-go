@@ -31,6 +31,11 @@ func (w *statusRecorder) WriteHeader(status int) {
 	w.ResponseWriter.WriteHeader(status)
 }
 
+// Unwrap gives http.ResponseController access to the underlying writer's
+// Flusher and Hijacker, which an embedded interface does not promote. SSE
+// flushing and the WebSocket upgrade both reach the real writer through it.
+func (w *statusRecorder) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
 // serve runs h and reports any transport-level failure as an *echo.HTTPError.
 func serve(c *echo.Context, h http.Handler) error {
 	rec := &statusRecorder{ResponseWriter: c.Response(), status: http.StatusOK}

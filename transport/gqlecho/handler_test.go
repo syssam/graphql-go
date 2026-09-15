@@ -28,6 +28,32 @@ func TestPostQuery(t *testing.T) {
 	}
 }
 
+// A 400 from gqlhttp carries a GraphQL response envelope, not a
+// transport-level failure -- it must reach the client as that envelope, not
+// be swallowed and replaced by Echo's error page. This guards the switch in
+// serve against ever adding http.StatusBadRequest to the mapped statuses.
+func TestMalformedQueryIsNotAnEchoHTTPError(t *testing.T) {
+	var seen error
+	e := echo.New()
+	e.HTTPErrorHandler = func(c *echo.Context, err error) { seen = err }
+	e.POST("/graphql", gqlecho.New(newTestExecutor(t)))
+
+	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if seen != nil {
+		t.Fatalf("HTTPErrorHandler invoked with %#v, want it untouched", seen)
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.HasPrefix(body, `{"errors":[{"message":`) {
+		t.Errorf("body = %s, want a GraphQL error envelope", body)
+	}
+}
+
 // A method the handler rejects must reach Echo as an HTTPError, so that an
 // application's error handler and middleware observe it. This is the only
 // behavioural reason to prefer this package over echo.WrapHandler.
