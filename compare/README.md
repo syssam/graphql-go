@@ -4,9 +4,12 @@ graphql-go and gqlgen over **one shared schema, one shared set of Go structs
 and one shared dataset**, so a difference in the numbers is a difference
 between the engines rather than between two test harnesses.
 
-    go run gen.go -n 200      # generate both engines (~40s at 200 entities)
-    go test -run TestEnginesAgree .
+    go run gen.go -n 200                          # generate both engines (~40s)
+    go test -run TestEnginesAgree .               # they must agree first
     go test -count=5 -run '^$' -bench . -benchmem .
+
+    go run ./graphqlgo/cmd/graphqlgo-server -addr :18080
+    go run ./gqlgen/cmd/gqlgen-server   -addr :18081
 
 Generated code is not committed: gqlgen emits 429 834 lines at 200 entities.
 
@@ -29,135 +32,106 @@ So gqlgen is told, per field, to resolve instead:
           owner:    { resolver: true }
           children: { resolver: true }
 
-both engines are bound to the same structs in `shared/`, `ID` is mapped to
-`string` on both sides, and gqlgen's introspection extension is enabled
-because the raw executor leaves it off while graphql-go answers introspection
-out of the box.
+both engines bind to the same structs in `shared/`, `ID` maps to `string` on
+both sides, and gqlgen's introspection extension is enabled because the raw
+executor leaves it off while graphql-go answers introspection out of the box.
 
-`TestEnginesAgree` then asserts both return **byte-identical JSON** for six
-query shapes — leaf fields, a resolver-backed object, a Relay connection, a
-nested connection, an owner chain and a mutation. Without it, the benchmarks
-below could be comparing different work.
+`TestEnginesAgree` and `TestHTTPEnginesAgree` then assert both return
+**byte-identical JSON** for six query shapes, in process and again over HTTP.
+Without that, everything below could be comparing different work.
 
-## Results, 200 entities
+## Results
 
-Go 1.27.1, Windows, i7-12700. Medians of five runs; allocation counts are
-deterministic and were identical across runs. The schema is ~1 600 types.
+200 entities (~1 600 types), Go 1.27.1, Windows, i7-12700, medians of five
+runs taken in one sitting. Allocation counts are deterministic.
 
-| Operation | graphql-go | gqlgen | graphql-go is |
+### In process
+
+| Operation | graphql-go | gqlgen | ratio |
 |---|---:|---:|---:|
-| Leaf fields | 925 ns, 16 allocs | 65 704 ns, 975 allocs | **71x** |
-| Owner (nested resolver) | 828 ns, 20 allocs | 66 368 ns, 954 allocs | **80x** |
-| Connection, 20 rows | 25 024 ns, 233 allocs | 164 477 ns, 2 715 allocs | **6.6x** |
-| Nested connection | 115 836 ns, 1 526 allocs | 429 700 ns, 10 756 allocs | **3.7x** |
-| Mutation | 734 ns, 17 allocs | 66 447 ns, 926 allocs | **90x** |
-| Full introspection | 8.77 ms, 122 666 allocs | 47.8 ms, 1 739 547 allocs | **5.5x** |
-| Schema build (start-up) | 20.0 ms, 240 863 allocs | 9.98 us, 9 allocs | **0.0005x** |
+| Leaf fields | 1 103 ns, 16 allocs | 98 323 ns, 975 allocs | **89x** |
+| Owner (nested resolver) | 1 223 ns, 20 allocs | 95 448 ns, 954 allocs | **78x** |
+| Mutation | 1 123 ns, 17 allocs | 79 276 ns, 926 allocs | **71x** |
+| Connection, 20 rows | 31 076 ns, 233 allocs | 231 434 ns, 2 715 allocs | **7.4x** |
+| Nested connection | 157 774 ns, 1 525 allocs | 573 931 ns, 10 757 allocs | **3.6x** |
+| Full introspection | 14.7 ms, 122 666 allocs | 65.9 ms, 1 739 712 allocs | **4.5x** |
 
-## The finding that matters
+### Over HTTP, one request at a time
+
+| Operation | graphql-go | gqlgen | ratio |
+|---|---:|---:|---:|
+| Leaf fields | 83.5 us, 114 allocs | 194.3 us, 1 079 allocs | **2.3x** |
+| Owner | 72.6 us, 118 allocs | 182.1 us, 1 057 allocs | **2.5x** |
+| Mutation | 67.9 us, 115 allocs | 169.3 us, 1 030 allocs | **2.5x** |
+| Connection | 120.1 us, 335 allocs | 348.6 us, 2 830 allocs | **2.9x** |
+| Nested connection | 297.6 us, 1 632 allocs | 725.1 us, 10 899 allocs | **2.4x** |
+
+### Over HTTP, saturated
+
+| | graphql-go | gqlgen | ratio |
+|---|---:|---:|---:|
+| GOMAXPROCS clients | 16.3 us, 319 allocs | 73.4 us, 2 763 allocs | **4.5x** |
+| Sustained, 32 clients | 67 109 req/s | 12 071 req/s | **5.6x** |
+
+### Start-up and memory
+
+| | graphql-go | gqlgen | |
+|---|---:|---:|---|
+| Schema build | 30.4 ms, 240 863 allocs | 13.9 us, 9 allocs | **2 180x slower** |
+| Heap retained by the schema | **11.0 MB** | 0.04 MB | **278x more** |
+| Binary size | 51.1 MB | 58.5 MB | 1.15x smaller |
+| Server RSS, idle | 46.4 MB | 21.9 MB | 2.1x more |
+| Server RSS, after 400 requests | 55.3 MB | 31.7 MB | 1.7x more |
+
+## What the numbers say
 
 **gqlgen's per-request cost scales with the size of the schema, even for a
-query that touches one object.** graphql-go's does not.
+query that touches one object.** graphql-go's does not:
 
-| Leaf query | 2 entities | 200 entities | growth |
-|---|---:|---:|---:|
-| graphql-go | 1 032 ns, 16 allocs | 925 ns, 16 allocs | **flat** |
-| gqlgen | 7 289 ns, 168 allocs | 65 704 ns, 975 allocs | **9x** |
+| Leaf query | 2 entities | 200 entities |
+|---|---:|---:|
+| graphql-go | 1 032 ns, **16 allocs** | 1 103 ns, **16 allocs** |
+| gqlgen | 7 289 ns, **168 allocs** | 98 323 ns, **975 allocs** |
 
-The allocation counts make the point without any timing noise: graphql-go
+The allocation counts carry the point without any timing noise: graphql-go
 allocates the same 16 objects whether the schema holds 2 entities or 200,
-while gqlgen goes from 168 to 975. At 200 entities gqlgen allocates 113 KB to
-answer `{ entity000(id: "3") { id owner { id name } } }`; graphql-go
-allocates 1.6 KB.
+while gqlgen goes from 168 to 975. That is the compiled-plan design measured —
+the plan is built once for the operation, so a request costs what the query
+costs, not what the schema costs.
 
-That is the compiled-plan design, measured: the plan is built once for the
-operation, so what a request costs depends on the query rather than on how
-many types the schema happens to contain.
+**Transport compresses the advantage, saturation restores it.** A loopback
+round trip costs roughly 70 us, which dwarfs the 1 us graphql-go needs for a
+leaf query, so one-at-a-time HTTP shows 2.3x rather than 89x. Under
+concurrency the round trips overlap, per-request CPU decides throughput again,
+and the ratio returns to 4.5-5.6x. The in-process figure is an upper bound and
+the sequential HTTP figure a lower one; a loaded server sits between them.
 
-## Over HTTP, which is what a server actually delivers
+**The cost is start-up and memory.** graphql-go binds and validates the whole
+type graph at `NewSchema` where gqlgen did that at code generation time, and
+then holds it: 11 MB of retained heap against 0.04 MB, and roughly 24 MB more
+resident per process. A long-lived server repays the 30 ms build within a few
+hundred requests and will not notice it again. A short-lived process answering
+one query will, and so will a deployment that is memory-bound rather than
+CPU-bound: at 55 MB against 32 MB, fewer replicas fit per node.
 
-The table above measures the engines in process. A request in production
-arrives over a socket, and transport is a fixed cost charged to both, so the
-in-process ratio is an upper bound rather than a forecast.
+## Caveats
 
-Same schema, same queries, each engine behind its own `httptest` server —
-graphql-go under `gqlhttp.New`, gqlgen under its `handler.NewDefaultServer` —
-driven by a real client. Medians of five runs.
+Timings are medians of five runs on an otherwise idle machine; a warm machine
+inflates both engines by 20-50%, so treat any single sample with suspicion and
+compare versions with `benchstat` rather than by eye. Allocation counts and
+retained heap are stable and are the figures to trust.
 
-| Operation | graphql-go | gqlgen | ratio | in process |
-|---|---:|---:|---:|---:|
-| Leaf fields | 70.2 us, 114 allocs | 182.7 us, 1 080 allocs | **2.6x** | 71x |
-| Owner | 70.1 us, 118 allocs | 171.3 us, 1 058 allocs | **2.4x** | 80x |
-| Nested connection | 265.5 us, 1 632 allocs | 806.4 us, 10 905 allocs | **3.0x** | 3.7x |
+No latency percentiles are reported. This machine's monotonic clock has a
+granularity of about 522 us — 99 999 of 100 000 back-to-back `time.Since`
+calls return exactly zero — so a request served in 70 us cannot be timed
+individually, and the *faster* engine accumulates more unmeasurable samples,
+biasing any percentile toward gqlgen. Throughput spans thousands of ticks and
+is unaffected. Tail latency needs a platform with a finer clock, and any
+external load tool inherits the same limit when run here.
 
-**A 71x engine advantage becomes 2.6x once a socket is involved.** A loopback
-round trip costs roughly 70 us here, which dwarfs the 0.9 us graphql-go needs
-to execute a leaf query and still swamps gqlgen's 65 us. The larger the query,
-the more of the advantage survives: the nested connection keeps 3.0x of its
-3.7x, because there the engine is doing enough work to matter.
-
-Allocations compress far less — 114 against 1 080, still 9.5x — and that is
-the number to watch under load, because allocation drives GC pressure and tail
-latency rather than the mean.
-
-Two caveats. `handler.NewDefaultServer` is heavier than `gqlhttp.New`: it adds
-introspection, automatic persisted queries and a multipart transport, so some
-of the gap is gqlgen's default server rather than its engine. And these runs
-are sequential, one request at a time; they say nothing about behaviour under
-saturation, which is where the allocation difference would be expected to tell.
-
-## Under concurrent load, the advantage comes back
-
-The sequential HTTP numbers above are latency-bound: one request at a time, so
-a ~70us round trip dominates and compresses everything. A real server is
-throughput-bound, with many requests in flight, and there the round trips
-overlap and the engine decides the rate again.
-
-Same connection query on both, 200 entities:
-
-| Measurement | graphql-go | gqlgen | ratio |
-|---|---:|---:|---:|
-| In process | 25.0 us, 233 allocs | 164.5 us, 2 715 allocs | 6.6x |
-| HTTP, one at a time (leaf) | 70.2 us | 182.7 us | 2.6x |
-| **HTTP, GOMAXPROCS clients** | **13.7 us, 319 allocs** | **92.1 us, 2 766 allocs** | **6.7x** |
-| **Sustained, 32 clients** | **67 109 req/s** | **12 071 req/s** | **5.6x** |
-
-Two numbers were misleading in opposite directions. The in-process ratio is an
-upper bound that ignores transport. The sequential HTTP ratio is a lower bound
-that charges the whole round trip to a single request. **A loaded server sees
-something close to the in-process figure**, because once requests overlap the
-transport stops being the bottleneck and per-request CPU decides throughput --
-which is where 8.7x fewer allocations tells.
-
-Note that the per-request cost *falls* under parallelism for both engines
-(graphql-go 70.2us to 13.7us) as round trips overlap across cores. The ratio
-is the durable part; the absolute numbers depend on core count.
-
-### Why there are no latency percentiles here
-
-The obvious next measurement is p95 and p99, and it cannot be taken on this
-machine. Its monotonic clock has a granularity of about 522us: 99 999 of
-100 000 back-to-back `time.Since` calls return exactly zero. A request served
-in 70us cannot be timed individually at all, and the *faster* engine
-accumulates more unmeasurable samples than the slower one, which quietly
-biases any percentile in gqlgen's favour.
-
-Throughput is measured over thousands of clock ticks and is unaffected. Tail
-latency needs a platform with a finer clock, and any external load tool --
-k6, vegeta, bombardier -- inherits the same limit when it runs here.
-
-## The trade-off, stated plainly
-
-**graphql-go starts about 2 000x slower.** Building the schema takes 20.0 ms
-against gqlgen's 9.98 us, because graphql-go binds and validates the whole
-type graph at `NewSchema` where gqlgen did that work at code generation time.
-
-For a long-lived server it is paid once and repaid within a few hundred
-requests. For a short-lived process — a serverless invocation answering one
-query and exiting — it is the dominant cost, and gqlgen wins.
-
-Start-up also grows faster than gqlgen's: 0.42 ms to 20.0 ms from 2 to 200
-entities (47x), against 0.37 us to 9.98 us (27x).
+`handler.NewDefaultServer` is heavier than `gqlhttp.New` — it adds
+introspection, automatic persisted queries and a multipart transport — so part
+of the HTTP gap is gqlgen's default server rather than its engine.
 
 ## Layout
 
@@ -166,9 +140,10 @@ entities (47x), against 0.37 us to 9.98 us (27x).
       internal/gen/       the generator: schema, shared structs, both engines
       engines.go          the two runners
       compare_test.go     both engines must return identical JSON
-      bench_test.go       the same operations against both, in process
+      bench_test.go       the same operations in process
       http_test.go        the same operations through a real HTTP server
       load_test.go        throughput under concurrent clients
+      memory_test.go      heap retained by a built schema
       graphqlgo/
         cmd/graphqlgo-server/   one process per engine, so a load test does
         gen/                    not have both sharing a GC and a CPU
@@ -181,12 +156,7 @@ Generated output lives under each engine's `gen/`, which is what the generator
 deletes and git ignores. Hand-written code sits beside it and survives
 regeneration.
 
-## Caveats
-
-Timings are medians of five runs on an otherwise idle machine; individual runs
-varied by up to about 10%, and a warm machine inflates both engines by 20-50%,
-so treat single samples with suspicion. Allocation figures are deterministic.
-
-The build-cost comparison — generation time, peak memory, compile and
-incremental rebuild — lives separately in
-[`docs/benchmarks.md`](../docs/benchmarks.md); this module measures execution.
+Build cost — generation time, peak memory, compile and incremental rebuild —
+is measured separately in [`docs/benchmarks.md`](../docs/benchmarks.md).
+Specification conformance is in
+[`docs/graphql-http-audit.md`](../docs/graphql-http-audit.md).

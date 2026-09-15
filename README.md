@@ -143,8 +143,10 @@ go test -run xxx -fuzz FuzzExecute -fuzztime 30s .
 cd benchmarks && go test -run '^$' -bench . -benchmem -count=5
 ```
 
-Conformance against the official GraphQL over HTTP audit is recorded in
-[`docs/graphql-http-audit.md`](docs/graphql-http-audit.md): 0 errors, all 13
-MUST requirements met. Runtime comparison with gqlgen (same SDL, same 100
-users) lives in [`docs/benchmarks.md`](docs/benchmarks.md). Bindings can be generated from
+Measured performance and specification conformance are summarised in
+[`docs/performance.md`](docs/performance.md), which links the detail: query
+execution and memory in [`compare/`](compare), build cost in
+[`docs/benchmarks.md`](docs/benchmarks.md), and the official GraphQL over HTTP
+audit in [`docs/graphql-http-audit.md`](docs/graphql-http-audit.md) — 0 errors,
+all 13 MUST requirements met. Bindings can be generated from
 SDL with [`cmd/gqlc`](cmd/gqlc).
