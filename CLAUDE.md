@@ -109,13 +109,17 @@ streams over Server-Sent Events (distinct connections mode); `transport/gqlws` s
 `graphql-transport-ws` over `coder/websocket`; `transport/gqlecho` and `transport/gqlfiber`
 add Echo v5 and Fiber v3. All five serve every operation kind — a query or mutation is one
 `next` then `complete` — so a client needs one endpoint. `internal/httpreq` expresses its
-CSRF, body-limit and decoding rules over a `Source` accessor, so `gqlhttp`, `gqlsse`,
-`gqlecho` and `gqlfiber` share one rule set and a request one rejects as forgeable or
-oversized is rejected by all four; `transport/equivalence_test.go` proves this by driving
-real requests through all four rather than by inspecting the code. The one documented
-exception: "mutations are not allowed over GET" is composed independently per transport, not
-through `httpreq`, and the SSE family (`gqlsse`, `gqlfiber`'s SSE) and the plain-HTTP family
-use different wording for it — a real split along transport kind, not drift to fix.
+CSRF, body-limit and decoding rules over a `Source` accessor, and owns `Negotiate` (Accept
+q-values, and with them the response `Content-Type` and whether a request error is 200 or
+400), so `gqlhttp`, `gqlsse`, `gqlecho` and `gqlfiber` share one rule set and a request one
+rejects as forgeable or oversized is rejected by all of them;
+`transport/equivalence_test.go` proves this by driving real requests through all six
+HTTP-carrying handlers — both SSE handlers included, since `gqlfiber`'s is hand-written —
+rather than by inspecting the code. The one documented exception: "mutations are not allowed
+over GET" is composed independently per transport, not through `httpreq`, and the SSE family
+(`gqlsse`, `gqlecho.SSE`, `gqlfiber.SSE`) and the plain-HTTP family use different wording for
+it, as they do for the unacceptable-`Accept` message — a real split along transport kind, not
+drift to fix. A row that splits still asserts every handler on both sides of it.
 
 `gqlecho` is `net/http` underneath, so it delegates to `gqlhttp`/`gqlsse`/`gqlws` rather than
 reimplementing them; its only addition over `echo.WrapHandler` is mapping a pre-response
@@ -129,8 +133,8 @@ own cancellable context; without it, `Executor.Subscribe`'s teardown has nothing
 through. **That derived context cancels on handler return, not on client disconnect**: fine
 for unary requests, but the SSE handler parks inside `SendStreamWriter` for the whole stream,
 so a failed `w.Flush()` — fasthttp's only disconnect signal — is what drives the cancel.
-Getting this backwards produces a leak test that cannot fail, which happened once on this
-branch. Two related, deliberate limits: `gqlfiber`'s WebSocket sets no read deadline (the
+Getting this backwards produces a leak test that cannot fail, which this branch's own plan
+did once, caught in review before it reached a commit. Two related, deliberate limits: `gqlfiber`'s WebSocket sets no read deadline (the
 only candidate interval is `PingInterval`, and the protocol tracks no pongs, so a derived
 deadline would drop slow-but-live clients), and `WithKeepAlive(0)` on its SSE leaves an idle
 subscription with no write that can fail, so it is held open until its source ends — the

@@ -20,6 +20,13 @@ var ErrBinaryFrame = errors.New("gqlwsproto: binary frame")
 // loop rejecting a message while operations are still streaming — and must
 // serialize itself against one: a close frame interleaved with a data frame
 // corrupts the stream.
+//
+// Read may ignore its context: gqlfiber's driver does, because
+// fasthttp/websocket's ReadMessage cannot be interrupted, and a parked read
+// there ends only when the connection does. So the protocol must never rely on
+// cancelling a read to unblock anything — closing the socket is what it has —
+// and a driver that can honour the context gains nothing the protocol depends
+// on by doing so.
 type Socket interface {
 	Read(ctx context.Context) ([]byte, error)
 	Write(ctx context.Context, data []byte) error

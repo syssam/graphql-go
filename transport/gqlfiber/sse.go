@@ -181,9 +181,11 @@ func (h *sseHandler) subscribe(c fiber.Ctx, req *graphql.Request) error {
 	// An SSE client needs the 200 to know the stream is open.
 	c.Response().ImmediateHeaderFlush = true
 
-	// The stream writer runs after this handler returns, on its own
-	// goroutine, and fiber has recycled the Ctx by then: nothing below may
-	// capture c.
+	// fasthttp starts the stream writer's goroutine inside SendStreamWriter,
+	// not when this handler returns, so the closure runs alongside the rest
+	// of the handler and goes on running after Fiber has recycled the Ctx.
+	// Nothing below may capture c: it is not merely stale by then, it is
+	// serving another request while this goroutine is still writing.
 	//
 	// Its error is discarded rather than returned, because by now the
 	// response is committed to a stream: handing fiber an error would let
@@ -192,15 +194,16 @@ func (h *sseHandler) subscribe(c fiber.Ctx, req *graphql.Request) error {
 		defer func() {
 			// Leaving the stream writer is the end of the response however
 			// it came about -- the source closed, or a flush found nobody
-			// reading. Cancelling ends the executor's pump; draining
-			// releases what it has already produced and unblocks it if it
-			// is mid-send into the unbuffered channel.
+			// reading. Cancelling ends the executor's pump; draining hands
+			// back the responses it had already built, and unblocks it if it
+			// is mid-send into the unbuffered channel. gqlsse simply returns
+			// and leaves those to the garbage collector.
 			//
-			// The drain therefore ends only if the subscription source
-			// honours cancellation. One that ignores its context holds this
-			// goroutine and its pooled writer for the process lifetime --
-			// the price of releasing responses the pump had already built,
-			// which gqlsse avoids only by abandoning them.
+			// The drain cannot hang. The pump closes this channel on its way
+			// out, and both points it can be parked at -- reading the
+			// binding's channel and sending into this one -- select on the
+			// operation context, so a subscription source that ignores its
+			// own context is not what decides whether this ends.
 			cancel()
 			for resp := range events {
 				resp.Release()
