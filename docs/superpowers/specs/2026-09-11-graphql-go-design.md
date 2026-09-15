@@ -913,6 +913,22 @@ Phase 3 is complete: the subscription executor, both streaming transports and AP
 
 ### Phase 4 Deviations
 
+- **Actual cost is the sum of resolved field weights, not a second
+  traversal.** Section 8.5 describes result-based cost; computing it by
+  re-walking the result would need the result, which the writer deliberately
+  never builds. Counting each field as it is written gives the same number --
+  `weight + child x listSize` falls out of writing the child once per element
+  -- and needs no intermediate tree.
+- **A rejected operation reports no actual cost at all.** Reporting zero would
+  read as "this query was free" rather than "it never ran", so `actualOK`
+  distinguishes the two and the member is simply absent.
+- **Counters are sized to fit the struct, not to the type's range.** Both
+  `execState` and `OperationContext` sit on a size-class boundary, so an
+  `atomic.Int64` counter cost 3.2% more bytes per request with the feature
+  switched off. A 32-bit counter packed against the existing flags measures
+  zero. Overflow would need two billion resolved fields in one operation,
+  which the complexity and cost caps exist to prevent.
+
 - **Metrics are recorded once, at the operation layer.** `ext/otel` hooks both
   the request and operation chains, and recording in both double-counts every
   request. The operation layer owns it, because that is where the operation

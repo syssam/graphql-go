@@ -62,6 +62,11 @@ func (st *execState) writeFieldValue(ctx context.Context, w *jsonw.Writer, obj *
 		w.String(obj.name)
 		return true
 	}
+	// Zero unless actual cost is enabled, so this is one compare and no
+	// atomic on the ordinary path.
+	if f.costWeight != 0 {
+		st.actualCost.Add(int32(f.costWeight))
+	}
 	if err := ctx.Err(); err != nil {
 		st.recordCancellation(ctx, err)
 		return false

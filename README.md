@@ -151,7 +151,9 @@ metadata (tracing ids, rate-limit windows).
 Executor options follow the gRPC style: `WithMaxConcurrency`, `WithPlanCache`,
 `WithErrorPresenter`, `WithRecover`, typed interceptors, plus production
 limits `WithMaxComplexity`, `WithMaxDepth` and `WithQueryCost` (Shopify-style
-`first`/`last` multipliers and optional `extensions.cost`). Schema options:
+`first`/`last` multipliers and optional `extensions.cost`; `Actual` adds
+`actualQueryCost`, summed from the fields really resolved rather than from
+assumed list sizes). Schema options:
 `DisableIntrospection`.
 
 Empty `Args[T]()` / `Input[T](name)` derive every field (`graphql` tag, else

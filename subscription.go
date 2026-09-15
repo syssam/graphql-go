@@ -274,5 +274,6 @@ func (e *Executor) runSubscriptionEvent(ctx context.Context, oc *OperationContex
 		w.Reset()
 		w.Null()
 	}
+	st.reportActualCost(e, oc)
 	return e.finishResponse(oc, w, st)
 }

@@ -111,6 +111,19 @@ query or mutation is one `next` then `complete` — so a client needs one endpoi
 HTTP transports parse requests through `internal/httpreq`, so a request one rejects as
 forgeable or oversized is rejected by the other; drift there is visible to clients.
 
+**Actual query cost (`limits.go`).** `QueryCost.Actual` sums the weight of every field
+really resolved, alongside the requested cost computed from assumed list sizes; the two
+together say whether `DefaultListSize` is near reality. Weights are resolved onto
+`planField.costWeight` at plan compile, so the write path adds an integer rather than
+looking up a coordinate, and the weight is zero unless the feature is on.
+
+**Adding a field to `execState` or `OperationContext` is a hot-path change.** Both are
+allocated per request and both sit exactly on a size-class boundary. An `atomic.Int64`
+counter on `execState` measured +3.2% B/op with the feature disabled; as an `atomic.Int32`
+packed beside `cancelled` it measures zero. Check with `unsafe.Sizeof` and `benchstat`
+before growing either, and interleave the runs — a non-interleaved comparison on this
+machine reported a 13.8% regression that vanished at n=18.
+
 `ext/otel` instruments an executor with OpenTelemetry: `graphql.NewExecutor(s, otel.New()...)`.
 One span per request, started before parsing so a parse failure still produces one and
 renamed once the operation is known. **Metrics are recorded at the operation layer and at
@@ -179,6 +192,6 @@ options, not an `ext/complexity` package; `Manifest`/`AutoBind` codegen are not 
 Read the deviations before trusting the prose. `docs/superpowers/plans/` holds the phase
 implementation plans; `docs/benchmarks.md` holds the gqlgen comparison.
 
-Status: phases 1-3 complete and merged to `main`; phase 4 in progress — `ext/otel` is
-built. Not yet built: result-based actual query cost, codegen auto-bind and manifest modes,
-APQ over WebSocket.
+Status: phases 1-3 complete and merged to `main`; phase 4 in progress — `ext/otel` and
+result-based actual query cost are built. Not yet built: codegen auto-bind and manifest
+modes, APQ over WebSocket, subscription load testing.

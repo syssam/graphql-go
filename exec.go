@@ -232,7 +232,18 @@ func (e *Executor) runOperation(ctx context.Context, oc *OperationContext) *Resp
 		w.Reset()
 		w.Null()
 	}
+	st.reportActualCost(e, oc)
 	return e.finishResponse(oc, w, st)
+}
+
+// reportActualCost publishes what execution measured. A rejected or
+// never-executed operation leaves actualOK false rather than reporting zero.
+func (st *execState) reportActualCost(e *Executor, oc *OperationContext) {
+	if e.cost == nil || !e.cost.Actual {
+		return
+	}
+	oc.actualCost = st.actualCost.Load()
+	oc.actualOK = true
 }
 
 // finishResponse packages a written buffer and the collected errors, taking
@@ -283,9 +294,22 @@ type execState struct {
 	s    *Schema
 	vars map[string]any
 
-	mu        sync.Mutex
-	errs      []*Error
-	cancelled atomic.Bool
+	mu   sync.Mutex
+	errs []*Error
+
+	// actualCost accumulates the weight of every field resolved. Sibling
+	// resolvers run concurrently, so it is atomic; it is only ever touched
+	// for fields whose costWeight is non-zero, which no field has unless
+	// actual cost is enabled.
+	//
+	// It is 32 bits, and sits next to cancelled, so that the two share the
+	// padding the struct already had: as an int64 it pushed execState into
+	// the next size class and cost 16 bytes on every request, including the
+	// requests of everyone who never turns cost accounting on. Overflow needs
+	// two billion resolved fields in one operation, which the complexity and
+	// cost caps exist to prevent and which would take minutes to reach.
+	actualCost atomic.Int32
+	cancelled  atomic.Bool
 }
 
 // elementErrors reports errors for nullable list elements that were written
