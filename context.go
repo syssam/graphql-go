@@ -27,8 +27,16 @@ type OperationContext struct {
 	// what routes the operation chain to the per-event writer.
 	event *subEvent
 
-	costOK    bool
-	costValue int
+	// These four pack into the two words costOK and costValue used to take on
+	// their own: two flags, a 32-bit measured cost beside them, then the
+	// requested cost. Laid out any other way the struct crosses a size class
+	// and every request pays 16 bytes for a feature most never enable.
+	costOK   bool
+	actualOK bool
+	// actualCost is summed during execution; actualOK distinguishes a query
+	// that resolved nothing from one that never ran.
+	actualCost int32
+	costValue  int
 
 	mu         sync.Mutex
 	values     map[any]any
@@ -79,6 +87,13 @@ func (oc *OperationContext) GetOrSet(key, value any) (actual any, loaded bool) {
 	}
 	oc.values[key] = value
 	return value, false
+}
+
+// ActualCost returns the cost summed from the fields this operation really
+// resolved, and whether it was measured. It is measured only when the executor
+// was built with a QueryCost whose Actual is set, and only after execution.
+func (oc *OperationContext) ActualCost() (int, bool) {
+	return int(oc.actualCost), oc.actualOK
 }
 
 // Complexity returns the static field count of the compiled plan.

@@ -234,6 +234,12 @@ func (b *builder) emitResolver(group string) string {
 			if b.fieldKind(name, fd) != fieldResolve {
 				continue
 			}
+			// A method binding that can fail is still scheduled like a
+			// resolver, but it is answered by the model, so asking the
+			// Resolver interface for it would demand a method nothing calls.
+			if fb, ok := b.manifest.binding(name, fd.Name); ok && fb.Kind != FieldResolver {
+				continue
+			}
 			ret := b.goType(fd.Type, "", false)
 			meth := b.resolverMethod(name, fd.Name)
 			if b.isRoot(name) {
@@ -373,6 +379,9 @@ func (b *builder) emitBindings(group string, withResolver bool) string {
 
 func (b *builder) fieldCall(typeName string, fd *ast.FieldDefinition, root bool) string {
 	goRet := b.goType(fd.Type, "", false)
+	if fb, ok := b.manifest.binding(typeName, fd.Name); ok && fb.Kind != FieldResolver {
+		return b.manifestFieldCall(typeName, fd, fb, goRet)
+	}
 	switch {
 	case b.isSubscriptionRoot(typeName):
 		meth := b.resolverMethod(typeName, fd.Name)

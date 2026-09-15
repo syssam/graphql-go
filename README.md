@@ -151,7 +151,9 @@ metadata (tracing ids, rate-limit windows).
 Executor options follow the gRPC style: `WithMaxConcurrency`, `WithPlanCache`,
 `WithErrorPresenter`, `WithRecover`, typed interceptors, plus production
 limits `WithMaxComplexity`, `WithMaxDepth` and `WithQueryCost` (Shopify-style
-`first`/`last` multipliers and optional `extensions.cost`). Schema options:
+`first`/`last` multipliers and optional `extensions.cost`; `Actual` adds
+`actualQueryCost`, summed from the fields really resolved rather than from
+assumed list sizes). Schema options:
 `DisableIntrospection`.
 
 Empty `Args[T]()` / `Input[T](name)` derive every field (`graphql` tag, else
@@ -173,8 +175,17 @@ built: `transport/gqlsse` over Server-Sent Events and `transport/gqlws` over
 init timeout and a per-connection operation cap. Both serve queries and
 mutations too -- one `next` then `complete` -- so a client needs only one
 endpoint. Automatic persisted queries are in `ext/apq`, opt-in on either HTTP transport
-with `WithPersistedQueries(apq.NewCache(1000))`. Still to come: codegen
-auto-bind and OpenTelemetry.
+with `WithPersistedQueries(apq.NewCache(1000))`. OpenTelemetry traces and
+metrics are in `ext/otel`: `graphql.NewExecutor(s, otel.New()...)`.
+
+Phase 4 is under way. `QueryCost.Actual` reports `actualQueryCost` alongside
+the requested one, summed from the fields really resolved rather than from
+assumed list sizes. `codegen.Config.Manifest` binds GraphQL types and fields
+to Go types outright instead of inferring them, still without loading any Go
+type information, which is the mode an external generator such as an ORM
+wants, and `AutoBind` discovers the same bindings from named packages,
+loading only their export data rather than a whole module. Still to come: APQ
+over WebSocket.
 
 ## Development
 

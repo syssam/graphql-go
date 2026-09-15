@@ -117,13 +117,42 @@ range. Numbers here were taken on a cool machine where possible.
 | 50 | flat | gqlgen | 7.75 s | 1.32 GB | 2 | 100 345 | 4.57 s | 8.15 s | 259 ms | **8.41 s** |
 | 50 | split | gqlc | 390 ms | 22 MB | 103 | 11 750 | 5.26 s | 171 ms | 2.18 s | **2.35 s** |
 | 50 | split | gqlgen | 8.26 s | 1.36 GB | 2 | 100 995 | 4.32 s | 8.05 s | 265 ms | **8.31 s** |
-| 200 | flat | gqlc | 331 ms | 44 MB | 2 | 35 101 | 26.04 s | 156 ms | 26.6 s | **26.76 s** |
-| 200 | flat | gqlgen | 31.44 s | 4.64 GB | 2 | 392 245 | 25.09 s | 31.6 s | 268 ms | **31.87 s** |
-| 200 | split | gqlc | 1.72 s | 39 MB | 403 | 46 700 | 23.99 s | 1.2 s | 8.76 s | **9.96 s** |
-| 200 | split | gqlgen | 34.9 s | 4.44 GB | 2 | 394 845 | 26.5 s | 31.8 s | 367 ms | **32.1 s** |
+| 200 | flat | gqlc | 430 ms | 82 MB | 2 | 35 084 | 27.2 s | 182 ms | 33.25 s | **33.43 s** |
+| 200 | flat | gqlgen | 40.73 s | 4.62 GB | 2 | 392 245 | 28.56 s | 36.94 s | 305 ms | **37.25 s** |
+| 200 | split | gqlc | 1.47 s | 72 MB | 403 | 42 485 | 29.91 s | 1.06 s | 10.3 s | **11.37 s** |
+| 200 | split | gqlgen | 39.29 s | 4.36 GB | 2 | 394 845 | 31.39 s | 38.39 s | 426 ms | **38.82 s** |
 
 gqlgen ignores the layout: its output is one `generated.go` plus one model
 package either way.
+
+### Reading the 200-entity rows
+
+The 50-entity rows are older. The 200-entity rows were re-measured in one
+sitting after phase 4, both engines back to back, which is the only way the
+comparison means anything: every absolute number here is larger than the
+figures this document first carried, gqlgen's included -- its generation went
+from 31.4 s to 40.7 s on identical input. That is the machine, not the code.
+**Compare the ratios, not the seconds.**
+
+| At 200 entities | flat | split |
+|---|---:|---:|
+| Generation | **95x** faster | **27x** faster |
+| Peak RSS | **56x** less | **60x** less |
+| Generated lines | **11x** fewer | **9.3x** fewer |
+| Edit to rebuilt | 1.11x faster | **3.4x** faster |
+
+Generation speed is unchanged from the original measurement at 95x. Peak RSS
+was 105x and is now 56x, and that one is the code rather than the machine:
+`codegen` imports `golang.org/x/tools/go/packages` for auto-bind, which links
+into `gqlc` whether or not auto-bind is used, taking the binary from 5.4 MB to
+9.7 MB and roughly doubling its resident set. Generated output is unaffected --
+byte-identical to the previous commit for the same schema, verified by
+generating with both binaries and diffing.
+
+It is worth being plain about what that trade bought: a feature many users will
+never enable costs every user of the CLI about 40 MB of peak memory. It is the
+clearest argument yet for `codegen` becoming its own module, and it is recorded
+here rather than absorbed quietly into a smaller headline number.
 
 ## Confirmed
 

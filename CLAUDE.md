@@ -84,6 +84,15 @@ the bounded semaphore; `Inline()`/`Concurrent()` override per field. `loader.Loa
 coalesces `Load` calls within one concurrent wave — the executor announces a wave before
 launching sibling tasks (`pushWave`), which is what makes DataLoader batching work.
 
+`transport/gqlws/load_test.go` opens 150 concurrent subscriptions and requires both the
+source registrations and the goroutines back afterwards; it honours `-short`.
+`BenchmarkSubscriptionFanout` measures a broadcast reaching every subscriber by counting
+receipts, because `publish` drops rather than blocks and timing it alone reports a fan-out
+to 128 clients at 45ns each when the honest figure is 4us. **Releasing an operation is
+doubly redundant** — the operation context derives from the connection context, and
+`cancelAll` also calls each stored cancel — so breaking either leaves every test green and
+only breaking both leaks. Do not read a green suite as evidence that one of them is dead.
+
 **Subscriptions (`subscription.go`).** `Subscribe`/`SubscribeArgs` bind a subscription root
 field to a function returning `<-chan R`; `Executor.Subscribe` plans the operation, opens
 the stream and returns `<-chan *Response`, one per event, closed when the source closes or
@@ -98,6 +107,28 @@ and why field interceptors do not see that one field. A subscription root field 
 args structs, a `Resolver` interface and bindings that call the same public constructors as
 hand-written code. Each group emits a single `generated.go` holding its args, `Resolver`
 interface and bindings — one file per package, since that is the unit the compiler rebuilds.
+`Config.Manifest` binds types and fields outright instead of inferring them, which is the
+mode an external generator wants; it still loads no Go type information, so a method binding
+declares its own shape (`Context`, `Error`). Type bindings are folded into `cfg.Models` in
+`newBuilder`, so model references, imports and `mapped` keep working unchanged and only
+field kinds and group overrides are read from the manifest afterwards. **A method's
+arguments are spread into the call, not passed as the generated args struct** — passing the
+struct makes the bound type's package import the generated one, which already imports it for
+the model, and that is an import cycle. A type in the manifest gets no inference at all: an
+unlisted field is a resolver.
+
+`Config.AutoBind` discovers bindings from named packages instead of being told them, and
+produces a `Manifest` — so discovery is the only new behaviour and everything downstream is
+the manifest path. **Only export data is loaded** (`NeedName | NeedTypes | NeedImports |
+NeedDeps`): adding `NeedSyntax` or `NeedTypesInfo` would parse every file of every package,
+which is the cost this project exists to avoid, so treat either as a regression. Matching is
+json tag, then case-insensitive name, then a method whose shape the generator can call;
+anything else falls through to `Resolver`, because a resolver method can always be written
+where a bad guess is a compile error in code the user did not write. A Go type over the same
+basic kind gets a conversion (`graphql.ID(v.ID)`), since an ORM storing an id as a `string`
+still answers `ID!` and refusing would send the commonest field in any schema through a
+resolver.
+
 One SDL group stays flat in `Output`; two or more become subpackages plus a `Resolvers` struct, with models split the same way (`model/<group>/`) so a one-group edit
 does not invalidate every other group's compiled package — except when two groups' input
 objects reference each other, which would be an import cycle and falls back to one shared
@@ -110,6 +141,27 @@ streams over Server-Sent Events (distinct connections mode); `transport/gqlws` s
 query or mutation is one `next` then `complete` — so a client needs one endpoint. The two
 HTTP transports parse requests through `internal/httpreq`, so a request one rejects as
 forgeable or oversized is rejected by the other; drift there is visible to clients.
+
+**Actual query cost (`limits.go`).** `QueryCost.Actual` sums the weight of every field
+really resolved, alongside the requested cost computed from assumed list sizes; the two
+together say whether `DefaultListSize` is near reality. Weights are resolved onto
+`planField.costWeight` at plan compile, so the write path adds an integer rather than
+looking up a coordinate, and the weight is zero unless the feature is on.
+
+**Adding a field to `execState` or `OperationContext` is a hot-path change.** Both are
+allocated per request and both sit exactly on a size-class boundary. An `atomic.Int64`
+counter on `execState` measured +3.2% B/op with the feature disabled; as an `atomic.Int32`
+packed beside `cancelled` it measures zero. Check with `unsafe.Sizeof` and `benchstat`
+before growing either, and interleave the runs — a non-interleaved comparison on this
+machine reported a 13.8% regression that vanished at n=18.
+
+`ext/otel` instruments an executor with OpenTelemetry: `graphql.NewExecutor(s, otel.New()...)`.
+One span per request, started before parsing so a parse failure still produces one and
+renamed once the operation is known. **Metrics are recorded at the operation layer and at
+the request layer only when the operation chain never ran** — recording at both double-counts
+every request, which the metric test caught. Field spans are opt-in and cost more than they
+look: a field interceptor routes every field through the type-erased path, pure ones
+included.
 
 `ext/apq` is automatic persisted queries, opt-in through `WithPersistedQueries` on either
 HTTP transport. **Resolution happens during parsing, not at execution**: a request carrying
@@ -134,8 +186,11 @@ produce engine values directly.
 
 - **Root package may depend only on `gqlparser/v2` and the standard library.** Transports,
   codegen and extensions keep their dependencies in sub-packages. `go.mod` therefore also
-  carries `yaml.v3` (for `cmd/gqlc`) and `coder/websocket` (for `transport/gqlws`); the rule
-  is about what the root package imports, not about module purity.
+  carries `yaml.v3` (for `cmd/gqlc`), `coder/websocket` (for `transport/gqlws`) and the
+  OpenTelemetry API and SDK (for `ext/otel`, the SDK only in its tests); the rule is about
+  what the root package imports, not about module purity. `ext/otel` is the obvious
+  candidate to split into its own module at publication time, so that the SDK leaves every
+  consumer's module graph.
 - **No reflection on the request hot path.** Reflection is allowed at `NewSchema`, in
   `Args[T]`/`Input[T]` decode, and in the one documented composite nested-list traverser
   (which logs `slog.Warn` at start-up). Adding reflection to the write path is a regression.
@@ -168,6 +223,6 @@ options, not an `ext/complexity` package; `Manifest`/`AutoBind` codegen are not 
 Read the deviations before trusting the prose. `docs/superpowers/plans/` holds the phase
 implementation plans; `docs/benchmarks.md` holds the gqlgen comparison.
 
-Status: phases 1 and 2 complete and merged to `main`; phase 3 complete on
-`phase3-subscriptions` — subscription executor, `transport/gqlsse`, `transport/gqlws` and
-`ext/apq`. Not yet built: OpenTelemetry, codegen auto-bind and manifest modes.
+Status: phases 1-3 complete and merged to `main`; phase 4 in progress — `ext/otel`,
+result-based actual query cost and both codegen binding modes are built. Not yet built: APQ
+over WebSocket, subscription load testing.

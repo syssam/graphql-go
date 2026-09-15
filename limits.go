@@ -27,6 +27,14 @@ type QueryCost struct {
 	// Report writes extensions.cost on every response, including
 	// rejected ones.
 	Report bool
+	// Actual also reports actualQueryCost, summed from the fields that were
+	// really resolved rather than from assumed list sizes. Requested cost has
+	// to guess how long a list will be; actual cost counts it, so the two
+	// together say whether DefaultListSize is set anywhere near reality.
+	//
+	// It costs one integer add per resolved field on the write path, which is
+	// why it is separate from Report rather than implied by it.
+	Actual bool
 }
 
 func (c QueryCost) listArgs() []string {
@@ -109,6 +117,11 @@ func (e *Executor) attachCost(oc *OperationContext, resp *Response) {
 	payload := map[string]any{"requestedQueryCost": n}
 	if e.cost.Max > 0 {
 		payload["maxQueryCost"] = e.cost.Max
+	}
+	// An operation rejected before execution resolved nothing, so reporting a
+	// zero would read as "this query was free" rather than "it never ran".
+	if e.cost.Actual && oc.actualOK {
+		payload["actualQueryCost"] = int(oc.actualCost)
 	}
 	if resp.Extensions == nil {
 		resp.Extensions = map[string]any{}

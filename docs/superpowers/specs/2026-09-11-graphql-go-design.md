@@ -820,8 +820,8 @@ passed to `graph.NewSchema`.
   models hold only leaf fields, so object types never reference each other
   and the split is acyclic; input objects can reference across groups, and
   a cycle among them falls back to the single shared package.
-- **`Manifest` and `AutoBind` are not implemented.** There is no
-  `go/packages` loading.
+- **`Manifest` and `AutoBind` are implemented in phase 4, not phase 2.** See
+  the phase 4 deviations.
 - **`Config.Models` is `map[string]string`.** A GraphQL type maps to a Go
   type expression (`Time: time.Time`). Unmapped custom scalars become named
   `string` types in `model`. Mapped scalars are omitted from `model` and
@@ -873,6 +873,26 @@ Phase 3 is complete: the subscription executor, both streaming transports and AP
   subscription sharing that connection. The operation context still gates
   whether a result is written at all, which narrows post-`complete` traffic to
   the one event already mid-write.
+
+  The tear-down is not a hazard to be avoided but the reason the rule works,
+  and the two facts only make sense together: a peer that cannot accept a
+  frame is gone, and dropping the connection is what frees every other
+  subscriber on that socket. What must not happen is dropping it because one
+  subscriber unsubscribed.
+
+  A consequence worth knowing before anyone tunes this: **writes on a
+  connection are serialized, so a peer that stops reading stalls every
+  subscription on that connection.** coder/websocket blocks concurrent writers
+  internally, so this has been true since `gqlws` shipped rather than being
+  introduced by any later locking, and the protocol ping does not rescue it —
+  the ping travels the same write path and parks on the same lock. Nothing
+  bounds the wait, because writes use the connection context and that context
+  has no deadline. A per-write deadline would bound it, and cancelling a write
+  is the correct response by the rule above; it is deliberately not derived
+  from the ping interval, which answers "is this peer alive" rather than "is
+  this peer accepting bytes" — a peer can acknowledge pings with a full
+  receive window. Not implemented: it is new public API on every driver, so it
+  belongs to whoever takes that decision rather than being slipped in.
 - **The init timeout closes the connection from a timer, not by bounding the
   read.** A read aborted by its own context leaves the library no way to emit a
   close frame, so the client would see an abnormal closure rather than 4408.
@@ -910,6 +930,85 @@ Phase 3 is complete: the subscription executor, both streaming transports and AP
   `Resolve` there composes cleanly and then has no stream, so it is rejected
   at `NewSchema` rather than at request time. Codegen emits
   `Subscribe`/`SubscribeArgs` and a `<-chan T` resolver signature to match.
+
+### Phase 4 Deviations
+
+- **Actual cost is the sum of resolved field weights, not a second
+  traversal.** Section 8.5 describes result-based cost; computing it by
+  re-walking the result would need the result, which the writer deliberately
+  never builds. Counting each field as it is written gives the same number --
+  `weight + child x listSize` falls out of writing the child once per element
+  -- and needs no intermediate tree.
+- **A rejected operation reports no actual cost at all.** Reporting zero would
+  read as "this query was free" rather than "it never ran", so `actualOK`
+  distinguishes the two and the member is simply absent.
+- **Counters are sized to fit the struct, not to the type's range.** Both
+  `execState` and `OperationContext` sit on a size-class boundary, so an
+  `atomic.Int64` counter cost 3.2% more bytes per request with the feature
+  switched off. A 32-bit counter packed against the existing flags measures
+  zero. Overflow would need two billion resolved fields in one operation,
+  which the complexity and cost caps exist to prevent.
+
+- **Auto-bind produces a Manifest and stops.** Section 7.3 describes
+  discovery as its own path; making it emit a manifest instead means the
+  emission, validation and grouping it needs were already built and tested by
+  manifest mode, and discovery is the only new behaviour to get wrong.
+- **A Go type over the same basic kind is bound with a conversion.** Section
+  7.3 matches by name and says nothing about types. Binding `ID!` to a field
+  declared `string` fails to compile, and refusing it sends the commonest
+  field in any schema through a resolver, so the generator emits
+  `graphql.ID(v.ID)`. The conversion is only emitted when both sides bottom
+  out in the same basic kind, where it can neither lose information nor
+  reinterpret one thing as another; anything else falls through to the
+  resolver. The compile-and-run test found this too — the emitted text read
+  correctly and did not compile.
+- **Signature sniffing is conservative.** A method binds only when its shape
+  is `(ctx?, args...) (R)` or `(R, error)` with the argument count matching
+  the field's. Variadics, a context anywhere but first, and any other result
+  shape fall through to the resolver rather than generating a call that will
+  not compile.
+
+- **A manifest method's arguments are spread, not passed as the args
+  struct.** Section 7.3 leaves the call shape open. Passing
+  `ProductPriceWithTaxArgs` would make the bound type's package import the
+  generated package, which already imports it for the model: an import cycle,
+  and an ORM entity depending on GraphQL types. `v.PriceWithTax(a.Rate)` has
+  neither problem and is how the method would have been written anyway. The
+  compile-and-run test found this; nothing in the emitted text looked wrong.
+- **A manifest method declares its own shape.** `FieldBinding.Context` and
+  `Error` say whether the method takes a context and whether it can fail,
+  because manifest mode loads no type information and so cannot look it up.
+  Section 7.3's signature sniffing belongs to auto-bind mode.
+- **A type in the manifest gets no inference.** Section 7.2 says an absent
+  field falls through to discovery or `Resolver`; with no auto-bind that is
+  `Resolver`, which is also the safe answer — a resolver method can always be
+  written, where generated access to a struct field that does not exist is a
+  compile error in code the user did not write.
+- **Type bindings are folded into `Config.Models`.** A manifest `Go` binding
+  and a `Models` entry are the same fact in two spellings, so `newBuilder`
+  merges them and rejects a disagreement rather than silently preferring one.
+
+- **Metrics are recorded once, at the operation layer.** `ext/otel` hooks both
+  the request and operation chains, and recording in both double-counts every
+  request. The operation layer owns it, because that is where the operation
+  type is known; the request layer records only when the operation chain never
+  ran, which is how a parse failure is still counted exactly once. A flag on
+  the context, not a response inspection, decides which — a complexity
+  rejection also produces a request-error response from inside the operation
+  chain, and inspecting the response would double-count that case.
+- **The query document is not recorded on spans by default.** Inline arguments
+  can carry data, and traces are usually retained longer and read more widely
+  than logs. `WithDocument(true)` opts in.
+- **A subscription event is its own span.** `Executor.Subscribe` does not run
+  the request chain and the operation chain runs per event, so the operation
+  interceptor creates its own span when it finds none. That is the useful
+  shape anyway: an event is the unit of work, and a subscription open for a
+  day should not be a single span.
+- **`ext/otel` lives in the root module.** The OpenTelemetry SDK is test-only
+  here but still lands in every consumer's module graph as a direct require.
+  While the project is unpublished a separate module would add a versioning
+  problem for a benefit that only matters after release, and the import path
+  is the same either way, so splitting it is deferred rather than rejected.
 
 ## 12. Risks and Mitigations
 

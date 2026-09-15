@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 )
 
-// Config drives Generate. Manifest and AutoBind are not required: SDL
-// types without a Models entry get a generated model in Output/model.
+// Config drives Generate. A Manifest is not required: SDL types without a
+// Models or Manifest entry get a generated model in Output/model.
 type Config struct {
 	// Dir is the working directory for SchemaGlobs and Output. Empty means
 	// the process working directory.
@@ -31,6 +31,14 @@ type Config struct {
 	// (for example Time → time.Time). Unmapped custom scalars become
 	// named string types in the model package.
 	Models map[string]string
+	// Manifest binds GraphQL types and fields explicitly instead of letting
+	// the generator infer them. It loads no Go type information; see the
+	// Manifest documentation.
+	Manifest *Manifest
+	// AutoBind names package patterns to discover bindings from. Only those
+	// packages are loaded, and only their export data: no syntax trees and no
+	// function bodies. A Manifest entry overrides discovery field by field.
+	AutoBind []string
 	// NullableInputOmittable uses graphql.Omittable[*T] for nullable
 	// input-object fields so PATCH-style inputs distinguish absent from
 	// null. Field arguments stay pointers.

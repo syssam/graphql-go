@@ -1,0 +1,268 @@
+// Package otel instruments an Executor with OpenTelemetry traces and metrics.
+//
+// Install it as executor options:
+//
+//	e := graphql.NewExecutor(schema, otel.New()...)
+//
+// One span covers a request. It starts before parsing, so a document that
+// fails to parse still produces a span, and is renamed once the operation is
+// known — a span called "query UserPage" is worth more than one called
+// "graphql.request", but the name is only available after parsing.
+//
+// Subscriptions are the exception to "one span per request": Executor.
+// Subscribe does not run the request chain, and the operation chain runs once
+// per event. Each event therefore gets its own operation span, parented to
+// whatever span was active when Subscribe was called, which is the useful
+// shape — an event is the unit of work, and a subscription open for a day
+// should not be one span.
+package otel
+
+import (
+	"context"
+	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/syssam/graphql-go"
+)
+
+// ScopeName identifies this instrumentation to a tracer or meter provider.
+const ScopeName = "github.com/syssam/graphql-go/ext/otel"
+
+// Attribute keys, following the OpenTelemetry GraphQL semantic conventions.
+const (
+	AttrOperationName = attribute.Key("graphql.operation.name")
+	AttrOperationType = attribute.Key("graphql.operation.type")
+	AttrDocument      = attribute.Key("graphql.document")
+
+	// Attributes with no convention, kept under a distinct prefix so they are
+	// obviously ours rather than mistaken for standard ones.
+	AttrFieldPath   = attribute.Key("graphqlgo.field.path")
+	AttrCacheHit    = attribute.Key("graphqlgo.plan.cache_hit")
+	AttrComplexity  = attribute.Key("graphqlgo.operation.complexity")
+	AttrDepth       = attribute.Key("graphqlgo.operation.depth")
+	AttrErrorCount  = attribute.Key("graphqlgo.response.error_count")
+	AttrFieldObject = attribute.Key("graphqlgo.field.object")
+)
+
+type config struct {
+	tracer      trace.Tracer
+	meter       metric.Meter
+	fieldSpans  bool
+	recordQuery bool
+	duration    metric.Float64Histogram
+	errors      metric.Int64Counter
+}
+
+// Option configures the instrumentation.
+type Option func(*config)
+
+// WithTracerProvider sets the provider spans are created from. The default is
+// otel.GetTracerProvider().
+func WithTracerProvider(tp trace.TracerProvider) Option {
+	return func(c *config) { c.tracer = tp.Tracer(ScopeName) }
+}
+
+// WithMeterProvider sets the provider metrics are created from. The default is
+// otel.GetMeterProvider().
+func WithMeterProvider(mp metric.MeterProvider) Option {
+	return func(c *config) { c.meter = mp.Meter(ScopeName) }
+}
+
+// WithFieldSpans emits a span per field. It is off by default and costs more
+// than it looks: a field interceptor routes every field through the
+// type-erased path, including the pure ones that would otherwise run inline
+// with no context allocation at all.
+func WithFieldSpans(enabled bool) Option {
+	return func(c *config) { c.fieldSpans = enabled }
+}
+
+// WithDocument records the query text on the span. It is off by default
+// because a document can carry data in inline arguments, and traces are
+// usually retained longer and read more widely than logs.
+func WithDocument(enabled bool) Option {
+	return func(c *config) { c.recordQuery = enabled }
+}
+
+// New returns the executor options that install the instrumentation.
+func New(opts ...Option) []graphql.ExecutorOption {
+	c := &config{}
+	for _, o := range opts {
+		o(c)
+	}
+	if c.tracer == nil {
+		c.tracer = otel.GetTracerProvider().Tracer(ScopeName)
+	}
+	if c.meter == nil {
+		c.meter = otel.GetMeterProvider().Meter(ScopeName)
+	}
+	// Instrument creation fails only on a bad name, which is a constant here;
+	// a nil instrument is simply not recorded, so a failure degrades to traces
+	// only rather than taking the server down.
+	c.duration, _ = c.meter.Float64Histogram("graphql.server.request.duration",
+		metric.WithUnit("s"),
+		metric.WithDescription("Duration of a GraphQL operation."))
+	c.errors, _ = c.meter.Int64Counter("graphql.server.errors",
+		metric.WithDescription("GraphQL errors returned to clients."))
+
+	out := []graphql.ExecutorOption{
+		graphql.WithRequestInterceptor(graphql.RequestInterceptorFunc(c.interceptRequest)),
+		graphql.WithOperationInterceptor(graphql.OperationInterceptorFunc(c.interceptOperation)),
+	}
+	if c.fieldSpans {
+		out = append(out, graphql.WithFieldInterceptor(graphql.FieldInterceptorFunc(c.interceptField)))
+	}
+	return out
+}
+
+// interceptRequest opens the span that covers everything, including parsing.
+func (c *config) interceptRequest(ctx context.Context, req *graphql.Request, next graphql.RequestHandler) *graphql.Response {
+	ctx, span := c.tracer.Start(ctx, "graphql.request", trace.WithSpanKind(trace.SpanKindServer))
+	defer span.End()
+
+	if req.OperationName != "" {
+		span.SetAttributes(AttrOperationName.String(req.OperationName))
+	}
+	if c.recordQuery {
+		span.SetAttributes(AttrDocument.String(req.Query))
+	}
+
+	// The operation layer owns the metrics, because that is where the
+	// operation type is known and it is the better dimension to slice by.
+	// This flag lets the request layer record only when the operation chain
+	// never ran, so a parse failure is counted exactly once and a successful
+	// request is not counted twice.
+	recorded := new(bool)
+	ctx = context.WithValue(ctx, recordedKey{}, recorded)
+
+	start := time.Now()
+	resp := next(ctx, req)
+	c.recordSpan(span, resp)
+	if !*recorded {
+		c.recordMetrics(ctx, resp, start, requestAttrs(req))
+	}
+	return resp
+}
+
+// recordedKey carries the flag that keeps a metric from being recorded at
+// both layers of the chain.
+type recordedKey struct{}
+
+// interceptOperation names the span now that the operation is known and adds
+// what only the compiled plan can say.
+func (c *config) interceptOperation(ctx context.Context, oc *graphql.OperationContext, next graphql.OperationHandler) *graphql.Response {
+	span := trace.SpanFromContext(ctx)
+	kind := string(oc.Operation.Operation)
+	name := oc.Operation.Name
+
+	// A subscription event never passed through interceptRequest, so it has no
+	// span of ours to rename and needs one of its own.
+	own := !span.IsRecording()
+	if own {
+		var sub trace.Span
+		ctx, sub = c.tracer.Start(ctx, spanName(kind, name), trace.WithSpanKind(trace.SpanKindServer))
+		defer sub.End()
+		span = sub
+	} else {
+		span.SetName(spanName(kind, name))
+	}
+
+	attrs := []attribute.KeyValue{
+		AttrOperationType.String(kind),
+		AttrCacheHit.Bool(oc.Stats.CacheHit),
+		AttrComplexity.Int(oc.Complexity()),
+		AttrDepth.Int(oc.Depth()),
+	}
+	if name != "" {
+		attrs = append(attrs, AttrOperationName.String(name))
+	}
+	span.SetAttributes(attrs...)
+
+	start := time.Now()
+	resp := next(ctx, oc)
+
+	metricAttrs := []attribute.KeyValue{AttrOperationType.String(kind)}
+	if name != "" {
+		metricAttrs = append(metricAttrs, AttrOperationName.String(name))
+	}
+	c.recordMetrics(ctx, resp, start, metricAttrs)
+	if flag, ok := ctx.Value(recordedKey{}).(*bool); ok {
+		*flag = true
+	}
+	// A subscription event owns its span, so it also applies the outcome; on
+	// a request the enclosing layer does it once, over the whole request.
+	if own {
+		c.recordSpan(span, resp)
+	}
+	return resp
+}
+
+// interceptField emits a span per field when field spans are enabled.
+func (c *config) interceptField(ctx context.Context, fc *graphql.FieldContext, next graphql.FieldHandler) (any, error) {
+	ctx, span := c.tracer.Start(ctx, fc.Object.Name+"."+fc.Field.Name)
+	defer span.End()
+	span.SetAttributes(
+		AttrFieldObject.String(fc.Object.Name),
+		AttrFieldPath.String(fc.Path().String()),
+	)
+
+	v, err := next(ctx)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return v, err
+}
+
+// recordSpan applies the outcome of a response to a span. Field errors mark
+// it as an error too: a 200 carrying errors is still a request that did not do
+// what was asked.
+func (c *config) recordSpan(span trace.Span, resp *graphql.Response) {
+	n := errorCount(resp)
+	span.SetAttributes(AttrErrorCount.Int(n))
+	if n == 0 {
+		span.SetStatus(codes.Ok, "")
+		return
+	}
+	span.SetStatus(codes.Error, resp.Errors[0].Message)
+	for _, e := range resp.Errors {
+		span.RecordError(e)
+	}
+}
+
+func (c *config) recordMetrics(ctx context.Context, resp *graphql.Response, start time.Time, attrs []attribute.KeyValue) {
+	set := metric.WithAttributes(attrs...)
+	if c.duration != nil {
+		c.duration.Record(ctx, time.Since(start).Seconds(), set)
+	}
+	if n := errorCount(resp); c.errors != nil && n > 0 {
+		c.errors.Add(ctx, int64(n), set)
+	}
+}
+
+func errorCount(resp *graphql.Response) int {
+	if resp == nil {
+		return 0
+	}
+	return len(resp.Errors)
+}
+
+func requestAttrs(req *graphql.Request) []attribute.KeyValue {
+	if req.OperationName == "" {
+		return nil
+	}
+	return []attribute.KeyValue{AttrOperationName.String(req.OperationName)}
+}
+
+// spanName follows the convention of "<type> <name>", falling back to the
+// type alone for an anonymous operation rather than leaving a trailing space.
+func spanName(kind, name string) string {
+	if name == "" {
+		return kind
+	}
+	return kind + " " + name
+}

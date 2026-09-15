@@ -81,6 +81,12 @@ type planField struct {
 	abstract    *abstractType
 	exec        fieldExec
 	schedulable bool
+
+	// costWeight is this field's contribution to the actual query cost,
+	// resolved once here so the write path adds an integer instead of
+	// looking up a schema coordinate. It stays zero unless actual cost is
+	// enabled, which is what keeps the write path unchanged when it is not.
+	costWeight int
 }
 
 // fieldExec holds the executor functions used for a field within one plan.
@@ -295,6 +301,9 @@ func (c *compiler) buildField(obj *objectType, g *fieldGroup) *planField {
 	pf.def = fd
 	pf.exec = fieldExec{writeLeaf: fd.writeLeaf, resolve: fd.resolve}
 	pf.schedulable = fd.schedulable
+	if c.e != nil && c.e.cost != nil && c.e.cost.Actual {
+		pf.costWeight = c.e.cost.weight(coordinate(obj.name, fd.name))
+	}
 	if c.e != nil && len(c.e.fieldInterceptors) > 0 {
 		pf.exec = c.e.interceptedExec(pf)
 	}
