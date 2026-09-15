@@ -15,6 +15,18 @@
 // carry a WebSocket at all, and hands the wrapped handler a request context
 // that does not cancel when the client disconnects. See docs/benchmarks.md for
 // the measurement and its caveats.
+//
+// The handlers from New and SSE never return an error, because by the time
+// anything can go wrong a GraphQL response envelope is already on the wire
+// and handing Fiber an error would invite the application's error handler to
+// write a second body over it. WS is the exception: a refused upgrade -- a
+// plain HTTP request, or an unauthorized Origin -- is rejected before any
+// GraphQL response exists, so there is nothing to protect and the refusal is
+// Fiber's own (fiber.ErrUpgradeRequired, or a 403), shaped like every other
+// rejected request in the application.
+//
+// The body limit is the one place where an option means something different
+// here than under net/http: see WithMaxBodyBytes.
 package gqlfiber
 
 import (
@@ -70,6 +82,14 @@ type config struct {
 type Option func(*config)
 
 // WithMaxBodyBytes limits the size of request bodies. The default is 1 MiB.
+//
+// Unlike its gqlhttp namesake this does not bound the wire read. fasthttp has
+// already read the whole body, and Fiber has already decompressed a
+// Content-Encoding one, before a handler runs, so n is checked against a body
+// that is by then fully in memory: a compressed expansion bomb is
+// materialised before it is rejected. fiber.Config.BodyLimit is what bounds
+// the read from the socket, at 4 MiB by default -- set the two together, or a
+// hardened n here promises a bound the server does not have.
 func WithMaxBodyBytes(n int64) Option { return func(c *config) { c.maxBody = n } }
 
 // WithBatching accepts JSON arrays of requests with at most max entries,

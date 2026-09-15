@@ -7,9 +7,24 @@
 // an unacceptable Accept header, a forgeable request -- reach Echo as an
 // *echo.HTTPError, so an application's error handler and middleware see them.
 //
+// That HTTPError is observational. The wrapped handler has already written
+// the status and the response body by the time it is raised, so Echo's
+// default error handler finds the response committed and returns without
+// touching it. A replacement HTTPErrorHandler must do the same: one that
+// calls c.JSON unconditionally logs "echo: response already written to
+// client" and changes nothing a client sees. Use echo.UnwrapResponse on the
+// Context's response writer and check Committed before writing.
+//
 // GraphQL errors are not translated: a response carrying field errors is a
 // successful HTTP response, and the status rules for
 // application/graphql-response+json belong to gqlhttp.
+//
+// Nothing here raises an HTTPError for a refused WebSocket upgrade, where
+// gqlfiber raises a Fiber error: WS hands the request straight to gqlws
+// rather than through the recorder below, because the upgrade hijacks the
+// connection and a refused one has already written its own response. The
+// difference is in what each framework's socket layer leaves to report, not a
+// difference of policy.
 package gqlecho
 
 import (

@@ -36,7 +36,12 @@ func main() {
 
 	exec := graphql.NewExecutor(s)
 
-	app := fiber.New()
+	// BodyLimit is set alongside gqlfiber's own default of 1 MiB because the
+	// two bound different things: fasthttp has read and decompressed the
+	// whole body before a handler sees it, so gqlfiber's limit is a length
+	// check on memory already spent, and BodyLimit (4 MiB if left alone) is
+	// the only thing bounding the read from the socket.
+	app := fiber.New(fiber.Config{BodyLimit: 1 << 20})
 
 	// Each handler serves more than one method itself (gqlfiber's GraphQL
 	// and SSE handlers both accept GET and POST; its WS handler answers any
