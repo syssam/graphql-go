@@ -116,6 +116,9 @@ func WithReadLimit(n int64) Option { return func(c *config) { c.readLimit = n } 
 // whether it is accepting bytes, and a peer can answer pings while its
 // receive window stays full. Because gqlwsproto serializes writes, one peer
 // stalled here blocks every subscription sharing its connection.
+//
+// It also bounds the handshake: the 101 response is a write to the same peer
+// asking the same question, so it is held to the same deadline.
 func WithWriteTimeout(d time.Duration) Option { return func(c *config) { c.writeTimeout = d } }
 
 // WithOriginPatterns authorizes cross-origin WebSocket connections from hosts

@@ -1,10 +1,14 @@
 package gqlfiber
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
+	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -358,6 +362,112 @@ func TestWSOriginCheck(t *testing.T) {
 		c := dialWSAt(t, url, nil)
 		c.init()
 	})
+
+	// Near misses. A pattern match that is not anchored at both ends, or that
+	// ignores the port, authorizes a host the operator did not name -- and
+	// registering evil.example.com is trivial for an attacker who knows the
+	// pattern is *.example.
+	for _, tc := range []struct {
+		name, pattern, origin string
+	}{
+		{"a suffix beyond the pattern", "*.example", "http://app.example.com"},
+		{"a prefix before the pattern", "*.example", "http://evil-app.example.attacker.net"},
+		{"a label where the pattern has none", "app.example", "http://evil.app.example"},
+		{"a port the pattern does not carry", "app.example", "http://app.example:8080"},
+		{"a scheme the pattern pins", "https://app.example", "http://app.example"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			url := newApp(WithOriginPatterns(tc.pattern))
+			if err := originDial(t, url, tc.origin); err == nil {
+				t.Fatalf("origin %q was authorized by pattern %q", tc.origin, tc.pattern)
+			}
+		})
+	}
+}
+
+// A pattern that can never match denies everything but the request host,
+// which is indistinguishable from a correctly configured same-origin-only
+// handler. The only way an operator learns of the typo is the warning.
+func TestWSWarnsOnMalformedOriginPattern(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	WS(newTestExecutor(t), WithOriginPatterns("[bad", "*.example"), WithLogger(logger))
+
+	out := buf.String()
+	if !strings.Contains(out, "[bad") {
+		t.Fatalf("start-up logged %q, want a warning naming the malformed pattern", out)
+	}
+	if strings.Contains(out, "*.example") {
+		t.Fatalf("start-up warned about a valid pattern: %q", out)
+	}
+}
+
+// countingListener counts the connections the server has accepted and not yet
+// closed, so that a test can see a descriptor that was never released.
+type countingListener struct {
+	net.Listener
+	live atomic.Int64
+}
+
+func (l *countingListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	l.live.Add(1)
+	return &countedConn{Conn: c, listener: l}, nil
+}
+
+type countedConn struct {
+	net.Conn
+	listener *countingListener
+	once     sync.Once
+}
+
+func (c *countedConn) Close() error {
+	c.once.Do(func() { c.listener.live.Add(-1) })
+	return c.Conn.Close()
+}
+
+// The hijacked socket is nobody else's to close. contrib/v3/websocket closes
+// only when the handler panics, and it sets fasthttp's KeepHijackedConns, so
+// fasthttp will not either; the protocol's own Close runs for the failures it
+// names, and a client that simply goes away takes none of those paths. A
+// handler that returns without closing therefore holds the descriptor and its
+// buffered reader until the process exits.
+//
+// Asserting the subscription source was released would not see this: that
+// happens through cancelAll whether or not the socket closed.
+func TestWSClosesTheSocketWhenTheClientGoes(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	counted := &countingListener{Listener: ln}
+
+	app := fiber.New()
+	app.Get("/graphql", WS(newTestExecutor(t)))
+	go func() { _ = app.Listener(counted, fiber.ListenConfig{DisableStartupMessage: true}) }()
+	t.Cleanup(func() { _ = app.ShutdownWithTimeout(2 * time.Second) })
+
+	c := dialWSAt(t, "http://"+ln.Addr().String()+"/graphql", nil)
+	c.init()
+	if got := counted.live.Load(); got != 1 {
+		t.Fatalf("accepted connections = %d, want 1", got)
+	}
+
+	// Leave the way a client normally does: no protocol error, nothing
+	// pending, just a socket that ends.
+	c.ws.CloseNow()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for counted.live.Load() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d hijacked socket(s) still open 5s after the client left", counted.live.Load())
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // idleWSSource opens subscription streams that never produce an event, so the

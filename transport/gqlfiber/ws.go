@@ -36,18 +36,33 @@ const (
 
 type connKey struct{}
 
-// ConnFrom returns the WebSocket connection that a ConnectFunc is
-// authenticating, or nil.
+// UpgradeConn is what a ConnectFunc can read of the request that opened the
+// connection: its headers, cookies, query arguments, route parameters and
+// locals, copied out before fasthttp recycled the request, plus the client
+// address.
+//
+// It is an interface of our own rather than the upgrader's concrete
+// connection type so that the WebSocket library stays an implementation
+// detail. Widening this interface later is additive; changing a concrete
+// return type would break every caller.
+type UpgradeConn interface {
+	Headers(key string, defaultValue ...string) string
+	Cookies(key string, defaultValue ...string) string
+	Query(key string, defaultValue ...string) string
+	Params(key string, defaultValue ...string) string
+	Locals(key string, value ...any) any
+	IP() string
+}
+
+// ConnFrom returns the connection a ConnectFunc is authenticating, or nil.
 //
 // It is the Fiber counterpart of gqlws.RequestFrom: a browser cannot set
 // headers on a WebSocket, so token auth arrives in the connection_init
-// payload while cookie auth arrives on the upgrade request. The connection
-// carries that request's headers, cookies, query arguments and locals, copied
-// before fasthttp recycled it. Only the context a ConnectFunc receives has
-// it; later operations do not, because reading the socket from a resolver
-// would race the protocol.
-func ConnFrom(ctx context.Context) *websocket.Conn {
-	c, _ := ctx.Value(connKey{}).(*websocket.Conn)
+// payload while cookie auth arrives on the upgrade request. Only the context
+// a ConnectFunc receives carries it; the connection's later operations do
+// not, because reading the socket from a resolver would race the protocol.
+func ConnFrom(ctx context.Context) UpgradeConn {
+	c, _ := ctx.Value(connKey{}).(UpgradeConn)
 	return c
 }
 
@@ -94,6 +109,11 @@ func (s *fastSocket) Write(_ context.Context, data []byte) error {
 		// reading, so it will not send either, and the read loop is parked in
 		// ReadMessage where no context reaches it. coder/websocket closes on a
 		// failed write for the same reason.
+		//
+		// closed means "the socket is gone", not "Close ran", so a later
+		// protocol close does not set a deadline on a dead connection and try
+		// to frame a close message into it.
+		s.closed = true
 		_ = s.conn.Close()
 		return err
 	}
@@ -140,9 +160,18 @@ func (s *fastSocket) Close(code int, reason string) error {
 // server write fails, which on an idle connection is the next ping.
 func WS(exec *graphql.Executor, opts ...Option) fiber.Handler {
 	cfg := newConfig(opts...)
+	warnBadOriginPatterns(cfg)
 
 	upgrade := websocket.New(func(conn *websocket.Conn) {
 		sock := &fastSocket{conn: conn, writeTimeout: cfg.writeTimeout}
+		// The socket is hijacked out of fasthttp with KeepHijackedConns set,
+		// so nothing upstream ever closes it: the library closes only when the
+		// handler panics, and the protocol calls Close only for the failures
+		// it names -- a client that simply goes away takes none of those
+		// paths. By the time Serve returns it has waited out every writer, so
+		// this is the last word on the descriptor.
+		defer func() { _ = conn.Close() }()
+
 		if conn.Subprotocol() != Subprotocol {
 			_ = sock.Close(StatusSubprotocolNotAcceptable, "Subprotocol not acceptable")
 			return
@@ -182,6 +211,20 @@ func WS(exec *graphql.Executor, opts ...Option) fiber.Handler {
 			return fiber.NewError(fiber.StatusForbidden, "Origin not authorized")
 		}
 		return upgrade(c)
+	}
+}
+
+// warnBadOriginPatterns reports a pattern that can never match. Patterns are
+// known at construction, and a silent deny would leave a typo looking exactly
+// like a correctly configured same-origin-only handler -- the kind of
+// security misconfiguration that survives to production because nothing ever
+// said anything.
+func warnBadOriginPatterns(cfg *config) {
+	for _, pattern := range cfg.originPatterns {
+		if _, err := path.Match(strings.ToLower(pattern), ""); err != nil {
+			cfg.logger.Warn("gqlfiber: WebSocket origin pattern is malformed and will never match",
+				"pattern", pattern, "error", err)
+		}
 	}
 }
 
