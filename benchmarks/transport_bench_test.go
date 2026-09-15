@@ -283,6 +283,15 @@ func BenchmarkTransportAdaptorOverhead(b *testing.B) {
 	// per request and changes nothing else, so the difference between it and
 	// TransportInProcess/Tiny/NetHTTP is what the adaptor's concurrency costs
 	// on this workload rather than on an empty one.
+	//
+	// Read that difference as an upper bound, for two reasons. The channel
+	// here is unbuffered, so the child parks until the parent receives, where
+	// the adaptor's modeCh is make(chan int, 1) written under a select/default
+	// and never blocks. And it is a subtraction between two independently
+	// noisy benchmarks whose subtrahend is the least stable row in the matrix:
+	// across the two runs in docs/benchmarks.md it came out at +2.2µs and at
+	// +0.8µs, which is why that document reports a range and declines to say
+	// whether this or ConvertRequest is the larger cost.
 	b.Run("HandlerOnGoroutine", func(b *testing.B) {
 		d := newNetHTTPDriver(newNetHTTPHandler(), transportBody(transportQueries[0].query))
 		ch := make(chan struct{})

@@ -3,8 +3,16 @@
 // Fiber is built on fasthttp, not net/http, so this is a native
 // implementation rather than a wrapper: requests are parsed through the rules
 // in internal/httpreq and responses are written straight into the fasthttp
-// response buffer. Routing a request through middleware/adaptor would rebuild
-// a synthetic *http.Request per call and cannot carry a WebSocket at all.
+// response buffer.
+//
+// Routing a request through middleware/adaptor instead costs 22 allocations
+// per request, which end to end is the whole of what fasthttp was saving over
+// net/http. Rebuilding the synthetic *http.Request is only 8 of those; the
+// larger part is the io.Pipe, channels and goroutine the adaptor sets up per
+// request so that it can react to a Flush or a Hijack that a GraphQL response
+// never performs. The adaptor also cannot carry a WebSocket at all, and hands
+// the wrapped handler a request context that does not cancel when the client
+// disconnects. See docs/benchmarks.md for the measurement and its caveats.
 package gqlfiber
 
 import (
