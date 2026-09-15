@@ -1,9 +1,9 @@
-# Decision needed: one module or five
+# Decision: one module now, five at publication
 
-This is a question for the project owner, written once so it does not arrive
-three times from three directions. Two implementation sessions have each
-deferred it and recorded the same reasoning; the numbers below are measured,
-not estimated.
+Settled 2026-09-15. Written once so it does not arrive a fourth time: two
+implementation sessions each deferred this and recorded the same reasoning,
+and the numbers below are measured, not estimated. The decision is at the
+bottom.
 
 **The question.** Should `codegen`, `ext/otel`, and the Echo and Fiber
 transports become their own Go modules, or stay in the root module?
@@ -77,7 +77,7 @@ growing. Defensible while unpublished — nobody is resolving this module yet.
 module, do it as part of the first tagged release when the gate script and CI
 exist anyway.
 
-## Recommendation
+## Decision: C, with B's scope
 
 **C, with B's scope.** The costs are real but every one of them is paid at
 resolution time by consumers, and there are no consumers yet. Splitting now
@@ -93,6 +93,22 @@ that also has to invent its own safety net.
 If the answer is B instead, the four should go together rather than in two
 passes, so that `gqlecho` and `gqlfiber` are not created in the root module and
 moved out a month later.
+
+**The cheap half is done.** `scripts/gate.sh` walks every `go.mod` and is the
+gate for all four modules, so `benchmarks/`, `compare/` and `lint/` are no
+longer tested by memory. That was the stated prerequisite, which makes the
+split a mechanical change at the first tag rather than one that has to invent
+its own safety net. The trigger is the first tagged release; there is nothing
+to revisit before then.
+
+**One item does not wait for the split.** `codegen` imports
+`x/tools/go/packages` unconditionally, so `gqlc` links it whether or not
+`AutoBind` is used — 18 `x/tools` packages appear in `go list -deps ./cmd/gqlc`,
+which is what moved the figures in the table above and took generation memory
+from 105x to 56x better than gqlgen. (The binary measures 9.2 MB today; the
+table's 9.7 MB was a separate measurement.) That is a regression in the root module today and is fixable there: it
+is about an unconditional import, not about module boundaries. Splitting
+`codegen` out would hide it from consumers rather than fix it.
 
 ## What is not in question
 
