@@ -14,8 +14,12 @@ import (
 // operation, so it ends the connection.
 var ErrBinaryFrame = errors.New("gqlwsproto: binary frame")
 
-// Socket is the transport under the protocol. Implementations need not be
-// safe for concurrent writes: Serve holds a lock across every Write.
+// Socket is the transport under the protocol. Serve holds a lock across every
+// Write, so Write need not be safe against concurrent Writes. Close, however,
+// may be called while a Write is in flight — by the init timer, or by the read
+// loop rejecting a message while operations are still streaming — and must
+// serialize itself against one: a close frame interleaved with a data frame
+// corrupts the stream.
 type Socket interface {
 	Read(ctx context.Context) ([]byte, error)
 	Write(ctx context.Context, data []byte) error
