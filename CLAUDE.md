@@ -98,7 +98,21 @@ cached in an LRU (`docEntry`); each `(operation, @skip/@include variant)` compil
 immutable `plan` with fragments flattened, directives constant-folded per variant (up to
 `maxCondVars` boolean variables), arguments pre-decoded and response keys pre-serialized.
 `selectionSet` carries `byType` for abstract parents plus the scheduling counts the
-executor needs.
+executor needs. Abstract parents expand through a memo keyed on `(parent type, selection
+set)`, so the expansion is a DAG rather than a tree — without it, 8 implementers selected 6
+deep built 2,696,338 selection sets; with it, 64. The memo key is a fingerprint of AST node
+identities, not of the selection slice: `buildField` allocates a fresh slice when a response
+key has more than one AST node, so a pointer key is defeated by `{ a { b } a { b } }`. Every
+walk over a plan must memoize on `*selectionSet` for the same reason, `queryCostOf` included,
+because it runs per request. Depth and complexity are computed by `operationMetrics` from the
+document before `compilePlan`, so the limits refuse a query rather than reporting on one
+already expanded; `plan_metrics_oracle_test.go` holds the plan-tree walk it replaced, and the
+two are checked against each other by `TestOperationMetricsMatchesPlan` and fuzzed by
+`FuzzOperationMetrics`. The guard's value is structural, not latency: with memoization already
+in place, a rejected query and a compiled one finish in the same sub-millisecond range, since
+the memo bounds compilation whether or not the guard runs first — what the guard actually
+buys is that no plan is built or cached for a rejected query, and that compilation stays
+bounded by document size times type count, which memoization alone does not bound.
 
 **Execute (`exec.go`, `exec_object.go`, `internal/jsonw`).** `Executor` owns the plan cache,
 the concurrency semaphore, interceptor chains and the limit options. `execState.writeObject`
