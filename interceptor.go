@@ -157,10 +157,7 @@ func (e *Executor) buildChains() {
 func (e *Executor) interceptedExec(pf *planField) fieldExec {
 	fd := pf.def
 	inner := fd.anyResolve
-	chain := func(ctx context.Context, parent, args any) (any, error) {
-		// The executor attaches a FieldContext to every field when field
-		// interceptors are registered; see execState.fieldContext.
-		fc := FieldFrom(ctx)
+	chain := func(ctx context.Context, parent, args any, fc *FieldContext) (any, error) {
 		handler := FieldHandler(func(ctx context.Context) (any, error) { return inner(ctx, parent, args) })
 		for i := len(e.fieldInterceptors) - 1; i >= 0; i-- {
 			next, fi := handler, e.fieldInterceptors[i]
@@ -170,8 +167,8 @@ func (e *Executor) interceptedExec(pf *planField) fieldExec {
 	}
 	if fd.leaf {
 		writeAny, typ := fd.writeAny, fd.typ
-		return fieldExec{writeLeaf: func(ctx context.Context, w *jsonw.Writer, parent, args any) error {
-			v, err := chain(ctx, parent, args)
+		return fieldExec{writeLeaf: func(ctx context.Context, w *jsonw.Writer, parent, args any, fc *FieldContext) error {
+			v, err := chain(ctx, parent, args, fc)
 			if err != nil {
 				return err
 			}

@@ -1,6 +1,7 @@
 package graphql
 
 import (
+	"context"
 	"sync"
 	"testing"
 )
@@ -60,3 +61,25 @@ func TestOperationContextGetOrSetIsAtomic(t *testing.T) {
 		}
 	}
 }
+
+// TestPathFromInsideResolver pins the public guarantee this change must not
+// touch: a resolver field can still read its own path out of the context.
+func TestPathFromInsideResolver(t *testing.T) {
+	var got Path
+	s, err := NewSchema(SDL(`type Query { deep: Inner } type Inner { v: String }`),
+		Object[Root]("Query", Resolve("deep", func(ctx context.Context, _ Root) (*inner, error) {
+			got = PathFrom(ctx)
+			return &inner{}, nil
+		})),
+		Object[inner]("Inner", Field("v", func(*inner) string { return "x" })),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run(t, NewExecutor(s), `{ deep { v } }`, "")
+	if len(got) != 1 || got[0].Key != "deep" {
+		t.Fatalf("PathFrom = %v, want [deep]", got)
+	}
+}
+
+type inner struct{}

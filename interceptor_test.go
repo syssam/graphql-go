@@ -151,6 +151,40 @@ func TestFieldInterceptorErrorAndArgs(t *testing.T) {
 	expectData(t, resp, `{"user":{"id":"1"}}`)
 }
 
+// TestFieldInterceptorSeesPureFieldsWithoutContextAttachment pins the split
+// this change introduces: an interceptor still receives every field's
+// FieldContext as its parameter, but the context no longer carries one for a
+// pure field, because nothing but the interceptor could read it there --
+// Field and FieldArgs accessors take no context at all.
+func TestFieldInterceptorSeesPureFieldsWithoutContextAttachment(t *testing.T) {
+	var seen []string
+	var attached []bool
+	_, e := newFixtureExecutor(t, WithFieldInterceptor(FieldInterceptorFunc(
+		func(ctx context.Context, fc *FieldContext, next FieldHandler) (any, error) {
+			if fc == nil {
+				t.Error("interceptor got a nil FieldContext")
+				return next(ctx)
+			}
+			seen = append(seen, fc.Object.Name+"."+fc.Field.Name)
+			attached = append(attached, FieldFrom(ctx) != nil)
+			return next(ctx)
+		})))
+
+	run(t, e, `{ users { id } }`, "")
+
+	if len(seen) == 0 {
+		t.Fatal("interceptor never ran")
+	}
+	for i, name := range seen {
+		if name == "Query.users" {
+			continue // a resolver field: the context must still carry it
+		}
+		if attached[i] {
+			t.Errorf("%s: context still carries a FieldContext for a pure field", name)
+		}
+	}
+}
+
 const directiveSDL = `
 directive @upper on FIELD_DEFINITION
 directive @prefix(with: String!, times: Int = 1) on FIELD_DEFINITION

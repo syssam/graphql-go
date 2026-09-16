@@ -267,11 +267,11 @@ func (e *Executor) runSubscriptionEvent(ctx context.Context, oc *OperationContex
 	f := *src
 	if fd.leaf {
 		writeAny, typ := fd.writeAny, fd.typ
-		f.exec.writeLeaf = func(_ context.Context, w *jsonw.Writer, _, _ any) error {
+		f.exec.writeLeaf = func(_ context.Context, w *jsonw.Writer, _, _ any, _ *FieldContext) error {
 			return writeAny(w, event, typ)
 		}
 	} else {
-		f.exec.resolve = func(context.Context, any, any) (any, error) { return event, nil }
+		f.exec.resolve = func(context.Context, any, any, *FieldContext) (any, error) { return event, nil }
 	}
 	sel := &selectionSet{fields: []*planField{&f}}
 

@@ -100,19 +100,25 @@ func (st *execState) writeFieldValue(ctx context.Context, w *jsonw.Writer, obj *
 	return st.writeValue(ctx, w, v, fd.typ, fd.shape, f, &pathNode{parent: path, key: f.alias})
 }
 
-// fieldContext attaches a FieldContext for resolver fields and, when field
-// interceptors observe every field, for pure fields as well.
-func (st *execState) fieldContext(ctx context.Context, f *planField, parent, args any, path *pathNode) context.Context {
+// fieldContext builds the FieldContext for a field and attaches it to the
+// context only where something could read it back: a resolver may call
+// FieldFrom or PathFrom, a pure accessor takes no context at all. An
+// interceptor receives it as an argument either way.
+func (st *execState) fieldContext(ctx context.Context, f *planField, parent, args any, path *pathNode) (context.Context, *FieldContext) {
 	fd := f.def
 	if fd.pure && len(st.e.fieldInterceptors) == 0 {
-		return ctx
+		return ctx, nil
 	}
-	return withField(ctx, &FieldContext{Field: fd.def, Object: fd.object.def, Args: args, Parent: parent, field: f, path: &pathNode{parent: path, key: f.alias}})
+	fc := &FieldContext{Field: fd.def, Object: fd.object.def, Args: args, Parent: parent, field: f, pathParent: path, alias: f.alias}
+	if fd.pure {
+		return ctx, fc
+	}
+	return withField(ctx, fc), fc
 }
 
 // callLeaf invokes a leaf executor with panic protection and a FieldContext.
 func (st *execState) callLeaf(ctx context.Context, w *jsonw.Writer, f *planField, parent, args any, path *pathNode) (err error) {
-	ctx = st.fieldContext(ctx, f, parent, args, path)
+	ctx, fc := st.fieldContext(ctx, f, parent, args, path)
 	if st.e.recover {
 		defer func() {
 			if r := recover(); r != nil {
@@ -120,12 +126,12 @@ func (st *execState) callLeaf(ctx context.Context, w *jsonw.Writer, f *planField
 			}
 		}()
 	}
-	return f.exec.writeLeaf(ctx, w, parent, args)
+	return f.exec.writeLeaf(ctx, w, parent, args, fc)
 }
 
 // callResolve invokes a composite executor with the same protections.
 func (st *execState) callResolve(ctx context.Context, f *planField, parent, args any, path *pathNode) (v any, err error) {
-	ctx = st.fieldContext(ctx, f, parent, args, path)
+	ctx, fc := st.fieldContext(ctx, f, parent, args, path)
 	if st.e.recover {
 		defer func() {
 			if r := recover(); r != nil {
@@ -133,7 +139,7 @@ func (st *execState) callResolve(ctx context.Context, f *planField, parent, args
 			}
 		}()
 	}
-	return f.exec.resolve(ctx, parent, args)
+	return f.exec.resolve(ctx, parent, args, fc)
 }
 
 // writeValue writes a composite result: null handling, lists, abstract type

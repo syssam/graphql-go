@@ -94,8 +94,8 @@ type planField struct {
 // They start as copies of the fieldDef functions and are replaced by
 // interceptor-wrapped versions when the executor has field interceptors.
 type fieldExec struct {
-	writeLeaf func(ctx context.Context, w *jsonw.Writer, parent, args any) error
-	resolve   func(ctx context.Context, parent, args any) (any, error)
+	writeLeaf func(ctx context.Context, w *jsonw.Writer, parent, args any, fc *FieldContext) error
+	resolve   func(ctx context.Context, parent, args any, fc *FieldContext) (any, error)
 }
 
 // compiler holds per-compilation state.
