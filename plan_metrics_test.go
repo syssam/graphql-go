@@ -66,44 +66,48 @@ func TestOperationMetricsMatchesPlan(t *testing.T) {
 
 // TestOperationMetricsIsBounded is the reason the walk carries its own memo:
 // a guard that expands N^depth to decide whether to refuse to expand N^depth
-// has refused nothing. Besides asserting the resulting depth, it asserts a
-// structural bound on walkConcrete's call count, so that if the memo ever
-// regresses, this test fails fast and deterministically rather than hanging:
-// a bare depth assertion would never even run, because an unmemoized walk of
-// fanQuery(9) would not return in any reasonable time. See metricWalker's
-// budget field: it is what makes this failure fast instead of a hang.
+// has refused nothing. It asserts a structural bound on walkConcrete's call
+// count after the walk returns, rather than the walk enforcing a cap on
+// itself (see metricWalker.calls): production code has no business turning
+// "this document is merely large" into an error on this test's behalf, and
+// Task 5 is precisely the commit that wires this walker into real limit
+// enforcement, where that call would not be this test's to make.
+//
+// Depth 6 is chosen, not the fanTypes^9 used elsewhere in this file, because
+// an unmemoized walk at this depth still finishes in about a second (see
+// task-4-report.md for the measurement) instead of needing a hang-avoidance
+// mechanism: fanTypes^6 = 262,144 calls unmemoized against ~57 memoized is
+// already a three-order-of-magnitude gap, which is all this test needs to
+// tell a working memo from a broken one.
 func TestOperationMetricsIsBounded(t *testing.T) {
 	s, e := newFanExecutor(t)
-	entry, errs := e.document(fanQuery(9))
+	const depth = 6
+	entry, errs := e.document(fanQuery(depth))
 	if errs != nil {
 		t.Fatalf("document: %v", errs[0])
 	}
 	op := entry.doc.Operations[0]
 	root := s.rootFor(op.Operation)
 
-	// budget is a generous multiple of the memoized call count (well under
-	// 100 for this fixture: one call per fanTypes type per nesting level),
-	// but far below the fanTypes^9 an unmemoized walk would need, so it
-	// trips within a handful of calls instead of running to completion.
-	const budget = 10_000
 	w := &metricWalker{
-		c:      &compiler{s: s, doc: entry.doc, nodeID: make(map[ast.Selection]int32)},
-		memo:   make(map[selKey]planMetrics),
-		budget: budget,
+		c:    &compiler{s: s, doc: entry.doc, nodeID: make(map[ast.Selection]int32)},
+		memo: make(map[selKey]planMetrics),
 	}
-	// Depth 9 is fanTypes^9 unfolded; if this returns at all, the walk is
-	// memoized. The plan is deliberately never compiled here.
-	//
 	// fanQuery(n) chains root -> next (n times) -> id, so the plan-tree
 	// depth (the specification depthOf/complexityOf are checked against) is
-	// n+2; verified directly against compilePlan for n=0..9, where it is
-	// still cheap because Task 2 already memoizes plan compilation.
+	// n+2; verified directly against compilePlan for n=0..9 in an earlier
+	// pass (task-4-report.md), where it is cheap because Task 2 already
+	// memoizes plan compilation.
 	m := w.walk(root, nil, op.SelectionSet)
-	if m.depth != 11 {
-		t.Fatalf("depth = %d, want 11", m.depth)
+	if m.depth != depth+2 {
+		t.Fatalf("depth = %d, want %d", m.depth, depth+2)
 	}
 	t.Logf("walkConcrete calls = %d", w.calls)
-	if w.calls > budget {
-		t.Fatalf("walkConcrete called %d times, want at most %d; the memo is not deduplicating", w.calls, budget)
+	// want is a generous multiple of the memoized call count (one call per
+	// fanTypes type per nesting level, comfortably under 100 here), but far
+	// below the fanTypes^6 = 262,144 an unmemoized walk needs.
+	const want = 200
+	if w.calls > want {
+		t.Fatalf("walkConcrete called %d times, want at most %d; the memo is not deduplicating", w.calls, want)
 	}
 }

@@ -1,10 +1,6 @@
 package graphql
 
-import (
-	"fmt"
-
-	"github.com/vektah/gqlparser/v2/ast"
-)
+import "github.com/vektah/gqlparser/v2/ast"
 
 // planMetrics is an operation's static complexity and nesting depth.
 type planMetrics struct {
@@ -43,17 +39,15 @@ type metricWalker struct {
 	c    *compiler
 	memo map[selKey]planMetrics
 
-	// calls counts walkConcrete invocations. budget, when nonzero, panics
-	// once calls exceeds it. operationMetrics leaves budget at zero
-	// (unlimited): with the memo intact, calls are bounded by the number of
-	// distinct (parent, selection) pairs in the document regardless of
-	// nesting depth, so no legitimate operation needs a cap here. A nonzero
-	// budget exists only so a test can break the memo on purpose and get a
-	// fast, deterministic failure instead of the fanTypes^depth recursion
-	// that an unmemoized walk would otherwise run to completion (or to a
-	// test-runner timeout) before ever reaching a post-hoc assertion.
-	calls  int
-	budget int
+	// calls counts walkConcrete invocations. It is plain bookkeeping with no
+	// effect on the result: operationMetrics never reads it, and nothing
+	// here acts on its value. It exists so a test can assert a structural
+	// bound on it directly, rather than the walk enforcing one itself — a
+	// pre-plan cost check is exactly the kind of thing Task 5 wires this
+	// walker into, and a hard cap living here would need to turn a "this
+	// document is merely large" case into an error, which is a product
+	// decision this file should not make unilaterally.
+	calls int
 }
 
 func (w *metricWalker) walk(obj *objectType, abs *abstractType, sels ast.SelectionSet) planMetrics {
@@ -75,6 +69,11 @@ func (w *metricWalker) walk(obj *objectType, abs *abstractType, sels ast.Selecti
 		// through the same (concrete, sels) memo level compileSelection
 		// uses, so a concrete type reached from two different abstract
 		// ancestors with the same AST selection is computed once.
+		//
+		// Ranging over abs.possible (a map) visits concrete types in an
+		// unspecified order, unlike compileSelection's sorted iteration
+		// (plan.go:203-207). That is fine only because max is commutative;
+		// an edit that makes this loop order-sensitive needs the same sort.
 		for _, concrete := range abs.possible {
 			c := w.walk(concrete, nil, sels)
 			m.complexity = max(m.complexity, c.complexity)
@@ -87,9 +86,6 @@ func (w *metricWalker) walk(obj *objectType, abs *abstractType, sels ast.Selecti
 
 func (w *metricWalker) walkConcrete(obj *objectType, sels ast.SelectionSet) planMetrics {
 	w.calls++
-	if w.budget != 0 && w.calls > w.budget {
-		panic(fmt.Sprintf("metricWalker: exceeded call budget %d; memo is not deduplicating", w.budget))
-	}
 
 	var groups []*fieldGroup
 	index := make(map[string]*fieldGroup)
