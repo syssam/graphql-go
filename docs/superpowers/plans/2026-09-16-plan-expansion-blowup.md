@@ -26,7 +26,9 @@
 
 ### Task 1: Pin the duplicate compile-error behaviour
 
-Memoizing `compileSelection` will collapse a plan-time argument error that currently fires once per concrete type into a single error. Spec §7 requires pinning the current behaviour first, so the change in Task 2 is deliberate and visible in a diff rather than discovered later.
+Spec §7 requires pinning how many errors one bad literal argument under an abstract parent produces, before Task 2 touches the compiler, so that any change is deliberate and visible in a diff rather than discovered later.
+
+> **Corrected during execution.** This task was written expecting Task 2 to collapse the count from three to one. It does not: the memo is keyed on `(parent, selection set)`, and the abstract branch compiles each implementer with the same selection set but a different `*objectType`, so every implementer is a distinct key and still reports its own error. Task 2's step 10 has been corrected accordingly. The test keeps its assertion of three and pins something more useful than intended — that the memo key includes the parent type.
 
 **Files:**
 - Create: `plan_duperr_test.go`
@@ -541,9 +543,34 @@ Then comment out only the memo *read* (`if s, ok := c.memo[key]; ok`) and leave 
 
 Restore both. Re-run and confirm PASS. Do not commit with either edit in place.
 
-- [ ] **Step 10: Update the duplicate-error test from Task 1**
+- [ ] **Step 10: Re-check the duplicate-error test from Task 1 — do not assume it changes**
 
-Memoization collapses the three identical errors into one. Change the assertion in `plan_duperr_test.go` and rewrite the doc comment to record why:
+This step originally asserted that memoization collapses the three errors into one. **It does not.** The memo key is `(parent, selection set)`, and the abstract branch compiles `abs.possible[name]` once per implementer with the same selection set but a different `*objectType`, so the three implementers are three distinct keys and each still reports its own error. The memo elides only a *repeated* key, and a depth-1 fan-out never repeats one.
+
+Leave the assertion at 3. Rewrite the doc comment to say why the count is stable, and what the test now pins:
+
+```go
+// TestPlanArgErrorPerConcreteType pins how many errors one bad literal
+// produces when it sits under an abstract parent. The count is one per
+// concrete type and memoization does not reduce it: the memo key carries the
+// parent type, so each implementer compiles under its own key. That is what
+// this test now guards — a memo keyed on the selection set alone would
+// collapse these three into one and silently conflate distinct parents.
+func TestPlanArgErrorPerConcreteType(t *testing.T) {
+	s := newDupErrSchema(t)
+	e := NewExecutor(s)
+	entry, errs := e.document(`{ root { at(day: "Funday") } }`)
+	if errs != nil {
+		t.Fatalf("document: %v", errs[0])
+	}
+	_, _, perrs := entry.planFor(s, e, entry.doc.Operations[0], nil)
+	if len(perrs) != 3 {
+		t.Fatalf("got %d errors, want 3 (one per concrete type)", len(perrs))
+	}
+}
+```
+
+The collapse the original step expected is real, but needs the same concrete type at two levels of one query. If you want it covered, that is a separate test and a separate fixture — do not bend this one into it.
 
 ```go
 // TestPlanArgErrorPerConcreteType pins how many errors one bad literal
@@ -1360,7 +1387,7 @@ git commit -m "docs: record the plan expansion memo and its key invariant"
 | §6 differential fuzz | Task 6 steps 1-2 |
 | §6 `-race` | Task 6 steps 3-4 |
 | §6 cost memo | Task 3 step 1 |
-| §7 duplicate errors pinned then changed | Task 1; Task 2 step 10 |
+| §7 duplicate errors pinned, then re-checked and found stable | Task 1; Task 2 step 10 (corrected during execution) |
 | §7 no change to reported numbers | Task 2 step 11, Task 3 step 6 |
 | §7 guard-rejected query loses `extensions.cost` | Task 5 step 8 |
 

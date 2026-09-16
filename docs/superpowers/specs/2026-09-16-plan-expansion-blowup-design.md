@@ -268,12 +268,21 @@ memo is gone.
 
 ## 7. Observable Changes
 
-- **Duplicate compile errors collapse.** A bad literal argument inside an
-  abstract fan-out is currently reported once per concrete type that compiles
-  it; with the memo it is reported once. This is a fix rather than a
-  regression, but it is an observable output change: write a test pinning the
-  current behaviour before changing it, so the change is deliberate and
-  reviewable rather than incidental.
+- **Duplicate compile errors collapse only where a memo key actually repeats.**
+  An earlier draft of this section claimed that a bad literal argument under an
+  abstract parent, currently reported once per concrete type, would collapse to
+  one report. That is wrong, and `plan_duperr_test.go` measured it: the memo is
+  keyed on `(parent, selection set)`, and the abstract branch compiles each
+  implementer with the *same* selection set but a *different* `*objectType`, so
+  every implementer is a distinct key. Three implementers still produce three
+  errors.
+
+  The collapse is real only where one `(parent, selection set)` pair recurs —
+  which needs the same concrete type at two levels of the same query, not a
+  single fan-out. The characterisation test keeps its assertion of three and
+  gains a better purpose than the one it was written for: it now pins that the
+  memo key includes the parent type, so a later "simplification" that keyed on
+  the selection set alone would fail it.
 - **`Selection` values may share pointers.** Not user-visible: plan structures
   are read-only at runtime (section 3.1).
 - **A guard-rejected query loses `extensions.cost`.** `attachCost`
