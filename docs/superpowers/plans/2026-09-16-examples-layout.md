@@ -19,11 +19,15 @@
 - **`-race` is not optional** on any test run in this plan.
 - **Comments explain why, not what. English only. No code-narrating comments.**
 - **Commit messages:** imperative, lower-case type prefix (`feat:`, `fix:`, `test:`, `refactor:`, `docs:`).
-- **Attribution.** End every commit message with:
+- **Attribution.** End every commit message with the `Co-Authored-By:` line for
+  **your own** model, as your session's attribution instruction gives it — not a
+  model name copied from this plan — followed verbatim by:
   ```
-  Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
   Claude-Session: https://claude.ai/code/session_01Wsx2gLrrQkLMK744k1gz2n
   ```
+  The session line is constant across every commit; the model line names whoever
+  actually wrote the code. Where a task's example commit below shows a specific
+  `Co-Authored-By:` model, substitute your own and copy the rest verbatim.
 - **The working tree has unrelated uncommitted changes**, someone else's work in progress on `loader.NewMapped` and plan cacheability: `context.go`, `exec.go`, `plan.go`, `plan_test.go`, `subscription.go`, `loader/`, `ext/otel/`, and **`README.md`**. Never `git add -A` or `git commit -a`. Stage only the exact paths each task names.
 - **`README.md` is being edited concurrently.** That work is at line ~149 (the `loader.New` / `loader.NewMapped` row); Tasks 1 and 9 touch lines ~136 and ~177. Re-read the file immediately before editing it rather than trusting a line number from this plan, and stage `README.md` alone — never alongside a wildcard.
 
