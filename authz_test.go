@@ -3,6 +3,7 @@ package graphql
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -149,10 +150,131 @@ type Query { a: String! @requiresScopes(scopes: [["x"]]) b: String! }
 		byName[f.name] = f.authIdx
 	}
 	if byName["a"] < 0 {
-		t.Errorf("declaring field a has authIdx %d, want >= 0", byName["a"])
+		t.Fatalf("declaring field a has authIdx %d, want >= 0", byName["a"])
 	}
 	if byName["b"] != -1 {
 		t.Errorf("undeclared field b has authIdx %d, want -1", byName["b"])
+	}
+	// authIdx alone proves nothing if it points at the wrong site: pin that
+	// it actually indexes field a's own site, not merely a non-negative one.
+	if got := p.shape.Sites()[byName["a"]].Coord; got != "Query.a" {
+		t.Errorf("shape.Sites()[a's authIdx].Coord = %q, want Query.a", got)
+	}
+}
+
+// The byType branch of shapeBuilder.walk is what gives interface- and
+// union-selected fields a site at all; without it every field selected
+// through an abstract parent keeps authIdx 0 and Task 6 would enforce
+// whatever decision happens to sit at site 0 against it. Pin both that a
+// declaring field on one concrete type gets its own correct site and that a
+// non-declaring field on a sibling concrete type stays unindexed.
+func TestAuthShapeCoversFieldsSelectedThroughAnInterface(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+interface Pet { name: String! }
+type Dog implements Pet { name: String! barks: Boolean! @requiresScopes(scopes: [["dog:read"]]) }
+type Cat implements Pet { name: String! lives: Int! }
+type Query { pet: Pet! }
+`
+	s, err := NewSchema(SDL(sdl),
+		Query(Field("pet", func(Root) shapePet { return &shapeDog{} })),
+		Interface[shapePet]("Pet"),
+		Object[shapeDog]("Dog",
+			Field("name", func(*shapeDog) string { return "" }),
+			Field("barks", func(*shapeDog) bool { return true }),
+		),
+		Object[shapeCat]("Cat",
+			Field("name", func(*shapeCat) string { return "" }),
+			Field("lives", func(*shapeCat) int { return 9 }),
+		),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	e := NewExecutor(s)
+	p, _, perrs := planForTest(t, e, `{ pet { name ... on Dog { barks } ... on Cat { lives } } }`)
+	if perrs != nil {
+		t.Fatalf("plan: %v", perrs)
+	}
+	pet := p.sel.forType(p.root).fields[0]
+	if pet.sub == nil || pet.sub.byType == nil {
+		t.Fatal("pet should compile as an abstract selection")
+	}
+
+	dog := map[string]int32{}
+	for _, f := range pet.sub.byType["Dog"].fields {
+		dog[f.name] = f.authIdx
+	}
+	barksIdx := dog["barks"]
+	if barksIdx < 0 {
+		t.Fatalf("Dog.barks authIdx = %d, want >= 0", barksIdx)
+	}
+	if got := p.shape.Sites()[barksIdx].Coord; got != "Dog.barks" {
+		t.Errorf("site coord = %q, want Dog.barks", got)
+	}
+
+	cat := map[string]int32{}
+	for _, f := range pet.sub.byType["Cat"].fields {
+		cat[f.name] = f.authIdx
+	}
+	if got := cat["lives"]; got != -1 {
+		t.Errorf("Cat.lives authIdx = %d, want -1", got)
+	}
+}
+
+type shapePet interface{ petName() string }
+type shapeDog struct{}
+type shapeCat struct{}
+
+func (d *shapeDog) petName() string { return "dog" }
+func (c *shapeCat) petName() string { return "cat" }
+
+// NewSchema must reject a "scopes" value that is not a non-empty list of
+// non-empty lists of strings: gqlparser checks the directive's name,
+// location and required-argument presence, but never the argument value's
+// shape, so an unchecked value one nesting level short of Apollo's syntax
+// (a flat list of strings) would silently decode to a Requirement satisfied
+// by everyone while still creating a site — a field that looks guarded but
+// is not.
+func TestNewSchemaRejectsMalformedScopesValue(t *testing.T) {
+	cases := []struct {
+		name   string
+		scopes string
+	}{
+		{"one nesting level short (the commonest Apollo typo)", `["x"]`},
+		{"not a list at all", `"x"`},
+		{"empty outer list", `[]`},
+		{"empty inner group", `[[]]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sdl := "directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT\n" +
+				"type Query { a: String! @requiresScopes(scopes: " + tc.scopes + ") }\n"
+			_, err := NewSchema(SDL(sdl), Query(Field("a", func(Root) string { return "a" })))
+			if err == nil {
+				t.Fatalf("NewSchema accepted scopes: %s", tc.scopes)
+			}
+			if !strings.Contains(err.Error(), "Query.a") {
+				t.Errorf("error does not name the coordinate Query.a: %v", err)
+			}
+		})
+	}
+}
+
+// The same malformed-value check applies to @requiresScopes on an OBJECT
+// definition, not only on a field: Plan 2 will read that position too, and
+// the validation walks both regardless of which one this task consumes.
+func TestNewSchemaRejectsMalformedScopesValueOnObject(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+type Query @requiresScopes(scopes: ["x"]) { a: String! }
+`
+	_, err := NewSchema(SDL(sdl), Query(Field("a", func(Root) string { return "a" })))
+	if err == nil {
+		t.Fatal("NewSchema accepted a malformed scopes value on an object type")
+	}
+	if !strings.Contains(err.Error(), "Query") {
+		t.Errorf("error does not name the coordinate Query: %v", err)
 	}
 }
 

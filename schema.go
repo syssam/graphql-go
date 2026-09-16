@@ -225,6 +225,7 @@ func (b *schemaBuilder) build() *Schema {
 
 	// Phase 6: coverage.
 	b.validateCoverage(s)
+	b.validateAuthDirectives()
 
 	if b.ast.Query != nil {
 		s.query = s.objects[b.ast.Query.Name]

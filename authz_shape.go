@@ -36,8 +36,11 @@ func (b *shapeBuilder) walk(sel *selectionSet) {
 	if sel == nil {
 		return
 	}
-	// A plan for a recursive selection can reach the same set twice; without
-	// this the walk would index the same field more than once.
+	// Insurance against a plan that reaches the same *selectionSet twice: this
+	// engine's compileSelection allocates a fresh selectionSet per call, so no
+	// double-reach has ever been observed, but indexing a field twice would be
+	// silent (the second index would win) and the check costs nothing when it
+	// never fires.
 	if b.seen == nil {
 		b.seen = make(map[*selectionSet]bool)
 	}
@@ -72,10 +75,12 @@ func (b *shapeBuilder) field(f *planField) {
 	b.walk(f.sub)
 }
 
-// requirementOf reads @requiresScopes off a definition. The argument is a
-// list of lists of strings; anything else is a schema error already caught
-// at NewSchema, so a malformed value here is treated as no requirement
-// rather than as a lockout nobody can diagnose at request time.
+// requirementOf reads @requiresScopes off a definition. NewSchema's
+// validateAuthDirectives rejects any use of the directive whose "scopes"
+// value is not a non-empty list of non-empty lists of strings, so by the
+// time a plan compiles every matched directive's groups are already
+// well-formed; this function only extracts them. The nil/absent-argument
+// branches below stay as defensive fallbacks, not as the shape guarantee.
 func requirementOf(ds ast.DirectiveList) (Requirement, bool) {
 	d := ds.ForName(authDirective)
 	if d == nil {
@@ -96,5 +101,60 @@ func requirementOf(ds ast.DirectiveList) (Requirement, bool) {
 	if groups == nil {
 		return Requirement{}, false
 	}
-	return Requirement{anyOf: groups}, true
+	return NewRequirement(groups...), true
+}
+
+// validateAuthDirectives rejects a malformed @requiresScopes usage at schema
+// build, joined into NewSchema's errors like every other Go-vs-SDL shape
+// mismatch. gqlparser validates the directive's name, location and required
+// argument presence, but never checks the "scopes" value's shape against
+// [[String!]!]!: a value one nesting level short of Apollo's syntax (a flat
+// list of strings) decodes to a Requirement satisfied by everyone — an AND
+// over zero scopes is vacuous — while still creating a site, so the field
+// looks guarded and an Authorizer is consulted, but every caller passes.
+// Catching this here, once, is what keeps that failure mode from reaching a
+// request.
+func (b *schemaBuilder) validateAuthDirectives() {
+	for name, def := range b.ast.Types {
+		if def.BuiltIn {
+			continue
+		}
+		if def.Kind == ast.Object {
+			b.checkRequiresScopes(name, def.Directives)
+		}
+		for _, f := range def.Fields {
+			b.checkRequiresScopes(coordinate(name, f.Name), f.Directives)
+		}
+	}
+}
+
+func (b *schemaBuilder) checkRequiresScopes(coord string, ds ast.DirectiveList) {
+	d := ds.ForName(authDirective)
+	if d == nil {
+		return
+	}
+	if !scopesShapeValid(d.Arguments.ForName("scopes")) {
+		b.errorf("%s: @%s scopes must be a non-empty list of non-empty lists of strings", coord, authDirective)
+	}
+}
+
+// scopesShapeValid reports whether arg's value is a non-empty ListValue of
+// non-empty ListValues of StringValue leaves — the literal shape
+// [[String!]!]! takes on the wire, since gqlparser does not check it itself.
+func scopesShapeValid(arg *ast.Argument) bool {
+	if arg == nil || arg.Value == nil || arg.Value.Kind != ast.ListValue || len(arg.Value.Children) == 0 {
+		return false
+	}
+	for _, outer := range arg.Value.Children {
+		inner := outer.Value
+		if inner == nil || inner.Kind != ast.ListValue || len(inner.Children) == 0 {
+			return false
+		}
+		for _, elem := range inner.Children {
+			if elem.Value == nil || elem.Value.Kind != ast.StringValue {
+				return false
+			}
+		}
+	}
+	return true
 }

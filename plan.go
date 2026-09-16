@@ -296,6 +296,11 @@ func (c *compiler) buildField(obj *objectType, g *fieldGroup) *planField {
 		alias: g.alias,
 		name:  first.Name,
 		ast:   first,
+		// authIdx defaults to -1 (no site) by construction rather than
+		// solely by shapeBuilder.field visiting it: a future change that
+		// skips buildAuthShape would otherwise leave Go's zero value 0,
+		// which points every unvisited field at site 0 instead of at none.
+		authIdx: -1,
 	}
 	if first.Name == "__typename" {
 		pf.kind = fieldTypename
