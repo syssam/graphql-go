@@ -74,11 +74,11 @@ func TestOperationMetricsMatchesPlan(t *testing.T) {
 // enforcement, where that call would not be this test's to make.
 //
 // Depth 6 is chosen, not the fanTypes^9 used elsewhere in this file, because
-// an unmemoized walk at this depth still finishes in about a second (see
-// task-4-report.md for the measurement) instead of needing a hang-avoidance
-// mechanism: fanTypes^6 = 262,144 calls unmemoized against ~57 memoized is
-// already a three-order-of-magnitude gap, which is all this test needs to
-// tell a working memo from a broken one.
+// an unmemoized walk at this depth still finishes in about 2.4s, measured
+// directly (see task-4-report.md), instead of needing a hang-avoidance
+// mechanism: 2,396,745 calls unmemoized against 57 memoized is already a
+// four-order-of-magnitude gap, which is all this test needs to tell a
+// working memo from a broken one.
 func TestOperationMetricsIsBounded(t *testing.T) {
 	s, e := newFanExecutor(t)
 	const depth = 6
@@ -105,7 +105,8 @@ func TestOperationMetricsIsBounded(t *testing.T) {
 	t.Logf("walkConcrete calls = %d", w.calls)
 	// want is a generous multiple of the memoized call count (one call per
 	// fanTypes type per nesting level, comfortably under 100 here), but far
-	// below the fanTypes^6 = 262,144 an unmemoized walk needs.
+	// below the 2,396,745 calls an unmemoized walk needs, measured directly
+	// (see task-4-report.md).
 	const want = 200
 	if w.calls > want {
 		t.Fatalf("walkConcrete called %d times, want at most %d; the memo is not deduplicating", w.calls, want)
