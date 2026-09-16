@@ -118,7 +118,7 @@ func New(opts ...Option) []graphql.ExecutorOption {
 		graphql.WithOperationInterceptor(graphql.OperationInterceptorFunc(c.interceptOperation)),
 	}
 	if c.fieldSpans {
-		out = append(out, graphql.WithFieldInterceptor(graphql.FieldInterceptorFunc(c.interceptField)))
+		out = append(out, graphql.WithFieldObserver(fieldSpanObserver{c}))
 	}
 	return out
 }
@@ -208,21 +208,27 @@ func (c *config) interceptOperation(ctx context.Context, oc *graphql.OperationCo
 	return resp
 }
 
-// interceptField emits a span per field when field spans are enabled.
-func (c *config) interceptField(ctx context.Context, fc *graphql.FieldContext, next graphql.FieldHandler) (any, error) {
-	ctx, span := c.tracer.Start(ctx, fc.Object.Name+"."+fc.Field.Name)
-	defer span.End()
-	span.SetAttributes(
-		AttrFieldObject.String(fc.Object.Name),
-		AttrFieldPath.String(fc.Path().String()),
-	)
+// fieldSpanObserver emits a span per field. It keeps no state: Start returns a
+// context carrying the span and EndField is handed that same context back, so
+// there is nothing to store between the two.
+type fieldSpanObserver struct{ c *config }
 
-	v, err := next(ctx)
+func (o fieldSpanObserver) BeginField(ctx context.Context, f graphql.FieldInfo) context.Context {
+	ctx, span := o.c.tracer.Start(ctx, f.Object+"."+f.Field)
+	span.SetAttributes(
+		AttrFieldObject.String(f.Object),
+		AttrFieldPath.String(f.Path().String()),
+	)
+	return ctx
+}
+
+func (o fieldSpanObserver) EndField(ctx context.Context, _ graphql.FieldInfo, err error) {
+	span := trace.SpanFromContext(ctx)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 	}
-	return v, err
+	span.End()
 }
 
 // recordSpan applies the outcome of a response to a span. Field errors mark

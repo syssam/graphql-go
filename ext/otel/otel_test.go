@@ -19,7 +19,7 @@ import (
 )
 
 const sdl = `
-type User { id: ID! name: String! boom: String! }
+type User { id: ID! name: String! boom: String! kaboom: String! }
 type Query { me: User! }
 type Subscription { ticks: Int! }
 `
@@ -50,6 +50,9 @@ func newHarness(t *testing.T, opts ...gqlotel.Option) *harness {
 			graphql.Field("name", func(u *user) string { return u.Name }),
 			graphql.Resolve("boom", func(context.Context, *user) (string, error) {
 				return "", errors.New("boom")
+			}),
+			graphql.Resolve("kaboom", func(context.Context, *user) (string, error) {
+				panic("kaboom")
 			}),
 		),
 		graphql.Query(
@@ -222,6 +225,28 @@ func TestFieldSpansAreOptional(t *testing.T) {
 	}
 }
 
+// TestFieldSpansRecordAPanicAsAnError pins the property this task exists for:
+// that field spans are wired through the observer, not a field interceptor.
+// The interceptor's own defer runs during the panic's unwind, before recovery
+// converts it to an error, so its span always ended clean even for a field
+// that crashed. The observer's EndField is deliberately called after recovery
+// has set err, so it sees what the interceptor could not.
+func TestFieldSpansRecordAPanicAsAnError(t *testing.T) {
+	h := newHarness(t, gqlotel.WithFieldSpans(true))
+	resp := h.run(t, `{ me { kaboom } }`, "")
+	if len(resp.Errors) != 1 {
+		t.Fatalf("wanted one error, got %d", len(resp.Errors))
+	}
+
+	field := named(t, h.spans.Ended(), "User.kaboom")
+	if field.Status().Code != codes.Error {
+		t.Fatalf("status = %v, want error", field.Status())
+	}
+	if len(field.Events()) == 0 {
+		t.Fatal("the panic should be recorded on the field span")
+	}
+}
+
 func TestDocumentIsNotRecordedByDefault(t *testing.T) {
 	const query = `{ me { id } }`
 
@@ -342,6 +367,9 @@ func TestNoProviderIsSafe(t *testing.T) {
 			graphql.Field("name", func(u *user) string { return u.Name }),
 			graphql.Resolve("boom", func(context.Context, *user) (string, error) {
 				return "", errors.New("boom")
+			}),
+			graphql.Resolve("kaboom", func(context.Context, *user) (string, error) {
+				panic("kaboom")
 			}),
 		),
 		graphql.Query(graphql.Resolve("me", func(context.Context, graphql.Root) (*user, error) {
