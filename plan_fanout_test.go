@@ -50,8 +50,10 @@ func fanObject[T any](name string) SchemaOption {
 	)
 }
 
-func newFanExecutor(t *testing.T, opts ...ExecutorOption) (*Schema, *Executor) {
-	t.Helper()
+// buildFanExecutor builds the fan-out fixture schema without a *testing.T, so
+// a fuzz target can report a schema failure as a clean skip rather than a
+// panic from calling t.Fatal on a bare &testing.T{}.
+func buildFanExecutor(opts ...ExecutorOption) (*Schema, *Executor, error) {
 	s, err := NewSchema(SDL(fanSDL()),
 		fanObject[fanTag0]("T0"),
 		fanObject[fanTag1]("T1"),
@@ -64,9 +66,18 @@ func newFanExecutor(t *testing.T, opts ...ExecutorOption) (*Schema, *Executor) {
 		Object[Root]("Query", Field("root", func(Root) fanNode { return nil })),
 	)
 	if err != nil {
+		return nil, nil, err
+	}
+	return s, NewExecutor(s, opts...), nil
+}
+
+func newFanExecutor(t *testing.T, opts ...ExecutorOption) (*Schema, *Executor) {
+	t.Helper()
+	s, e, err := buildFanExecutor(opts...)
+	if err != nil {
 		t.Fatal(err)
 	}
-	return s, NewExecutor(s, opts...)
+	return s, e
 }
 
 // fanQuery nests `next` depth levels below root.

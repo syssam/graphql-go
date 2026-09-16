@@ -113,3 +113,36 @@ func TestOperationMetricsIsBounded(t *testing.T) {
 		t.Fatalf("walkConcrete called %d times, want at most %d; the memo is not deduplicating", w.calls, want)
 	}
 }
+
+// FuzzOperationMetrics is what keeps operationMetrics and the plan-tree oracle
+// from drifting. The AST walk reproduces a walk over a structure built by
+// different code; nothing but a differential check will notice when one of
+// them learns about a construct and the other does not.
+func FuzzOperationMetrics(f *testing.F) {
+	for _, tc := range metricsCases {
+		f.Add(tc.query)
+	}
+	s, e, err := buildFanExecutor()
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Fuzz(func(t *testing.T, query string) {
+		entry, errs := e.document(query)
+		if errs != nil {
+			return // not a valid document against this schema
+		}
+		if len(entry.doc.Operations) == 0 {
+			return
+		}
+		op := entry.doc.Operations[0]
+		p, perrs := compilePlan(s, e, entry.doc, op, nil)
+		if perrs != nil {
+			return
+		}
+		want := planMetricsOracle(p)
+		got := operationMetrics(s, entry.doc, op, nil)
+		if got != want {
+			t.Fatalf("operationMetrics = %+v, oracle = %+v, query = %q", got, want, query)
+		}
+	})
+}
