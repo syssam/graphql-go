@@ -286,7 +286,9 @@ func countSelectionSets(sel *selectionSet) int {
 // Counting selection sets rather than timing the compile keeps it
 // deterministic: the bound is a property of the algorithm, not of the machine.
 //
-// Before memoization this compiles fanTypes^6 = 262,144 selection sets.
+// Before memoization this compiles 2,696,338 selection sets, measured
+// directly (see task-4-report.md); fanTypes^6 = 262,144 undercounts because
+// it only counts one branch of the expansion.
 func TestFanOutExpansionIsBounded(t *testing.T) {
 	s, e := newFanExecutor(t)
 	const depth = 6
@@ -537,7 +539,7 @@ Expected: both PASS, in well under a second.
 A regression test that passes against broken code is agreeing with the code, not checking it. Temporarily comment out the two `c.memo[key] = out` assignments in `compileSelection`.
 
 Run: `go test -race -count=1 -run TestFanOutExpansionIsBounded .`
-Expected: FAIL, reporting roughly 262,144 selection sets.
+Expected: FAIL, reporting roughly 2,696,338 selection sets.
 
 Then comment out only the memo *read* (`if s, ok := c.memo[key]; ok`) and leave the writes, and run it again. Expected: FAIL as well.
 

@@ -175,7 +175,9 @@ func countSelectionSets(sel *selectionSet) int {
 // Counting selection sets rather than timing the compile keeps it
 // deterministic: the bound is a property of the algorithm, not of the machine.
 //
-// Before memoization this compiles fanTypes^6 = 262,144 selection sets.
+// Before memoization this compiles 2,696,338 selection sets, measured
+// directly (see task-4-report.md); fanTypes^6 = 262,144 undercounts because
+// it only counts one branch of the expansion.
 func TestFanOutExpansionIsBounded(t *testing.T) {
 	s, e := newFanExecutor(t)
 	const depth = 6
