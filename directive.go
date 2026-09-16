@@ -123,7 +123,12 @@ func (b *schemaBuilder) applyDirectives(s *Schema) {
 		}
 	}
 	for _, obj := range s.objects {
+		subRoot := b.ast.Subscription != nil && obj.name == b.ast.Subscription.Name
 		for _, fd := range obj.fields {
+			if subRoot {
+				b.rejectDirectivesOnSubscriptionRoot(obj, fd)
+				continue
+			}
 			for i := len(fd.def.Directives) - 1; i >= 0; i-- {
 				b.wrapWithDirective(s, fd, fd.def.Directives[i], coordinate(obj.name, fd.name))
 			}
@@ -131,5 +136,18 @@ func (b *schemaBuilder) applyDirectives(s *Schema) {
 				b.wrapWithDirective(s, fd, obj.def.Directives[i], obj.name)
 			}
 		}
+	}
+}
+
+// rejectDirectivesOnSubscriptionRoot fails the build for a bound directive on
+// a subscription root field. Wrapping fd.anyResolve there has no effect: the
+// field is served by fd.subscribe, and the per-event writer substitutes its
+// executor outright. Reporting it beats a check that quietly never runs.
+func (b *schemaBuilder) rejectDirectivesOnSubscriptionRoot(obj *objectType, fd *fieldDef) {
+	for _, d := range append(append([]*ast.Directive(nil), fd.def.Directives...), obj.def.Directives...) {
+		if b.directives[d.Name] == nil {
+			continue
+		}
+		b.errorf("field %s: @%s is bound, but a directive on a subscription root field never runs; use a SubscriptionInterceptor", coordinate(obj.name, fd.name), d.Name)
 	}
 }
