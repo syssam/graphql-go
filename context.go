@@ -102,7 +102,8 @@ func (oc *OperationContext) ActualCost() (int, bool) {
 	return int(oc.actualCost), oc.actualOK
 }
 
-// Complexity returns the static field count of the compiled plan.
+// Complexity returns the static field count computed by operationMetrics
+// over the document, copied onto the plan at compile time.
 func (oc *OperationContext) Complexity() int {
 	if oc.plan == nil {
 		return 0
@@ -110,7 +111,8 @@ func (oc *OperationContext) Complexity() int {
 	return oc.plan.complexity
 }
 
-// Depth returns the maximum selection nesting of the compiled plan.
+// Depth returns the maximum selection nesting computed by operationMetrics
+// over the document, copied onto the plan at compile time.
 func (oc *OperationContext) Depth() int {
 	if oc.plan == nil {
 		return 0

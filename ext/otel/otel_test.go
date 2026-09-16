@@ -146,7 +146,7 @@ func TestQuerySpanIsNamedForTheOperation(t *testing.T) {
 		t.Fatalf("status = %v", s.Status())
 	}
 	if attrOf(t, s, gqlotel.AttrComplexity).AsInt64() == 0 {
-		t.Fatal("complexity should come from the compiled plan")
+		t.Fatal("complexity should come from operationMetrics, copied onto the plan")
 	}
 }
 

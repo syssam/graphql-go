@@ -6,6 +6,7 @@ import (
 	"hash/maphash"
 	"slices"
 	"sort"
+	"strconv"
 	"sync"
 
 	"github.com/syssam/graphql-go/internal/jsonw"
@@ -104,6 +105,48 @@ type compiler struct {
 	doc  *ast.QueryDocument
 	cond map[string]bool
 	errs []*Error
+
+	// An interface with N implementers selected D levels deep expands to N^D
+	// selection sets, because each concrete expansion can contain further
+	// abstract fields. compileSelection is a pure function of its parent and
+	// selection set for a fixed cond, and plan structures are read-only once
+	// built, so identical calls share one result and the tree becomes a DAG.
+	memo   map[selKey]*selectionSet
+	nodeID map[ast.Selection]int32
+}
+
+// selKey identifies a compileSelection call. parent holds the *objectType for
+// a concrete parent or the *abstractType for an abstract one; both are
+// pointers, so the interface value is comparable.
+type selKey struct {
+	parent any
+	sels   string
+}
+
+// selFingerprint identifies a selection set by the identities of the AST nodes
+// in it. Slice identity will not do: buildField reuses first.SelectionSet when
+// a response key has a single AST node but appends a fresh slice when it has
+// more, so a query repeating a response key would miss a pointer-keyed memo at
+// every level and expand exponentially regardless.
+func (c *compiler) selFingerprint(sels ast.SelectionSet) string {
+	var b []byte
+	for _, s := range sels {
+		b = strconv.AppendInt(b, int64(c.nodeNum(s)), 36)
+		b = append(b, ',')
+	}
+	return string(b)
+}
+
+// nodeNum numbers an AST selection node on first sight. The document is cached
+// and never mutated, so a node's identity is stable across every plan compiled
+// from it.
+func (c *compiler) nodeNum(s ast.Selection) int32 {
+	if n, ok := c.nodeID[s]; ok {
+		return n
+	}
+	n := int32(len(c.nodeID))
+	c.nodeID[s] = n
+	return n
 }
 
 // compilePlan flattens an operation into a plan. cond supplies the values of
@@ -114,14 +157,16 @@ func compilePlan(s *Schema, e *Executor, doc *ast.QueryDocument, op *ast.Operati
 	if root == nil {
 		return nil, []*Error{Errorf("schema does not define a %s root type", op.Operation).WithCode(CodeValidationFailed)}
 	}
-	c := &compiler{s: s, e: e, doc: doc, cond: cond}
+	c := &compiler{
+		s: s, e: e, doc: doc, cond: cond,
+		memo:   make(map[selKey]*selectionSet),
+		nodeID: make(map[ast.Selection]int32),
+	}
 	p := &plan{op: op, root: root}
 	p.sel = c.compileSelection(root, nil, op.SelectionSet)
 	if len(c.errs) > 0 {
 		return nil, c.errs
 	}
-	p.complexity = complexityOf(p.sel)
-	p.depth = depthOf(p.sel)
 	return p, nil
 }
 
@@ -138,10 +183,19 @@ func (s *Schema) rootFor(op ast.Operation) *objectType {
 }
 
 func (c *compiler) compileSelection(obj *objectType, abs *abstractType, sels ast.SelectionSet) *selectionSet {
+	key := selKey{parent: any(obj), sels: c.selFingerprint(sels)}
+	if abs != nil {
+		key.parent = any(abs)
+	}
+	if s, ok := c.memo[key]; ok {
+		return s
+	}
+
 	out := &selectionSet{}
 	if abs == nil {
 		out.fields = c.collect(obj, sels)
 		out.directSchedulable, out.deepSchedulable = schedulability(out.fields)
+		c.memo[key] = out
 		return out
 	}
 	names := make([]string, 0, len(abs.possible))
@@ -156,6 +210,7 @@ func (c *compiler) compileSelection(obj *objectType, abs *abstractType, sels ast
 		out.directSchedulable = max(out.directSchedulable, concrete.directSchedulable)
 		out.deepSchedulable = out.deepSchedulable || concrete.deepSchedulable
 	}
+	c.memo[key] = out
 	return out
 }
 
@@ -362,27 +417,6 @@ func argsHaveVariables(args ast.ArgumentList) bool {
 	return false
 }
 
-func complexityOf(sel *selectionSet) int {
-	if sel == nil {
-		return 0
-	}
-	count := func(fields []*planField) int {
-		n := 0
-		for _, f := range fields {
-			n += 1 + complexityOf(f.sub)
-		}
-		return n
-	}
-	if sel.byType == nil {
-		return count(sel.fields)
-	}
-	most := 0
-	for _, concrete := range sel.byType {
-		most = max(most, count(concrete.fields))
-	}
-	return most
-}
-
 // condVariables returns the sorted names of Boolean variables used by @skip
 // or @include anywhere in the document.
 func condVariables(doc *ast.QueryDocument) []string {
@@ -440,24 +474,21 @@ func variantKey(condVars []string, vars map[string]any) (uint16, map[string]bool
 	return key, values
 }
 
-// planFor returns the plan for op under the given variables, compiling and
-// caching it on first use.
-// planFor returns the plan for this operation and variant, reporting whether
-// it was already compiled. The caller must not inspect d.plans itself: it is
-// written under d.mu, and reading it unlocked is a data race that concurrent
-// requests for the same query will hit.
 // planUncacheable reports that this document has too many @skip/@include
 // variables for the variant cache, so every request recompiles its plan.
 func (d *docEntry) planUncacheable() bool { return len(d.condVars) > maxCondVars }
 
+// planFor returns the plan for this operation and variant, reporting whether
+// it was already compiled. The caller must not inspect d.plans itself: it is
+// written under d.mu, and reading it unlocked is a data race that concurrent
+// requests for the same query will hit.
 func (d *docEntry) planFor(s *Schema, e *Executor, op *ast.OperationDefinition, vars map[string]any) (*plan, bool, []*Error) {
 	if d.planUncacheable() {
 		cond := make(map[string]bool, len(d.condVars))
 		for _, name := range d.condVars {
 			cond[name], _ = vars[name].(bool)
 		}
-		p, errs := compilePlan(s, e, d.doc, op, cond)
-		return p, false, errs
+		return d.compile(s, e, op, cond, planKey{}, false)
 	}
 	variant, cond := variantKey(d.condVars, vars)
 	key := planKey{op: op.Name, variant: variant}
@@ -467,14 +498,31 @@ func (d *docEntry) planFor(s *Schema, e *Executor, op *ast.OperationDefinition, 
 	if p, ok := d.plans[key]; ok {
 		return p, true, nil
 	}
+	return d.compile(s, e, op, cond, key, true)
+}
+
+// compile runs the pre-compile guard and then compiles. store is false for the
+// uncached path taken when the document has more conditional variables than
+// maxCondVars. e is never nil on any path that reaches here: planFor's only
+// callers (exec.go, subscription.go) pass the receiver Executor, and every
+// direct plan_test.go caller of compilePlan supplies a real *Executor too.
+func (d *docEntry) compile(s *Schema, e *Executor, op *ast.OperationDefinition, cond map[string]bool, key planKey, store bool) (*plan, bool, []*Error) {
+	m := operationMetrics(s, d.doc, op, cond)
+	if err := e.rejectByMetrics(m); err != nil {
+		return nil, false, []*Error{err}
+	}
 	p, errs := compilePlan(s, e, d.doc, op, cond)
 	if errs != nil {
 		return nil, false, errs
 	}
-	if d.plans == nil {
-		d.plans = make(map[planKey]*plan, 1)
+	p.complexity = m.complexity
+	p.depth = m.depth
+	if store {
+		if d.plans == nil {
+			d.plans = make(map[planKey]*plan, 1)
+		}
+		d.plans[key] = p
 	}
-	d.plans[key] = p
 	return p, false, nil
 }
 

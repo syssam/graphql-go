@@ -202,6 +202,16 @@ sound within a call and must not outlive it.
 per-request cost of the current design (section 1.2); the memo is what makes
 the DAG safe *and* fixes a pre-existing per-request cost.
 
+The interleaved benchstat run that established "no hot-path regression" for
+this change covered `BenchmarkExecuteConcurrentList`, `BenchmarkExecuteUsers`,
+`BenchmarkLazySeq*` and `BenchmarkListResults*` — none of which configures
+`WithQueryCost`, so none of them exercises this new per-call
+`map[*selectionSet]int` allocation. The cost-disabled path is genuinely
+untouched (`rejectIfOverLimit` only calls `ensureCost` when `cost.Max > 0`,
+and `attachCost` returns early when `Report` is false), so a regression here
+is unlikely — but that is an argument from the code, not a measurement. The
+cost-enabled path, which is the one this section changed, is unmeasured.
+
 ## 5. The Pre-Compile Guard
 
 ### 5.1 One implementation, moved to the AST
@@ -223,12 +233,38 @@ not an aspiration; section 6 pins it.
 The old plan-tree implementations are not deleted. They move to a test file as
 the reference oracle for the differential fuzz test.
 
+### 5.1a What the guard is worth once the memo exists
+
+Measured during implementation, and worth recording because it contradicts the
+motivating number in section 1.1: once section 4's memoization has landed,
+`WithMaxDepth(3)` against a depth-8 fan-out rejects in roughly 500-700
+microseconds **whether or not the guard is present**. The 1.65-second figure was
+taken before memoization. On this shape the memo alone already bounds
+compilation, so the guard buys no measurable latency.
+
+That does not make the guard redundant, but it does mean its justification has to
+be stated honestly:
+
+- A rejected query builds and caches **no plan at all**. Without the guard, every
+  query that will always be refused still compiles a plan and occupies a plan
+  cache entry.
+- Compilation is bounded by *document size × type count*. Memoization removes the
+  exponential term but not that product, and it is the only remaining way a
+  single request can make compilation expensive. This is what the guard is for,
+  and the fan-out fixture does not exercise it.
+- The limit becomes a precondition rather than a postcondition.
+
+A test that asserts the guard by timing is therefore measuring nothing after
+section 4 lands. The property to assert is structural: after a rejection, no plan
+exists for that operation and variant.
+
 ### 5.2 Where it runs
 
 `docEntry.planFor` (`plan.go:447`) runs the walk before `compilePlan` and
 returns the limit error without compiling when it is exceeded. The
-`len(d.condVars) > maxCondVars` branch, which compiles without caching, gets
-the same treatment.
+uncacheable path, `docEntry.planUncacheable()` (`len(d.condVars) >
+maxCondVars`, which compiles without caching because there are too many
+@skip/@include variables for the variant cache), gets the same treatment.
 
 The results fill `plan.complexity` and `plan.depth`, so:
 
@@ -237,6 +273,11 @@ The results fill `plan.complexity` and `plan.depth`, so:
   semantics are unchanged for callers.
 - The guard costs nothing on a plan cache hit. It runs only on the compile path
   it exists to protect.
+- On the uncacheable path, every request already recompiles the plan, so the
+  guard adds one full `operationMetrics` walk per request there — the one path
+  where the new walk is genuinely per-request rather than per distinct
+  document. Bounded by document size × type count, so not a risk, but worth
+  naming: it is not free the way the cache-hit case is.
 
 ### 5.3 Interaction with query cost
 
@@ -255,7 +296,7 @@ this design does not make it one.
 | Fan-out regression | 12 types × depth 6 compiles within a bounded time and node count (today: 20.2 s, 42.3M nodes) |
 | **Deliberate break** | With the memo removed, the fan-out regression **must fail**. A test that still passes against a broken memo is agreeing with the code, not checking it |
 | Memo defeat vector | `{ root { next { ... } next { ... } } }` — duplicate response keys, which produce fresh merged slices at every level, must still hit the memo |
-| Guard | `WithMaxDepth(3)` against the depth-5 fan-out query rejects in milliseconds (today: 1.65 s) |
+| Guard | After a `WithMaxDepth` rejection, no plan was compiled or cached for that operation and variant. **Not** a timing assertion: once section 4 lands, the rejection is sub-millisecond with or without the guard, so timing it measures nothing (section 5.1a) |
 | Differential fuzz | The AST walk and the retained plan-tree oracle agree on `depth` and `complexity` for fuzzed documents |
 | `-race` | Concurrent compiles of one document, and concurrent reads of shared `selectionSet` pointers across executor goroutines |
 | Cost memo | A fan-out query under `WithQueryCost` has bounded per-request time |
@@ -268,24 +309,64 @@ memo is gone.
 
 ## 7. Observable Changes
 
-- **Duplicate compile errors collapse.** A bad literal argument inside an
-  abstract fan-out is currently reported once per concrete type that compiles
-  it; with the memo it is reported once. This is a fix rather than a
-  regression, but it is an observable output change: write a test pinning the
-  current behaviour before changing it, so the change is deliberate and
-  reviewable rather than incidental.
+- **Duplicate compile errors collapse only where a memo key actually repeats.**
+  An earlier draft of this section claimed that a bad literal argument under an
+  abstract parent, currently reported once per concrete type, would collapse to
+  one report. That is wrong, and `plan_duperr_test.go` measured it: the memo is
+  keyed on `(parent, selection set)`, and the abstract branch compiles each
+  implementer with the *same* selection set but a *different* `*objectType`, so
+  every implementer is a distinct key. Three implementers still produce three
+  errors.
+
+  The collapse is real only where one `(parent, selection set)` pair recurs —
+  which needs the same concrete type at two levels of the same query, not a
+  single fan-out. The characterisation test keeps its assertion of three and
+  gains a better purpose than the one it was written for: it now pins that the
+  memo key includes the parent type, so a later "simplification" that keyed on
+  the selection set alone would fail it.
 - **`Selection` values may share pointers.** Not user-visible: plan structures
   are read-only at runtime (section 3.1).
-- **A guard-rejected query loses `extensions.cost`.** `attachCost`
-  (`limits.go:112`) requires `oc.plan`. Today a query rejected for depth or
-  complexity still has a compiled plan, so cost is reported alongside the
-  rejection. Once the guard rejects before compiling there is no plan and no
-  cost to report. This is unavoidable rather than incidental — the cost is
-  computed from the plan the guard exists to refuse to build — and it applies
-  only to queries rejected by `WithMaxDepth` or `WithMaxComplexity`. Queries
-  rejected by `QueryCost.Max` are unaffected: that check stays in
-  `rejectIfOverLimit`, after compilation, because it depends on request
-  variables.
+- **A guard rejection bypasses the operation interceptor chain entirely, not
+  just `extensions.cost`.** Before this change, a depth/complexity rejection
+  happened inside `rejectIfOverLimit`, itself called from within `e.opChain`
+  (`interceptor.go:136`) — so it ran wrapped by every registered
+  `OperationInterceptor`, with a real `OperationContext` in hand. Now
+  `docEntry.compile` rejects in `execute` (`exec.go:194-196`) before an
+  `OperationContext` exists, and `execute` returns `e.requestError(...)`
+  directly without ever calling `e.opChain`. Concretely for `ext/otel`: the
+  span is never renamed from `graphql.request` to `query Foo`;
+  `AttrOperationType`, `AttrOperationName`, `AttrCacheHit`, `AttrComplexity`
+  and `AttrDepth` are never set; the duration/error metric falls back to the
+  request layer, losing its operation dimensions. `extensions.cost`
+  (`attachCost`, `limits.go:112`, requires `oc.plan`) is one symptom of this —
+  today a query rejected for depth or complexity still has a compiled plan
+  and an `OperationContext`, so cost is reported alongside the rejection;
+  once the guard rejects first there is neither, so there is no cost to
+  report. This applies only to queries rejected by `WithMaxDepth` or
+  `WithMaxComplexity` — queries rejected by `QueryCost.Max` are unaffected,
+  since that check stays in `rejectIfOverLimit`, after compilation, because it
+  depends on request variables.
+
+  The same bypass means a guard-rejected query never reaches any operation
+  interceptor, including a rate limiter: `main` has since gained an
+  `ext/throttle` built as exactly such an interceptor, so a rejected query is
+  unmetered by it. Scope this honestly rather than alarmingly: the guard
+  rejects before `compilePlan`, so an unmetered rejected request costs parse +
+  validate + one memoized `operationMetrics` walk over the AST — not a plan
+  compile — and that walk is bounded by document size × type count. Before
+  the guard existed, the same abusive query would have compiled, built an
+  `OperationContext`, and been both charged and metered; now it is refused
+  earlier and cheaper, but outside every interceptor's view.
+- **Subscriptions: an over-limit subscription is now rejected once, at
+  `Subscribe`, instead of once per event.** `subscription.go:146-149` makes
+  `Subscribe` return a `*SubscribeError` when the guard fires, before the
+  stream ever opens. Previously `Subscribe` succeeded, the stream opened, and
+  `rejectIfOverLimit` ran inside `opChain` on every event — an over-depth
+  subscription emitted an `error` `next` payload forever, once per event,
+  until the client gave up or disconnected. The new behaviour is strictly
+  better for the client and the server, but it changes what `gqlws`/`gqlsse`
+  put on the wire: a single `error` message followed by a close, rather than
+  an indefinite stream of per-event error payloads.
 - **Plan memory for polymorphic queries drops sharply.** The plan cache holds
   documents, so this also reduces steady-state RSS on schemas with wide
   interfaces.

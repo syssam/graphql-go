@@ -26,7 +26,9 @@
 
 ### Task 1: Pin the duplicate compile-error behaviour
 
-Memoizing `compileSelection` will collapse a plan-time argument error that currently fires once per concrete type into a single error. Spec §7 requires pinning the current behaviour first, so the change in Task 2 is deliberate and visible in a diff rather than discovered later.
+Spec §7 requires pinning how many errors one bad literal argument under an abstract parent produces, before Task 2 touches the compiler, so that any change is deliberate and visible in a diff rather than discovered later.
+
+> **Corrected during execution.** This task was written expecting Task 2 to collapse the count from three to one. It does not: the memo is keyed on `(parent, selection set)`, and the abstract branch compiles each implementer with the same selection set but a different `*objectType`, so every implementer is a distinct key and still reports its own error. Task 2's step 10 has been corrected accordingly. The test keeps its assertion of three and pins something more useful than intended — that the memo key includes the parent type.
 
 **Files:**
 - Create: `plan_duperr_test.go`
@@ -284,7 +286,9 @@ func countSelectionSets(sel *selectionSet) int {
 // Counting selection sets rather than timing the compile keeps it
 // deterministic: the bound is a property of the algorithm, not of the machine.
 //
-// Before memoization this compiles fanTypes^6 = 262,144 selection sets.
+// Before memoization this compiles 2,696,338 selection sets, measured
+// directly (see task-4-report.md); fanTypes^6 = 262,144 undercounts because
+// it only counts one branch of the expansion.
 func TestFanOutExpansionIsBounded(t *testing.T) {
 	s, e := newFanExecutor(t)
 	const depth = 6
@@ -535,15 +539,40 @@ Expected: both PASS, in well under a second.
 A regression test that passes against broken code is agreeing with the code, not checking it. Temporarily comment out the two `c.memo[key] = out` assignments in `compileSelection`.
 
 Run: `go test -race -count=1 -run TestFanOutExpansionIsBounded .`
-Expected: FAIL, reporting roughly 262,144 selection sets.
+Expected: FAIL, reporting roughly 2,696,338 selection sets.
 
 Then comment out only the memo *read* (`if s, ok := c.memo[key]; ok`) and leave the writes, and run it again. Expected: FAIL as well.
 
 Restore both. Re-run and confirm PASS. Do not commit with either edit in place.
 
-- [ ] **Step 10: Update the duplicate-error test from Task 1**
+- [ ] **Step 10: Re-check the duplicate-error test from Task 1 — do not assume it changes**
 
-Memoization collapses the three identical errors into one. Change the assertion in `plan_duperr_test.go` and rewrite the doc comment to record why:
+This step originally asserted that memoization collapses the three errors into one. **It does not.** The memo key is `(parent, selection set)`, and the abstract branch compiles `abs.possible[name]` once per implementer with the same selection set but a different `*objectType`, so the three implementers are three distinct keys and each still reports its own error. The memo elides only a *repeated* key, and a depth-1 fan-out never repeats one.
+
+Leave the assertion at 3. Rewrite the doc comment to say why the count is stable, and what the test now pins:
+
+```go
+// TestPlanArgErrorPerConcreteType pins how many errors one bad literal
+// produces when it sits under an abstract parent. The count is one per
+// concrete type and memoization does not reduce it: the memo key carries the
+// parent type, so each implementer compiles under its own key. That is what
+// this test now guards — a memo keyed on the selection set alone would
+// collapse these three into one and silently conflate distinct parents.
+func TestPlanArgErrorPerConcreteType(t *testing.T) {
+	s := newDupErrSchema(t)
+	e := NewExecutor(s)
+	entry, errs := e.document(`{ root { at(day: "Funday") } }`)
+	if errs != nil {
+		t.Fatalf("document: %v", errs[0])
+	}
+	_, _, perrs := entry.planFor(s, e, entry.doc.Operations[0], nil)
+	if len(perrs) != 3 {
+		t.Fatalf("got %d errors, want 3 (one per concrete type)", len(perrs))
+	}
+}
+```
+
+The collapse the original step expected is real, but needs the same concrete type at two levels of one query. If you want it covered, that is a separate test and a separate fixture — do not bend this one into it.
 
 ```go
 // TestPlanArgErrorPerConcreteType pins how many errors one bad literal
@@ -814,8 +843,11 @@ func TestOperationMetricsIsBounded(t *testing.T) {
 	}
 	// Depth 9 is fanTypes^9 unfolded; if this returns at all, the walk is
 	// memoized. The plan is deliberately never compiled here.
-	if m := operationMetrics(s, entry.doc, entry.doc.Operations[0], nil); m.depth != 10 {
-		t.Fatalf("depth = %d, want 10", m.depth)
+	//
+	// fanQuery(n) is the single chain root -> next^n -> id, and depthOf adds
+	// one per link, so the depth is n+2.
+	if m := operationMetrics(s, entry.doc, entry.doc.Operations[0], nil); m.depth != 11 {
+		t.Fatalf("depth = %d, want 11", m.depth)
 	}
 }
 ```
@@ -983,16 +1015,20 @@ compilation. It is not wired up yet."
 Append to `plan_fanout_test.go`:
 
 ```go
-// TestDepthLimitRejectsBeforeCompiling is the point of the guard. Before it,
-// WithMaxDepth(3) against this query still built 8^5 selection sets and only
-// then reported that the query was three levels too deep.
-func TestDepthLimitRejectsBeforeCompiling(t *testing.T) {
+// TestDepthLimitRejectsWithoutCompiling asserts the guard's actual property: a
+// query over the limit is refused without a plan being built for it.
+//
+// Do not assert this by timing. Task 2's memoization already bounds compilation
+// for this fixture, so the rejection is sub-millisecond with or without the
+// guard and a timing assertion passes either way -- a test that agrees with the
+// code rather than checking it. Measured during implementation at ~500-700us on
+// both sides; see the design's section 5.1a.
+func TestDepthLimitRejectsWithoutCompiling(t *testing.T) {
 	s, e := newFanExecutor(t, WithMaxDepth(3))
 	_ = s
 
-	start := time.Now()
-	resp := e.Execute(t.Context(), &Request{Query: fanQuery(8)})
-	elapsed := time.Since(start)
+	query := fanQuery(8)
+	resp := e.Execute(t.Context(), &Request{Query: query})
 
 	if len(resp.Errors) == 0 {
 		t.Fatal("want a depth limit error")
@@ -1000,18 +1036,27 @@ func TestDepthLimitRejectsBeforeCompiling(t *testing.T) {
 	if got := resp.Errors[0].Message; !strings.Contains(got, "maximum depth") {
 		t.Fatalf("error = %q, want a maximum depth error", got)
 	}
-	// Depth 8 is 16 million selection sets unmemoized and tens of thousands
-	// memoized. Rejecting without compiling should be neither.
-	if elapsed > 50*time.Millisecond {
-		t.Fatalf("rejection took %v; the query was compiled before being refused", elapsed)
+
+	// The guard's property: nothing was compiled. Read d.plans under d.mu --
+	// its comment warns that reading it unlocked races with concurrent
+	// requests for the same query.
+	entry := e.cache.get(query)
+	if entry == nil {
+		t.Fatal("document should still be cached; only the plan is refused")
+	}
+	entry.mu.Lock()
+	n := len(entry.plans)
+	entry.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d plan(s) compiled for a query the guard refused", n)
 	}
 }
 ```
 
 - [ ] **Step 2: Run the test and verify it fails**
 
-Run: `go test -race -count=1 -run TestDepthLimitRejectsBeforeCompiling .`
-Expected: FAIL on the duration assertion. The error message assertion should already pass — the limit works today, it is only late.
+Run: `go test -race -count=1 -run TestDepthLimitRejectsWithoutCompiling .`
+Expected: FAIL on the compiled-plan assertion — without the guard the plan is built and cached before the limit is consulted. The error message assertion should already pass: the limit works today, it is only late.
 
 - [ ] **Step 3: Add the metric check to the executor**
 
@@ -1144,7 +1189,7 @@ This is the step that keeps the test honest. Skipping it leaves a test that cann
 - [ ] **Step 8: Run the guard test and the suite**
 
 Run: `go vet ./... && go test -race -count=1 .`
-Expected: PASS, including `TestDepthLimitRejectsBeforeCompiling`.
+Expected: PASS, including `TestDepthLimitRejectsWithoutCompiling`.
 
 Two failures are expected here and are not bugs in this task:
 - Any test asserting that a depth- or complexity-rejected response carries `extensions.cost` will now fail. Spec §7 records this: the cost is computed from a plan the guard refuses to build. Update such a test to assert the absence, with a comment pointing at the spec.
@@ -1154,8 +1199,8 @@ Two failures are expected here and are not bugs in this task:
 
 Temporarily change `compile` to ignore the guard by replacing `if err := e.rejectByMetrics(m); err != nil` with `if err := e.rejectByMetrics(m); false`.
 
-Run: `go test -race -count=1 -run TestDepthLimitRejectsBeforeCompiling .`
-Expected: FAIL on the duration assertion. Restore, re-run, confirm PASS.
+Run: `go test -race -count=1 -run TestDepthLimitRejectsWithoutCompiling .`
+Expected: FAIL, reporting that a plan was compiled. Restore, re-run, confirm PASS.
 
 - [ ] **Step 10: Commit**
 
@@ -1360,7 +1405,7 @@ git commit -m "docs: record the plan expansion memo and its key invariant"
 | §6 differential fuzz | Task 6 steps 1-2 |
 | §6 `-race` | Task 6 steps 3-4 |
 | §6 cost memo | Task 3 step 1 |
-| §7 duplicate errors pinned then changed | Task 1; Task 2 step 10 |
+| §7 duplicate errors pinned, then re-checked and found stable | Task 1; Task 2 step 10 (corrected during execution) |
 | §7 no change to reported numbers | Task 2 step 11, Task 3 step 6 |
 | §7 guard-rejected query loses `extensions.cost` | Task 5 step 8 |
 

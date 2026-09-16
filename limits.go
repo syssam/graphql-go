@@ -24,8 +24,9 @@ type QueryCost struct {
 	// FieldWeight overrides the default weight of 1 for a schema
 	// coordinate such as "Query.search".
 	FieldWeight map[string]int
-	// Report writes extensions.cost on every response, including
-	// rejected ones.
+	// Report writes extensions.cost on every response, including operations
+	// rejected by Max. Operations refused by WithMaxDepth/WithMaxComplexity
+	// are rejected before a plan exists and so carry no cost.
 	Report bool
 	// Connections prices a Relay connection by the page size it asked for.
 	// first/last sit on the connection field, one level above the edges list
@@ -118,6 +119,26 @@ func (e *Executor) rejectIfOverLimit(oc *OperationContext) *Error {
 	return nil
 }
 
+// rejectByMetrics applies the static limits to metrics computed before the
+// plan is compiled. rejectIfOverLimit applies the same two limits per request
+// from the cached plan; this one exists so that a query over the limit is
+// never compiled at all.
+func (e *Executor) rejectByMetrics(m planMetrics) *Error {
+	if e.maxComplexity > 0 && m.complexity > e.maxComplexity {
+		return Errorf("query exceeds complexity limit: %d > %d", m.complexity, e.maxComplexity).
+			WithCode(CodeTooComplex).
+			WithExtension("complexity", m.complexity).
+			WithExtension("maxComplexity", e.maxComplexity)
+	}
+	if e.maxDepth > 0 && m.depth > e.maxDepth {
+		return Errorf("query exceeds maximum depth: %d > %d", m.depth, e.maxDepth).
+			WithCode(CodeMaxDepth).
+			WithExtension("depth", m.depth).
+			WithExtension("maxDepth", e.maxDepth)
+	}
+	return nil
+}
+
 func (e *Executor) attachCost(oc *OperationContext, resp *Response) {
 	if e.cost == nil || !e.cost.Report || oc == nil || oc.plan == nil {
 		return
@@ -147,32 +168,54 @@ func (oc *OperationContext) ensureCost(cfg QueryCost) int {
 	return oc.costValue
 }
 
+// costKey memoizes the cost walk. It carries paid as well as the selection
+// set: the same *selectionSet costs differently paid and unpaid, so a memo
+// keyed on the pointer alone would hand the second visit whatever the first
+// one computed.
+type costKey struct {
+	sel  *selectionSet
+	paid bool
+}
+
 func queryCostOf(sel *selectionSet, vars map[string]any, cfg QueryCost, paid bool) int {
+	return queryCostMemo(sel, vars, cfg, paid, make(map[costKey]int))
+}
+
+// queryCostMemo carries the memo that keeps the walk linear in the plan's DAG
+// rather than in the tree that DAG unfolds to. The memo lives for exactly one
+// call: vars and cfg are fixed only within one request.
+func queryCostMemo(sel *selectionSet, vars map[string]any, cfg QueryCost, paid bool, memo map[costKey]int) int {
 	if sel == nil {
 		return 0
+	}
+	key := costKey{sel: sel, paid: paid}
+	if n, ok := memo[key]; ok {
+		return n
 	}
 	sum := func(fields []*planField) int {
 		n := 0
 		for _, f := range fields {
-			n += fieldCost(f, vars, cfg, paid)
+			n += fieldCost(f, vars, cfg, paid, memo)
 		}
 		return n
 	}
+	n := 0
 	if sel.byType == nil {
-		return sum(sel.fields)
+		n = sum(sel.fields)
+	} else {
+		for _, concrete := range sel.byType {
+			n = max(n, sum(concrete.fields))
+		}
 	}
-	most := 0
-	for _, concrete := range sel.byType {
-		most = max(most, sum(concrete.fields))
-	}
-	return most
+	memo[key] = n
+	return n
 }
 
 // fieldCost prices one field. paid reports that an enclosing connection's
 // page size has already counted this field's elements when it is a list,
 // which is what stops first: 200 from multiplying with the edges list's own
 // default and pricing a page of 200 as one of 2000.
-func fieldCost(f *planField, vars map[string]any, cfg QueryCost, paid bool) int {
+func fieldCost(f *planField, vars map[string]any, cfg QueryCost, paid bool, memo map[costKey]int) int {
 	if f.kind == fieldTypename {
 		return 0
 	}
@@ -194,7 +237,7 @@ func fieldCost(f *planField, vars map[string]any, cfg QueryCost, paid bool) int 
 
 	child := 0
 	if f.sub != nil {
-		child = queryCostOf(f.sub, vars, cfg, childPaid)
+		child = queryCostMemo(f.sub, vars, cfg, childPaid, memo)
 	}
 	return weight + child*mult
 }
@@ -245,29 +288,4 @@ func asCostInt(v any) (int, bool) {
 	default:
 		return 0, false
 	}
-}
-
-func depthOf(sel *selectionSet) int {
-	if sel == nil {
-		return 0
-	}
-	walk := func(fields []*planField) int {
-		d := 0
-		for _, f := range fields {
-			fd := 1
-			if f.sub != nil {
-				fd += depthOf(f.sub)
-			}
-			d = max(d, fd)
-		}
-		return d
-	}
-	if sel.byType == nil {
-		return walk(sel.fields)
-	}
-	d := 0
-	for _, c := range sel.byType {
-		d = max(d, walk(c.fields))
-	}
-	return d
 }
