@@ -31,32 +31,47 @@ load generator and the machine, not the server.
 **So: on this hardware, over a real socket, transport choice is not
 measurable.** That is the honest result and it is worth more than a ranking.
 
-## Where the difference is real
+## Where the difference is real: allocations, not time
 
-The Go benchmarks do separate them, because they measure CPU and allocations
-rather than wall time through a socket.
+These are ten samples through `benchstat`, with the spread shown. An earlier
+revision of this file quoted single samples and claimed Fiber was 1.11x faster
+in process and 1.27x faster over loopback. **Both were noise**, and the numbers
+below retract them.
 
-In process, tiny payload — this is almost entirely transport:
+Time, in process and over loopback. Read the spreads before the values:
 
-| | ns/op | B/op | allocs/op |
-|---|---:|---:|---:|
-| net/http | 1 762 | 1 430 | 20 |
-| echo v5 | 2 102 | 1 456 | 21 |
-| **fiber v3 native** | **1 585** | **892** | **18** |
-| fiber v3 via adaptor | 6 211 | 4 172 | 40 |
+| | in-proc tiny | in-proc list | loopback tiny | loopback list |
+|---|---:|---:|---:|---:|
+| net/http | 1.911us ± 18% | 18.44us ± 51% | 70.67us ± 10% | 107.0us ± 17% |
+| echo v5 | 2.465us ± 14% | 18.30us ± 82% | 70.75us ± 11% | 118.0us ± 8% |
+| fiber v3 native | 1.907us ± 13% | 15.38us ± 3% | 66.29us ± 8% | 106.0us ± 9% |
+| fiber v3 adaptor | 7.842us ± 13% | 23.40us ± 6% | 75.30us ± 13% | 109.7us ± 6% |
 
-Over loopback, list payload — connection reuse and header parsing included:
+**net/http and Fiber's native path are indistinguishable on time**: 1.911us
+against 1.907us in process, 70.67us against 66.29us over loopback, with spreads
+of 8-18% around both. The in-process list row reaches ±51% and ±82%, which is
+not a measurement at all. The one unambiguous time result is the adaptor's
+in-process penalty, 7.842us against 1.907us, and its spread is tight enough to
+believe.
 
-| | ns/op | B/op | allocs/op |
-|---|---:|---:|---:|
-| net/http | 118 954 | 18 982 | 223 |
-| echo v5 | 106 193 | 18 931 | 224 |
-| **fiber v3 native** | **93 562** | **14 471** | **192** |
-| fiber v3 via adaptor | 123 713 | 19 672 | 218 |
+Allocations, the same ten samples, spreads of 0-4%:
 
-Fiber's native path allocates 24% fewer bytes and 14% fewer objects per request
-over the wire than net/http. That is the part that survives the trip to another
-machine; the nanoseconds are not.
+| | in-proc tiny | in-proc list | loopback tiny | loopback list |
+|---|---:|---:|---:|---:|
+| net/http | 1 396 B / 20 | 6 606 B / 127 | 10.4 KiB / 110 | 17.1 KiB / 222 |
+| echo v5 | 1 422 B / 21 | 6 636 B / 128 | 10.5 KiB / 111 | 18.4 KiB / 224 |
+| **fiber v3 native** | **892 B / 18** | **6 068 B / 125** | **6.9 KiB / 84** | **13.3 KiB / 192** |
+| fiber v3 adaptor | 4 090 B / 40 | 9 585 B / 147 | 10.7 KiB / 110 | 17.2 KiB / 218 |
+
+Fiber's native path allocates 22-36% fewer bytes than net/http at every size,
+and over loopback with a tiny payload it makes 84 allocations against 110. That
+is the result that holds: it is deterministic where the timings are not, and it
+is a mechanism rather than a number -- fasthttp writes into its own buffer
+where net/http builds a request object.
+
+So: **Fiber is the best transport here on allocations, and tied with net/http
+on speed.** Echo is net/http with a router in front, which is what its numbers
+say. Anyone choosing on latency alone should choose on something else.
 
 ## The adaptor row, which exists to be falsified
 
@@ -75,7 +90,8 @@ It does earn it, and the mechanism is measurable:
 | HandlerOnGoroutine | 2 799 | 1 463 | 21 |
 
 674 bytes and 8 allocations per request, before the handler runs. In process
-that is a 3.9x penalty on time and 4.7x on bytes.
+that is a 4.1x penalty on time (7.842us against 1.907us, ten samples) and 4.6x
+on bytes. This is the one place the suite's timings separate anything.
 
 **And k6 cannot see any of it.** At 6 000 and 40 000 req/s the adaptor performs
 the same as the native path, within noise. A 4.6us handler difference is
