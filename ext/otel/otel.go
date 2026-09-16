@@ -77,10 +77,11 @@ func WithMeterProvider(mp metric.MeterProvider) Option {
 	return func(c *config) { c.meter = mp.Meter(ScopeName) }
 }
 
-// WithFieldSpans emits a span per field. It is off by default and costs more
-// than it looks: a field interceptor routes every field through the
-// type-erased path, including the pure ones that would otherwise run inline
-// with no context allocation at all.
+// WithFieldSpans emits a span per field. It is off by default. It is wired
+// through a FieldObserver rather than a FieldInterceptor: an observer cannot
+// change a field's result, so pure fields keep their typed write path instead
+// of being routed through the type-erased one, which is what the interceptor
+// form used to cost.
 func WithFieldSpans(enabled bool) Option {
 	return func(c *config) { c.fieldSpans = enabled }
 }
