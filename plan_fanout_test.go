@@ -265,6 +265,102 @@ func TestFanOutQueryCostIsBounded(t *testing.T) {
 	}
 }
 
+// fanPlanFromExecute compiles query through a real Execute call rather than
+// calling planFor directly, capturing oc.plan via an operation interceptor.
+// That exercises the same path a request takes, including the plan cache and
+// operation-context construction that planFor alone bypasses.
+func fanPlanFromExecute(t *testing.T, query string) *plan {
+	t.Helper()
+	var p *plan
+	_, e := newFanExecutor(t, WithOperationInterceptor(OperationInterceptorFunc(
+		func(ctx context.Context, oc *OperationContext, next OperationHandler) *Response {
+			p = oc.plan
+			return next(ctx, oc)
+		})))
+	resp := e.Execute(t.Context(), &Request{Query: query})
+	if len(resp.Errors) > 0 {
+		t.Fatalf("query errors: %v", resp.Errors)
+	}
+	if p == nil {
+		t.Fatal("operation interceptor never observed a plan")
+	}
+	return p
+}
+
+// findField locates a *planField by response key among sel's direct fields.
+func findField(t *testing.T, sel *selectionSet, alias string) *planField {
+	t.Helper()
+	for _, f := range sel.fields {
+		if f.alias == alias {
+			return f
+		}
+	}
+	t.Fatalf("no field %q in selection set", alias)
+	return nil
+}
+
+// TestFanOutMemoSharesFragmentSelections pins the memo at pointer granularity,
+// where TestFanOutExpansionIsBounded only pins an aggregate count. A count
+// cannot tell "the memo collapsed the right things" from "the memo collapsed
+// the same number of things" — a memo that shared the wrong pair of selection
+// sets, or a probe that always reported "shared", would still pass a bound on
+// the total.
+//
+// Two queries, one abstract field aliased twice:
+//
+//	fragment: fragment F on Node { id next { id } } { a: root { ...F } b: root { ...F } }
+//	control:  { a: root { id next { id } } b: root { id next { id } } }
+//
+// a: and b: are distinct *ast.Field nodes owning their own brace pairs in
+// both queries, so their sub-selections are never shared — that holds
+// regardless of memoization and is asserted here as the always-false half of
+// the table. Below that, the fragment case has collectInto expand F's single
+// "next" field into both parents' field groups, so buildField sees one
+// *ast.Field reached from two sites and compileSelection's memo key matches,
+// returning one shared sub-selection. The control writes "next" out twice, so
+// there are two distinct AST nodes, two fingerprints, two selection sets.
+//
+// The control is load-bearing: without it, a probe that reports "shared"
+// unconditionally, or a memo keyed too loosely and collapsing a/b themselves,
+// would look identical to a correct memo on the fragment case alone.
+func TestFanOutMemoSharesFragmentSelections(t *testing.T) {
+	const fragmentQuery = `fragment F on Node { id next { id } } { a: root { ...F } b: root { ...F } }`
+	const controlQuery = `{ a: root { id next { id } } b: root { id next { id } } }`
+
+	check := func(t *testing.T, query string, wantNextFieldShared, wantNextSubShared bool) {
+		t.Helper()
+		p := fanPlanFromExecute(t, query)
+
+		a := findField(t, p.sel, "a")
+		b := findField(t, p.sel, "b")
+
+		if a.sub == b.sub {
+			t.Fatalf("a/b abstract selection sets identical, want distinct: a and b are separate *ast.Field nodes")
+		}
+
+		aT0, bT0 := a.sub.byType["T0"], b.sub.byType["T0"]
+		if aT0 == nil || bT0 == nil {
+			t.Fatalf("T0 concrete selection set missing: a=%v b=%v", aT0, bT0)
+		}
+		if aT0 == bT0 {
+			t.Fatalf("a/b T0 concrete selection sets identical, want distinct: each root field owns its own concrete expansion")
+		}
+
+		aNext := findField(t, aT0, "next")
+		bNext := findField(t, bT0, "next")
+
+		if got := aNext.ast == bNext.ast; got != wantNextFieldShared {
+			t.Fatalf("next *ast.Field identical = %v, want %v", got, wantNextFieldShared)
+		}
+		if got := aNext.sub == bNext.sub; got != wantNextSubShared {
+			t.Fatalf("next sub-selection identical = %v, want %v", got, wantNextSubShared)
+		}
+	}
+
+	t.Run("fragment", func(t *testing.T) { check(t, fragmentQuery, true, true) })
+	t.Run("control", func(t *testing.T) { check(t, controlQuery, false, false) })
+}
+
 // TestDepthLimitRejectsWithoutCompiling is the point of the guard, asserted
 // directly rather than through a latency budget. An earlier version of this
 // test timed the rejection instead, on the theory that a compiled-then-
