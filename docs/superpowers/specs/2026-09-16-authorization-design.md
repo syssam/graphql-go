@@ -291,7 +291,7 @@ const (
 
 // AuthSite is one position in a plan that may need a decision.
 type AuthSite struct {
-    Coord    Coordinate
+    Coord    string
     Field    *ast.FieldDefinition // nil when Kind is SiteObject
     Object   *ast.Definition
     Kind     SiteKind

@@ -22,10 +22,6 @@
 - Commit messages: imperative, lower-case type prefix (`feat:`, `fix:`, `test:`, `refactor:`, `docs:`).
 - The working tree may carry concurrent work from another session. **Stage files explicitly; never `git add -A`.**
 
-### Deviation from the spec
-
-The spec writes `Coord Coordinate`. This codebase has no `Coordinate` type — `coordinate(typeName, field)` (`schema.go:350`) returns a plain `string`. Tasks below use `Coord string`. Update the spec's §5.1 when Task 4 lands.
-
 ## File Structure
 
 | File | Responsibility |

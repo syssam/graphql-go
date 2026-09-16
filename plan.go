@@ -39,6 +39,7 @@ type plan struct {
 	sel        *selectionSet
 	complexity int
 	depth      int
+	shape      *AuthShape
 }
 
 // selectionSet is the flattened selection for a composite value. Concrete
@@ -87,6 +88,12 @@ type planField struct {
 	// looking up a schema coordinate. It stays zero unless actual cost is
 	// enabled, which is what keeps the write path unchanged when it is not.
 	costWeight int
+
+	// authIdx indexes this field's site in the plan's AuthShape, or -1 when
+	// the field declares no requirement. An integer compare on a field
+	// already in cache is what keeps authorization free for fields that
+	// declare nothing.
+	authIdx int32
 }
 
 // fieldExec holds the executor functions used for a field within one plan.
@@ -122,6 +129,7 @@ func compilePlan(s *Schema, e *Executor, doc *ast.QueryDocument, op *ast.Operati
 	}
 	p.complexity = complexityOf(p.sel)
 	p.depth = depthOf(p.sel)
+	p.shape = buildAuthShape(p.sel)
 	return p, nil
 }
 

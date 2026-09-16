@@ -1,6 +1,7 @@
 package graphql
 
 import (
+	"context"
 	"slices"
 	"testing"
 )
@@ -65,4 +66,110 @@ func TestNewRequirementCopiesItsGroups(t *testing.T) {
 	if r.Satisfied(map[string]bool{"write": true}) {
 		t.Error("requirement now accepts a scope the caller never declared")
 	}
+}
+
+// The shape is a property of the plan, not of the caller, so the same
+// document yields the same sites regardless of who asks. That is what keeps
+// the plan cache from multiplying by policy.
+func TestAuthShapeListsOnlyDeclaringFields(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+type Query { me: User! open: String! }
+type User { id: ID! salary: Int! @requiresScopes(scopes: [["pay:read"]]) }
+`
+	s, err := NewSchema(SDL(sdl),
+		Query(
+			Resolve("me", func(context.Context, Root) (*shapeUser, error) { return &shapeUser{}, nil }),
+			Field("open", func(Root) string { return "ok" }),
+		),
+		Object[shapeUser]("User",
+			Field("id", func(u *shapeUser) ID { return ID(u.ID) }),
+			Field("salary", func(u *shapeUser) int { return u.Salary }),
+		),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	var shape *AuthShape
+	e := NewExecutor(s, WithOperationInterceptor(OperationInterceptorFunc(
+		func(ctx context.Context, oc *OperationContext, next OperationHandler) *Response {
+			shape = oc.AuthShape()
+			return next(ctx, oc)
+		})))
+	resp := run(t, e, `{ open me { id salary } }`, "")
+	if len(resp.Errors) > 0 {
+		t.Fatalf("errors: %s", errorsJSON(resp.Errors))
+	}
+	if shape == nil {
+		t.Fatal("no shape on the operation context")
+	}
+
+	sites := shape.Sites()
+	if len(sites) != 1 {
+		t.Fatalf("got %d sites, want 1 (only User.salary declares)", len(sites))
+	}
+	if sites[0].Coord != "User.salary" {
+		t.Errorf("site coord = %q, want User.salary", sites[0].Coord)
+	}
+	if sites[0].Kind != SiteOutput {
+		t.Errorf("site kind = %v, want SiteOutput", sites[0].Kind)
+	}
+	if !sites[0].Requires.Satisfied(map[string]bool{"pay:read": true}) {
+		t.Error("site requirement not satisfied by the scope it names")
+	}
+	if got := shape.Scopes(); len(got) != 1 || got[0] != "pay:read" {
+		t.Errorf("Scopes = %v, want [pay:read]", got)
+	}
+}
+
+// A field that declares nothing must carry authIdx -1, which is what makes
+// the write-path check free for it.
+func TestAuthShapeLeavesUndeclaredFieldsUnindexed(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+type Query { a: String! @requiresScopes(scopes: [["x"]]) b: String! }
+`
+	s, err := NewSchema(SDL(sdl),
+		Query(
+			Field("a", func(Root) string { return "a" }),
+			Field("b", func(Root) string { return "b" }),
+		),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	e := NewExecutor(s)
+	p, _, perrs := planForTest(t, e, `{ a b }`)
+	if perrs != nil {
+		t.Fatalf("plan: %v", perrs)
+	}
+	sel := p.sel.forType(p.root)
+	byName := map[string]int32{}
+	for _, f := range sel.fields {
+		byName[f.name] = f.authIdx
+	}
+	if byName["a"] < 0 {
+		t.Errorf("declaring field a has authIdx %d, want >= 0", byName["a"])
+	}
+	if byName["b"] != -1 {
+		t.Errorf("undeclared field b has authIdx %d, want -1", byName["b"])
+	}
+}
+
+func planForTest(t *testing.T, e *Executor, query string) (*plan, bool, []*Error) {
+	t.Helper()
+	entry, errs := e.document(query)
+	if errs != nil {
+		t.Fatalf("document: %v", errs)
+	}
+	op, oerr := selectOperation(entry.doc, "")
+	if oerr != nil {
+		t.Fatalf("selectOperation: %v", oerr)
+	}
+	return entry.planFor(e.schema, e, op, nil)
+}
+
+type shapeUser struct {
+	ID     string
+	Salary int
 }
