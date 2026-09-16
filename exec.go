@@ -396,13 +396,12 @@ func (n *pathNode) materialize() Path {
 // working on one operation.
 type execState struct {
 	e *Executor
-	// decision replaces the redundant s *Schema this field used to be (every
-	// construction site set s to e.schema, which is reachable through e
-	// anyway): the size class this struct sits in has no slack, so a new
-	// pointer needed a field to displace rather than one to add. Filled once
-	// in runOperation, before any field resolves; nil when no Authorizer is
-	// configured or the operation's shape is empty. Task 6 reads it against
-	// planField.authIdx.
+	// decision is carried per request so the write path can enforce each
+	// field's Outcome by planField.authIdx with no lookup and no call back
+	// into the Authorizer. It is nil when no Authorizer is configured or the
+	// operation touches no declaring field, which keeps that path to one nil
+	// check. The struct has no slack in its size class, so there is no
+	// separate schema pointer: the schema is reached through e.
 	decision *Decision
 	vars     map[string]any
 

@@ -40,11 +40,15 @@
 // itself -- the shape does not depend on who is asking, so the plan cache is
 // not multiplied by policy, and a field that declares nothing carries
 // authIdx -1 and costs one integer compare on the request path. An
-// Authorizer turns a shape into a Decision once per operation -- and, for a
-// subscription, once when the stream opens (gating the source itself) plus
-// once more per event (gating that event's Response), so a scope revoked
-// mid-stream takes effect on the next event without tearing the subscription
-// down; a refused event is an error response, not a closed stream.
+// Authorizer turns a shape into a Decision once per query or mutation -- and,
+// for a subscription, once when the stream opens plus once more per event.
+// At open, exactly two things refuse the subscription before its source is
+// opened: an Authorize error, or a Deny recorded for the subscription root
+// field; any other outcome on the root, and every outcome below it, is left
+// to the per-event pass. That pass gates each event's Response, so a scope
+// revoked mid-stream takes effect on the next event without tearing the
+// subscription down; a refused event is an error response, not a closed
+// stream.
 // Decision.Set assigns each Site an Outcome: Allow (the zero value), Deny
 // (an AIP-211-worded error that reveals neither the value nor whether the
 // resource exists), Null, Zero (a non-null field's zero value, for

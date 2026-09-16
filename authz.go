@@ -262,10 +262,13 @@ func (o Outcome) validFor(site AuthSite) error {
 }
 
 // Authorizer turns an operation's shape into a decision for one principal.
-// It runs once per operation, before any field resolves, and is not called
-// at all when the operation touches nothing that declares a requirement.
+// It runs once per query or mutation, before any field resolves, and is not
+// called at all when the operation touches nothing that declares a
+// requirement. A subscription calls it once when the stream opens and again
+// for every event, so a scope revoked mid-stream applies to the next event.
 //
-// A returned error rejects the whole operation. The interface deliberately
+// A returned error rejects the whole operation, or for a subscription the
+// opening of the stream or the one event being evaluated. The interface deliberately
 // holds no policy of its own: it is the adapter to whatever decides, be that
 // OPA, Cedar, OpenFGA, Casbin or a hand-written checker.
 type Authorizer interface {
