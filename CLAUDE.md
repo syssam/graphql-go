@@ -265,10 +265,11 @@ observer call sites costing nothing when the observer itself does nothing. The i
 interceptor is able to replace a result, whether or not it uses that ability; an observer
 cannot change a result, so the engine never routes a field through that path for one, and a
 pure field keeps its typed writer regardless of what the observer does. What `ext/otel`'s own
-`fieldSpanObserver` then spends per field it actually observes — a `tracer.Start`, two
-`SetAttributes` calls and a `span.End()`, on every field including pure ones once
-`WithFieldSpans` is on — is real cost that these benchmarks do not measure and this file does
-not have a number for. One behaviour changed with the switch: the observer's `EndField` runs
+`fieldSpanObserver` then spends per field it actually observes — a `tracer.Start`, one
+`SetAttributes` call carrying two attributes and a `span.End()`, plus `RecordError` and
+`SetStatus` when the field errors, on every field including pure ones once `WithFieldSpans`
+is on — is real cost that these benchmarks do not measure and this file does not have a
+number for. One behaviour changed with the switch: the observer's `EndField` runs
 after panic recovery sets the field error, so a panicking field's span now gets error status
 — the interceptor's plain `defer span.End()` ran during the panic's unwind, before recovery
 converted it, so a crashed field used to produce a span that looked clean.
