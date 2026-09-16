@@ -12,6 +12,14 @@ import (
 // for cases with no variables; where set, it is decoded into a cond map via
 // variantKey (the same path planFor uses), so operationMetrics and the
 // compiled plan are compared under the same variant.
+//
+// fanSDL's own types are Query.root: Node, Node.id: ID! and Node.next: Node —
+// no concrete object field, no list, no field with arguments. Every case
+// above walks only the abstract-interface shape. "introspection" closes that
+// gap: __schema is a concrete object field returning a concrete object,
+// fields/args/ofType are lists and nested objects, and args itself is a field
+// with arguments in its own right, all reachable because introspection is
+// wired into every schema as ordinary bindings.
 var metricsCases = []struct {
 	name  string
 	query string
@@ -34,6 +42,11 @@ var metricsCases = []struct {
 		"skip variable false",
 		`query($s: Boolean!) { root { id @skip(if: $s) next { id } } }`,
 		map[string]any{"s": false},
+	},
+	{
+		"introspection",
+		`{ __schema { queryType { name fields { name args { name } type { name kind ofType { name } } } } } }`,
+		nil,
 	},
 }
 
