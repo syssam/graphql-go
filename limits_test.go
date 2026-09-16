@@ -109,7 +109,7 @@ type connArgs struct{ First, Last *int }
 
 // connCostSchema is Relay-shaped: the pagination arguments sit on the
 // connection field, one level above the list they actually bound.
-func connCostSchema(t *testing.T) *Schema {
+func connCostSchema(t testing.TB) *Schema {
 	t.Helper()
 	s, err := NewSchema(SDL(`
 		type User { id: ID! friends: [User!]! }
@@ -243,4 +243,38 @@ func TestQueryCostConnectionsPaidAndUnpaidReachTheSameShape(t *testing.T) {
 	if cost != 38 {
 		t.Fatalf("cost = %d, want 38 (16 paid + 22 unpaid); 20 or 128 means one visit's figure was reused for the other", cost)
 	}
+}
+
+// The cost walk runs once per request whenever a cost model is configured,
+// and until now nothing measured it. These three are the configurations that
+// differ: no model at all, a model that walks, and a model that also reads
+// connection arguments. The connection resolver returns an empty page on
+// purpose, so what is left is the walk rather than the data.
+func benchCost(b *testing.B, cfg *QueryCost) {
+	b.Helper()
+	var opts []ExecutorOption
+	if cfg != nil {
+		opts = append(opts, WithQueryCost(*cfg))
+	}
+	e := NewExecutor(connCostSchema(b), opts...)
+	req := &Request{Query: `{ conn(first: 5) { edges { node { id friends { id } } } } }`}
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		resp := e.Execute(ctx, req)
+		if len(resp.Errors) > 0 {
+			b.Fatal(resp.Errors[0])
+		}
+		resp.Release()
+	}
+}
+
+func BenchmarkQueryCostDisabled(b *testing.B) { benchCost(b, nil) }
+
+func BenchmarkQueryCostReported(b *testing.B) {
+	benchCost(b, &QueryCost{DefaultListSize: 10, Report: true})
+}
+
+func BenchmarkQueryCostConnections(b *testing.B) {
+	benchCost(b, &QueryCost{DefaultListSize: 10, Report: true, Connections: true})
 }

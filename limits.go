@@ -207,6 +207,12 @@ func fieldCost(f *planField, w costWalk) int {
 	if f.def != nil && f.def.object != nil {
 		weight = w.cfg.weight(coordinate(f.def.object.name, f.def.name))
 	}
+	// A leaf multiplies nothing, so its multiplier need not be computed.
+	// Working one out means reading arguments off every scalar field in the
+	// query, and scalars are most of the fields in most queries.
+	if f.sub == nil {
+		return weight
+	}
 
 	mult, childPaid := 1, false
 	switch isList := f.def != nil && f.def.typ != nil && f.def.typ.Elem != nil; {
