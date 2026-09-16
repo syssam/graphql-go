@@ -177,6 +177,9 @@ func TestFieldInterceptorSeesPureFieldsWithoutContextAttachment(t *testing.T) {
 	}
 	for i, name := range seen {
 		if name == "Query.users" {
+			if !attached[i] {
+				t.Errorf("%s: resolver field lost its FieldContext from the context", name)
+			}
 			continue // a resolver field: the context must still carry it
 		}
 		if attached[i] {

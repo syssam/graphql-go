@@ -227,11 +227,8 @@ func newFieldSpec[P, R any](name string, argsType reflect.Type, pure bool, opts 
 		if err != nil {
 			return fmt.Errorf("field %s: %w", coord, err)
 		}
-		// See the matching comment in fieldDef.wrap: fd.resolve carries a
-		// FieldContext parameter that anyResolve, shared with directives, does not.
-		resolve := fd.anyResolve
 		fd.resolve = func(ctx context.Context, parent, args any, _ *FieldContext) (any, error) {
-			return resolve(ctx, parent, args)
+			return call(ctx, getParent(parent), args)
 		}
 		fd.shape = b.reg.shapeFor(spec.result, def.Type, target)
 		return nil
