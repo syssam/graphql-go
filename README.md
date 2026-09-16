@@ -149,7 +149,7 @@ and a subscription fed by the `createPost` mutation lives in
 | `Directive` / `DirectiveArgs[A]` | Schema-directive middleware on `FIELD_DEFINITION` and `OBJECT`. |
 | `Query` / `Mutation` / `Subscription` | Bind the schema's root types without repeating their names. |
 | `Subscribe` / `SubscribeArgs` | Bind a subscription root field to a `<-chan R` source. `Executor.Subscribe` yields one response per event. |
-| `loader.New` | Per-request batch+cache (Facebook DataLoader) in `graphql-go/loader`. `Load` coalesces concurrent Resolve fields in one execution wave, driven by `graphql.WaveCoordinator`. |
+| `loader.New` / `loader.NewMapped` | Per-request batch+cache (Facebook DataLoader) in `graphql-go/loader`. `Load` coalesces concurrent Resolve fields in one execution wave, driven by `graphql.WaveCoordinator`. `NewMapped` reports failure per key, so one bad id does not null its siblings. |
 
 Resolvers can read their context with `graphql.FieldFrom`, `graphql.PathFrom`
 and `graphql.SelectionFrom`; `graphql.OperationFrom` exposes the operation,

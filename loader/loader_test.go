@@ -3,6 +3,7 @@ package loader_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"iter"
 	"strconv"
 	"strings"
@@ -353,5 +354,81 @@ func TestLoaderBatchSeesRequestDeadline(t *testing.T) {
 
 	if !hasDeadline.Load() {
 		t.Fatal("batch function saw no deadline; the request's was not propagated")
+	}
+}
+
+// newNullableOwnerSchema is newLoaderSchema with a nullable owner, so one
+// failed key is visible as a null beside its surviving siblings instead of
+// bubbling the whole list away.
+func newNullableOwnerSchema(t *testing.T, ld *loader.Loader[graphql.ID, *loadOwner], items []*loadItem) *graphql.Executor {
+	t.Helper()
+	s, err := graphql.NewSchema(graphql.SDL(`
+		type User { name: String! }
+		type Item { owner: User }
+		type Query { items: [Item!]! }
+	`),
+		graphql.Object[loadOwner]("User",
+			graphql.Field("name", func(u *loadOwner) string { return u.Name }),
+		),
+		graphql.Object[loadItem]("Item",
+			graphql.Resolve("owner", func(ctx context.Context, it *loadItem) (*loadOwner, error) {
+				return ld.Load(ctx, it.OwnerID)
+			}),
+		),
+		graphql.Query(graphql.Resolve("items", func(context.Context, graphql.Root) ([]*loadItem, error) {
+			return items, nil
+		})),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return graphql.NewExecutor(s)
+}
+
+// GraphQL's partial-response contract is per field, so one key failing in a
+// batch must not null its siblings.
+func TestMappedLoaderReportsPerKeyErrors(t *testing.T) {
+	ld := loader.NewMapped(func(_ context.Context, keys []graphql.ID) (map[graphql.ID]*loadOwner, map[graphql.ID]error, error) {
+		vals := make(map[graphql.ID]*loadOwner, len(keys))
+		errs := make(map[graphql.ID]error)
+		for _, k := range keys {
+			if k == "bad" {
+				errs[k] = errors.New("owner lookup failed")
+				continue
+			}
+			vals[k] = &loadOwner{Name: "u" + string(k)}
+		}
+		return vals, errs, nil
+	})
+
+	e := newNullableOwnerSchema(t, ld, []*loadItem{{"1"}, {"bad"}, {"2"}})
+	resp := e.Execute(context.Background(), &graphql.Request{Query: `{ items { owner { name } } }`})
+
+	want := `{"items":[{"owner":{"name":"u1"}},{"owner":null},{"owner":{"name":"u2"}}]}`
+	if got := string(resp.Data); got != want {
+		t.Fatalf("one failed key took its siblings with it\n got: %s\nwant: %s", got, want)
+	}
+	if len(resp.Errors) != 1 {
+		t.Fatalf("errors = %d, want exactly 1", len(resp.Errors))
+	}
+	if !strings.Contains(resp.Errors[0].Message, "owner lookup failed") {
+		t.Fatalf("error message = %q", resp.Errors[0].Message)
+	}
+}
+
+// A batch-wide failure (the database is down) still fails every key in it.
+func TestMappedLoaderBatchErrorFailsEveryKey(t *testing.T) {
+	ld := loader.NewMapped(func(_ context.Context, keys []graphql.ID) (map[graphql.ID]*loadOwner, map[graphql.ID]error, error) {
+		return nil, nil, errors.New("database unavailable")
+	})
+
+	e := newNullableOwnerSchema(t, ld, []*loadItem{{"1"}, {"2"}})
+	resp := e.Execute(context.Background(), &graphql.Request{Query: `{ items { owner { name } } }`})
+
+	if got := string(resp.Data); got != `{"items":[{"owner":null},{"owner":null}]}` {
+		t.Fatalf("data = %s", got)
+	}
+	if len(resp.Errors) != 2 {
+		t.Fatalf("errors = %d, want 2 (one per key)", len(resp.Errors))
 	}
 }

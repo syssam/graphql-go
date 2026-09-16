@@ -29,6 +29,15 @@ import (
 // away and a tracing span or tenant read from it is the caller's own.
 type BatchFunc[K comparable, V any] func(ctx context.Context, keys []K) (map[K]V, error)
 
+// MappedBatchFunc is BatchFunc with per-key failure. A key present in the
+// error map fails only the Loads waiting on that key; its siblings in the
+// same batch are unaffected, which is what GraphQL's per-field error
+// contract asks for. The third return fails every key in the batch and is
+// for the whole call going wrong, such as the database being unreachable.
+//
+// Neither kind of error is cached.
+type MappedBatchFunc[K comparable, V any] func(ctx context.Context, keys []K) (map[K]V, map[K]error, error)
+
 // Loader is a Facebook-style DataLoader: per-request cache plus a batch
 // function. Create one Loader per process (it is safe for concurrent
 // Execute calls); cache and in-flight batches are scoped to the
@@ -40,6 +49,7 @@ type BatchFunc[K comparable, V any] func(ctx context.Context, keys []K) (map[K]V
 // calls in one resolver do not coalesce; use LoadMany for that.
 type Loader[K comparable, V any] struct {
 	batch    BatchFunc[K, V]
+	mapped   MappedBatchFunc[K, V]
 	maxBatch int
 	cache    bool
 
@@ -73,6 +83,19 @@ func New[K comparable, V any](batch BatchFunc[K, V], opts ...Option) *Loader[K, 
 		o(&cfg)
 	}
 	l := &Loader[K, V]{batch: batch, maxBatch: cfg.maxBatch, cache: cfg.cache}
+	l.orphan.init(l, nil)
+	return l
+}
+
+// NewMapped builds a loader whose batch function reports failure per key.
+// Everything else — caching, wave-driven batching, max batch size — behaves
+// as it does for New.
+func NewMapped[K comparable, V any](batch MappedBatchFunc[K, V], opts ...Option) *Loader[K, V] {
+	cfg := config{cache: true}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	l := &Loader[K, V]{mapped: batch, maxBatch: cfg.maxBatch, cache: cfg.cache}
 	l.orphan.init(l, nil)
 	return l
 }
@@ -282,18 +305,23 @@ func (s *requestScope[K, V]) flush(ctx context.Context) {
 		}
 		s.mu.Unlock()
 
-		got, err := s.invoke(ctx, keys)
+		got, keyErrs, err := s.invoke(ctx, keys)
 		for _, k := range keys {
 			var r result[V]
-			if err != nil {
+			switch {
+			case err != nil:
 				r.err = err
-			} else if v, ok := got[k]; ok {
-				r.val = v
-				if s.cached != nil {
-					s.mu.Lock()
-					s.cache[k] = v
-					s.cached[k] = struct{}{}
-					s.mu.Unlock()
+			case keyErrs[k] != nil:
+				r.err = keyErrs[k]
+			default:
+				if v, ok := got[k]; ok {
+					r.val = v
+					if s.cached != nil {
+						s.mu.Lock()
+						s.cache[k] = v
+						s.cached[k] = struct{}{}
+						s.mu.Unlock()
+					}
 				}
 			}
 			for _, w := range waiters[k] {
@@ -303,12 +331,17 @@ func (s *requestScope[K, V]) flush(ctx context.Context) {
 	}
 }
 
-func (s *requestScope[K, V]) invoke(ctx context.Context, keys []K) (map[K]V, error) {
-	if s.loader.batch == nil {
-		return nil, errors.New("loader: no batch function")
-	}
+func (s *requestScope[K, V]) invoke(ctx context.Context, keys []K) (map[K]V, map[K]error, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return s.loader.batch(ctx, keys)
+	switch {
+	case s.loader.mapped != nil:
+		return s.loader.mapped(ctx, keys)
+	case s.loader.batch != nil:
+		v, err := s.loader.batch(ctx, keys)
+		return v, nil, err
+	default:
+		return nil, nil, errors.New("loader: no batch function")
+	}
 }
