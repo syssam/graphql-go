@@ -134,9 +134,17 @@ Do **not** touch dated files under `docs/superpowers/plans/` or `docs/superpower
 cd "$(git rev-parse --show-toplevel)"
 grep -rn 'examples/basic' --include='*.go' --include='*.md' --include='*.yml' --include='*.yaml' . \
   | grep -v '^./ref/' | grep -v '^./docs/superpowers/plans/2026-09-1[15]' \
-  | grep -v '^./docs/superpowers/specs/2026-09-1[15]'
+  | grep -v '^./docs/superpowers/specs/2026-09-1[15]' \
+  | grep -v '^./docs/superpowers/plans/2026-09-16' \
+  | grep -v '^./examples/echo/' | grep -v '^./examples/fiber/'
 ```
 Expected: no output.
+
+`examples/echo/resolvers.go` and `examples/fiber/resolvers.go` each mention
+`examples/basic` twice (lines 75 and 135) and are deliberately excluded here —
+Task 8 owns those two files and rewrites both references to their final paths.
+Do not edit them in this task; an intermediate value written here would only be
+rewritten again.
 
 - [ ] **Step 9: Commit**
 
@@ -1585,12 +1593,48 @@ func run() error {
 }
 ```
 
-- [ ] **Step 3: Update the comment in notes.go that points at the old layout**
+- [ ] **Step 3: Update both stale references in notes.go**
 
-In `examples/quickstart/notes.go`, the doc comment on `newSchema` reads
-"see examples/basic and cmd/gqlc for the codegen path this example deliberately
-skips, to stay copyable as a single small package." Replace `examples/basic`
-with `examples/blog`.
+`examples/quickstart/notes.go` (moved from `examples/echo/resolvers.go`) mentions
+the old layout **twice**. Fix both, to their final post-refactor paths.
+
+Around line 75, in the `broker` doc comment:
+
+```go
+// the same two rules as examples/basic/schema/broker.go: a subscriber that
+```
+
+becomes:
+
+```go
+// the same two rules as examples/blog/internal/repository/broker.go: a
+// subscriber that
+```
+
+Re-wrap the following lines of that comment if the reflow needs it — the
+sentence continues "is not keeping up is dropped rather than allowed to block a
+mutation".
+
+Around line 135, in the `newSchema` doc comment:
+
+```go
+// hand-written rather than generated -- see examples/basic and cmd/gqlc for
+```
+
+becomes:
+
+```go
+// hand-written rather than generated -- see examples/blog and cmd/gqlc for
+```
+
+Verify both landed:
+
+```bash
+cd "$(git rev-parse --show-toplevel)"
+grep -n 'examples/' examples/quickstart/notes.go
+```
+Expected: two lines, naming `examples/blog/internal/repository/broker.go` and
+`examples/blog`. No occurrence of `examples/basic` anywhere in the file.
 
 - [ ] **Step 4: Point both transport examples at blog**
 
