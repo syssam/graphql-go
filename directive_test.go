@@ -32,6 +32,31 @@ type Subscription { ticks: Int! @guard }
 	}
 }
 
+// A bound directive on the Subscription type wraps every one of its fields
+// the same way a field-level one does, so it never runs either and must be
+// rejected by the same check, naming the field it would have wrapped.
+func TestBoundDirectiveOnSubscriptionTypeIsRejected(t *testing.T) {
+	const sdl = `
+directive @guard on FIELD_DEFINITION | OBJECT
+type Query { ping: String! }
+type Subscription @guard { ticks: Int! }
+`
+	ch := make(chan int)
+	_, err := NewSchema(SDL(sdl),
+		Query(Field("ping", func(Root) string { return "pong" })),
+		Subscription(Subscribe("ticks", func(context.Context) (<-chan int, error) { return ch, nil })),
+		Directive("guard", func(next FieldFunc) FieldFunc { return next }),
+	)
+	if err == nil {
+		t.Fatal("NewSchema accepted a bound directive on the Subscription type")
+	}
+	for _, want := range []string{"Subscription.ticks", "@guard", "SubscriptionInterceptor"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not mention %q\n got: %v", want, err)
+		}
+	}
+}
+
 // The rejection must be about bound directives, not about directives. A
 // subscription root carrying only unbound or built-in directives still builds.
 func TestUnboundDirectiveOnSubscriptionRootIsAllowed(t *testing.T) {
