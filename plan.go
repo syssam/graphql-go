@@ -6,6 +6,7 @@ import (
 	"hash/maphash"
 	"slices"
 	"sort"
+	"strconv"
 	"sync"
 
 	"github.com/syssam/graphql-go/internal/jsonw"
@@ -104,6 +105,48 @@ type compiler struct {
 	doc  *ast.QueryDocument
 	cond map[string]bool
 	errs []*Error
+
+	// An interface with N implementers selected D levels deep expands to N^D
+	// selection sets, because each concrete expansion can contain further
+	// abstract fields. compileSelection is a pure function of its parent and
+	// selection set for a fixed cond, and plan structures are read-only once
+	// built, so identical calls share one result and the tree becomes a DAG.
+	memo   map[selKey]*selectionSet
+	nodeID map[ast.Selection]int32
+}
+
+// selKey identifies a compileSelection call. parent holds the *objectType for
+// a concrete parent or the *abstractType for an abstract one; both are
+// pointers, so the interface value is comparable.
+type selKey struct {
+	parent any
+	sels   string
+}
+
+// selFingerprint identifies a selection set by the identities of the AST nodes
+// in it. Slice identity will not do: buildField reuses first.SelectionSet when
+// a response key has a single AST node but appends a fresh slice when it has
+// more, so a query repeating a response key would miss a pointer-keyed memo at
+// every level and expand exponentially regardless.
+func (c *compiler) selFingerprint(sels ast.SelectionSet) string {
+	var b []byte
+	for _, s := range sels {
+		b = strconv.AppendInt(b, int64(c.nodeNum(s)), 36)
+		b = append(b, ',')
+	}
+	return string(b)
+}
+
+// nodeNum numbers an AST selection node on first sight. The document is cached
+// and never mutated, so a node's identity is stable across every plan compiled
+// from it.
+func (c *compiler) nodeNum(s ast.Selection) int32 {
+	if n, ok := c.nodeID[s]; ok {
+		return n
+	}
+	n := int32(len(c.nodeID))
+	c.nodeID[s] = n
+	return n
 }
 
 // compilePlan flattens an operation into a plan. cond supplies the values of
@@ -114,7 +157,11 @@ func compilePlan(s *Schema, e *Executor, doc *ast.QueryDocument, op *ast.Operati
 	if root == nil {
 		return nil, []*Error{Errorf("schema does not define a %s root type", op.Operation).WithCode(CodeValidationFailed)}
 	}
-	c := &compiler{s: s, e: e, doc: doc, cond: cond}
+	c := &compiler{
+		s: s, e: e, doc: doc, cond: cond,
+		memo:   make(map[selKey]*selectionSet),
+		nodeID: make(map[ast.Selection]int32),
+	}
 	p := &plan{op: op, root: root}
 	p.sel = c.compileSelection(root, nil, op.SelectionSet)
 	if len(c.errs) > 0 {
@@ -138,10 +185,19 @@ func (s *Schema) rootFor(op ast.Operation) *objectType {
 }
 
 func (c *compiler) compileSelection(obj *objectType, abs *abstractType, sels ast.SelectionSet) *selectionSet {
+	key := selKey{parent: any(obj), sels: c.selFingerprint(sels)}
+	if abs != nil {
+		key.parent = any(abs)
+	}
+	if s, ok := c.memo[key]; ok {
+		return s
+	}
+
 	out := &selectionSet{}
 	if abs == nil {
 		out.fields = c.collect(obj, sels)
 		out.directSchedulable, out.deepSchedulable = schedulability(out.fields)
+		c.memo[key] = out
 		return out
 	}
 	names := make([]string, 0, len(abs.possible))
@@ -156,6 +212,7 @@ func (c *compiler) compileSelection(obj *objectType, abs *abstractType, sels ast
 		out.directSchedulable = max(out.directSchedulable, concrete.directSchedulable)
 		out.deepSchedulable = out.deepSchedulable || concrete.deepSchedulable
 	}
+	c.memo[key] = out
 	return out
 }
 
@@ -363,24 +420,35 @@ func argsHaveVariables(args ast.ArgumentList) bool {
 }
 
 func complexityOf(sel *selectionSet) int {
+	return complexityMemo(sel, make(map[*selectionSet]int))
+}
+
+// complexityMemo carries the memo that makes the walk linear in the DAG rather
+// than in the tree the DAG unfolds to.
+func complexityMemo(sel *selectionSet, memo map[*selectionSet]int) int {
 	if sel == nil {
 		return 0
+	}
+	if n, ok := memo[sel]; ok {
+		return n
 	}
 	count := func(fields []*planField) int {
 		n := 0
 		for _, f := range fields {
-			n += 1 + complexityOf(f.sub)
+			n += 1 + complexityMemo(f.sub, memo)
 		}
 		return n
 	}
+	n := 0
 	if sel.byType == nil {
-		return count(sel.fields)
+		n = count(sel.fields)
+	} else {
+		for _, concrete := range sel.byType {
+			n = max(n, count(concrete.fields))
+		}
 	}
-	most := 0
-	for _, concrete := range sel.byType {
-		most = max(most, count(concrete.fields))
-	}
-	return most
+	memo[sel] = n
+	return n
 }
 
 // condVariables returns the sorted names of Boolean variables used by @skip

@@ -218,26 +218,35 @@ func asCostInt(v any) (int, bool) {
 }
 
 func depthOf(sel *selectionSet) int {
+	return depthMemo(sel, make(map[*selectionSet]int))
+}
+
+func depthMemo(sel *selectionSet, memo map[*selectionSet]int) int {
 	if sel == nil {
 		return 0
+	}
+	if n, ok := memo[sel]; ok {
+		return n
 	}
 	walk := func(fields []*planField) int {
 		d := 0
 		for _, f := range fields {
 			fd := 1
 			if f.sub != nil {
-				fd += depthOf(f.sub)
+				fd += depthMemo(f.sub, memo)
 			}
 			d = max(d, fd)
 		}
 		return d
 	}
-	if sel.byType == nil {
-		return walk(sel.fields)
-	}
 	d := 0
-	for _, c := range sel.byType {
-		d = max(d, walk(c.fields))
+	if sel.byType == nil {
+		d = walk(sel.fields)
+	} else {
+		for _, c := range sel.byType {
+			d = max(d, walk(c.fields))
+		}
 	}
+	memo[sel] = d
 	return d
 }

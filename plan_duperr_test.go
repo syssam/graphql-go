@@ -65,9 +65,21 @@ func newDupErrSchema(t *testing.T) *Schema {
 }
 
 // TestPlanArgErrorPerConcreteType pins how many errors one bad literal
-// produces when it sits under an abstract parent. Today compileSelection
-// expands the selection once per concrete type, so the same failure is
-// reported three times.
+// produces when it sits under an abstract parent.
+//
+// This count is unchanged by memoizing compileSelection on (parent type,
+// selection set). The memo only collapses calls that recur with an identical
+// key; D0, D1 and D2 are three distinct *objectType values (abstractType.possible
+// holds one per implementing type), so the abstract branch calls
+// compileSelection(D0, ...), compileSelection(D1, ...) and compileSelection(D2, ...)
+// exactly once each, both before and after memoization — dispatching a field
+// to every possible concrete type is required GraphQL behavior, not the
+// redundant re-expansion the memo targets. That redundancy only arises when
+// the *same* (parent, selection) pair is reached by more than one path, which
+// is what TestFanOutExpansionIsBounded (plan_fanout_test.go) exercises via a
+// self-referential interface. Confirmed by instrumenting buildField: it is
+// invoked three times, once per obj pointer, both before and after this
+// change.
 func TestPlanArgErrorPerConcreteType(t *testing.T) {
 	s := newDupErrSchema(t)
 	e := NewExecutor(s)
