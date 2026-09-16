@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fanTagN give fanT distinct instantiations. The registry keys bindings by
@@ -161,5 +162,46 @@ func TestFanOutMemoSurvivesDuplicateKeys(t *testing.T) {
 	want := fanTypes * (depth + 2) * 4
 	if got > want {
 		t.Fatalf("plan holds %d selection sets, want at most %d", got, want)
+	}
+}
+
+// TestFanOutQueryCostIsBounded covers the walk that runs per request rather
+// than per compile. queryCostOf depends on request variables, so its result
+// cannot live on the plan; without its own memo it re-walks every shared
+// subgraph of the DAG on every request.
+func TestFanOutQueryCostIsBounded(t *testing.T) {
+	s, e := newFanExecutor(t, WithQueryCost(QueryCost{Report: true}))
+	const depth = 6
+	p := fanPlan(t, s, e, depth)
+
+	visits := 0
+	var walk func(*selectionSet)
+	walk = func(sel *selectionSet) {
+		if sel == nil {
+			return
+		}
+		visits++
+		for _, sub := range sel.byType {
+			walk(sub)
+		}
+		for _, f := range sel.fields {
+			walk(f.sub)
+		}
+	}
+	walk(p.sel)
+	// An unmemoized walk of the DAG unfolds it back to the tree. If that is
+	// still cheap the fixture is too small to be measuring anything.
+	if visits < 10000 {
+		t.Fatalf("fixture unfolds to only %d visits; it cannot detect the regression", visits)
+	}
+
+	start := time.Now()
+	for i := 0; i < 50; i++ {
+		if n := queryCostOf(p.sel, nil, QueryCost{}); n <= 0 {
+			t.Fatalf("cost = %d, want positive", n)
+		}
+	}
+	if d := time.Since(start); d > 200*time.Millisecond {
+		t.Fatalf("50 cost walks took %v; the walk is not memoized", d)
 	}
 }

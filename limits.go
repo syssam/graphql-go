@@ -139,27 +139,36 @@ func (oc *OperationContext) ensureCost(cfg QueryCost) int {
 }
 
 func queryCostOf(sel *selectionSet, vars map[string]any, cfg QueryCost) int {
+	return queryCostMemo(sel, vars, cfg, make(map[*selectionSet]int))
+}
+
+func queryCostMemo(sel *selectionSet, vars map[string]any, cfg QueryCost, memo map[*selectionSet]int) int {
 	if sel == nil {
 		return 0
+	}
+	if n, ok := memo[sel]; ok {
+		return n
 	}
 	sum := func(fields []*planField) int {
 		n := 0
 		for _, f := range fields {
-			n += fieldCost(f, vars, cfg)
+			n += fieldCost(f, vars, cfg, memo)
 		}
 		return n
 	}
+	n := 0
 	if sel.byType == nil {
-		return sum(sel.fields)
+		n = sum(sel.fields)
+	} else {
+		for _, concrete := range sel.byType {
+			n = max(n, sum(concrete.fields))
+		}
 	}
-	most := 0
-	for _, concrete := range sel.byType {
-		most = max(most, sum(concrete.fields))
-	}
-	return most
+	memo[sel] = n
+	return n
 }
 
-func fieldCost(f *planField, vars map[string]any, cfg QueryCost) int {
+func fieldCost(f *planField, vars map[string]any, cfg QueryCost, memo map[*selectionSet]int) int {
 	if f.kind == fieldTypename {
 		return 0
 	}
@@ -169,7 +178,7 @@ func fieldCost(f *planField, vars map[string]any, cfg QueryCost) int {
 	}
 	child := 0
 	if f.sub != nil {
-		child = queryCostOf(f.sub, vars, cfg)
+		child = queryCostMemo(f.sub, vars, cfg, memo)
 	}
 	mult := 1
 	if f.def != nil && f.def.typ != nil && f.def.typ.Elem != nil {
