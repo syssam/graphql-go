@@ -382,6 +382,18 @@ func TestUpdatePostAppliesThreeValuedPatch(t *testing.T) {
 	}
 }
 
+// TestUpdatePostClearsTitleBecauseAppIsNotHere is the other half of
+// TestRulesCannotBeBypassed: the repository applies a clear that the schema
+// forbids, so the rule refusing it has to live somewhere every caller passes
+// through. A repository that quietly declined would make app look optional.
+func TestUpdatePostClearsTitleBecauseAppIsNotHere(t *testing.T) {
+	s := NewStore()
+	s.UpdatePost("12", domain.PostUpdate{Title: domain.Present[string](nil)})
+	if got := s.Post("12"); got.Title != "" {
+		t.Fatalf("repository declined the clear on its own (title %q); the rule is in the wrong layer", got.Title)
+	}
+}
+
 func TestSubscriberIsRemovedOnCancel(t *testing.T) {
 	s := NewStore()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -671,7 +683,9 @@ func (s *Store) CreatePost(authorID, title, body string, tags []string) *domain.
 }
 
 // UpdatePost applies a partial update and returns the post, or nil if there is
-// no such post. Rejecting a clear the schema does not allow happens in app.
+// no such post. It applies what it is given, including a clear the schema does
+// not allow: refusing that is app's rule, and enforcing it here too would leave
+// two half-answers to the same question.
 func (s *Store) UpdatePost(id string, u domain.PostUpdate) *domain.Post {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -679,8 +693,12 @@ func (s *Store) UpdatePost(id string, u domain.PostUpdate) *domain.Post {
 	if p == nil {
 		return nil
 	}
-	if u.Title.Present && u.Title.Value != nil {
-		p.Title = *u.Title.Value
+	if u.Title.Present {
+		if u.Title.Value == nil {
+			p.Title = ""
+		} else {
+			p.Title = *u.Title.Value
+		}
 	}
 	if u.Body.Present {
 		if u.Body.Value == nil {
