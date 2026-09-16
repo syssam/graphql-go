@@ -206,26 +206,42 @@ func TestFanOutQueryCostIsBounded(t *testing.T) {
 	}
 }
 
-// TestDepthLimitRejectsBeforeCompiling is the point of the guard. Before it,
-// WithMaxDepth(3) against this query still built 8^5 selection sets and only
-// then reported that the query was three levels too deep.
-func TestDepthLimitRejectsBeforeCompiling(t *testing.T) {
+// TestDepthLimitRejectsWithoutCompiling is the point of the guard, asserted
+// directly rather than through a latency budget. An earlier version of this
+// test timed the rejection instead, on the theory that a compiled-then-
+// rejected query would be slow: true before Task 2 (1.65s for a depth-5
+// fan-out, measured pre-memoization), but Task 2's DAG memoization already
+// bounds compilePlan for this fixture to about fanTypes*depth selection
+// sets, so both the guarded and unguarded paths finish in well under a
+// millisecond here and a wall-clock assertion cannot tell them apart — it
+// passed whether or not the guard ran. What "rejects before compiling"
+// actually means is structural: no plan exists afterward. That is what this
+// test checks.
+func TestDepthLimitRejectsWithoutCompiling(t *testing.T) {
 	s, e := newFanExecutor(t, WithMaxDepth(3))
 	_ = s
 
-	start := time.Now()
-	resp := e.Execute(t.Context(), &Request{Query: fanQuery(8)})
-	elapsed := time.Since(start)
+	query := fanQuery(8)
+	entry, errs := e.document(query)
+	if errs != nil {
+		t.Fatalf("document: %v", errs[0])
+	}
 
+	resp := e.Execute(t.Context(), &Request{Query: query})
 	if len(resp.Errors) == 0 {
 		t.Fatal("want a depth limit error")
 	}
 	if got := resp.Errors[0].Message; !strings.Contains(got, "maximum depth") {
 		t.Fatalf("error = %q, want a maximum depth error", got)
 	}
-	// Depth 8 is 16 million selection sets unmemoized and tens of thousands
-	// memoized. Rejecting without compiling should be neither.
-	if elapsed > 50*time.Millisecond {
-		t.Fatalf("rejection took %v; the query was compiled before being refused", elapsed)
+
+	// d.plans is written under d.mu; reading it unlocked here would be the
+	// data race its own comment in plan.go warns about, even though this
+	// goroutine is the only writer in this test.
+	entry.mu.Lock()
+	n := len(entry.plans)
+	entry.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("plans cached for rejected operation = %d, want 0: a depth-rejected query must never be compiled or cached", n)
 	}
 }
