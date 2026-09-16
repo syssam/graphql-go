@@ -215,6 +215,13 @@ subscription explicitly. Either path alone suffices, so **a green test suite is 
 that either one is dead code** — breaking each half separately still passes every test; only
 breaking both leaks. See the comment on `cancelAll` in `internal/gqlwsproto/conn.go`.
 
+**Operation interceptors wrap the engine's own limit check; they do not follow it.**
+`rejectIfOverLimit` and `attachCost` are the innermost layer of `opChain`
+(`interceptor.go:132`), and an interceptor registered earlier sits further out. So an
+extension reading `OperationContext.Cost` runs before the engine would compute it, which is
+why `execute` computes it eagerly whenever a cost model is configured, and why a limiter must
+be registered before any interceptor that should not run for a request it rejects.
+
 **Actual query cost (`limits.go`).** `QueryCost.Actual` sums the weight of every field
 really resolved, alongside the requested cost computed from assumed list sizes; the two
 together say whether `DefaultListSize` is near reality. Weights are resolved onto
@@ -228,6 +235,15 @@ packed beside `cancelled` it measures zero. Check with `unsafe.Sizeof` and `benc
 before growing either, and interleave the runs — a non-interleaved comparison on this
 machine reported a 13.8% regression that vanished at n=18.
 
+`QueryCost.Connections` prices a Relay connection by its `first`/`last`, which sit on the
+connection field one level above the `edges` list they bound and are otherwise invisible:
+without it `conn(first: 2)` and `conn(first: 200)` both cost `DefaultListSize`. The page size
+pays for the list directly inside it and nothing deeper, or the two multiply and a page of
+200 prices as one of 2000. Off by default: it changes the number an existing deployment set
+`Max` against. The walk carries its state on `costWalk`, and **a memo over it must key on
+`paid` as well as the selection set** — the same `*selectionSet` costs differently paid and
+unpaid.
+
 `ext/otel` instruments an executor with OpenTelemetry: `graphql.NewExecutor(s, otel.New()...)`.
 One span per request, started before parsing so a parse failure still produces one and
 renamed once the operation is known. **Metrics are recorded at the operation layer and at
@@ -235,6 +251,12 @@ the request layer only when the operation chain never ran** — recording at bot
 every request, which the metric test caught. Field spans are opt-in and cost more than they
 look: a field interceptor routes every field through the type-erased path, pure ones
 included.
+
+`otel.Batch` / `otel.MappedBatch` wrap a `loader.BatchFunc` so every flush gets a span under
+the request that caused it. They live in `ext/otel` rather than as a loader option so
+`loader/` keeps depending on nothing but the engine and the standard library.
+`graphqlgo.loader.keys` is the attribute to alert on: one key per span means batching has
+degraded to N+1.
 
 `ext/apq` is automatic persisted queries, opt-in through `WithPersistedQueries` on either
 HTTP transport. **Resolution happens during parsing, not at execution**: a request carrying
@@ -244,12 +266,28 @@ nothing to inspect and would wave a persisted mutation through. Registration ver
 every later client's hash executes. `httpreq` takes a `queryOptional` flag so that with APQ
 off the missing-query errors are byte-identical to before.
 
+`ext/trusted` is the same wiring as a safelist: a `Store` is an `apq.Cache`, and `apq.Resolve`
+tells the two apart by the `apq.TrustedStore` marker. A safelist must refuse query text
+however it hashes — verifying the hash only proves the client can hash — and must refuse a
+freeform request carrying no hash at all, which is otherwise the way straight round it.
+
+`ext/throttle` spends what `QueryCost` computes: a bucket of points per caller, refilled on
+read rather than on a timer, quoted before the query runs and refunded down to the actual
+cost after. **It charges per subscription event**, because each event runs the whole
+operation chain; a stream billed once at open is unmetered.
+
 In `gqlwsproto`, **writes use the connection context, never the operation's**: coder/websocket
 tears down the whole connection when a write context is cancelled mid-frame, so writing a
 `next` under the operation context would let one client's unsubscribe drop every other
 subscription on that connection. The init timeout likewise closes the connection from a
 timer rather than bounding the read, because a read aborted by its own context leaves no
 way to send the 4408 close frame.
+
+`relay/` binds the Relay contract: global ids (`base64("Type:id")`, byte for byte what
+graphql-relay-js and graphql-java produce), `Node`, and cursor connections. It emits no
+types — the SDL still declares `Node`, the connection and the edge, as in every reference
+implementation. `Query.node` needed no engine change: it binds through the existing
+`any`-returning resolver on an unbound interface.
 
 `internal/jsonw` is the output writer and has no dependency on engine types — the plan
 compiler and executor deliberately live in the root package so generic constructors can
@@ -288,6 +326,10 @@ produce engine values directly.
   runs, and only under `-race` — concurrent sibling resolvers hit their first `Load` together, and
   the check-then-act pair silently gives each one its own copy. `-race` will not catch
   it; the symptom is DataLoader batching intermittently degrading to N+1.
+- A nil Go slice is written as `null`, so a list field bound to `[T!]!` must return
+  `make([]T, 0, n)` rather than a nil slice for an empty result.
+- Undo a deliberate break with a reverse edit, not `git checkout -- <file>`: on a file whose
+  real change is not yet committed, that reverts to HEAD and destroys the work being tested.
 - Package documentation lives in `doc.go`; `graphql.go` holds only the primitive public
   types (`ID`, `Root`, `Omittable`). Moving code between files in a package is free and
   invisible to callers, so keep each file focused enough to guess from its name.
@@ -317,8 +359,12 @@ from it, because the timings it first recorded were single samples and have been
 
 Status: phases 1-4 complete and merged to `main` — engine, both codegen binding modes,
 subscriptions, five transports, DataLoader, APQ, limits with actual cost accounting,
-OpenTelemetry, and the `lint/` analyzer. Not built: APQ over WebSocket, which belongs in the
-`graphql-transport-ws` state machine. Not measured, both needing Linux: latency percentiles,
+OpenTelemetry, and the `lint/` analyzer, plus `relay/`, `ext/throttle`, `ext/trusted` and
+DataLoader tracing. Not built: APQ over WebSocket, which belongs in the
+`graphql-transport-ws` state machine. `@defer`/`@stream` is not merely unbuilt — the prelude's
+`@defer` is stripped at `introspection.go:87` so the validator and introspection agree the
+server says no; adding it reverses a decision rather than filling a gap. Not measured,
+both needing Linux: latency percentiles,
 which this machine's ~522us clock granularity makes impossible, and behaviour under a
 cgroup memory limit.
 
