@@ -1,0 +1,30 @@
+"""A tiny note board: query and create notes, subscribe to new ones."""
+schema {
+  query: Query
+  mutation: Mutation
+  subscription: Subscription
+}
+
+type Note {
+  id: ID!
+  title: String!
+  body: String!
+}
+
+type Query {
+  """Lists every note, oldest first."""
+  notes: [Note!]!
+
+  """Looks up one note by id."""
+  note(id: ID!): Note
+}
+
+type Mutation {
+  """Creates a note and publishes it to noteCreated subscribers."""
+  createNote(title: String!, body: String!): Note!
+}
+
+type Subscription {
+  """Emits every note as it is created."""
+  noteCreated: Note!
+}

@@ -167,10 +167,53 @@ content-equal files are not rewritten.
 
 **Transports.** `transport/gqlhttp` is the GraphQL-over-HTTP handler; `transport/gqlsse`
 streams over Server-Sent Events (distinct connections mode); `transport/gqlws` speaks
-`graphql-transport-ws` over `coder/websocket`. All three serve every operation kind — a
-query or mutation is one `next` then `complete` — so a client needs one endpoint. The two
-HTTP transports parse requests through `internal/httpreq`, so a request one rejects as
-forgeable or oversized is rejected by the other; drift there is visible to clients.
+`graphql-transport-ws` over `coder/websocket`; `transport/gqlecho` and `transport/gqlfiber`
+add Echo v5 and Fiber v3. All five serve every operation kind — a query or mutation is one
+`next` then `complete` — so a client needs one endpoint. `internal/httpreq` expresses its
+CSRF, body-limit and decoding rules over a `Source` accessor, and owns `Negotiate` (Accept
+q-values, and with them the response `Content-Type` and whether a request error is 200 or
+400), so `gqlhttp`, `gqlsse`, `gqlecho` and `gqlfiber` share one rule set and a request one
+rejects as forgeable or oversized is rejected by all of them;
+`transport/equivalence_test.go` proves this by driving real requests through all six
+HTTP-carrying handlers — both SSE handlers included, since `gqlfiber`'s is hand-written —
+rather than by inspecting the code. The one documented exception: "mutations are not allowed
+over GET" is composed independently per transport, not through `httpreq`, and the SSE family
+(`gqlsse`, `gqlecho.SSE`, `gqlfiber.SSE`) and the plain-HTTP family use different wording for
+it, as they do for the unacceptable-`Accept` message — a real split along transport kind, not
+drift to fix. A row that splits still asserts every handler on both sides of it.
+
+`gqlecho` is `net/http` underneath, so it delegates to `gqlhttp`/`gqlsse`/`gqlws` rather than
+reimplementing them; its only addition over `echo.WrapHandler` is mapping a pre-response
+failure (rejected method, unacceptable `Accept`, forgeable request) into an `*echo.HTTPError`
+so Echo's error handler and middleware see it. `gqlfiber` is fasthttp-native instead: parsing
+goes through `httpreq`'s fasthttp `Source`, writing goes straight into the fasthttp response
+buffer via `Response.WriteTo`, and no `net/http` value exists anywhere on the path. Fiber's
+own `Ctx` can never be cancelled — `Done()` is always nil, and `Context()` is
+`context.Background()` unless middleware set one — so every `gqlfiber` handler derives its
+own cancellable context; without it, `Executor.Subscribe`'s teardown has nothing to unwind
+through. **That derived context cancels on handler return, not on client disconnect**: fine
+for unary requests, but the SSE handler parks inside `SendStreamWriter` for the whole stream,
+so a failed `w.Flush()` — fasthttp's only disconnect signal — is what drives the cancel.
+Getting this backwards produces a leak test that cannot fail, which this branch's own plan
+did once, caught in review before it reached a commit. Two related, deliberate limits: `gqlfiber`'s WebSocket sets no read deadline (the
+only candidate interval is `PingInterval`, and the protocol tracks no pongs, so a derived
+deadline would drop slow-but-live clients), and `WithKeepAlive(0)` on its SSE leaves an idle
+subscription with no write that can fail, so it is held open until its source ends — the
+handler warns at construction rather than reinterpreting the option's meaning. Its WebSocket
+layer (`gofiber/contrib/v3/websocket`, over `fasthttp/websocket`) has no origin-check hook of
+its own, so `transport/gqlfiber/ws.go` hand-rolls one mirroring `coder/websocket`'s semantics
+branch for branch — keep it a mirror; divergence there is a security divergence.
+
+`internal/gqlwsproto` is `graphql-transport-ws` extracted so `gqlws` and `gqlfiber`'s
+WebSocket layer both drive it. It locks around every write: `coder/websocket` serializes
+writers itself, but `fasthttp/websocket` (a gorilla derivative) does not, and concurrent
+subscriptions on one connection all write to the same socket. `Close` is deliberately outside
+that lock and serializes itself instead — an interleaved close frame corrupts the stream.
+Subscription release is double-secured on purpose: operation contexts derive from the
+connection context (so `cancel()` alone frees every one) and `cancelAll` also cancels each
+subscription explicitly. Either path alone suffices, so **a green test suite is not evidence
+that either one is dead code** — breaking each half separately still passes every test; only
+breaking both leaks. See the comment on `cancelAll` in `internal/gqlwsproto/conn.go`.
 
 **Actual query cost (`limits.go`).** `QueryCost.Actual` sums the weight of every field
 really resolved, alongside the requested cost computed from assumed list sizes; the two
@@ -201,7 +244,7 @@ nothing to inspect and would wave a persisted mutation through. Registration ver
 every later client's hash executes. `httpreq` takes a `queryOptional` flag so that with APQ
 off the missing-query errors are byte-identical to before.
 
-In `gqlws`, **writes use the connection context, never the operation's**: coder/websocket
+In `gqlwsproto`, **writes use the connection context, never the operation's**: coder/websocket
 tears down the whole connection when a write context is cancelled mid-frame, so writing a
 `next` under the operation context would let one client's unsubscribe drop every other
 subscription on that connection. The init timeout likewise closes the connection from a
@@ -216,11 +259,15 @@ produce engine values directly.
 
 - **Root package may depend only on `gqlparser/v2` and the standard library.** Transports,
   codegen and extensions keep their dependencies in sub-packages. `go.mod` therefore also
-  carries `yaml.v3` (for `cmd/gqlc`), `coder/websocket` (for `transport/gqlws`) and the
-  OpenTelemetry API and SDK (for `ext/otel`, the SDK only in its tests); the rule is about
-  what the root package imports, not about module purity. `ext/otel` is the obvious
-  candidate to split into its own module at publication time, so that the SDK leaves every
-  consumer's module graph.
+  carries `yaml.v3` (for `cmd/gqlc`), `coder/websocket` (for `transport/gqlws`),
+  `labstack/echo/v5` (for `transport/gqlecho`), `gofiber/fiber/v3` and
+  `gofiber/contrib/v3/websocket` (for `transport/gqlfiber`), and the OpenTelemetry API and SDK
+  (for `ext/otel`, the SDK only in its tests); the rule is about what the root package
+  imports, not about module purity. **Mind the Fiber websocket module path**:
+  `gofiber/contrib/websocket` (no `/v3/`) is the Fiber v2 module and will not build against
+  v3 — the path above, with `/v3/`, is the one this repository needs. `ext/otel`, `gqlecho`
+  and `gqlfiber` are the obvious candidates to split into their own modules at publication
+  time, so those dependencies leave every consumer's module graph.
 - **No reflection on the request hot path.** Reflection is allowed at `NewSchema`, in
   `Args[T]`/`Input[T]` decode, and in the one documented composite nested-list traverser
   (which logs `slog.Warn` at start-up). Adding reflection to the write path is a regression.
@@ -256,12 +303,20 @@ the body (e.g. `Object[User]` not `Object[*User]`; nullable input positions requ
 pointer/slice even with a default; complexity/depth/cost are `Executor` options, not an
 `ext/complexity` package; `Manifest` and `AutoBind` landed in phase 4 rather than phase 2,
 and the phase 4 deviations describe how). Read the deviations before trusting the prose.
-`docs/superpowers/plans/` holds the phase implementation plans; `docs/benchmarks.md` holds
-the gqlgen comparison and `docs/module-layout.md` the decision to stay one module until
-publication.
+`docs/superpowers/plans/` holds the phase implementation plans; `docs/module-layout.md` the
+decision to stay one module until publication; and `docs/benchmarks.md` the gqlgen comparison
+and the transport cost comparison (`net/http`, Echo, Fiber-native, Fiber-via-`adaptor`). The
+latter is also where the strongest argument for `gqlfiber`'s native path lives, and it has
+nothing to do with allocations: `fasthttpadaptor` hands the wrapped handler a
+`*fasthttp.RequestCtx` as its request context, and `RequestCtx.Done()` is documented as the
+**server's** shutdown channel, not a per-request one — so a `gqlhttp` handler reached through
+`adaptor.HTTPHandler` never sees a client disconnect, and every in-flight adapted request
+sees `ctx.Err() != nil` the moment shutdown begins. `benchmarks/k6/` load tests the HTTP
+transports against `benchmarks/cmd/transportserver`; read its README before quoting a number
+from it, because the timings it first recorded were single samples and have been retracted.
 
 Status: phases 1-4 complete and merged to `main` — engine, both codegen binding modes,
-subscriptions, three transports, DataLoader, APQ, limits with actual cost accounting,
+subscriptions, five transports, DataLoader, APQ, limits with actual cost accounting,
 OpenTelemetry, and the `lint/` analyzer. Not built: APQ over WebSocket, which belongs in the
 `graphql-transport-ws` state machine. Not measured, both needing Linux: latency percentiles,
 which this machine's ~522us clock granularity makes impossible, and behaviour under a

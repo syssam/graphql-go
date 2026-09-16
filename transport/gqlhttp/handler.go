@@ -12,9 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"mime"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/vektah/gqlparser/v2/ast"
@@ -26,7 +24,7 @@ import (
 
 // Media types negotiated by the handler.
 const (
-	MediaTypeGraphQLResponse = "application/graphql-response+json"
+	MediaTypeGraphQLResponse = httpreq.MediaTypeGraphQLResponse
 	MediaTypeJSON            = httpreq.MediaTypeJSON
 )
 
@@ -51,7 +49,7 @@ type Option func(*Handler)
 // WithMaxBodyBytes limits the size of request bodies. The default is 1 MiB.
 func WithMaxBodyBytes(n int64) Option { return func(h *Handler) { h.maxBody = n } }
 
-// WithBatching accepts JSON arrays of requests with at most max entries,
+// WithBatching accepts JSON arrays of requests with at most maxEntries entries,
 // executed sequentially. Batching is disabled by default.
 func WithBatching(maxEntries int) Option { return func(h *Handler) { h.batchMax = maxEntries } }
 
@@ -95,7 +93,7 @@ func New(exec *graphql.Executor, opts ...Option) *Handler {
 
 // ServeHTTP implements http.Handler.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	mediaType, ok := negotiate(r.Header.Get("Accept"))
+	mediaType, ok := httpreq.Negotiate(r.Header.Get("Accept"))
 	if !ok {
 		h.writeError(w, mediaType, http.StatusNotAcceptable, "Accept header does not allow %s or %s.", MediaTypeGraphQLResponse, MediaTypeJSON)
 		return
@@ -107,7 +105,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.csrf && httpreq.Forgeable(r, h.csrfHeaders) {
+	src := httpreq.FromRequest(w, r)
+
+	if h.csrf && httpreq.Forgeable(src, h.csrfHeaders) {
 		h.writeError(w, mediaType, http.StatusForbidden,
 			"This request could be forged cross-site. Send a non-simple Content-Type or one of the headers %s.", strings.Join(h.csrfHeaders, ", "))
 		return
@@ -119,7 +119,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	)
 	switch r.Method {
 	case http.MethodGet:
-		req, err := httpreq.ParseGET(r, h.apq != nil)
+		req, err := httpreq.ParseGET(src, h.apq != nil)
 		if err != nil {
 			h.writeError(w, mediaType, http.StatusBadRequest, "%v", err)
 			return
@@ -141,7 +141,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		var status int
 		var err error
-		reqs, batch, status, err = h.parsePOST(w, r)
+		reqs, batch, status, err = h.parsePOST(src)
 		if err != nil {
 			h.writeError(w, mediaType, status, "%v", err)
 			return
@@ -221,12 +221,12 @@ func (h *Handler) writeGraphQLError(w http.ResponseWriter, mediaType string, res
 
 // parsePOST reads and decodes the body. The returned status applies when err
 // is non-nil.
-func (h *Handler) parsePOST(w http.ResponseWriter, r *http.Request) (reqs []*graphql.Request, batch bool, status int, err error) {
-	if err := httpreq.RequireJSONBody(r); err != nil {
+func (h *Handler) parsePOST(src httpreq.Source) (reqs []*graphql.Request, batch bool, status int, err error) {
+	if err := httpreq.RequireJSONBody(src); err != nil {
 		return nil, false, http.StatusUnsupportedMediaType, err
 	}
 
-	body, status, err := httpreq.ReadBody(w, r, h.maxBody)
+	body, status, err := httpreq.ReadBody(src, h.maxBody)
 	if err != nil {
 		return nil, false, status, err
 	}
@@ -259,50 +259,6 @@ func (h *Handler) parsePOST(w http.ResponseWriter, r *http.Request) (reqs []*gra
 		return nil, false, http.StatusBadRequest, err
 	}
 	return []*graphql.Request{req}, false, 0, nil
-}
-
-// negotiate chooses the response media type from an Accept header. The
-// second result is false when the client accepts neither supported type.
-func negotiate(accept string) (string, bool) {
-	if strings.TrimSpace(accept) == "" {
-		return MediaTypeGraphQLResponse, true
-	}
-	best, bestQ := "", -1.0
-	consider := func(mt string, q float64) {
-		// Ties favour the specification's preferred type.
-		if q > bestQ || (q == bestQ && mt == MediaTypeGraphQLResponse) {
-			best, bestQ = mt, q
-		}
-	}
-	for _, part := range strings.Split(accept, ",") {
-		mt, params, err := mime.ParseMediaType(strings.TrimSpace(part))
-		if err != nil {
-			continue
-		}
-		q := 1.0
-		if qs, ok := params["q"]; ok {
-			if parsed, err := strconv.ParseFloat(qs, 64); err == nil {
-				q = parsed
-			}
-		}
-		if q <= 0 {
-			continue
-		}
-		switch mt {
-		case MediaTypeGraphQLResponse, MediaTypeJSON:
-			consider(mt, q)
-		case "*/*", "application/*":
-			// Wildcards match both; the preferred type wins the tie, but an
-			// explicit application/json still outranks a wildcard at equal q.
-			if q > bestQ {
-				best, bestQ = MediaTypeGraphQLResponse, q
-			}
-		}
-	}
-	if best == "" {
-		return MediaTypeGraphQLResponse, false
-	}
-	return best, true
 }
 
 func (h *Handler) writeResponse(w http.ResponseWriter, mediaType string, status int, write func(io.Writer) error) {

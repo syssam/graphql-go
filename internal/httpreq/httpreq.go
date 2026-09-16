@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"mime"
 	"net/http"
 	"strings"
@@ -31,16 +30,16 @@ var (
 // that required a CORS preflight. Any of them satisfies the CSRF check.
 var DefaultCSRFHeaders = []string{"GraphQL-Require-Preflight", "X-Requested-With"}
 
-// Forgeable reports whether a browser could have sent r cross-origin without
-// a preflight: no Content-Type or one of the CORS "simple" types, and none
-// of the preflight-forcing headers.
-func Forgeable(r *http.Request, headers []string) bool {
+// Forgeable reports whether a browser could have sent the request
+// cross-origin without a preflight: no Content-Type or one of the CORS
+// "simple" types, and none of the preflight-forcing headers.
+func Forgeable(src Source, headers []string) bool {
 	for _, name := range headers {
-		if r.Header.Get(name) != "" {
+		if src.Header(name) != "" {
 			return false
 		}
 	}
-	ct, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	ct, _, err := mime.ParseMediaType(src.Header("Content-Type"))
 	if err != nil {
 		return true
 	}
@@ -56,19 +55,18 @@ func Forgeable(r *http.Request, headers []string) bool {
 // queryOptional lets a request arrive without query text, which is only valid
 // when something downstream can supply it -- automatic persisted queries send
 // a hash alone. The caller must then check for itself that a query was found.
-func ParseGET(r *http.Request, queryOptional bool) (*graphql.Request, error) {
-	q := r.URL.Query()
-	req := &graphql.Request{Query: q.Get("query"), OperationName: q.Get("operationName")}
+func ParseGET(src Source, queryOptional bool) (*graphql.Request, error) {
+	req := &graphql.Request{Query: src.QueryParam("query"), OperationName: src.QueryParam("operationName")}
 	if req.Query == "" && !queryOptional {
 		return nil, ErrMissingQueryParam
 	}
-	if v := q.Get("variables"); v != "" {
+	if v := src.QueryParam("variables"); v != "" {
 		if !IsJSONObject(v) {
 			return nil, errors.New(`"variables" must be a JSON object`)
 		}
 		req.Variables = json.RawMessage(v)
 	}
-	if e := q.Get("extensions"); e != "" {
+	if e := src.QueryParam("extensions"); e != "" {
 		if err := json.Unmarshal([]byte(e), &req.Extensions); err != nil {
 			return nil, fmt.Errorf(`"extensions" must be a JSON object: %w`, err)
 		}
@@ -77,21 +75,20 @@ func ParseGET(r *http.Request, queryOptional bool) (*graphql.Request, error) {
 }
 
 // RequireJSONBody rejects a POST whose Content-Type is not JSON.
-func RequireJSONBody(r *http.Request) error {
-	ct, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+func RequireJSONBody(src Source) error {
+	ct, _, err := mime.ParseMediaType(src.Header("Content-Type"))
 	if err != nil || ct != MediaTypeJSON {
 		return fmt.Errorf("Content-Type must be %s.", MediaTypeJSON)
 	}
 	return nil
 }
 
-// ReadBody reads at most max bytes. The returned status applies when err is
+// ReadBody reads at most limit bytes. The returned status applies when err is
 // non-nil, and distinguishes an over-long body from an unreadable one.
-func ReadBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, int, error) {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
+func ReadBody(src Source, limit int64) ([]byte, int, error) {
+	body, err := src.Body(limit)
 	if err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
+		if errors.Is(err, ErrBodyTooLarge) {
 			return nil, http.StatusRequestEntityTooLarge, fmt.Errorf("request body exceeds %d bytes.", limit)
 		}
 		return nil, http.StatusBadRequest, fmt.Errorf("reading request body: %w", err)
