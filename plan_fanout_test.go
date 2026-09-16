@@ -1,12 +1,39 @@
 package graphql
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// fanInFlight/fanMaxInFlight are a concurrency witness for the fan fixture's
+// resolvers, not a correctness mechanism: they exist so a race test can
+// assert, not just hope, that goroutines were genuinely inside the shared
+// selectionSet's field resolution at the same time, rather than one after
+// another so fast that -race never sampled an overlap. fanTouch sleeps
+// briefly to widen the window a real overlap needs to be observed in.
+var (
+	fanInFlight    atomic.Int64
+	fanMaxInFlight atomic.Int64
+)
+
+func fanResetConcurrencyWitness() { fanMaxInFlight.Store(0) }
+
+func fanTouch() func() {
+	n := fanInFlight.Add(1)
+	for {
+		m := fanMaxInFlight.Load()
+		if n <= m || fanMaxInFlight.CompareAndSwap(m, n) {
+			break
+		}
+	}
+	time.Sleep(200 * time.Microsecond)
+	return func() { fanInFlight.Add(-1) }
+}
 
 // fanTagN give fanT distinct instantiations. The registry keys bindings by
 // (GraphQL type name, reflect.Type), so the eight schema types need eight Go
@@ -43,10 +70,26 @@ func fanSDL() string {
 	return b.String()
 }
 
+// fanObject binds both fields through Resolve rather than Field. That makes
+// both "id" and "next" schedulable (object.go: schedulable = !pure ||
+// concurrent), which is what gives a selection two-or-more schedulable fields
+// and lets writeFieldsConcurrent (exec_object.go) actually fire for this
+// fixture; a Field-bound pair never leaves the inline loop in writeObject.
+// "next" returns a real *fanT[T] of the same tag every time, so a chain of
+// "next" calls stays on one concrete type and keeps recursing instead of
+// stopping at the first level — see TestFanOutSharedSelectionSetsRace and
+// TestFanOutConcurrentCompileRace, which depend on genuine multi-level
+// traversal to exercise the shared selectionSet DAG under concurrent readers.
 func fanObject[T any](name string) SchemaOption {
 	return Object[fanT[T]](name,
-		Field("id", func(t *fanT[T]) string { return t.ID }),
-		Field("next", func(t *fanT[T]) fanNode { return nil }),
+		Resolve("id", func(_ context.Context, t *fanT[T]) (string, error) {
+			defer fanTouch()()
+			return t.ID, nil
+		}),
+		Resolve("next", func(_ context.Context, t *fanT[T]) (fanNode, error) {
+			defer fanTouch()()
+			return &fanT[T]{ID: t.ID + ".n"}, nil
+		}),
 	)
 }
 
@@ -63,7 +106,9 @@ func buildFanExecutor(opts ...ExecutorOption) (*Schema, *Executor, error) {
 		fanObject[fanTag5]("T5"),
 		fanObject[fanTag6]("T6"),
 		fanObject[fanTag7]("T7"),
-		Object[Root]("Query", Field("root", func(Root) fanNode { return nil })),
+		Object[Root]("Query", Resolve("root", func(_ context.Context, _ Root) (fanNode, error) {
+			return &fanT[fanTag0]{ID: "0"}, nil
+		})),
 	)
 	if err != nil {
 		return nil, nil, err
