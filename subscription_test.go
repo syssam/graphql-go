@@ -537,3 +537,58 @@ func TestSubscribeEventStateIsPerEvent(t *testing.T) {
 	}
 	expectClosed(t, out)
 }
+
+// A rejected subscription must not open its source. Asserting only on the
+// returned error would pass against an interceptor that runs after the
+// stream is already live, which is the leak this interceptor exists to
+// close; src.opens is what makes the assertion mean something.
+func TestSubscriptionInterceptorRunsBeforeTheSourceOpens(t *testing.T) {
+	denied := errors.New("denied")
+	src, e := newSubExecutor(t, WithSubscriptionInterceptor(
+		SubscriptionInterceptorFunc(func(ctx context.Context, oc *OperationContext, next SubscriptionHandler) (<-chan *Response, error) {
+			if oc.Operation.SelectionSet == nil {
+				t.Error("interceptor got no operation")
+			}
+			return nil, denied
+		}),
+	))
+
+	out, err := e.Subscribe(context.Background(), &Request{Query: `subscription { messages { id } }`})
+	if !errors.Is(err, denied) {
+		t.Fatalf("Subscribe error = %v, want %v", err, denied)
+	}
+	if out != nil {
+		t.Error("Subscribe returned a channel for a rejected subscription")
+	}
+	if n := src.opens.Load(); n != 0 {
+		t.Errorf("source opened %d times for a rejected subscription, want 0", n)
+	}
+}
+
+// The chain must not disturb the ordinary path: with a pass-through
+// interceptor the subscription still delivers.
+func TestSubscriptionInterceptorPassesThrough(t *testing.T) {
+	var saw atomic.Int64
+	src, e := newSubExecutor(t, WithSubscriptionInterceptor(
+		SubscriptionInterceptorFunc(func(ctx context.Context, oc *OperationContext, next SubscriptionHandler) (<-chan *Response, error) {
+			saw.Add(1)
+			return next(ctx, oc)
+		}),
+	))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	out, err := e.Subscribe(ctx, &Request{Query: `subscription { messages { id } }`})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	src.messages <- &subMessage{ID: "1"}
+	resp := nextResponse(t, out)
+	defer resp.Release()
+	if got, want := string(resp.Data), `{"messages":{"id":"1"}}`; got != want {
+		t.Errorf("data = %s, want %s", got, want)
+	}
+	if saw.Load() != 1 {
+		t.Errorf("interceptor ran %d times, want 1", saw.Load())
+	}
+}

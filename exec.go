@@ -36,6 +36,7 @@ type Executor struct {
 	reqInterceptors   []RequestInterceptor
 	opInterceptors    []OperationInterceptor
 	fieldInterceptors []FieldInterceptor
+	subInterceptors   []SubscriptionInterceptor
 	reqChain          RequestHandler
 	opChain           OperationHandler
 

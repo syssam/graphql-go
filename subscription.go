@@ -190,14 +190,25 @@ func (e *Executor) Subscribe(ctx context.Context, req *Request) (<-chan *Respons
 		args = v
 	}
 
-	stream, serr := f.def.subscribe(ctx, args)
-	if serr != nil {
-		return nil, e.subscribeError(ctx, Errorf("%v", serr).WithPath(Path{{Key: f.alias}}))
+	// Arguments are decoded above rather than inside the handler so an
+	// interceptor refusing the subscription sees the same operation context a
+	// successful one would.
+	open := SubscriptionHandler(func(ctx context.Context, oc *OperationContext) (<-chan *Response, error) {
+		stream, serr := f.def.subscribe(ctx, args)
+		if serr != nil {
+			return nil, e.subscribeError(ctx, Errorf("%v", serr).WithPath(Path{{Key: f.alias}}))
+		}
+		out := make(chan *Response)
+		go e.pump(ctx, oc, f, stream, out)
+		return out, nil
+	})
+	for i := len(e.subInterceptors) - 1; i >= 0; i-- {
+		next, si := open, e.subInterceptors[i]
+		open = func(ctx context.Context, oc *OperationContext) (<-chan *Response, error) {
+			return si.InterceptSubscription(ctx, oc, next)
+		}
 	}
-
-	out := make(chan *Response)
-	go e.pump(ctx, base, f, stream, out)
-	return out, nil
+	return open(ctx, base)
 }
 
 // pump drains the source stream, executing the selection once per event.
