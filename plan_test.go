@@ -1,6 +1,8 @@
 package graphql
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -173,5 +175,65 @@ func TestPlanCacheDisabled(t *testing.T) {
 	var nilCache *planCache
 	if nilCache.get("a") != nil {
 		t.Fatal("nil cache must miss")
+	}
+}
+
+// condQuery builds a document referencing n distinct Boolean variables from
+// @include, which is what docEntry.condVars counts.
+func condQuery(n int) (query, vars string) {
+	var decl, sel, vs strings.Builder
+	for i := range n {
+		if i > 0 {
+			decl.WriteString(", ")
+			vs.WriteString(",")
+		}
+		fmt.Fprintf(&decl, "$v%d: Boolean!", i)
+		fmt.Fprintf(&sel, " s%d: strings @include(if: $v%d)", i, i)
+		fmt.Fprintf(&vs, "\"v%d\":true", i)
+	}
+	return fmt.Sprintf("query Q(%s) {%s }", decl.String(), sel.String()), "{" + vs.String() + "}"
+}
+
+func statsFor(t *testing.T, condVars int) []OperationStats {
+	t.Helper()
+	var seen []OperationStats
+	_, e := newFixtureExecutor(t, WithOperationInterceptor(OperationInterceptorFunc(
+		func(ctx context.Context, oc *OperationContext, next OperationHandler) *Response {
+			seen = append(seen, oc.Stats)
+			return next(ctx, oc)
+		})))
+	query, vars := condQuery(condVars)
+	for range 2 {
+		if resp := run(t, e, query, vars); len(resp.Errors) > 0 {
+			t.Fatalf("query errors: %v", resp.Errors)
+		}
+	}
+	if len(seen) != 2 {
+		t.Fatalf("operations seen = %d, want 2", len(seen))
+	}
+	return seen
+}
+
+// Over the variant cap the plan is recompiled on every request. CacheHit
+// cannot say so on its own — it is also false on the first request for a
+// perfectly cacheable document — so the reason is reported separately.
+func TestPlanOverCondVarCapReportsUncacheable(t *testing.T) {
+	seen := statsFor(t, maxCondVars+1)
+	if !seen[1].PlanUncacheable {
+		t.Fatal("document over maxCondVars is recompiled every request but does not report it")
+	}
+	if seen[1].CacheHit {
+		t.Fatal("CacheHit must stay false when no plan was cached")
+	}
+}
+
+// The control: at the cap the plan caches and nothing is flagged.
+func TestPlanAtCondVarCapIsCached(t *testing.T) {
+	seen := statsFor(t, maxCondVars)
+	if seen[1].PlanUncacheable {
+		t.Fatal("a cacheable document was reported uncacheable")
+	}
+	if !seen[1].CacheHit {
+		t.Fatal("second identical request missed the plan cache")
 	}
 }

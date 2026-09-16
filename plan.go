@@ -446,8 +446,12 @@ func variantKey(condVars []string, vars map[string]any) (uint16, map[string]bool
 // it was already compiled. The caller must not inspect d.plans itself: it is
 // written under d.mu, and reading it unlocked is a data race that concurrent
 // requests for the same query will hit.
+// planUncacheable reports that this document has too many @skip/@include
+// variables for the variant cache, so every request recompiles its plan.
+func (d *docEntry) planUncacheable() bool { return len(d.condVars) > maxCondVars }
+
 func (d *docEntry) planFor(s *Schema, e *Executor, op *ast.OperationDefinition, vars map[string]any) (*plan, bool, []*Error) {
-	if len(d.condVars) > maxCondVars {
+	if d.planUncacheable() {
 		cond := make(map[string]bool, len(d.condVars))
 		for _, name := range d.condVars {
 			cond[name], _ = vars[name].(bool)

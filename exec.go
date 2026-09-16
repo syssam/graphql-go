@@ -202,7 +202,7 @@ func (e *Executor) execute(ctx context.Context, req *Request) *Response {
 		RawQuery:      req.Query,
 		OperationName: req.OperationName,
 		Variables:     vars,
-		Stats:         OperationStats{Start: start, CacheHit: cacheHit},
+		Stats:         OperationStats{Start: start, CacheHit: cacheHit, PlanUncacheable: entry.planUncacheable()},
 		plan:          p,
 		entry:         entry,
 		hub:           newWaveCoordinator(),

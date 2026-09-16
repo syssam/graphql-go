@@ -41,12 +41,16 @@ const (
 
 	// Attributes with no convention, kept under a distinct prefix so they are
 	// obviously ours rather than mistaken for standard ones.
-	AttrFieldPath   = attribute.Key("graphqlgo.field.path")
-	AttrCacheHit    = attribute.Key("graphqlgo.plan.cache_hit")
-	AttrComplexity  = attribute.Key("graphqlgo.operation.complexity")
-	AttrDepth       = attribute.Key("graphqlgo.operation.depth")
-	AttrErrorCount  = attribute.Key("graphqlgo.response.error_count")
-	AttrFieldObject = attribute.Key("graphqlgo.field.object")
+	AttrFieldPath = attribute.Key("graphqlgo.field.path")
+	AttrCacheHit  = attribute.Key("graphqlgo.plan.cache_hit")
+	// AttrPlanUncacheable is set only when true: a cache_hit that is false
+	// forever means something different from one that is false because the
+	// document is new, and only this tells them apart.
+	AttrPlanUncacheable = attribute.Key("graphqlgo.plan.uncacheable")
+	AttrComplexity      = attribute.Key("graphqlgo.operation.complexity")
+	AttrDepth           = attribute.Key("graphqlgo.operation.depth")
+	AttrErrorCount      = attribute.Key("graphqlgo.response.error_count")
+	AttrFieldObject     = attribute.Key("graphqlgo.field.object")
 )
 
 type config struct {
@@ -179,6 +183,9 @@ func (c *config) interceptOperation(ctx context.Context, oc *graphql.OperationCo
 	}
 	if name != "" {
 		attrs = append(attrs, AttrOperationName.String(name))
+	}
+	if oc.Stats.PlanUncacheable {
+		attrs = append(attrs, AttrPlanUncacheable.Bool(true))
 	}
 	span.SetAttributes(attrs...)
 

@@ -3,6 +3,7 @@ package otel_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -396,5 +397,43 @@ func TestParseFailureIsCountedOnce(t *testing.T) {
 	}
 	if errs != 1 {
 		t.Fatalf("error count = %d, want 1", errs)
+	}
+}
+
+// condVarQuery builds a document with n distinct Boolean @include variables,
+// each defaulted so the request needs no variables of its own.
+func condVarQuery(n int) string {
+	var decl, sel strings.Builder
+	for i := range n {
+		if i > 0 {
+			decl.WriteString(", ")
+		}
+		fmt.Fprintf(&decl, "$v%d: Boolean! = true", i)
+		fmt.Fprintf(&sel, " m%d: me @include(if: $v%d) { id }", i, i)
+	}
+	return fmt.Sprintf("query Q(%s) {%s }", decl.String(), sel.String())
+}
+
+// An operator looking at a plan cache that never warms up needs to know
+// whether the document is cacheable at all; a false cache_hit alone cannot
+// tell them.
+func TestUncacheablePlanIsMarkedOnTheSpan(t *testing.T) {
+	h := newHarness(t)
+	h.run(t, condVarQuery(17), "")
+	s := named(t, h.spans.Ended(), "query Q")
+	if !attrOf(t, s, gqlotel.AttrPlanUncacheable).AsBool() {
+		t.Fatal("a document recompiled on every request is not marked uncacheable")
+	}
+}
+
+// The attribute is absent rather than false for the overwhelming majority of
+// documents, so it costs nothing on the common path and filters cleanly.
+func TestCacheablePlanCarriesNoUncacheableAttribute(t *testing.T) {
+	h := newHarness(t)
+	h.run(t, `{ me { id } }`, "")
+	for _, kv := range named(t, h.spans.Ended(), "query").Attributes() {
+		if kv.Key == gqlotel.AttrPlanUncacheable {
+			t.Fatalf("cacheable plan carries %s", kv.Key)
+		}
 	}
 }

@@ -47,6 +47,12 @@ type OperationContext struct {
 type OperationStats struct {
 	Start    time.Time
 	CacheHit bool
+	// PlanUncacheable reports that this document references more Boolean
+	// @skip/@include variables than the variant cache holds, so its plan is
+	// compiled on every request and CacheHit can never become true. It is
+	// reported separately because a false CacheHit alone is indistinguishable
+	// from the first request for a perfectly cacheable document.
+	PlanUncacheable bool
 }
 
 // Set stores an arbitrary value scoped to the operation, for use by
