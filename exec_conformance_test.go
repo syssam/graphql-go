@@ -410,3 +410,89 @@ func BenchmarkExecuteConcurrentList(b *testing.B) {
 		resp.Release()
 	}
 }
+
+// TestExecOneOfInputObjects walks the coercion table in specification
+// section 3.10.1. The literal rows are enforced by the validator; the
+// variable rows are request errors raised while coercing variables.
+func TestExecOneOfInputObjects(t *testing.T) {
+	_, e := newFixtureExecutor(t)
+	cases := []struct {
+		name     string
+		query    string
+		vars     string
+		wantData string
+		wantErr  string
+	}{
+		{"literal single member", `{choose(c:{name:"abc"})}`, "", `{"choose":"name=abc"}`, ""},
+		{"literal other member", `{choose(c:{score:123})}`, "", `{"choose":"score=123"}`, ""},
+		{"variable single member", `query($v:Choice!){choose(c:$v)}`, `{"v":{"name":"abc"}}`, `{"choose":"name=abc"}`, ""},
+		{"literal null member", `{choose(c:{name:null})}`, "", "", "must be non-null"},
+		{"variable null member", `query($v:Choice!){choose(c:$v)}`, `{"v":{"name":null}}`, "", "must be non-null"},
+		{"literal two members", `{choose(c:{name:"abc",score:123})}`, "", "", "exactly one key"},
+		{"literal two members one null", `{choose(c:{name:"abc",score:null})}`, "", "", "exactly one key"},
+		{"literal two members wrong types", `{choose(c:{name:456,score:"xyz"})}`, "", "", "exactly one key"},
+		{"literal member plus absent variable", `query($s:Int){choose(c:{name:"abc",score:$s})}`, `{}`, "", "exactly one key"},
+		{"literal no members", `{choose(c:{})}`, "", "", "exactly one key"},
+		{"variable two members", `query($v:Choice!){choose(c:$v)}`, `{"v":{"name":"abc","score":123}}`, "", "exactly one key"},
+		{"variable no members", `query($v:Choice!){choose(c:$v)}`, `{"v":{}}`, "", "exactly one key"},
+		{"member from nullable variable", `query($n:String){choose(c:{name:$n})}`, `{}`, "", "OneOf"},
+		{"two members from variables", `query($n:String,$s:Int){choose(c:{name:$n,score:$s})}`, `{"n":"abc"}`, "", "exactly one key"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := run(t, e, tc.query, tc.vars)
+			if tc.wantErr == "" {
+				expectData(t, resp, tc.wantData)
+				return
+			}
+			if got := string(resp.Data); got != tc.wantData {
+				t.Fatalf("data = %s, want %q", got, tc.wantData)
+			}
+			if len(resp.Errors) == 0 {
+				t.Fatalf("want an error containing %q, got none", tc.wantErr)
+			}
+			if !strings.Contains(errorsJSON(resp.Errors), tc.wantErr) {
+				t.Fatalf("errors lack %q: %s", tc.wantErr, errorsJSON(resp.Errors))
+			}
+		})
+	}
+}
+
+// TestExecRejectsDefer keeps the validated schema and the introspected schema
+// telling clients the same story. gqlparser's prelude declares @defer, but
+// incremental delivery is not implemented and not in the specification, so
+// accepting it would hand a client a complete response where it asked for a
+// streamed one.
+func TestExecRejectsDefer(t *testing.T) {
+	_, e := newFixtureExecutor(t)
+	resp := run(t, e, `{me{name ... @defer {nick}}}`, "")
+	if len(resp.Errors) == 0 {
+		t.Fatalf("@defer must be rejected, got data %s", resp.Data)
+	}
+	if !strings.Contains(errorsJSON(resp.Errors), "defer") {
+		t.Fatalf("error should name the directive: %s", errorsJSON(resp.Errors))
+	}
+}
+
+// TestExecKeepsUserDeclaredDefer guards the blast radius of removing the
+// prelude's @defer: only gqlparser's declaration goes. A schema that defines
+// a @defer of its own keeps it, because what that directive means there is
+// the schema author's business, not ours.
+func TestExecKeepsUserDeclaredDefer(t *testing.T) {
+	s, err := NewSchema(SDL(`directive @defer(label: String) on FIELD
+type Query { ok: String! }`),
+		Query(Field("ok", func(Root) string { return "ok" })),
+	)
+	if err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	e := NewExecutor(s)
+
+	resp := run(t, e, `{ok @defer}`, "")
+	expectData(t, resp, `{"ok":"ok"}`)
+
+	data := introQuery(t, e, `{__schema{directives{name}}}`)
+	if got := names(get(data, "__schema", "directives")); !strings.Contains(","+got+",", ",defer,") {
+		t.Errorf("a schema-declared @defer must stay visible: %s", got)
+	}
+}

@@ -135,6 +135,7 @@ func NewSchema(src Source, opts ...SchemaOption) (*Schema, error) {
 	if err != nil {
 		return nil, fmt.Errorf("graphql: load schema: %w", err)
 	}
+	patchPrelude(parsed)
 
 	b := &schemaBuilder{
 		ast:           parsed,
@@ -269,6 +270,44 @@ func (b *schemaBuilder) validateCoverage(s *Schema) {
 		}
 	}
 	b.validateSubscriptionRoot(s)
+	b.validateDeprecation()
+}
+
+// validateDeprecation enforces specification section 3.13.2: @deprecated must
+// not appear on a required argument or input field. A client cannot stop
+// supplying one, so the deprecation would be advice it is unable to take.
+func (b *schemaBuilder) validateDeprecation() {
+	deprecatedAndRequired := func(dirs ast.DirectiveList, t *ast.Type, def *ast.Value) bool {
+		return dirs.ForName("deprecated") != nil && t.NonNull && def == nil
+	}
+	for _, def := range b.ast.Types {
+		if def.BuiltIn {
+			continue
+		}
+		switch def.Kind {
+		case ast.Object, ast.Interface:
+			for _, f := range def.Fields {
+				for _, a := range f.Arguments {
+					if deprecatedAndRequired(a.Directives, a.Type, a.DefaultValue) {
+						b.errorf("argument %s(%s:) is required and cannot be @deprecated; make it nullable or give it a default first", coordinate(def.Name, f.Name), a.Name)
+					}
+				}
+			}
+		case ast.InputObject:
+			for _, f := range def.Fields {
+				if deprecatedAndRequired(f.Directives, f.Type, f.DefaultValue) {
+					b.errorf("input field %s is required and cannot be @deprecated; make it nullable or give it a default first", coordinate(def.Name, f.Name))
+				}
+			}
+		}
+	}
+	for _, d := range b.ast.Directives {
+		for _, a := range d.Arguments {
+			if deprecatedAndRequired(a.Directives, a.Type, a.DefaultValue) {
+				b.errorf("argument @%s(%s:) is required and cannot be @deprecated; make it nullable or give it a default first", d.Name, a.Name)
+			}
+		}
+	}
 }
 
 // validateSubscriptionRoot requires every subscription root field to carry a

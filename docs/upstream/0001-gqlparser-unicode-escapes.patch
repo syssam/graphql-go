@@ -1,0 +1,166 @@
+diff --git a/lexer/lexer.go b/lexer/lexer.go
+index 1af14c6..04ee5a6 100644
+--- a/lexer/lexer.go
++++ b/lexer/lexer.go
+@@ -3,6 +3,7 @@ package lexer
+ import (
+ 	"bytes"
+ 	"slices"
++	"strings"
+ 	"unicode/utf8"
+ 
+ 	"github.com/vektah/gqlparser/v2/ast"
+@@ -414,24 +415,18 @@ func (s *Lexer) readString() (Token, error) {
+ 			escape := s.Input[s.end+1]
+ 
+ 			if escape == 'u' {
+-				if s.end+6 >= inputLen {
+-					s.end++
+-					s.endRunes++
+-					return s.makeError("Invalid character escape sequence: \\%s.", s.Input[s.end:])
+-				}
+-
+-				r, ok := unhex(s.Input[s.end+2 : s.end+6])
++				r, w, ok := s.readEscapedUnicode(inputLen)
+ 				if !ok {
+ 					s.end++
+ 					s.endRunes++
+ 					return s.makeError(
+ 						"Invalid character escape sequence: \\%s.",
+-						s.Input[s.end:s.end+5],
++						s.Input[s.end:min(s.end+5, inputLen)],
+ 					)
+ 				}
+ 				buf.WriteRune(r)
+-				s.end += 6
+-				s.endRunes += 6
++				s.end += w
++				s.endRunes += w
+ 			} else {
+ 				switch escape {
+ 				case '"', '/', '\\':
+@@ -545,6 +540,62 @@ func (s *Lexer) readBlockString() (Token, error) {
+ 	return s.makeError("Unterminated string.")
+ }
+ 
++// readEscapedUnicode decodes the EscapedUnicode production beginning at the
++// backslash under s.end, returning the Unicode scalar value and the number of
++// bytes it spans (counting the leading backslash and "u").
++//
++// Two forms are accepted, per specification section 2.1.7: a braced form
++// holding one scalar value, and the four-digit form, which may also be the
++// leading half of a surrogate pair.
++//
++// A value in the surrogate range is not a Unicode scalar value. Alone it is a
++// syntax error; only a leading surrogate immediately followed by a trailing
++// one is valid, and the pair decodes to a supplementary character. Passing a
++// surrogate to buf.WriteRune silently yields U+FFFD, so rejecting it here is
++// what stops a malformed escape reaching the caller as ordinary data.
++func (s *Lexer) readEscapedUnicode(inputLen int) (rune, int, bool) {
++	if s.end+2 < inputLen && s.Input[s.end+2] == '{' {
++		closing := strings.IndexByte(s.Input[s.end+3:], '}')
++		if closing <= 0 || closing > 8 {
++			return 0, 0, false
++		}
++		r, ok := unhex(s.Input[s.end+3 : s.end+3+closing])
++		if !ok || !isUnicodeScalarValue(r) {
++			return 0, 0, false
++		}
++		return r, closing + 4, true
++	}
++
++	if s.end+6 > inputLen {
++		return 0, 0, false
++	}
++	r, ok := unhex(s.Input[s.end+2 : s.end+6])
++	if !ok {
++		return 0, 0, false
++	}
++	if isLeadingSurrogate(r) {
++		if s.end+12 > inputLen || s.Input[s.end+6] != '\\' || s.Input[s.end+7] != 'u' {
++			return 0, 0, false
++		}
++		trailing, ok := unhex(s.Input[s.end+8 : s.end+12])
++		if !ok || !isTrailingSurrogate(trailing) {
++			return 0, 0, false
++		}
++		return (r-0xD800)*0x400 + (trailing - 0xDC00) + 0x10000, 12, true
++	}
++	if isTrailingSurrogate(r) {
++		return 0, 0, false
++	}
++	return r, 6, true
++}
++
++func isLeadingSurrogate(r rune) bool  { return r >= 0xD800 && r <= 0xDBFF }
++func isTrailingSurrogate(r rune) bool { return r >= 0xDC00 && r <= 0xDFFF }
++
++func isUnicodeScalarValue(r rune) bool {
++	return (r >= 0 && r <= 0xD7FF) || (r >= 0xE000 && r <= 0x10FFFF)
++}
++
+ func unhex(b string) (v rune, ok bool) {
+ 	for _, c := range b {
+ 		v <<= 4
+diff --git a/lexer/lexer_test.yml b/lexer/lexer_test.yml
+index 22956b8..6e22ae0 100644
+--- a/lexer/lexer_test.yml
++++ b/lexer/lexer_test.yml
+@@ -291,6 +291,57 @@ lex reports useful string errors:
+       message: 'Invalid character escape sequence: \uXXXF.'
+       locations: [{ line: 1, column: 7 }]
+ 
++  - name: surrogate pair
++    input: '"\uD83D\uDE00"'
++    tokens:
++      -
++        kind: STRING
++        start: 0
++        end: 14
++        value: "😀"
++
++  - name: braced unicode escape
++    input: '"\u{1F600}"'
++    tokens:
++      -
++        kind: STRING
++        start: 0
++        end: 11
++        value: "😀"
++
++  - name: braced unicode escape in the basic plane
++    input: '"\u{41}"'
++    tokens:
++      -
++        kind: STRING
++        start: 0
++        end: 8
++        value: 'A'
++
++  - name: lone leading surrogate
++    input: '"\uD83D"'
++    error:
++      message: 'Invalid character escape sequence: \uD83D.'
++      locations: [{ line: 1, column: 3 }]
++
++  - name: lone trailing surrogate
++    input: '"\uDE00"'
++    error:
++      message: 'Invalid character escape sequence: \uDE00.'
++      locations: [{ line: 1, column: 3 }]
++
++  - name: braced surrogate is not a scalar value
++    input: '"\u{D83D}"'
++    error:
++      message: 'Invalid character escape sequence: \u{D83.'
++      locations: [{ line: 1, column: 3 }]
++
++  - name: braced escape above the unicode range
++    input: '"\u{110000}"'
++    error:
++      message: 'Invalid character escape sequence: \u{110.'
++      locations: [{ line: 1, column: 3 }]
++
+ lexes block strings:
+   - name: simple
+     input: '"""simple"""'

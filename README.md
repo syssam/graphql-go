@@ -25,10 +25,13 @@ straight into a pooled JSON buffer.
   `NewSchema`. Resolvers, scalar writers and explicit `InputField` setters
   are then ordinary function values. `Args[T]()` / `Input[T](name)` may
   reflect once per input value; that is decode only.
-- **Specification complete.** Null bubbling, list element errors, fragments,
-  `@skip`/`@include`, variable coercion, interfaces and unions, introspection
-  (including `specifiedByURL`, `isOneOf`, deprecated arguments) and the GraphQL
-  over HTTP protocol.
+- **Specification conformance.** Null bubbling, list element errors, fragments,
+  `@skip`/`@include`, variable and argument coercion, `@oneOf` input objects
+  from literals and variables alike, interfaces and unions, introspection
+  (including `specifiedByURL`, `isOneOf`, deprecated arguments and directive
+  deprecation) and the GraphQL over HTTP protocol. The gaps that remain are all
+  in the parser rather than the engine; each is tracked with a reproduction and
+  an upstream patch in [`docs/spec-conformance.md`](docs/spec-conformance.md).
 - **Production behaviour by default.** Bounded resolver concurrency, panic
   recovery, error masking, gRPC-style interceptors, schema directives, CSRF
   prevention, DataLoader batching, and GitHub/Shopify-style complexity, depth
