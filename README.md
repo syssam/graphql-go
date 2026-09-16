@@ -185,7 +185,10 @@ built: `transport/gqlsse` over Server-Sent Events and `transport/gqlws` over
 init timeout and a per-connection operation cap. Both serve queries and
 mutations too -- one `next` then `complete` -- so a client needs only one
 endpoint. Automatic persisted queries are in `ext/apq`, opt-in on either HTTP transport
-with `WithPersistedQueries(apq.NewCache(1000))`. OpenTelemetry traces and
+with `WithPersistedQueries(apq.NewCache(1000))`. `ext/trusted` turns the
+same wiring into a safelist — the server runs only documents a build step
+registered and refuses query text whatever hash accompanies it, which is what
+Relay's --persist-output and Apollo's manifest are for. OpenTelemetry traces and
 metrics are in `ext/otel`: `graphql.NewExecutor(s, otel.New()...)`. Cost-based rate
 limiting is in `ext/throttle`: a bucket of points per caller refilled at a fixed
 rate, quoted before the query runs and charged what it really cost afterwards,

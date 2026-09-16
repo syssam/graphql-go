@@ -25,6 +25,10 @@ import (
 const (
 	CodeNotFound     = "PERSISTED_QUERY_NOT_FOUND"
 	CodeNotSupported = "PERSISTED_QUERY_NOT_SUPPORTED"
+	// CodeNotInList is Apollo Router's spelling for a freeform document
+	// refused by a safelist, so a client that already handles their router
+	// handles this one.
+	CodeNotInList = "PERSISTED_QUERY_NOT_IN_LIST"
 )
 
 // Cache stores query text by hash. Implementations must be safe for
@@ -36,6 +40,18 @@ const (
 type Cache interface {
 	Get(hash string) (query string, ok bool)
 	Set(hash, query string)
+}
+
+// TrustedStore is a Cache that never learns: it answers from documents
+// registered ahead of time and nothing else. Resolve treats one differently
+// from an ordinary cache — query text is refused rather than registered, and
+// a request carrying no hash at all is refused too, because a safelist that
+// let freeform documents past would not bound anything.
+//
+// ext/trusted implements it.
+type TrustedStore interface {
+	Cache
+	TrustedDocuments()
 }
 
 // Hash returns the hex-encoded SHA-256 of a query, the form the protocol
@@ -54,8 +70,12 @@ func Hash(query string) string {
 // trusted, because a server that stored whatever text arrived alongside a
 // hash would let one client choose what every later client's hash executes.
 func Resolve(c Cache, req *graphql.Request) *graphql.Response {
+	_, trusted := c.(TrustedStore)
 	ext, ok := req.Extensions["persistedQuery"]
 	if !ok {
+		if trusted {
+			return errorResponse(CodeNotInList, "PersistedQueryNotInList")
+		}
 		return nil
 	}
 	fields, ok := ext.(map[string]any)
@@ -81,6 +101,13 @@ func Resolve(c Cache, req *graphql.Request) *graphql.Response {
 		return nil
 	}
 
+	// A safelist bounds what the server runs, so text is refused however it
+	// hashes: verifying it would only prove the client can hash.
+	// A safelist bounds what the server runs, so text is refused however it
+	// hashes: verifying it would only prove the client can hash.
+	if trusted {
+		return errorResponse(CodeNotInList, "PersistedQueryNotInList")
+	}
 	if Hash(req.Query) != hash {
 		return errorResponse("", "provided sha does not match query")
 	}
