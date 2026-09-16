@@ -98,3 +98,107 @@ func TestSetExtensionOnOperation(t *testing.T) {
 		t.Fatalf("extensions = %v", resp.Extensions)
 	}
 }
+
+type connUser struct{ ID ID }
+type connEdge struct {
+	Node   *connUser
+	Cursor string
+}
+type connPage struct{ Edges []connEdge }
+type connArgs struct{ First, Last *int }
+
+// connCostSchema is Relay-shaped: the pagination arguments sit on the
+// connection field, one level above the list they actually bound.
+func connCostSchema(t *testing.T) *Schema {
+	t.Helper()
+	s, err := NewSchema(SDL(`
+		type User { id: ID! friends: [User!]! }
+		type UserEdge { node: User! cursor: String! }
+		type UserConnection { edges: [UserEdge!]! }
+		type Query { conn(first: Int, last: Int): UserConnection! }
+	`),
+		Args[connArgs](),
+		Object[connUser]("User",
+			Field("id", func(u *connUser) ID { return u.ID }),
+			Resolve("friends", func(context.Context, *connUser) ([]*connUser, error) { return []*connUser{}, nil }),
+		),
+		Object[connEdge]("UserEdge",
+			Field("node", func(e *connEdge) *connUser { return e.Node }),
+			Field("cursor", func(e *connEdge) string { return e.Cursor }),
+		),
+		Object[connPage]("UserConnection",
+			Field("edges", func(p *connPage) []connEdge { return p.Edges }),
+		),
+		Query(ResolveArgs("conn", func(context.Context, Root, connArgs) (*connPage, error) {
+			return &connPage{Edges: []connEdge{}}, nil
+		})),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func connCost(t *testing.T, s *Schema, cfg QueryCost, query string) int {
+	t.Helper()
+	cfg.Report = true
+	resp := run(t, NewExecutor(s, WithQueryCost(cfg)), query, "")
+	if len(resp.Errors) > 0 {
+		t.Fatalf("errors: %s", errorsJSON(resp.Errors))
+	}
+	cost, _ := resp.Extensions["cost"].(map[string]any)
+	if cost == nil {
+		t.Fatalf("missing extensions.cost: %v", resp.Extensions)
+	}
+	n, ok := cost["requestedQueryCost"].(int)
+	if !ok {
+		t.Fatalf("requestedQueryCost = %v", cost["requestedQueryCost"])
+	}
+	return n
+}
+
+// Without the option the page size is invisible, which is the behaviour
+// every existing deployment's numbers were set against.
+func TestQueryCostIgnoresConnectionArgsByDefault(t *testing.T) {
+	s := connCostSchema(t)
+	cfg := QueryCost{DefaultListSize: 10}
+	small := connCost(t, s, cfg, `{ conn(first: 2) { edges { node { id } } } }`)
+	large := connCost(t, s, cfg, `{ conn(first: 200) { edges { node { id } } } }`)
+	if small != 22 || large != 22 {
+		t.Fatalf("costs = %d and %d, want 22 and 22", small, large)
+	}
+}
+
+// With it, first on the connection is the page size for the subtree below,
+// which is how Shopify and GitHub charge for a connection.
+func TestQueryCostConnectionsCountsThePageSize(t *testing.T) {
+	s := connCostSchema(t)
+	cfg := QueryCost{DefaultListSize: 10, Connections: true}
+	if got := connCost(t, s, cfg, `{ conn(first: 2) { edges { node { id } } } }`); got != 7 {
+		t.Fatalf("first: 2 cost %d, want 7", got)
+	}
+	if got := connCost(t, s, cfg, `{ conn(first: 200) { edges { node { id } } } }`); got != 601 {
+		t.Fatalf("first: 200 cost %d, want 601", got)
+	}
+}
+
+// The page size pays for the edges list directly beneath it and nothing
+// deeper: a plain list further down still costs DefaultListSize, or the two
+// multiply and a modest query prices like a hostile one.
+func TestQueryCostConnectionsDoesNotReachPastTheEdges(t *testing.T) {
+	s := connCostSchema(t)
+	cfg := QueryCost{DefaultListSize: 10, Connections: true}
+	if got := connCost(t, s, cfg, `{ conn(first: 5) { edges { node { id friends { id } } } } }`); got != 71 {
+		t.Fatalf("cost = %d, want 71", got)
+	}
+}
+
+// A connection asked for without a page size falls back to the default the
+// same way a bare list does.
+func TestQueryCostConnectionsWithoutAnArgumentUsesTheDefault(t *testing.T) {
+	s := connCostSchema(t)
+	cfg := QueryCost{DefaultListSize: 10, Connections: true}
+	if got := connCost(t, s, cfg, `{ conn { edges { node { id } } } }`); got != 22 {
+		t.Fatalf("cost = %d, want 22", got)
+	}
+}

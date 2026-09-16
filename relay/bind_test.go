@@ -18,7 +18,7 @@ type Query { users(first: Int, after: String, last: Int, before: String): UserCo
 
 var people = []*user{{ID: "1", Name: "Ada"}, {ID: "2", Name: "Alan"}, {ID: "3", Name: "Grace"}}
 
-func newConnExecutor(t *testing.T) *graphql.Executor {
+func newConnSchema(t *testing.T) *graphql.Schema {
 	t.Helper()
 	s, err := graphql.NewSchema(graphql.SDL(connSDL),
 		graphql.Object[user]("User",
@@ -36,7 +36,12 @@ func newConnExecutor(t *testing.T) *graphql.Executor {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return graphql.NewExecutor(s)
+	return s
+}
+
+func newConnExecutor(t *testing.T) *graphql.Executor {
+	t.Helper()
+	return graphql.NewExecutor(newConnSchema(t))
 }
 
 func TestBoundConnectionServesAPage(t *testing.T) {
@@ -68,5 +73,30 @@ func TestBoundConnectionRendersNullCursorsWhenEmpty(t *testing.T) {
 	want := `{"users":{"edges":[],"pageInfo":{"startCursor":null,"endCursor":null}}}`
 	if got := string(resp.Data); got != want {
 		t.Fatalf("data mismatch\n got: %s\nwant: %s", got, want)
+	}
+}
+
+// The cost model's connection support and this package describe the same
+// shape from two sides; this is the test that they meet. Asking for ten
+// times the page costs ten times as much, and only because the argument on
+// the connection field is read.
+func TestBoundConnectionIsPricedByItsPageSize(t *testing.T) {
+	s := newConnSchema(t)
+	cost := func(query string) int {
+		t.Helper()
+		e := graphql.NewExecutor(s, graphql.WithQueryCost(graphql.QueryCost{
+			DefaultListSize: 10, Connections: true, Report: true,
+		}))
+		resp := e.Execute(context.Background(), &graphql.Request{Query: query})
+		if len(resp.Errors) > 0 {
+			t.Fatalf("errors: %v", resp.Errors)
+		}
+		return resp.Extensions["cost"].(map[string]any)["requestedQueryCost"].(int)
+	}
+	if got := cost(`{ users(first: 2) { edges { node { id name } } } }`); got != 9 {
+		t.Fatalf("first: 2 cost %d, want 9", got)
+	}
+	if got := cost(`{ users(first: 20) { edges { node { id name } } } }`); got != 81 {
+		t.Fatalf("first: 20 cost %d, want 81", got)
 	}
 }

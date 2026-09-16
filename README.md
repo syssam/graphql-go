@@ -160,7 +160,8 @@ metadata (tracing ids, rate-limit windows).
 Executor options follow the gRPC style: `WithMaxConcurrency`, `WithPlanCache`,
 `WithErrorPresenter`, `WithRecover`, typed interceptors, plus production
 limits `WithMaxComplexity`, `WithMaxDepth` and `WithQueryCost` (Shopify-style
-`first`/`last` multipliers and optional `extensions.cost`; `Actual` adds
+`first`/`last` multipliers, `Connections` to price a Relay connection by its
+requested page size, and optional `extensions.cost`; `Actual` adds
 `actualQueryCost`, summed from the fields really resolved rather than from
 assumed list sizes). Schema options:
 `DisableIntrospection`.

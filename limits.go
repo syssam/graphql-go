@@ -27,6 +27,15 @@ type QueryCost struct {
 	// Report writes extensions.cost on every response, including
 	// rejected ones.
 	Report bool
+	// Connections prices a Relay connection by the page size it asked for.
+	// first/last sit on the connection field, one level above the edges list
+	// they bound, so without this the arguments are invisible to the cost and
+	// every connection is charged DefaultListSize whether it asked for one
+	// element or a thousand.
+	//
+	// It is off by default because turning it on changes the number an
+	// existing deployment has set its Max against.
+	Connections bool
 	// Actual also reports actualQueryCost, summed from the fields that were
 	// really resolved rather than from assumed list sizes. Requested cost has
 	// to guess how long a list will be; actual cost counts it, so the two
@@ -133,19 +142,19 @@ func (oc *OperationContext) ensureCost(cfg QueryCost) int {
 	if oc.costOK {
 		return oc.costValue
 	}
-	oc.costValue = queryCostOf(oc.plan.sel, oc.Variables, cfg)
+	oc.costValue = queryCostOf(oc.plan.sel, oc.Variables, cfg, false)
 	oc.costOK = true
 	return oc.costValue
 }
 
-func queryCostOf(sel *selectionSet, vars map[string]any, cfg QueryCost) int {
+func queryCostOf(sel *selectionSet, vars map[string]any, cfg QueryCost, paid bool) int {
 	if sel == nil {
 		return 0
 	}
 	sum := func(fields []*planField) int {
 		n := 0
 		for _, f := range fields {
-			n += fieldCost(f, vars, cfg)
+			n += fieldCost(f, vars, cfg, paid)
 		}
 		return n
 	}
@@ -159,7 +168,11 @@ func queryCostOf(sel *selectionSet, vars map[string]any, cfg QueryCost) int {
 	return most
 }
 
-func fieldCost(f *planField, vars map[string]any, cfg QueryCost) int {
+// fieldCost prices one field. paid reports that an enclosing connection's
+// page size has already counted this field's elements when it is a list,
+// which is what stops first: 200 from multiplying with the edges list's own
+// default and pricing a page of 200 as one of 2000.
+func fieldCost(f *planField, vars map[string]any, cfg QueryCost, paid bool) int {
 	if f.kind == fieldTypename {
 		return 0
 	}
@@ -167,21 +180,38 @@ func fieldCost(f *planField, vars map[string]any, cfg QueryCost) int {
 	if f.def != nil && f.def.object != nil {
 		weight = cfg.weight(coordinate(f.def.object.name, f.def.name))
 	}
+
+	mult, childPaid := 1, false
+	switch isList := f.def != nil && f.def.typ != nil && f.def.typ.Elem != nil; {
+	case isList && paid:
+	case isList:
+		mult = listMultiplier(f, vars, cfg)
+	case cfg.Connections:
+		if n, ok := pageArg(f, vars, cfg); ok {
+			mult, childPaid = n, true
+		}
+	}
+
 	child := 0
 	if f.sub != nil {
-		child = queryCostOf(f.sub, vars, cfg)
-	}
-	mult := 1
-	if f.def != nil && f.def.typ != nil && f.def.typ.Elem != nil {
-		mult = listMultiplier(f, vars, cfg)
+		child = queryCostOf(f.sub, vars, cfg, childPaid)
 	}
 	return weight + child*mult
 }
 
 func listMultiplier(f *planField, vars map[string]any, cfg QueryCost) int {
-	def := cfg.defaultList()
+	if n, ok := pageArg(f, vars, cfg); ok {
+		return n
+	}
+	return cfg.defaultList()
+}
+
+// pageArg returns the first positive pagination argument on f, reporting
+// whether there was one. Absent is not zero: no first at all asks for every
+// element, while first: 0 asks for none.
+func pageArg(f *planField, vars map[string]any, cfg QueryCost) (int, bool) {
 	if f.ast == nil {
-		return def
+		return 0, false
 	}
 	for _, name := range cfg.listArgs() {
 		a := f.ast.Arguments.ForName(name)
@@ -193,10 +223,10 @@ func listMultiplier(f *planField, vars map[string]any, cfg QueryCost) int {
 			continue
 		}
 		if n, ok := asCostInt(raw); ok && n > 0 {
-			return n
+			return n, true
 		}
 	}
-	return def
+	return 0, false
 }
 
 func asCostInt(v any) (int, bool) {

@@ -127,7 +127,7 @@ func (oc *OperationContext) Cost() int {
 	if oc.costOK {
 		return oc.costValue
 	}
-	return queryCostOf(oc.plan.sel, oc.Variables, QueryCost{DefaultListSize: 1})
+	return queryCostOf(oc.plan.sel, oc.Variables, QueryCost{DefaultListSize: 1}, false)
 }
 
 // SetExtension records a response-level extension (Netflix / Apollo
