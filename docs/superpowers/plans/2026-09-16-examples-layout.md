@@ -24,7 +24,8 @@
   Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
   Claude-Session: https://claude.ai/code/session_01Wsx2gLrrQkLMK744k1gz2n
   ```
-- **The working tree has unrelated uncommitted changes** in `context.go`, `exec.go`, `plan.go`, `subscription.go`, `loader/`, `ext/otel/`. They are someone else's work in progress. Never `git add -A` or `git commit -a`. Stage only the exact paths each task names.
+- **The working tree has unrelated uncommitted changes**, someone else's work in progress on `loader.NewMapped` and plan cacheability: `context.go`, `exec.go`, `plan.go`, `plan_test.go`, `subscription.go`, `loader/`, `ext/otel/`, and **`README.md`**. Never `git add -A` or `git commit -a`. Stage only the exact paths each task names.
+- **`README.md` is being edited concurrently.** That work is at line ~149 (the `loader.New` / `loader.NewMapped` row); Tasks 1 and 9 touch lines ~136 and ~177. Re-read the file immediately before editing it rather than trusting a line number from this plan, and stage `README.md` alone — never alongside a wildcard.
 
 ---
 
