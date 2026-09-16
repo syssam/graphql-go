@@ -54,3 +54,15 @@ func TestZeroRequirementIsZero(t *testing.T) {
 		t.Error("a non-empty Requirement reports IsZero true")
 	}
 }
+
+func TestNewRequirementCopiesItsGroups(t *testing.T) {
+	group := []string{"read"}
+	r := NewRequirement(group)
+	group[0] = "write"
+	if !r.Satisfied(map[string]bool{"read": true}) {
+		t.Error("mutating the caller's slice changed the requirement")
+	}
+	if r.Satisfied(map[string]bool{"write": true}) {
+		t.Error("requirement now accepts a scope the caller never declared")
+	}
+}

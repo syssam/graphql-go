@@ -15,8 +15,15 @@ type Requirement struct {
 }
 
 // NewRequirement builds a Requirement from its groups.
+// Each group is cloned to prevent external mutations from changing the requirement
+// after construction, which is important for Requirement's use on the concurrent
+// request path and its immutability contract everywhere else.
 func NewRequirement(anyOf ...[]string) Requirement {
-	return Requirement{anyOf: anyOf}
+	cloned := make([][]string, len(anyOf))
+	for i, group := range anyOf {
+		cloned[i] = slices.Clone(group)
+	}
+	return Requirement{anyOf: cloned}
 }
 
 // IsZero reports whether the requirement admits everyone.
