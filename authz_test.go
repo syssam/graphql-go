@@ -1370,3 +1370,70 @@ func TestSubscribeRootFieldWithHeldScopeOpensAndDelivers(t *testing.T) {
 		t.Errorf("data = %s, want %s", got, want)
 	}
 }
+
+// A remote policy service that panics must not take the server down when
+// the executor recovers panics: it is an internal error, like a resolver's.
+func TestAuthorizerPanicIsRecoveredOnAQuery(t *testing.T) {
+	s := shapeSchema(t)
+	e := NewExecutor(s, WithAuthorizer(AuthorizerFunc(
+		func(context.Context, *AuthShape, *Decision) error { panic("policy service down") })))
+
+	resp := run(t, e, `{ me { salary } }`, "")
+	if len(resp.Errors) != 1 {
+		t.Fatalf("got %d errors, want 1: %s", len(resp.Errors), errorsJSON(resp.Errors))
+	}
+	if got := resp.Errors[0].Extensions["code"]; got != CodeInternal {
+		t.Errorf("code = %v, want %v", got, CodeInternal)
+	}
+	if strings.Contains(resp.Errors[0].Message, "policy service down") {
+		t.Errorf("the panic value leaked to the client: %s", resp.Errors[0].Message)
+	}
+	if resp.Data != nil && string(resp.Data) != "null" {
+		t.Errorf("a failed authorization returned data: %s", resp.Data)
+	}
+}
+
+// With recovery off the caller has asked to see panics, so an Authorizer's
+// must propagate rather than be turned into a response.
+func TestAuthorizerPanicPropagatesWithRecoveryOff(t *testing.T) {
+	s := shapeSchema(t)
+	e := NewExecutor(s, WithRecover(false), WithAuthorizer(AuthorizerFunc(
+		func(context.Context, *AuthShape, *Decision) error { panic("policy service down") })))
+
+	defer func() {
+		if r := recover(); r != "policy service down" {
+			t.Errorf("recovered %v, want the Authorizer's panic", r)
+		}
+	}()
+	run(t, e, `{ me { salary } }`, "")
+	t.Error("the Authorizer's panic did not propagate")
+}
+
+// Per-event authorization runs in pump's goroutine, where an unrecovered
+// panic ends the process rather than the request.
+func TestAuthorizerPanicIsRecoveredOnASubscriptionEvent(t *testing.T) {
+	var calls atomic.Int64
+	src, e := newAuthSubExecutor(t, WithAuthorizer(AuthorizerFunc(
+		func(context.Context, *AuthShape, *Decision) error {
+			if calls.Add(1) > 1 {
+				panic("policy service down")
+			}
+			return nil
+		})))
+
+	ch, err := e.Subscribe(t.Context(), &Request{Query: `subscription { messages { id secret } }`})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	sendEvent(t, src.ch, &authSubMessage{ID: "1", Secret: "a"})
+	resp := nextResponse(t, ch)
+	if len(resp.Errors) != 1 {
+		t.Fatalf("got %d errors, want 1: %s", len(resp.Errors), errorsJSON(resp.Errors))
+	}
+	if got := resp.Errors[0].Extensions["code"]; got != CodeInternal {
+		t.Errorf("code = %v, want %v", got, CodeInternal)
+	}
+	if resp.Data != nil && string(resp.Data) != "null" {
+		t.Errorf("a failed authorization returned data: %s", resp.Data)
+	}
+}

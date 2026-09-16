@@ -91,7 +91,8 @@ func DisableSuggestions() ExecutorOption {
 }
 
 // WithRecover controls whether resolver panics are converted into
-// INTERNAL_SERVER_ERROR field errors. It is enabled by default; disable it
+// INTERNAL_SERVER_ERROR field errors, and Authorizer panics into the same
+// error for the whole operation or event. It is enabled by default; disable it
 // only in tests that want panics to surface.
 func WithRecover(enabled bool) ExecutorOption {
 	return func(e *Executor) { e.recover = enabled }
@@ -285,7 +286,26 @@ func (e *Executor) authorize(ctx context.Context, p *plan) (*Decision, error) {
 	if e.authorizer == nil || p.shape.IsEmpty() {
 		return nil, nil
 	}
-	d := newDecision(p.shape)
+	return e.runAuthorizer(ctx, p)
+}
+
+// runAuthorizer is split from authorize so the disabled path carries no
+// deferred recover. The recover matters beyond tidiness: per-event
+// authorization runs in pump's goroutine, where a panicking policy client
+// would end the process rather than one request.
+func (e *Executor) runAuthorizer(ctx context.Context, p *plan) (d *Decision, err error) {
+	if e.recover {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.ErrorContext(ctx, "graphql: authorizer panic",
+					"panic", r,
+					"stack", string(debug.Stack()),
+				)
+				d, err = nil, &panicError{value: r}
+			}
+		}()
+	}
+	d = newDecision(p.shape)
 	if err := e.authorizer.Authorize(ctx, p.shape, d); err != nil {
 		return nil, err
 	}
