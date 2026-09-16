@@ -1116,3 +1116,86 @@ func TestOutcomeEnforcementThroughSubscriptionEvent(t *testing.T) {
 		t.Errorf("data = %s, want %s", got, want)
 	}
 }
+
+// 825 SDL files cannot be held by review. A type arriving with no
+// declaration is how an aggregate surface came to return hidden columns in
+// full, so it must fail the build.
+func TestRequireAuthCoverageRejectsAnUndeclaredField(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+directive @public on FIELD_DEFINITION | OBJECT
+type Query { guarded: String! @requiresScopes(scopes: [["x"]]) forgotten: String! }
+`
+	_, err := NewSchema(SDL(sdl),
+		Query(
+			Field("guarded", func(Root) string { return "" }),
+			Field("forgotten", func(Root) string { return "" }),
+		),
+		RequireAuthCoverage(),
+	)
+	if err == nil {
+		t.Fatal("NewSchema accepted a field with no authorization declaration")
+	}
+	if !strings.Contains(err.Error(), "Query.forgotten") {
+		t.Errorf("error does not name the undeclared field: %v", err)
+	}
+	if strings.Contains(err.Error(), "Query.guarded") {
+		t.Errorf("error names a field that is declared: %v", err)
+	}
+}
+
+func TestRequireAuthCoverageAcceptsPublic(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+directive @public on FIELD_DEFINITION | OBJECT
+type Query { open: String! @public }
+`
+	if _, err := NewSchema(SDL(sdl),
+		Query(Field("open", func(Root) string { return "" })),
+		RequireAuthCoverage(),
+	); err != nil {
+		t.Fatalf("NewSchema rejected an explicitly public field: %v", err)
+	}
+}
+
+// Without the option nothing changes, or every existing schema breaks.
+func TestAuthCoverageIsOptIn(t *testing.T) {
+	const sdl = `type Query { forgotten: String! }`
+	if _, err := NewSchema(SDL(sdl),
+		Query(Field("forgotten", func(Root) string { return "" })),
+	); err != nil {
+		t.Fatalf("NewSchema rejected an undeclared field without RequireAuthCoverage: %v", err)
+	}
+}
+
+// graphql-hive/envelop#892: composing __schema into an ordinary operation
+// bypassed field permissions there, because the check was skipped for
+// documents it classified as introspection. This engine's rule is per-field
+// (introspection.go, observers.OnField) with no whole-document shortcut, so
+// it is immune by construction -- which is exactly why it needs a pin.
+// Immunity by construction is one refactor away from immunity by luck.
+func TestComposedIntrospectionDoesNotBypassChecks(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+directive @public on FIELD_DEFINITION | OBJECT
+type Query { secret: String! @requiresScopes(scopes: [["x"]]) }
+`
+	s, err := NewSchema(SDL(sdl),
+		Query(Field("secret", func(Root) string { return "classified" })),
+		RequireAuthCoverage(),
+		DisableIntrospection(),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	e := NewExecutor(s, WithAuthorizer(ScopeAuthorizer(
+		func(context.Context) map[string]bool { return nil })))
+
+	resp := run(t, e, `{ __schema { __typename } secret }`, "")
+	if len(resp.Errors) == 0 {
+		t.Fatalf("composed introspection was accepted; data = %s", resp.Data)
+	}
+	if strings.Contains(string(resp.Data), "classified") {
+		t.Errorf("the guarded value was returned: %s", resp.Data)
+	}
+}

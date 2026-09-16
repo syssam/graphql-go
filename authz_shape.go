@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"slices"
+	"strings"
 
 	"github.com/vektah/gqlparser/v2/ast"
 )
@@ -125,6 +126,43 @@ func (b *schemaBuilder) validateAuthDirectives() {
 		}
 		for _, f := range def.Fields {
 			b.checkRequiresScopes(coordinate(name, f.Name), f.Directives)
+		}
+	}
+}
+
+// validateAuthCoverage fails the build for any bound field that declares
+// neither @requiresScopes nor @public, when RequireAuthCoverage is on. It
+// walks s.objects (concrete, bound object types) rather than the raw SDL:
+// validateCoverage already rejects an unbound type or field regardless of
+// this option, so every field reachable here is guaranteed to have a
+// fieldDef, and an interface's own field directive is never consulted -- a
+// requirement declared only on an interface field produces no site (Task 4),
+// so accepting it here would pass a field authorization never enforces.
+func (b *schemaBuilder) validateAuthCoverage(s *Schema) {
+	if !b.authCoverage {
+		return
+	}
+	for name, obj := range s.objects {
+		if strings.HasPrefix(name, "__") {
+			continue
+		}
+		if obj.def.Directives.ForName("public") != nil {
+			continue
+		}
+		if _, ok := requirementOf(obj.def.Directives); ok {
+			continue
+		}
+		for _, fd := range obj.fields {
+			if strings.HasPrefix(fd.name, "__") {
+				continue
+			}
+			if fd.def.Directives.ForName("public") != nil {
+				continue
+			}
+			if _, ok := requirementOf(fd.def.Directives); ok {
+				continue
+			}
+			b.errorf("field %s declares no authorization; add @requiresScopes or @public", coordinate(obj.name, fd.name))
 		}
 	}
 }
