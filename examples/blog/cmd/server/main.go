@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/syssam/graphql-go"
-	"github.com/syssam/graphql-go/examples/blog/schema"
+	blog "github.com/syssam/graphql-go/examples/blog"
 	"github.com/syssam/graphql-go/transport/gqlhttp"
 	"github.com/syssam/graphql-go/transport/gqlsse"
 	"github.com/syssam/graphql-go/transport/gqlws"
@@ -40,7 +40,7 @@ func run() error {
 	addr := flag.String("addr", ":8080", "listen address")
 	flag.Parse()
 
-	s, err := schema.NewSchema(schema.NewStore())
+	s, err := blog.NewSchema()
 	if err != nil {
 		return fmt.Errorf("building schema: %w", err)
 	}

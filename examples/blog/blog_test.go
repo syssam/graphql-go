@@ -1,4 +1,4 @@
-package schema
+package blog
 
 import (
 	"context"
@@ -7,12 +7,13 @@ import (
 	"testing"
 
 	"github.com/syssam/graphql-go"
-	"github.com/syssam/graphql-go/examples/blog/graph/model"
+	"github.com/syssam/graphql-go/examples/blog/internal/domain"
+	"github.com/syssam/graphql-go/examples/blog/internal/repository"
 )
 
 func newExecutor(t *testing.T) *graphql.Executor {
 	t.Helper()
-	s, err := NewSchema(NewStore())
+	s, err := newSchema(repository.NewStore())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,10 +107,9 @@ func TestIntrospectionSanity(t *testing.T) {
 }
 
 func TestNonNullBubbling(t *testing.T) {
-	store := NewStore()
-	store.posts = append(store.posts, &model.Post{ID: "99", Title: "Orphan", Tags: []string{}})
-	store.postAuthor["99"] = "missing"
-	s, err := NewSchema(store)
+	repo := repository.NewStore()
+	repo.InsertPost(&domain.Post{ID: "99", Title: "Orphan", AuthorID: "missing", Tags: []string{}})
+	s, err := newSchema(repo)
 	if err != nil {
 		t.Fatal(err)
 	}

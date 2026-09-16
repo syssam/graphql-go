@@ -1,4 +1,4 @@
-package schema
+package blog
 
 import (
 	"context"
@@ -6,18 +6,19 @@ import (
 	"time"
 
 	"github.com/syssam/graphql-go"
+	"github.com/syssam/graphql-go/examples/blog/internal/repository"
 )
 
 // newStoreExecutor is newExecutor with the store kept, so a test can drive
 // mutations through the executor and still inspect the broker.
-func newStoreExecutor(t *testing.T) (*Store, *graphql.Executor) {
+func newStoreExecutor(t *testing.T) (*repository.Store, *graphql.Executor) {
 	t.Helper()
-	store := NewStore()
-	s, err := NewSchema(store)
+	repo := repository.NewStore()
+	s, err := newSchema(repo)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return store, graphql.NewExecutor(s)
+	return repo, graphql.NewExecutor(s)
 }
 
 func nextEvent(t *testing.T, events <-chan *graphql.Response) string {
@@ -100,7 +101,7 @@ func TestSubscriberIsReleasedOnCancel(t *testing.T) {
 	if _, err := e.Subscribe(ctx, &graphql.Request{Query: `subscription { postCreated { id } }`}); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	if n := store.created.subscribers(); n != 1 {
+	if n := store.Subscribers(); n != 1 {
 		t.Fatalf("broker holds %d subscribers, want 1", n)
 	}
 
@@ -108,12 +109,12 @@ func TestSubscriberIsReleasedOnCancel(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if store.created.subscribers() == 0 {
+		if store.Subscribers() == 0 {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("broker still holds %d subscribers after cancellation", store.created.subscribers())
+	t.Fatalf("broker still holds %d subscribers after cancellation", store.Subscribers())
 }
 
 // TestSlowSubscriberDoesNotBlockMutations is the backpressure rule: a client
@@ -130,9 +131,7 @@ func TestSlowSubscriberDoesNotBlockMutations(t *testing.T) {
 	go func() {
 		defer close(done)
 		for range 200 {
-			if _, err := store.CreatePost("1", "spam", "b", nil); err != nil {
-				return
-			}
+			store.CreatePost("1", "spam", "b", nil)
 		}
 	}()
 
