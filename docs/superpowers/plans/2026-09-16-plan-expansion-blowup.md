@@ -1013,16 +1013,20 @@ compilation. It is not wired up yet."
 Append to `plan_fanout_test.go`:
 
 ```go
-// TestDepthLimitRejectsBeforeCompiling is the point of the guard. Before it,
-// WithMaxDepth(3) against this query still built 8^5 selection sets and only
-// then reported that the query was three levels too deep.
-func TestDepthLimitRejectsBeforeCompiling(t *testing.T) {
+// TestDepthLimitRejectsWithoutCompiling asserts the guard's actual property: a
+// query over the limit is refused without a plan being built for it.
+//
+// Do not assert this by timing. Task 2's memoization already bounds compilation
+// for this fixture, so the rejection is sub-millisecond with or without the
+// guard and a timing assertion passes either way -- a test that agrees with the
+// code rather than checking it. Measured during implementation at ~500-700us on
+// both sides; see the design's section 5.1a.
+func TestDepthLimitRejectsWithoutCompiling(t *testing.T) {
 	s, e := newFanExecutor(t, WithMaxDepth(3))
 	_ = s
 
-	start := time.Now()
-	resp := e.Execute(t.Context(), &Request{Query: fanQuery(8)})
-	elapsed := time.Since(start)
+	query := fanQuery(8)
+	resp := e.Execute(t.Context(), &Request{Query: query})
 
 	if len(resp.Errors) == 0 {
 		t.Fatal("want a depth limit error")
@@ -1030,18 +1034,27 @@ func TestDepthLimitRejectsBeforeCompiling(t *testing.T) {
 	if got := resp.Errors[0].Message; !strings.Contains(got, "maximum depth") {
 		t.Fatalf("error = %q, want a maximum depth error", got)
 	}
-	// Depth 8 is 16 million selection sets unmemoized and tens of thousands
-	// memoized. Rejecting without compiling should be neither.
-	if elapsed > 50*time.Millisecond {
-		t.Fatalf("rejection took %v; the query was compiled before being refused", elapsed)
+
+	// The guard's property: nothing was compiled. Read d.plans under d.mu --
+	// its comment warns that reading it unlocked races with concurrent
+	// requests for the same query.
+	entry := e.cache.get(query)
+	if entry == nil {
+		t.Fatal("document should still be cached; only the plan is refused")
+	}
+	entry.mu.Lock()
+	n := len(entry.plans)
+	entry.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d plan(s) compiled for a query the guard refused", n)
 	}
 }
 ```
 
 - [ ] **Step 2: Run the test and verify it fails**
 
-Run: `go test -race -count=1 -run TestDepthLimitRejectsBeforeCompiling .`
-Expected: FAIL on the duration assertion. The error message assertion should already pass — the limit works today, it is only late.
+Run: `go test -race -count=1 -run TestDepthLimitRejectsWithoutCompiling .`
+Expected: FAIL on the compiled-plan assertion — without the guard the plan is built and cached before the limit is consulted. The error message assertion should already pass: the limit works today, it is only late.
 
 - [ ] **Step 3: Add the metric check to the executor**
 
@@ -1174,7 +1187,7 @@ This is the step that keeps the test honest. Skipping it leaves a test that cann
 - [ ] **Step 8: Run the guard test and the suite**
 
 Run: `go vet ./... && go test -race -count=1 .`
-Expected: PASS, including `TestDepthLimitRejectsBeforeCompiling`.
+Expected: PASS, including `TestDepthLimitRejectsWithoutCompiling`.
 
 Two failures are expected here and are not bugs in this task:
 - Any test asserting that a depth- or complexity-rejected response carries `extensions.cost` will now fail. Spec §7 records this: the cost is computed from a plan the guard refuses to build. Update such a test to assert the absence, with a comment pointing at the spec.
@@ -1184,8 +1197,8 @@ Two failures are expected here and are not bugs in this task:
 
 Temporarily change `compile` to ignore the guard by replacing `if err := e.rejectByMetrics(m); err != nil` with `if err := e.rejectByMetrics(m); false`.
 
-Run: `go test -race -count=1 -run TestDepthLimitRejectsBeforeCompiling .`
-Expected: FAIL on the duration assertion. Restore, re-run, confirm PASS.
+Run: `go test -race -count=1 -run TestDepthLimitRejectsWithoutCompiling .`
+Expected: FAIL, reporting that a plan was compiled. Restore, re-run, confirm PASS.
 
 - [ ] **Step 10: Commit**
 

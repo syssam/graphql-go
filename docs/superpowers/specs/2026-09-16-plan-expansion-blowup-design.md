@@ -223,6 +223,31 @@ not an aspiration; section 6 pins it.
 The old plan-tree implementations are not deleted. They move to a test file as
 the reference oracle for the differential fuzz test.
 
+### 5.1a What the guard is worth once the memo exists
+
+Measured during implementation, and worth recording because it contradicts the
+motivating number in section 1.1: once section 4's memoization has landed,
+`WithMaxDepth(3)` against a depth-8 fan-out rejects in roughly 500-700
+microseconds **whether or not the guard is present**. The 1.65-second figure was
+taken before memoization. On this shape the memo alone already bounds
+compilation, so the guard buys no measurable latency.
+
+That does not make the guard redundant, but it does mean its justification has to
+be stated honestly:
+
+- A rejected query builds and caches **no plan at all**. Without the guard, every
+  query that will always be refused still compiles a plan and occupies a plan
+  cache entry.
+- Compilation is bounded by *document size × type count*. Memoization removes the
+  exponential term but not that product, and it is the only remaining way a
+  single request can make compilation expensive. This is what the guard is for,
+  and the fan-out fixture does not exercise it.
+- The limit becomes a precondition rather than a postcondition.
+
+A test that asserts the guard by timing is therefore measuring nothing after
+section 4 lands. The property to assert is structural: after a rejection, no plan
+exists for that operation and variant.
+
 ### 5.2 Where it runs
 
 `docEntry.planFor` (`plan.go:447`) runs the walk before `compilePlan` and
@@ -255,7 +280,7 @@ this design does not make it one.
 | Fan-out regression | 12 types × depth 6 compiles within a bounded time and node count (today: 20.2 s, 42.3M nodes) |
 | **Deliberate break** | With the memo removed, the fan-out regression **must fail**. A test that still passes against a broken memo is agreeing with the code, not checking it |
 | Memo defeat vector | `{ root { next { ... } next { ... } } }` — duplicate response keys, which produce fresh merged slices at every level, must still hit the memo |
-| Guard | `WithMaxDepth(3)` against the depth-5 fan-out query rejects in milliseconds (today: 1.65 s) |
+| Guard | After a `WithMaxDepth` rejection, no plan was compiled or cached for that operation and variant. **Not** a timing assertion: once section 4 lands, the rejection is sub-millisecond with or without the guard, so timing it measures nothing (section 5.1a) |
 | Differential fuzz | The AST walk and the retained plan-tree oracle agree on `depth` and `complexity` for fuzzed documents |
 | `-race` | Concurrent compiles of one document, and concurrent reads of shared `selectionSet` pointers across executor goroutines |
 | Cost memo | A fan-out query under `WithQueryCost` has bounded per-request time |
