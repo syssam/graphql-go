@@ -202,3 +202,22 @@ func TestQueryCostConnectionsWithoutAnArgumentUsesTheDefault(t *testing.T) {
 		t.Fatalf("cost = %d, want 22", got)
 	}
 }
+
+// An operation interceptor is where a rate limiter lives, and it wraps the
+// engine's own cost check rather than running after it. Cost has to be the
+// configured number by then; the default-list-size-1 fallback is for callers
+// with no cost model at all, not for one that is merely not computed yet.
+func TestCostSeenByAnOperationInterceptorUsesTheConfiguredModel(t *testing.T) {
+	var seen int
+	e := NewExecutor(connCostSchema(t),
+		WithQueryCost(QueryCost{DefaultListSize: 10}),
+		WithOperationInterceptor(OperationInterceptorFunc(
+			func(ctx context.Context, oc *OperationContext, next OperationHandler) *Response {
+				seen = oc.Cost()
+				return next(ctx, oc)
+			})))
+	run(t, e, `{ conn(first: 2) { edges { node { id } } } }`, "")
+	if seen != 22 {
+		t.Fatalf("cost seen by the interceptor = %d, want 22 (the configured DefaultListSize)", seen)
+	}
+}

@@ -186,7 +186,10 @@ init timeout and a per-connection operation cap. Both serve queries and
 mutations too -- one `next` then `complete` -- so a client needs only one
 endpoint. Automatic persisted queries are in `ext/apq`, opt-in on either HTTP transport
 with `WithPersistedQueries(apq.NewCache(1000))`. OpenTelemetry traces and
-metrics are in `ext/otel`: `graphql.NewExecutor(s, otel.New()...)`.
+metrics are in `ext/otel`: `graphql.NewExecutor(s, otel.New()...)`. Cost-based rate
+limiting is in `ext/throttle`: a bucket of points per caller refilled at a fixed
+rate, quoted before the query runs and charged what it really cost afterwards,
+reporting `extensions.cost.throttleStatus` the way Shopify's Admin API does.
 
 Phase 4 is under way. `QueryCost.Actual` reports `actualQueryCost` alongside
 the requested one, summed from the fields really resolved rather than from

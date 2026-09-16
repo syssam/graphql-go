@@ -170,6 +170,13 @@ func (e *Executor) Subscribe(ctx context.Context, req *Request) (<-chan *Respons
 		entry:         entry,
 		hub:           newWaveCoordinator(),
 	}
+	// The cost is computed here rather than at the limit check because a
+	// rate limiter is an operation interceptor, and those wrap that check
+	// rather than following it. Without this base.Cost() hands every
+	// interceptor the no-model fallback even when a model is configured.
+	if e.cost != nil {
+		base.ensureCost(*e.cost)
+	}
 	// The stream opener runs under the base context; each event then gets its
 	// own, installed below.
 	ctx = withOperation(ctx, base)

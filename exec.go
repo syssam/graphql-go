@@ -207,6 +207,13 @@ func (e *Executor) execute(ctx context.Context, req *Request) *Response {
 		entry:         entry,
 		hub:           newWaveCoordinator(),
 	}
+	// The cost is computed here rather than at the limit check because a
+	// rate limiter is an operation interceptor, and those wrap that check
+	// rather than following it. Without this oc.Cost() hands every
+	// interceptor the no-model fallback even when a model is configured.
+	if e.cost != nil {
+		oc.ensureCost(*e.cost)
+	}
 	return e.opChain(withOperation(ctx, oc), oc)
 }
 
