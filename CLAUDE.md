@@ -256,18 +256,22 @@ One span per request, started before parsing so a parse failure still produces o
 renamed once the operation is known. **Metrics are recorded at the operation layer and at
 the request layer only when the operation chain never ran** — recording at both double-counts
 every request, which the metric test caught. Field spans (`WithFieldSpans`) are opt-in and
-are wired through a `FieldObserver`, not a `FieldInterceptor`: `BenchmarkFieldPathBare`,
+are wired through a `FieldObserver`, not a `FieldInterceptor`. `BenchmarkFieldPathBare`,
 `BenchmarkFieldPathInterceptor` and `BenchmarkFieldPathObserver` (root package,
-`-count=12`) measure 18, 74 and 18 allocs/op (993, 3900 and 993 B/op) over the same query.
-An interceptor may replace a field's result, so every field — pure ones included — is routed
-through the type-erased write path to make that possible, whether or not the interceptor
-uses the value; the otel one never did. An observer cannot change a result, so a pure field
-keeps its typed writer and costs nothing to observe; only the fields an observer actually
-touches (a resolver's own child spans) pay anything. One behaviour changed with the switch:
-the observer's `EndField` runs after panic recovery sets the field error, so a panicking
-field's span now gets error status — the interceptor's plain `defer span.End()` ran during
-the panic's unwind, before recovery converted it, so a crashed field used to produce a span
-that looked clean.
+`-count=12`) measure 18, 74 and 18 allocs/op (993, 3900 and 993 B/op) over the same query —
+but the observer benchmark registers a no-op observer, so what it measures is the engine's
+observer call sites costing nothing when the observer itself does nothing. The interceptor's
+74 allocs/op is the cost of the type-erased write path forced on every field so the
+interceptor is able to replace a result, whether or not it uses that ability; an observer
+cannot change a result, so the engine never routes a field through that path for one, and a
+pure field keeps its typed writer regardless of what the observer does. What `ext/otel`'s own
+`fieldSpanObserver` then spends per field it actually observes — a `tracer.Start`, two
+`SetAttributes` calls and a `span.End()`, on every field including pure ones once
+`WithFieldSpans` is on — is real cost that these benchmarks do not measure and this file does
+not have a number for. One behaviour changed with the switch: the observer's `EndField` runs
+after panic recovery sets the field error, so a panicking field's span now gets error status
+— the interceptor's plain `defer span.End()` ran during the panic's unwind, before recovery
+converted it, so a crashed field used to produce a span that looked clean.
 
 `ext/apq` is automatic persisted queries, opt-in through `WithPersistedQueries` on either
 HTTP transport. **Resolution happens during parsing, not at execution**: a request carrying
