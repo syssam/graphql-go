@@ -24,8 +24,9 @@ type QueryCost struct {
 	// FieldWeight overrides the default weight of 1 for a schema
 	// coordinate such as "Query.search".
 	FieldWeight map[string]int
-	// Report writes extensions.cost on every response, including
-	// rejected ones.
+	// Report writes extensions.cost on every response, including operations
+	// rejected by Max. Operations refused by WithMaxDepth/WithMaxComplexity
+	// are rejected before a plan exists and so carry no cost.
 	Report bool
 	// Actual also reports actualQueryCost, summed from the fields that were
 	// really resolved rather than from assumed list sizes. Requested cost has
