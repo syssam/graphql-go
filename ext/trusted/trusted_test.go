@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -153,5 +156,36 @@ func TestSafelistIsEnforcedOverHTTP(t *testing.T) {
 	ext, _ := errs[0].(map[string]any)["extensions"].(map[string]any)
 	if ext["code"] != apq.CodeNotInList {
 		t.Fatalf("code = %v, want %s", ext["code"], apq.CodeNotInList)
+	}
+}
+
+// LoadManifestFile is how a server reads what its build step wrote, and Len
+// is what tells it the file was not empty — a manifest that silently loaded
+// nothing refuses every request.
+func TestLoadManifestFileReadsFromDisk(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "manifest.json")
+	body := `{"` + apq.Hash(doc) + `":` + strconv.Quote(doc) + `}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := trusted.LoadManifestFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Len() != 1 {
+		t.Fatalf("Len = %d, want 1", s.Len())
+	}
+	req := &graphql.Request{Extensions: persisted(apq.Hash(doc))}
+	if resp := apq.Resolve(s, req); resp != nil {
+		t.Fatalf("a document from the file was refused: %v", resp.Errors)
+	}
+	if req.Query != doc {
+		t.Fatalf("query = %q", req.Query)
+	}
+}
+
+func TestLoadManifestFileReportsAMissingFile(t *testing.T) {
+	if _, err := trusted.LoadManifestFile(filepath.Join(t.TempDir(), "absent.json")); err == nil {
+		t.Fatal("a missing manifest was accepted")
 	}
 }
