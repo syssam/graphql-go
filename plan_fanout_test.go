@@ -1,6 +1,7 @@
 package graphql
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -243,5 +244,91 @@ func TestDepthLimitRejectsWithoutCompiling(t *testing.T) {
 	entry.mu.Unlock()
 	if n != 0 {
 		t.Fatalf("plans cached for rejected operation = %d, want 0: a depth-rejected query must never be compiled or cached", n)
+	}
+}
+
+// TestQueryCostAbsentOnDepthRejection pins the observable change recorded in
+// docs/superpowers/specs/2026-09-16-plan-expansion-blowup-design.md, section
+// 7 ("Observable Changes"): a query rejected by the pre-compile depth or
+// complexity guard never carries extensions.cost. attachCost (limits.go)
+// requires oc.plan, and execute returns via requestError before an
+// OperationContext is ever built when the guard fires, so attachCost never
+// runs. This is deliberate, not a regression to fix — QueryCost.Max
+// rejections are unaffected, since that check stays in rejectIfOverLimit,
+// after compilation, because it depends on request variables.
+func TestQueryCostAbsentOnDepthRejection(t *testing.T) {
+	s, e := newFanExecutor(t, WithMaxDepth(3), WithQueryCost(QueryCost{Report: true}))
+	_ = s
+
+	resp := e.Execute(t.Context(), &Request{Query: fanQuery(8)})
+	if len(resp.Errors) == 0 {
+		t.Fatal("want a depth limit error")
+	}
+	if got := resp.Errors[0].Message; !strings.Contains(got, "maximum depth") {
+		t.Fatalf("error = %q, want a maximum depth error", got)
+	}
+	if _, ok := resp.Extensions["cost"]; ok {
+		t.Fatalf("extensions.cost = %v, want absent: a guard rejection never compiles a plan for attachCost to read", resp.Extensions["cost"])
+	}
+}
+
+// TestDepthLimitRejectsOnUncacheablePath exercises the guard's other branch:
+// a document with more than maxCondVars boolean variables bound to
+// @skip/@include never enters the plan cache (docEntry.planUncacheable), so
+// every planFor call takes the store=false path through d.compile. There is
+// no d.plans to inspect on this branch — store is false regardless of
+// whether the guard fires — so this test cannot pin "no plan was cached" the
+// way TestDepthLimitRejectsWithoutCompiling does for the cached path. What is
+// observable, and what this test checks instead, is the same absence
+// TestQueryCostAbsentOnDepthRejection checks: a guard rejection never builds
+// an OperationContext, so extensions.cost never appears, whereas a rejection
+// caught only by the post-compile rejectIfOverLimit check still reports it.
+func TestDepthLimitRejectsOnUncacheablePath(t *testing.T) {
+	s, e := newFanExecutor(t, WithMaxDepth(3), WithQueryCost(QueryCost{Report: true}))
+	_ = s
+
+	var b strings.Builder
+	b.WriteString("query TooManyCond(")
+	for i := 0; i <= maxCondVars; i++ {
+		fmt.Fprintf(&b, "$v%d: Boolean!, ", i)
+	}
+	b.WriteString(") { root { id ")
+	for i := 0; i <= maxCondVars; i++ {
+		fmt.Fprintf(&b, "a%d: id @skip(if: $v%d) ", i, i)
+	}
+	const depth = 3
+	for i := 0; i < depth; i++ {
+		b.WriteString("next { id ")
+	}
+	b.WriteString(strings.Repeat("} ", depth))
+	b.WriteString("} }")
+	query := b.String()
+
+	entry, errs := e.document(query)
+	if errs != nil {
+		t.Fatalf("document: %v", errs[0])
+	}
+	if !entry.planUncacheable() {
+		t.Fatalf("condVars = %d, want more than %d to exercise the uncacheable path", len(entry.condVars), maxCondVars)
+	}
+
+	vars := make(map[string]any, maxCondVars+1)
+	for i := 0; i <= maxCondVars; i++ {
+		vars[fmt.Sprintf("v%d", i)] = false
+	}
+	varsJSON, err := json.Marshal(vars)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp := e.Execute(t.Context(), &Request{Query: query, Variables: varsJSON})
+	if len(resp.Errors) == 0 {
+		t.Fatal("want a depth limit error")
+	}
+	if got := resp.Errors[0].Message; !strings.Contains(got, "maximum depth") {
+		t.Fatalf("error = %q, want a maximum depth error", got)
+	}
+	if _, ok := resp.Extensions["cost"]; ok {
+		t.Fatalf("extensions.cost = %v, want absent on the uncacheable path too", resp.Extensions["cost"])
 	}
 }

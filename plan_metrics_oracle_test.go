@@ -3,9 +3,8 @@ package graphql
 // The walks below computed depth and complexity from the compiled plan until
 // operationMetrics replaced them with an equivalent walk over the document,
 // which can run before the plan is built. They are kept as the oracle that
-// pins the replacement: TestOperationMetricsMatchesPlan and
-// FuzzOperationMetrics compare the two. Do not reintroduce them into the
-// production path.
+// pins the replacement: TestOperationMetricsMatchesPlan compares the two. Do
+// not reintroduce them into the production path.
 
 func planMetricsOracle(p *plan) planMetrics {
 	return planMetrics{
