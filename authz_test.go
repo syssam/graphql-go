@@ -468,6 +468,230 @@ func TestAuthShapeSitesReturnsAnIndependentCopy(t *testing.T) {
 	}
 }
 
+func TestOutcomeEnforcement(t *testing.T) {
+	cases := []struct {
+		name    string
+		outcome Outcome
+		query   string
+		want    string
+		wantErr string
+	}{
+		{"allow is a pass-through", Allow(), `{ me { salary } }`, `{"me":{"salary":100}}`, ""},
+		{"zero replaces a non-null leaf", Zero(), `{ me { salary } }`, `{"me":{"salary":0}}`, ""},
+		{"redact rewrites the value", Redact(func(any) any { return 7 }), `{ me { salary } }`, `{"me":{"salary":7}}`, ""},
+		{"deny reports and bubbles", Deny("pay:read", "User.salary"), `{ me { salary } }`, "", "or it might not exist"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := shapeSchema(t)
+			e := NewExecutor(s, WithAuthorizer(AuthorizerFunc(
+				func(ctx context.Context, shape *AuthShape, d *Decision) error {
+					return d.Set(0, tc.outcome)
+				})))
+			resp := run(t, e, tc.query, "")
+			if tc.wantErr != "" {
+				if len(resp.Errors) == 0 {
+					t.Fatalf("no error; data = %s", resp.Data)
+				}
+				if !strings.Contains(resp.Errors[0].Message, tc.wantErr) {
+					t.Errorf("error = %s, want it to contain %q", resp.Errors[0].Message, tc.wantErr)
+				}
+				return
+			}
+			if len(resp.Errors) > 0 {
+				t.Fatalf("errors: %s", errorsJSON(resp.Errors))
+			}
+			if got := string(resp.Data); got != tc.want {
+				t.Errorf("data = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// Enforcement must not depend on how a field is bound. Defect B existed
+// because a pure Field and a Resolve of the same coordinate took different
+// paths; this pins that they no longer do.
+func TestOutcomeAppliesToPureAndResolverBindingsAlike(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+type Query { me: User! }
+type User {
+  pure: Int! @requiresScopes(scopes: [["x"]])
+  viaResolver: Int! @requiresScopes(scopes: [["x"]])
+}
+`
+	s, err := NewSchema(SDL(sdl),
+		Query(Resolve("me", func(context.Context, Root) (*shapeUser, error) { return &shapeUser{Salary: 5}, nil })),
+		Object[shapeUser]("User",
+			Field("pure", func(u *shapeUser) int { return u.Salary }),
+			Resolve("viaResolver", func(_ context.Context, u *shapeUser) (int, error) { return u.Salary, nil }),
+		),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	e := NewExecutor(s, WithAuthorizer(AuthorizerFunc(
+		func(ctx context.Context, shape *AuthShape, d *Decision) error {
+			for i := range shape.Sites() {
+				if err := d.Set(i, Zero()); err != nil {
+					return err
+				}
+			}
+			return nil
+		})))
+	resp := run(t, e, `{ me { pure viaResolver } }`, "")
+	if len(resp.Errors) > 0 {
+		t.Fatalf("errors: %s", errorsJSON(resp.Errors))
+	}
+	if got, want := string(resp.Data), `{"me":{"pure":0,"viaResolver":0}}`; got != want {
+		t.Errorf("data = %s, want %s", got, want)
+	}
+}
+
+// Field interceptors force a field through the type-erased path
+// (interceptedExec). Deny/Null/Zero are decided in writeFieldValue before
+// either the intercepted or plain executor runs, so a no-op interceptor
+// must not change any of these outcomes; Redact must still rewrite the
+// resolved value.
+func TestOutcomeEnforcementWithFieldInterceptor(t *testing.T) {
+	noop := FieldInterceptorFunc(func(ctx context.Context, fc *FieldContext, next FieldHandler) (any, error) {
+		return next(ctx)
+	})
+	cases := []struct {
+		name    string
+		outcome Outcome
+		want    string
+		wantErr string
+	}{
+		{"zero replaces a non-null leaf", Zero(), `{"me":{"salary":0}}`, ""},
+		{"redact rewrites the value", Redact(func(any) any { return 7 }), `{"me":{"salary":7}}`, ""},
+		{"deny reports and bubbles", Deny("pay:read", "User.salary"), "", "or it might not exist"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := shapeSchema(t)
+			e := NewExecutor(s,
+				WithAuthorizer(AuthorizerFunc(func(ctx context.Context, shape *AuthShape, d *Decision) error {
+					return d.Set(0, tc.outcome)
+				})),
+				WithFieldInterceptor(noop),
+			)
+			resp := run(t, e, `{ me { salary } }`, "")
+			if tc.wantErr != "" {
+				if len(resp.Errors) == 0 {
+					t.Fatalf("no error; data = %s", resp.Data)
+				}
+				if !strings.Contains(resp.Errors[0].Message, tc.wantErr) {
+					t.Errorf("error = %s, want it to contain %q", resp.Errors[0].Message, tc.wantErr)
+				}
+				return
+			}
+			if len(resp.Errors) > 0 {
+				t.Fatalf("errors: %s", errorsJSON(resp.Errors))
+			}
+			if got := string(resp.Data); got != tc.want {
+				t.Errorf("data = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// A no-op interceptor cannot show whether Redact's resolve actually passed
+// through the field interceptor chain or bypassed it; a counting one can.
+// callLeafRedacted calls fd.anyResolve directly rather than through
+// f.exec.writeLeaf, so a field interceptor never observes a redacted field
+// -- the same trade the architecture already makes for a subscription's
+// root field. This test documents that count, rather than asserting a
+// count of 1 and being surprised by it later.
+func TestOutcomeRedactBypassesFieldInterceptor(t *testing.T) {
+	var seen atomic.Int64
+	counting := FieldInterceptorFunc(func(ctx context.Context, fc *FieldContext, next FieldHandler) (any, error) {
+		if fc.Field.Name == "salary" {
+			seen.Add(1)
+		}
+		return next(ctx)
+	})
+	s := shapeSchema(t)
+	e := NewExecutor(s,
+		WithAuthorizer(AuthorizerFunc(func(ctx context.Context, shape *AuthShape, d *Decision) error {
+			return d.Set(0, Redact(func(any) any { return 7 }))
+		})),
+		WithFieldInterceptor(counting),
+	)
+	resp := run(t, e, `{ me { salary } }`, "")
+	if len(resp.Errors) > 0 {
+		t.Fatalf("errors: %s", errorsJSON(resp.Errors))
+	}
+	if got, want := string(resp.Data), `{"me":{"salary":7}}`; got != want {
+		t.Errorf("data = %s, want %s", got, want)
+	}
+	if n := seen.Load(); n != 0 {
+		t.Errorf("field interceptor observed the redacted field %d times, want 0", n)
+	}
+}
+
+// Zero and Deny apply through Outcome.validFor, not ad hoc bubbling logic:
+// a literal null for a non-null field is not a value the schema allows, so
+// Null on a non-null site must be refused at Decision.Set rather than
+// silently written and left to the caller to notice.
+func TestNullOutcomeRejectedOnNonNullField(t *testing.T) {
+	s := shapeSchema(t)
+	e := NewExecutor(s, WithAuthorizer(AuthorizerFunc(
+		func(ctx context.Context, shape *AuthShape, d *Decision) error {
+			return d.Set(0, Null())
+		})))
+	resp := run(t, e, `{ me { salary } }`, "")
+	if len(resp.Errors) == 0 {
+		t.Fatal("operation was not rejected")
+	}
+	if !strings.Contains(resp.Errors[0].Message, "Null is not valid for") {
+		t.Errorf("error = %s, want it to name Null as invalid", resp.Errors[0].Message)
+	}
+}
+
+// writeFieldsConcurrent (exec_object.go) is a second call site of
+// writeFieldValue, taken only when a selection has at least two
+// concurrently-schedulable fields. Both fields here are Resolve-bound so
+// planField.schedulable is true for both and directSchedulable reaches 2,
+// forcing that path; an enforcement point wired only into the serial loop
+// would leave one of these two unauthorized.
+func TestOutcomeEnforcementOnConcurrentFields(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+type Query { me: User! }
+type User {
+  a: Int! @requiresScopes(scopes: [["x"]])
+  b: Int! @requiresScopes(scopes: [["x"]])
+}
+`
+	s, err := NewSchema(SDL(sdl),
+		Query(Resolve("me", func(context.Context, Root) (*shapeUser, error) { return &shapeUser{Salary: 9}, nil })),
+		Object[shapeUser]("User",
+			Resolve("a", func(_ context.Context, u *shapeUser) (int, error) { return u.Salary, nil }),
+			Resolve("b", func(_ context.Context, u *shapeUser) (int, error) { return u.Salary, nil }),
+		),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	e := NewExecutor(s, WithAuthorizer(AuthorizerFunc(
+		func(ctx context.Context, shape *AuthShape, d *Decision) error {
+			for i := range shape.Sites() {
+				if err := d.Set(i, Zero()); err != nil {
+					return err
+				}
+			}
+			return nil
+		})))
+	resp := run(t, e, `{ me { a b } }`, "")
+	if len(resp.Errors) > 0 {
+		t.Fatalf("errors: %s", errorsJSON(resp.Errors))
+	}
+	if got, want := string(resp.Data), `{"me":{"a":0,"b":0}}`; got != want {
+		t.Errorf("data = %s, want %s", got, want)
+	}
+}
+
 // authSubMessage/authSubSDL/newAuthSubExecutor give the two subscription
 // authorization tests below their own minimal, self-contained fixture
 // instead of extending subscription_test.go's shared subSDL/subSource: those
@@ -591,5 +815,31 @@ func TestSubscribeAuthorizesBeforeOpeningTheSource(t *testing.T) {
 	}
 	if n := src.opens.Load(); n != 0 {
 		t.Errorf("source opened %d times, want 0: an unauthorized client must never reach it", n)
+	}
+}
+
+// runSubscriptionEvent builds its own execState per event (subscription.go);
+// a decision that reached only runOperation's execState would authorize the
+// first event and leave every later one unenforced. Zero on the event
+// payload's declaring field is the write-path assertion; deny is covered by
+// the two tests above, which already exercise the reject-the-event path.
+func TestOutcomeEnforcementThroughSubscriptionEvent(t *testing.T) {
+	src, e := newAuthSubExecutor(t, WithAuthorizer(AuthorizerFunc(
+		func(ctx context.Context, shape *AuthShape, d *Decision) error {
+			return d.Set(0, Zero())
+		})))
+
+	ch, err := e.Subscribe(context.Background(), &Request{Query: `subscription { messages { id secret } }`})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	src.ch <- &authSubMessage{ID: "1", Secret: "top-secret"}
+	resp := <-ch
+	if len(resp.Errors) != 0 {
+		t.Fatalf("event errored: %s", errorsJSON(resp.Errors))
+	}
+	if got, want := string(resp.Data), `{"messages":{"id":"1","secret":""}}`; got != want {
+		t.Errorf("data = %s, want %s", got, want)
 	}
 }
