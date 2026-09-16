@@ -1,0 +1,54 @@
+version: "2"
+
+# The default linter set plus the ones that catch mistakes this codebase has
+# actually made. Anything that would fight the design is off, with the reason
+# recorded rather than left as a silent omission.
+
+linters:
+  enable:
+    - bodyclose      # the HTTP transports and their tests hold response bodies
+    - copyloopvar
+    - errorlint      # errors.As on *Error and *SubscribeError is load-bearing
+    - gocritic
+    - misspell
+    - nilerr
+    - noctx
+    - perfsprint     # the write path is the point of this project
+    - revive
+    - unconvert
+    - usestdlibvars
+
+  settings:
+    revive:
+      rules:
+        - name: exported
+          # Exported identifiers are documented throughout; this keeps that
+          # true rather than relying on review.
+          arguments: [checkPrivateReceivers, disableStutteringCheck]
+    gocritic:
+      disabled-checks:
+        # The executor deliberately takes small structs by value on the hot
+        # path to avoid escaping them to the heap.
+        - hugeParam
+
+  exclusions:
+    rules:
+      # Generated code is emitted by codegen and formatted by go/format; it is
+      # not hand-maintained and linting it reports on the generator, not the
+      # code.
+      - path: (^|/)generated\.go$
+        linters: [revive, gocritic, perfsprint]
+      - path: (^|/)models\.go$
+        linters: [revive]
+      # Tests build throwaway servers, sockets and modules. noctx and bodyclose
+      # there report on fixtures rather than on anything shipped.
+      - path: _test\.go$
+        linters: [noctx, bodyclose, perfsprint]
+
+formatters:
+  enable:
+    - gofmt
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

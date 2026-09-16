@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Generation and compile benchmarks shell out to go; keep the toolchain from
+  # silently fetching a different one mid-run.
+  GOTOOLCHAIN: local
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is where this is developed and Linux is where it will run, so
+        # both gate. macOS catches the arm64 differences neither would.
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        shell: bash
+        run: |
+          unformatted=$(gofmt -l $(git ls-files '*.go'))
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt'd:"; echo "$unformatted"; exit 1
+          fi
+
+      # scripts/gate.sh walks every go.mod. go vet and go test reach only the
+      # module they run in, and this repository has four; a root-only run
+      # reports success while testing none of benchmarks, compare or lint.
+      - name: Gate every module
+        shell: bash
+        run: sh scripts/gate.sh
+
+      - name: Generated code is current
+        shell: bash
+        run: |
+          cd examples/basic && go generate ./...
+          cd "$GITHUB_WORKSPACE"
+          if ! git diff --quiet; then
+            echo "generated code is stale; run go generate in examples/basic"
+            git diff --stat; exit 1
+          fi
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # golangci-lint must be built with a Go at least as new as go.mod's
+      # version, or it refuses to load the config with "the Go language
+      # version (goX) used to build golangci-lint is lower than the targeted
+      # Go version". If this job is the only red one and that is the message,
+      # pin a version built with the current toolchain rather than debugging
+      # the config.
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+      # The repository ships its own analyzer for a bug class -race cannot
+      # find: a check-then-act pair on OperationContext that silently degrades
+      # DataLoader batching to N+1.
+      - name: Run gqlvet
+        run: |
+          cd lint && go build -o "$RUNNER_TEMP/gqlvet" ./cmd/gqlvet
+          cd "$GITHUB_WORKSPACE" && "$RUNNER_TEMP/gqlvet" ./...
+
+  fuzz:
+    name: fuzz (smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # Short by design. This is a smoke test that the fuzz targets still build
+      # and that the seed corpus passes, not a fuzzing campaign.
+      - name: Fuzz targets
+        run: |
+          for target in $(grep -ho 'func Fuzz[A-Za-z0-9_]*' *_test.go | sed 's/func //'); do
+            echo "== $target"
+            go test -run '^$' -fuzz "^${target}$" -fuzztime 30s .
+          done

@@ -1,5 +1,10 @@
 # graphql-go
 
+[![CI](https://github.com/syssam/graphql-go/actions/workflows/ci.yml/badge.svg)](https://github.com/syssam/graphql-go/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/syssam/graphql-go.svg)](https://pkg.go.dev/github.com/syssam/graphql-go)
+[![Go Report Card](https://goreportcard.com/badge/github.com/syssam/graphql-go)](https://goreportcard.com/report/github.com/syssam/graphql-go)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A schema-first GraphQL runtime for Go with a code-first, type-safe binding API.
 
 `graphql-go` is built for large schemas: hundreds of types, thousands of
@@ -190,6 +195,7 @@ over WebSocket.
 ## Development
 
 ```sh
+sh scripts/gate.sh                 # vet and test every module, not just the root
 go vet ./... && go test -race -count=1 ./...
 go test -run xxx -bench . -benchmem .
 go test -run xxx -fuzz FuzzExecute -fuzztime 30s .
@@ -203,3 +209,7 @@ execution and memory in [`compare/`](compare), build cost in
 audit in [`docs/graphql-http-audit.md`](docs/graphql-http-audit.md) — 0 errors,
 all 13 MUST requirements met. Bindings can be generated from
 SDL with [`cmd/gqlc`](cmd/gqlc).
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request, and
+[SECURITY.md](SECURITY.md) to report a vulnerability. Licensed under the
+[MIT License](LICENSE).
