@@ -16,8 +16,8 @@
 //
 //	src, bindings, err := fed.Subgraph(sdl,
 //		fed.Resolver("User", func(ctx context.Context, r fed.Representation) (*User, error) {
-//			id, _ := r["id"].(string)
-//			return loadUser(ctx, id)
+//			id, _ := r.ID("id")
+//			return loadUser(ctx, string(id))
 //		}),
 //	)
 //	if err != nil {
