@@ -107,11 +107,11 @@ func (w *metricWalker) walkConcrete(obj *objectType, sels ast.SelectionSet) plan
 			// buildField drops this group and reports an error, so it
 			// contributes nothing to either number. buildField can also drop
 			// a field whose literal arguments fail to decode, but that
-			// disagreement is unobservable: operationMetrics runs before
-			// compilePlan and may reject the operation on depth or
-			// complexity before compilePlan ever produces that argument
-			// error, so there is no document for which the two walks are
-			// compared and found to differ.
+			// disagreement is unobservable: compilePlan fails wholesale (plan.go
+			// line 167-169) if any error occurred during compilation,
+			// returning nil before a plan exists. When an argument decode error
+			// is recorded in c.errs, both comparison sites bail on error checks
+			// before any oracle value exists to compare against.
 			continue
 		}
 		if fd.leaf {
