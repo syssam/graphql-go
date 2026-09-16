@@ -23,6 +23,10 @@ import (
 // error fails every waiter in that batch and is not cached.
 //
 // Keys are unique. The function is called from a single goroutine per batch.
+//
+// ctx is the request's, not a fresh background one: it carries the request's
+// cancellation, deadline and values, so a batch stops when the client goes
+// away and a tracing span or tenant read from it is the caller's own.
 type BatchFunc[K comparable, V any] func(ctx context.Context, keys []K) (map[K]V, error)
 
 // Loader is a Facebook-style DataLoader: per-request cache plus a batch
@@ -114,6 +118,11 @@ func (l *Loader[K, V]) scope(ctx context.Context) *requestScope[K, V] {
 	s := &requestScope[K, V]{}
 	w := oc.Waves()
 	s.init(l, w)
+	// The batch runs after the resolver that queued its keys has parked, so
+	// the scope carries the request context rather than taking one from
+	// whichever Load happens to trigger the flush. Cancellation, deadline and
+	// request-scoped values reach the batch function only through this.
+	s.ctx = ctx
 	// GetOrSet, not Set: sibling resolvers reach their first Load together
 	// and would otherwise each install a scope, splitting the pending queue
 	// and the cache so batching degrades to N+1. Only the winner registers
@@ -121,7 +130,7 @@ func (l *Loader[K, V]) scope(ctx context.Context) *requestScope[K, V] {
 	if actual, loaded := oc.GetOrSet(l, s); loaded {
 		return actual.(*requestScope[K, V])
 	}
-	w.OnReady(s.flush)
+	w.OnReady(func() { s.flush(s.ctx) })
 	return s
 }
 
@@ -137,6 +146,7 @@ type waiter[V any] struct {
 type requestScope[K comparable, V any] struct {
 	loader    *Loader[K, V]
 	waves     *graphql.WaveCoordinator
+	ctx       context.Context
 	mu        sync.Mutex
 	cache     map[K]V
 	cached    map[K]struct{}
@@ -204,9 +214,9 @@ func (s *requestScope[K, V]) load(ctx context.Context, keys []K) ([]V, error) {
 		return out, nil
 	}
 	if queued {
-		s.notify()
+		s.notify(ctx)
 	} else if s.waves == nil {
-		s.schedule()
+		s.schedule(ctx)
 	}
 
 	if s.waves != nil {
@@ -228,31 +238,31 @@ func (s *requestScope[K, V]) load(ctx context.Context, keys []K) ([]V, error) {
 	return out, nil
 }
 
-func (s *requestScope[K, V]) notify() {
+func (s *requestScope[K, V]) notify(ctx context.Context) {
 	if s.waves != nil {
 		return
 	}
-	s.schedule()
+	s.schedule(ctx)
 }
 
-func (s *requestScope[K, V]) schedule() {
+func (s *requestScope[K, V]) schedule(ctx context.Context) {
 	if !s.scheduled.CompareAndSwap(false, true) {
 		return
 	}
 	go func() {
 		runtime.Gosched()
-		s.flush()
+		s.flush(ctx)
 		s.scheduled.Store(false)
 		s.mu.Lock()
 		more := len(s.pending) > 0
 		s.mu.Unlock()
 		if more {
-			s.schedule()
+			s.schedule(ctx)
 		}
 	}()
 }
 
-func (s *requestScope[K, V]) flush() {
+func (s *requestScope[K, V]) flush(ctx context.Context) {
 	for {
 		s.mu.Lock()
 		if len(s.pending) == 0 {
@@ -272,7 +282,7 @@ func (s *requestScope[K, V]) flush() {
 		}
 		s.mu.Unlock()
 
-		got, err := s.invoke(keys)
+		got, err := s.invoke(ctx, keys)
 		for _, k := range keys {
 			var r result[V]
 			if err != nil {
@@ -293,10 +303,12 @@ func (s *requestScope[K, V]) flush() {
 	}
 }
 
-func (s *requestScope[K, V]) invoke(keys []K) (map[K]V, error) {
+func (s *requestScope[K, V]) invoke(ctx context.Context, keys []K) (map[K]V, error) {
 	if s.loader.batch == nil {
 		return nil, errors.New("loader: no batch function")
 	}
-	ctx := context.Background()
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return s.loader.batch(ctx, keys)
 }

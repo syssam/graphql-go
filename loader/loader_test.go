@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	graphql "github.com/syssam/graphql-go"
 	"github.com/syssam/graphql-go/loader"
@@ -275,5 +276,82 @@ func TestLoaderScopeSharedAcrossConcurrentResolvers(t *testing.T) {
 	defer mu.Unlock()
 	if len(batches) != 1 {
 		t.Fatalf("batches = %d, want 1; concurrent first-touch must share one scope: %v", len(batches), batches)
+	}
+}
+
+type tenantKey struct{}
+
+// The batch function's ctx parameter must be the request's context: a batch
+// that cannot see cancellation keeps querying for a client that has gone.
+func TestLoaderBatchObservesRequestCancellation(t *testing.T) {
+	started := make(chan struct{})
+	observed := make(chan error, 1)
+	ld := loader.New(func(ctx context.Context, keys []graphql.ID) (map[graphql.ID]*loadOwner, error) {
+		close(started)
+		select {
+		case <-ctx.Done():
+			observed <- ctx.Err()
+		case <-time.After(2 * time.Second):
+			observed <- nil
+		}
+		return nil, ctx.Err()
+	})
+
+	e := newLoaderSchema(t, ld, []*loadItem{{"1"}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		<-started
+		cancel()
+	}()
+	e.Execute(ctx, &graphql.Request{Query: `{ items { owner { name } } }`})
+
+	if err := <-observed; err == nil {
+		t.Fatal("batch function never saw the request cancellation")
+	}
+}
+
+// Request-scoped values (tenant, auth, trace span) must reach the batch
+// function; it is the only place a DataLoader-backed query can read them.
+func TestLoaderBatchSeesRequestValues(t *testing.T) {
+	var got atomic.Value
+	ld := loader.New(func(ctx context.Context, keys []graphql.ID) (map[graphql.ID]*loadOwner, error) {
+		if v, ok := ctx.Value(tenantKey{}).(string); ok {
+			got.Store(v)
+		}
+		out := make(map[graphql.ID]*loadOwner, len(keys))
+		for _, k := range keys {
+			out[k] = &loadOwner{Name: "u" + string(k)}
+		}
+		return out, nil
+	})
+
+	e := newLoaderSchema(t, ld, []*loadItem{{"1"}})
+	ctx := context.WithValue(context.Background(), tenantKey{}, "tenant-42")
+	resp := e.Execute(ctx, &graphql.Request{Query: `{ items { owner { name } } }`})
+	expectData(t, resp, `{"items":[{"owner":{"name":"u1"}}]}`)
+
+	if got.Load() != "tenant-42" {
+		t.Fatalf("batch function saw tenant %v, want tenant-42", got.Load())
+	}
+}
+
+// A deadline on the request must bound the batch call too.
+func TestLoaderBatchSeesRequestDeadline(t *testing.T) {
+	var hasDeadline atomic.Bool
+	ld := loader.New(func(ctx context.Context, keys []graphql.ID) (map[graphql.ID]*loadOwner, error) {
+		_, ok := ctx.Deadline()
+		hasDeadline.Store(ok)
+		return map[graphql.ID]*loadOwner{"1": {Name: "u1"}}, nil
+	})
+
+	e := newLoaderSchema(t, ld, []*loadItem{{"1"}})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	expectData(t, e.Execute(ctx, &graphql.Request{Query: `{ items { owner { name } } }`}),
+		`{"items":[{"owner":{"name":"u1"}}]}`)
+
+	if !hasDeadline.Load() {
+		t.Fatal("batch function saw no deadline; the request's was not propagated")
 	}
 }
