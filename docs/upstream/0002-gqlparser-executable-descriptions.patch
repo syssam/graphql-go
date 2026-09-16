@@ -44,6 +44,184 @@ index 72d4b2c..bdbf97b 100644
  
  	f.WriteWord("fragment").WriteWord(def.Name)
  	f.FormatVariableDefinitionList(def.VariableDefinition)
+diff --git a/formatter/testdata/baseline/FormatQueryDocument/builtin/described.graphql b/formatter/testdata/baseline/FormatQueryDocument/builtin/described.graphql
+new file mode 100644
+index 0000000..876cde1
+--- /dev/null
++++ b/formatter/testdata/baseline/FormatQueryDocument/builtin/described.graphql
+@@ -0,0 +1,17 @@
++"""
++Fetch the current user.
++"""
++query Me {
++	me {
++		... Detail
++	}
++}
++mutation Undescribed {
++	touch
++}
++"""
++The fields every view of a user needs.
++"""
++fragment Detail on User {
++	name
++}
+diff --git a/formatter/testdata/baseline/FormatQueryDocument/comments/described.graphql b/formatter/testdata/baseline/FormatQueryDocument/comments/described.graphql
+new file mode 100644
+index 0000000..876cde1
+--- /dev/null
++++ b/formatter/testdata/baseline/FormatQueryDocument/comments/described.graphql
+@@ -0,0 +1,17 @@
++"""
++Fetch the current user.
++"""
++query Me {
++	me {
++		... Detail
++	}
++}
++mutation Undescribed {
++	touch
++}
++"""
++The fields every view of a user needs.
++"""
++fragment Detail on User {
++	name
++}
+diff --git a/formatter/testdata/baseline/FormatQueryDocument/compacted/described.graphql b/formatter/testdata/baseline/FormatQueryDocument/compacted/described.graphql
+new file mode 100644
+index 0000000..ea2d819
+--- /dev/null
++++ b/formatter/testdata/baseline/FormatQueryDocument/compacted/described.graphql
+@@ -0,0 +1,17 @@
++"""
++Fetch the current user.
++"""
++query Me{
++	me {
++		...Detail
++	}
++}
++mutation Undescribed{
++	touch
++}
++"""
++The fields every view of a user needs.
++"""
++fragment Detail on User {
++	name
++}
+diff --git a/formatter/testdata/baseline/FormatQueryDocument/default/described.graphql b/formatter/testdata/baseline/FormatQueryDocument/default/described.graphql
+new file mode 100644
+index 0000000..876cde1
+--- /dev/null
++++ b/formatter/testdata/baseline/FormatQueryDocument/default/described.graphql
+@@ -0,0 +1,17 @@
++"""
++Fetch the current user.
++"""
++query Me {
++	me {
++		... Detail
++	}
++}
++mutation Undescribed {
++	touch
++}
++"""
++The fields every view of a user needs.
++"""
++fragment Detail on User {
++	name
++}
+diff --git a/formatter/testdata/baseline/FormatQueryDocument/no_description/described.graphql b/formatter/testdata/baseline/FormatQueryDocument/no_description/described.graphql
+new file mode 100644
+index 0000000..717b2e1
+--- /dev/null
++++ b/formatter/testdata/baseline/FormatQueryDocument/no_description/described.graphql
+@@ -0,0 +1,11 @@
++query Me {
++	me {
++		... Detail
++	}
++}
++mutation Undescribed {
++	touch
++}
++fragment Detail on User {
++	name
++}
+diff --git a/formatter/testdata/baseline/FormatQueryDocument/non_introspection_builtin/described.graphql b/formatter/testdata/baseline/FormatQueryDocument/non_introspection_builtin/described.graphql
+new file mode 100644
+index 0000000..876cde1
+--- /dev/null
++++ b/formatter/testdata/baseline/FormatQueryDocument/non_introspection_builtin/described.graphql
+@@ -0,0 +1,17 @@
++"""
++Fetch the current user.
++"""
++query Me {
++	me {
++		... Detail
++	}
++}
++mutation Undescribed {
++	touch
++}
++"""
++The fields every view of a user needs.
++"""
++fragment Detail on User {
++	name
++}
+diff --git a/formatter/testdata/baseline/FormatQueryDocument/spaceIndent/described.graphql b/formatter/testdata/baseline/FormatQueryDocument/spaceIndent/described.graphql
+new file mode 100644
+index 0000000..1e8d378
+--- /dev/null
++++ b/formatter/testdata/baseline/FormatQueryDocument/spaceIndent/described.graphql
+@@ -0,0 +1,17 @@
++"""
++Fetch the current user.
++"""
++query Me {
++ me {
++  ... Detail
++ }
++}
++mutation Undescribed {
++ touch
++}
++"""
++The fields every view of a user needs.
++"""
++fragment Detail on User {
++ name
++}
+diff --git a/formatter/testdata/source/query/described.graphql b/formatter/testdata/source/query/described.graphql
+new file mode 100644
+index 0000000..ac154b8
+--- /dev/null
++++ b/formatter/testdata/source/query/described.graphql
+@@ -0,0 +1,17 @@
++"Fetch the current user."
++query Me {
++  me {
++    ...Detail
++  }
++}
++
++"""
++The fields every view of a user needs.
++"""
++fragment Detail on User {
++  name
++}
++
++mutation Undescribed {
++  touch
++}
 diff --git a/parser/query.go b/parser/query.go
 index 271a2ff..f4df610 100644
 --- a/parser/query.go

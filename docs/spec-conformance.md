@@ -71,8 +71,9 @@ operation, so it matters most for MCP-style tooling.
 It adds `Description` to both AST nodes, parses the optional description ahead
 of each executable definition, emits it from the formatter so documents round
 trip, and rejects a description on the shorthand `{ ... }` form, which has no
-description slot in the grammar. Six cases added to `query_test.yml`; the whole
-gqlparser suite passes.
+description slot in the grammar. Six cases in `query_test.yml`, plus a source
+file in the formatter's golden corpus so that dropping a description from the
+output fails a test rather than passing quietly.
 
 ### 4. Directives on directive definitions (draft only, not ratified)
 
@@ -95,12 +96,29 @@ It adds the location, parses applied directives on a directive definition and
 the `extend directive` form, applies extensions and validates them (self
 reference, allowed location, extending something undefined), emits them from
 the formatter in grammar order, and brings gqlparser's own prelude up to the
-same revision. Ten cases across `schema_test.yml` in the parser and validator.
+same revision. Ten cases across `schema_test.yml` in the parser and validator,
+plus a source file in the formatter's golden corpus.
 
 When that lands, `introDirective.directives` in `introspection.go` should
 return `d.def.Directives` instead of `nil`, at which point a deprecated
 directive actually reports as one. Until then the AST has nowhere to hold them
 and the honest answer is the one the code gives.
+
+## How the patches were checked
+
+Each was mutation tested: the fix was broken on purpose and the suite had to
+fail. That is the habit CLAUDE.md prescribes, and here it earned its keep —
+three changes were covered by tests that passed either way:
+
+- directive extensions were parsed and then never applied, and every test still
+  passed, because the validator case only asserted that the schema loaded;
+- the formatter silently dropped applied directives on a directive definition;
+- the formatter silently dropped an operation or fragment description.
+
+All three are round-trip losses that no assertion looked at. The golden corpus
+files named above close them: with any of those four mutations in place, a
+formatter baseline now fails. A test that cannot fail is not evidence, and
+these were headed for another project's repository.
 
 ## Deliberate deviations
 
