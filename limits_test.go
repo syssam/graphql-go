@@ -245,6 +245,12 @@ func TestQueryCostConnectionsPaidAndUnpaidReachTheSameShape(t *testing.T) {
 	}
 }
 
+// Interleaved against the same code without the leaf short-circuit, twelve
+// alternating rounds of two pre-built binaries: Disabled ~ (p=0.887),
+// Reported ~ (p=0.713), Connections -3.76% (p=0.040), allocations equal
+// sample for sample. The improvement lands only where it was predicted to,
+// on the configuration that was reading arguments off every scalar.
+//
 // The cost walk runs once per request whenever a cost model is configured,
 // and until now nothing measured it. These three are the configurations that
 // differ: no model at all, a model that walks, and a model that also reads

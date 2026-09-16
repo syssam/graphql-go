@@ -76,6 +76,28 @@ benchstat old.txt new.txt                                  # golang.org/x/perf/c
 
 Single samples on this codebase have been wrong by 20-77% when the machine was warm.
 
+**Two sequential runs measure the machine as much as the change.** Contention that
+arrives between `old.txt` and `new.txt` lands entirely on one side. On a busy machine —
+several agent sessions and their language servers — build two test binaries and alternate
+them, so every unit of contention is shared:
+
+```sh
+git worktree add --detach /tmp/base HEAD && cd /tmp/base   # then edit back to "before"
+go test -c -o /tmp/before.exe .                            # and from the main tree:
+go test -c -o /tmp/after.exe .
+for i in $(seq 1 12); do
+  /tmp/before.exe -test.run xxx -test.bench . -test.benchmem -test.count=1 >> before.txt
+  /tmp/after.exe  -test.run xxx -test.bench . -test.benchmem -test.count=1 >> after.txt
+done
+benchstat before.txt after.txt
+```
+
+This is not the same as more runs. A sequential comparison of a change that does strictly
+less work reported it 50% *slower* here; interleaved, the same change came out
+-3.76% (p=0.040, n=12) with allocations equal sample for sample, while per-sample spread
+stayed at +/-25% because the machine really was that noisy. The spread survives; the
+comparison does not have to.
+
 ## Architecture
 
 Schema-first runtime with a code-first binding API. SDL is the contract; Go bindings are
