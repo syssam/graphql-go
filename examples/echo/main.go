@@ -27,6 +27,11 @@ import (
 	"github.com/syssam/graphql-go/transport/gqlecho"
 )
 
+// timeout is used both for ReadHeaderTimeout (Slowloris mitigation) and for
+// how long shutdown waits for in-flight requests, matching the other two
+// example servers.
+const timeout = 5 * time.Second
+
 func main() {
 	if err := run(); err != nil {
 		slog.Error("server", "error", err)
@@ -66,26 +71,36 @@ func run() error {
 	// WithInsecureSkipOriginCheck, matching the Fiber example.
 	e.Any("/graphql/ws", gqlecho.WS(exec))
 
-	srv := &http.Server{
-		Addr:              *addr,
-		Handler:           e,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-
+	// e.Start(*addr) is Echo's own quickstart method, but its doc comment
+	// says it is "created for use in examples/demos and is deliberately
+	// simple without providing configuration options" -- it exposes no way
+	// to set ReadHeaderTimeout. StartConfig is Echo's documented answer for
+	// that: it still builds a plain http.Server internally (this is a
+	// startup/shutdown ergonomics wrapper, not a different transport, so it
+	// changes nothing about request-serving performance), but it replaces
+	// the hand-rolled signal/shutdown goroutine every other net/http-based
+	// example here needs with two struct fields.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			slog.Error("shutdown", "error", err)
-		}
-	}()
+
+	sc := echo.StartConfig{
+		Address: *addr,
+		// Both example mains print their own one-line summary below; Echo's
+		// own banner and "http(s) server started" log would otherwise
+		// duplicate it.
+		HideBanner:      true,
+		HidePort:        true,
+		GracefulTimeout: timeout,
+		OnShutdownError: func(err error) { slog.Error("shutdown", "error", err) },
+		BeforeServeFunc: func(s *http.Server) error {
+			s.ReadHeaderTimeout = timeout
+			return nil
+		},
+	}
 
 	slog.Info("serving GraphQL", "addr", *addr,
 		"http", "/graphql", "sse", "/graphql/stream", "ws", "/graphql/ws")
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := sc.Start(ctx, e); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
