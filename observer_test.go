@@ -72,6 +72,9 @@ func TestFieldObserverEndSeesBeginContext(t *testing.T) {
 // bound can, because the type-erased path allocates per leaf and the typed one
 // does not.
 func TestFieldObserverKeepsTypedWritePath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs two benchmarks")
+	}
 	bare := testing.Benchmark(func(b *testing.B) { benchFieldPath(b) })
 	obs := testing.Benchmark(func(b *testing.B) {
 		benchFieldPath(b, WithFieldObserver(&countingObserver{}))
