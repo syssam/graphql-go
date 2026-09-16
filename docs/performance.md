@@ -14,6 +14,7 @@ none is estimated. Detail, method and caveats are in the linked documents.
 | **Schema build** | **2 180x slower** | [compare](../compare/README.md) |
 | **Memory retained** | **278x more** | [compare](../compare/README.md) |
 | Subscription broadcast | **36 allocs** per subscriber, flat 1→128 | [gqlws](../transport/gqlws/load_test.go) |
+| Under k6, p95 at equal load | **22x** lower | [k6](../compare/k6/README.md) |
 | GraphQL over HTTP spec | **0 errors**, 13/13 MUST | [audit](graphql-http-audit.md) |
 
 Measured against gqlgen 0.17.95 on a 200-entity ORM-shaped schema (~1 600
@@ -89,10 +90,14 @@ trust when timings are noisy.
 
 ## What is not measured
 
-- **Latency percentiles.** This machine's monotonic clock has ~522 us
-  granularity, so a 70 us request cannot be timed individually and the faster
-  engine accumulates more unmeasurable samples. Needs a finer-clock platform;
-  no load tool escapes this.
+- **Latency percentiles of an unsaturated request.** This machine's monotonic
+  clock has ~522 us granularity, so a 70 us request cannot be timed
+  individually and the faster engine accumulates more unmeasurable samples.
+  Under load this stops applying: queued requests take milliseconds, three
+  orders of magnitude above the tick, and
+  [`compare/k6`](../compare/k6/README.md) reports real percentiles. The
+  artefact is still visible at low queue depth, where k6 reported graphql-go's
+  median as exactly `0s` while gqlgen's was 17.6 ms.
 - **Behaviour under a cgroup memory limit** with `GOMEMLIMIT`, which is how a
   container actually runs. Linux only.
 - **Subscriptions against another engine.** `BenchmarkSubscriptionFanout`
