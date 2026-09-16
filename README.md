@@ -134,6 +134,9 @@ A fuller example with interfaces, unions, enums, custom scalars, input objects,
 `Omittable` PATCH semantics, a schema directive, a DataLoader for `Post.author`
 and a subscription fed by the `createPost` mutation lives in
 [`examples/blog`](examples/blog).
+[`examples/quickstart`](examples/quickstart) is the same idea in one package
+with hand-written bindings; [`examples/README.md`](examples/README.md) compares
+the two.
 
 ## Concepts
 
