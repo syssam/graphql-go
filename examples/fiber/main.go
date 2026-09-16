@@ -22,7 +22,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 
 	"github.com/syssam/graphql-go"
-	blog "github.com/syssam/graphql-go/examples/blog"
+	"github.com/syssam/graphql-go/examples/blog"
 	"github.com/syssam/graphql-go/transport/gqlfiber"
 )
 

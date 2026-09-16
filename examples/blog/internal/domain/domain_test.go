@@ -1,6 +1,25 @@
 package domain
 
-import "testing"
+import (
+	"go/build"
+	"strings"
+	"testing"
+)
+
+// TestDomainImportsNothingButStdlib guards what the package comment claims. A
+// contributor who writes graphql.ID on domain.User breaks the example's entire
+// point, and every test in every module stays green while they do it.
+func TestDomainImportsNothingButStdlib(t *testing.T) {
+	pkg, err := build.ImportDir(".", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, imp := range pkg.Imports {
+		if strings.Contains(imp, "graphql-go") {
+			t.Fatalf("domain imports %q; the SDL must not be able to reach this package", imp)
+		}
+	}
+}
 
 func TestOptionalDistinguishesAbsentFromNull(t *testing.T) {
 	absent := Absent[string]()

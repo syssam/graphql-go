@@ -39,6 +39,12 @@ func (s *Service) Search(term string) ([]*domain.User, []*domain.Post) {
 	return s.repo.SearchUsers(lowered), s.repo.SearchPosts(lowered)
 }
 
+// CreatePost checks the author exists, then inserts.
+//
+// The check and the insert are two lock acquisitions now, where the single
+// pre-layering store did both under one. Nothing here deletes a user, so the
+// window cannot open; a service that did would need the repository to offer
+// the pair as one operation.
 func (s *Service) CreatePost(authorID, title, body string, tags []string) (*domain.Post, error) {
 	if s.repo.User(authorID) == nil {
 		return nil, fmt.Errorf("author %q does not exist", authorID)
@@ -49,11 +55,16 @@ func (s *Service) CreatePost(authorID, title, body string, tags []string) (*doma
 // UpdatePost applies a partial update. Post.title is non-null in the schema, so
 // an explicit null for it is a client error rather than a clear.
 func (s *Service) UpdatePost(id string, u domain.PostUpdate) (*domain.Post, error) {
+	if s.repo.Post(id) == nil {
+		return nil, fmt.Errorf("post %q does not exist", id)
+	}
 	if u.Title.Present && u.Title.Value == nil {
 		return nil, errors.New("title cannot be cleared")
 	}
 	p := s.repo.UpdatePost(id, u)
 	if p == nil {
+		// Nothing deletes posts, so this is unreachable; repeating the error
+		// beats a nil dereference if that ever stops being true.
 		return nil, fmt.Errorf("post %q does not exist", id)
 	}
 	return p, nil

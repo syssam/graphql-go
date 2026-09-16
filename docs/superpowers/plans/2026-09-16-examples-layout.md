@@ -1830,6 +1830,10 @@ Note: the working tree carries unrelated modifications in `context.go`,
 `git diff` reports only those, the generated code is current — scope the check
 with `git diff --quiet -- examples/` instead.
 
+This narrowing was a temporary accommodation for that unrelated uncommitted
+work in this one execution; it is not part of the check the plan specifies.
+CI runs the unnarrowed `git diff --quiet` and is the real gate.
+
 - [ ] **Step 5: Confirm the docs name paths that exist**
 
 Task 1 updated `cmd/gqlc/README.md` to describe the *finished* layout, so from
@@ -1879,7 +1883,7 @@ If Echo or Fiber answers the query but never delivers the subscription event,
 the transport is wired but the schema's subscription is not reaching it — report
 that rather than moving on.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"

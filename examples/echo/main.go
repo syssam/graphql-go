@@ -24,13 +24,13 @@ import (
 	"github.com/labstack/echo/v5"
 
 	"github.com/syssam/graphql-go"
-	blog "github.com/syssam/graphql-go/examples/blog"
+	"github.com/syssam/graphql-go/examples/blog"
 	"github.com/syssam/graphql-go/transport/gqlecho"
 )
 
 // timeout is used both for ReadHeaderTimeout (Slowloris mitigation) and for
-// how long shutdown waits for in-flight requests, matching the other two
-// example servers.
+// how long shutdown waits for in-flight requests, matching the other example
+// servers.
 const timeout = 5 * time.Second
 
 func main() {

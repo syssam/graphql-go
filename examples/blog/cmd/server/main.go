@@ -1,4 +1,4 @@
-// Command basic serves the example blog schema on every transport:
+// Command server serves the example blog schema on every transport:
 //
 //	/graphql         queries and mutations over HTTP
 //	/graphql/stream  Server-Sent Events
@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/syssam/graphql-go"
-	blog "github.com/syssam/graphql-go/examples/blog"
+	"github.com/syssam/graphql-go/examples/blog"
 	"github.com/syssam/graphql-go/transport/gqlhttp"
 	"github.com/syssam/graphql-go/transport/gqlsse"
 	"github.com/syssam/graphql-go/transport/gqlws"

@@ -112,8 +112,9 @@ built and measured before this spec was finalised, and the first version of
 `app` — the one this section originally described — came out at **seven methods,
 all seven of them a single forwarding call to the repository**. That is the
 cargo-cult outcome, and it was fixed by moving rules down rather than by deleting
-the layer: `CreatePost`'s "an unknown author is an error" and "a blank title is
-an error" now live in `app`, and the repository stores what it is given.
+the layer: `CreatePost`'s "an unknown author is an error" and `UpdatePost`'s
+"title cannot be cleared" now live in `app`, and the repository stores what it
+is given.
 
 The honest figure after that change is **five of seven methods still forwarding**.
 That is the real shape of a use-case layer over an in-memory store and the README
