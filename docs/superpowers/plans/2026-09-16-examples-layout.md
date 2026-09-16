@@ -1823,7 +1823,24 @@ Note: the working tree carries unrelated modifications in `context.go`,
 `git diff` reports only those, the generated code is current — scope the check
 with `git diff --quiet -- examples/` instead.
 
-- [ ] **Step 5: Serve all three for real**
+- [ ] **Step 5: Confirm the docs name paths that exist**
+
+Task 1 updated `cmd/gqlc/README.md` to describe the *finished* layout, so from
+Task 1 until Task 6 it named a directory that did not exist yet. That is
+deliberate, but it only stays harmless if the path really does come to exist.
+
+```bash
+cd "$(git rev-parse --show-toplevel)"
+test -d examples/blog/internal/transport/graphql && echo "cmd/gqlc/README.md path exists"
+test -f examples/blog/gqlc.yaml && echo "gqlc.yaml path exists"
+test -d examples/blog/graph && echo "graph output path exists"
+grep -rn 'examples/' cmd/gqlc/README.md CONTRIBUTING.md docs/module-layout.md
+```
+Expected: all three `exists` lines, and every `examples/…` path printed by the
+grep resolves on disk. Check each one — a doc naming a directory that was never
+created is the failure mode this step exists to catch.
+
+- [ ] **Step 6: Serve all three for real**
 
 This is the step the others cannot replace. Three mains that compile against one
 schema prove nothing about serving it.
