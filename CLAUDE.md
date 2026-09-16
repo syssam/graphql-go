@@ -112,7 +112,16 @@ two are checked against each other by `TestOperationMetricsMatchesPlan` and fuzz
 in place, a rejected query and a compiled one finish in the same sub-millisecond range, since
 the memo bounds compilation whether or not the guard runs first — what the guard actually
 buys is that no plan is built or cached for a rejected query, and that compilation stays
-bounded by document size times type count, which memoization alone does not bound.
+bounded by document size times type count, which memoization alone does not bound. The guard
+rejects from `execute`/`Subscribe` directly, before an `OperationContext` exists, so a
+rejected query never reaches `opChain` or any `OperationInterceptor` — `ext/otel` never
+renames its span or sets the operation attributes, and `ext/throttle` never sees the request
+to meter it. That is one full `operationMetrics` walk over the AST, not a plan compile, so
+the request is cheaper than before the guard existed, just invisible to interceptors; the one
+path where the walk runs on every request rather than once per cached document is
+`docEntry.planUncacheable()`, where every request already recompiles anyway. A subscription
+over the limit is rejected once at `Subscribe`, before the stream opens, instead of emitting
+an error `next` on every event as it did before this guard existed.
 
 **Execute (`exec.go`, `exec_object.go`, `internal/jsonw`).** `Executor` owns the plan cache,
 the concurrency semaphore, interceptor chains and the limit options. `execState.writeObject`

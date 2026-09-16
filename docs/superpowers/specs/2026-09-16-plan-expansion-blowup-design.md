@@ -202,6 +202,16 @@ sound within a call and must not outlive it.
 per-request cost of the current design (section 1.2); the memo is what makes
 the DAG safe *and* fixes a pre-existing per-request cost.
 
+The interleaved benchstat run that established "no hot-path regression" for
+this change covered `BenchmarkExecuteConcurrentList`, `BenchmarkExecuteUsers`,
+`BenchmarkLazySeq*` and `BenchmarkListResults*` — none of which configures
+`WithQueryCost`, so none of them exercises this new per-call
+`map[*selectionSet]int` allocation. The cost-disabled path is genuinely
+untouched (`rejectIfOverLimit` only calls `ensureCost` when `cost.Max > 0`,
+and `attachCost` returns early when `Report` is false), so a regression here
+is unlikely — but that is an argument from the code, not a measurement. The
+cost-enabled path, which is the one this section changed, is unmeasured.
+
 ## 5. The Pre-Compile Guard
 
 ### 5.1 One implementation, moved to the AST
@@ -252,8 +262,9 @@ exists for that operation and variant.
 
 `docEntry.planFor` (`plan.go:447`) runs the walk before `compilePlan` and
 returns the limit error without compiling when it is exceeded. The
-`len(d.condVars) > maxCondVars` branch, which compiles without caching, gets
-the same treatment.
+uncacheable path, `docEntry.planUncacheable()` (`len(d.condVars) >
+maxCondVars`, which compiles without caching because there are too many
+@skip/@include variables for the variant cache), gets the same treatment.
 
 The results fill `plan.complexity` and `plan.depth`, so:
 
@@ -262,6 +273,11 @@ The results fill `plan.complexity` and `plan.depth`, so:
   semantics are unchanged for callers.
 - The guard costs nothing on a plan cache hit. It runs only on the compile path
   it exists to protect.
+- On the uncacheable path, every request already recompiles the plan, so the
+  guard adds one full `operationMetrics` walk per request there — the one path
+  where the new walk is genuinely per-request rather than per distinct
+  document. Bounded by document size × type count, so not a risk, but worth
+  naming: it is not free the way the cache-hit case is.
 
 ### 5.3 Interaction with query cost
 
@@ -310,16 +326,47 @@ memo is gone.
   the selection set alone would fail it.
 - **`Selection` values may share pointers.** Not user-visible: plan structures
   are read-only at runtime (section 3.1).
-- **A guard-rejected query loses `extensions.cost`.** `attachCost`
-  (`limits.go:112`) requires `oc.plan`. Today a query rejected for depth or
-  complexity still has a compiled plan, so cost is reported alongside the
-  rejection. Once the guard rejects before compiling there is no plan and no
-  cost to report. This is unavoidable rather than incidental — the cost is
-  computed from the plan the guard exists to refuse to build — and it applies
-  only to queries rejected by `WithMaxDepth` or `WithMaxComplexity`. Queries
-  rejected by `QueryCost.Max` are unaffected: that check stays in
-  `rejectIfOverLimit`, after compilation, because it depends on request
-  variables.
+- **A guard rejection bypasses the operation interceptor chain entirely, not
+  just `extensions.cost`.** Before this change, a depth/complexity rejection
+  happened inside `rejectIfOverLimit`, itself called from within `e.opChain`
+  (`interceptor.go:136`) — so it ran wrapped by every registered
+  `OperationInterceptor`, with a real `OperationContext` in hand. Now
+  `docEntry.compile` rejects in `execute` (`exec.go:194-196`) before an
+  `OperationContext` exists, and `execute` returns `e.requestError(...)`
+  directly without ever calling `e.opChain`. Concretely for `ext/otel`: the
+  span is never renamed from `graphql.request` to `query Foo`;
+  `AttrOperationType`, `AttrOperationName`, `AttrCacheHit`, `AttrComplexity`
+  and `AttrDepth` are never set; the duration/error metric falls back to the
+  request layer, losing its operation dimensions. `extensions.cost`
+  (`attachCost`, `limits.go:112`, requires `oc.plan`) is one symptom of this —
+  today a query rejected for depth or complexity still has a compiled plan
+  and an `OperationContext`, so cost is reported alongside the rejection;
+  once the guard rejects first there is neither, so there is no cost to
+  report. This applies only to queries rejected by `WithMaxDepth` or
+  `WithMaxComplexity` — queries rejected by `QueryCost.Max` are unaffected,
+  since that check stays in `rejectIfOverLimit`, after compilation, because it
+  depends on request variables.
+
+  The same bypass means a guard-rejected query never reaches any operation
+  interceptor, including a rate limiter: `main` has since gained an
+  `ext/throttle` built as exactly such an interceptor, so a rejected query is
+  unmetered by it. Scope this honestly rather than alarmingly: the guard
+  rejects before `compilePlan`, so an unmetered rejected request costs parse +
+  validate + one memoized `operationMetrics` walk over the AST — not a plan
+  compile — and that walk is bounded by document size × type count. Before
+  the guard existed, the same abusive query would have compiled, built an
+  `OperationContext`, and been both charged and metered; now it is refused
+  earlier and cheaper, but outside every interceptor's view.
+- **Subscriptions: an over-limit subscription is now rejected once, at
+  `Subscribe`, instead of once per event.** `subscription.go:146-149` makes
+  `Subscribe` return a `*SubscribeError` when the guard fires, before the
+  stream ever opens. Previously `Subscribe` succeeded, the stream opened, and
+  `rejectIfOverLimit` ran inside `opChain` on every event — an over-depth
+  subscription emitted an `error` `next` payload forever, once per event,
+  until the client gave up or disconnected. The new behaviour is strictly
+  better for the client and the server, but it changes what `gqlws`/`gqlsse`
+  put on the wire: a single `error` message followed by a close, rather than
+  an indefinite stream of per-event error payloads.
 - **Plan memory for polymorphic queries drops sharply.** The plan cache holds
   documents, so this also reduces steady-state RSS on schemas with wide
   interfaces.
