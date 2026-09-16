@@ -221,3 +221,26 @@ func TestCostSeenByAnOperationInterceptorUsesTheConfiguredModel(t *testing.T) {
 		t.Fatalf("cost seen by the interceptor = %d, want 22 (the configured DefaultListSize)", seen)
 	}
 }
+
+// The same selection set costs differently paid and unpaid, so anything that
+// memoizes this walk must key on paid as well as on the selection set.
+//
+// Both aliases below select an identical sub-selection on the same type. One
+// reaches it through a connection carrying a page size, which pays for the
+// edges list beneath it; the other reaches it through the same connection
+// field with no page size, where that list takes DefaultListSize as any list
+// would. Today those are two distinct *selectionSet values, so the question
+// cannot arise and this test cannot fail for that reason — it is here for the
+// branch that memoizes compileSelection, where one pointer becomes reachable
+// from both parents and a memo keyed on the pointer alone returns whichever
+// visit ran first.
+func TestQueryCostConnectionsPaidAndUnpaidReachTheSameShape(t *testing.T) {
+	cost := connCost(t, connCostSchema(t), QueryCost{DefaultListSize: 10, Connections: true}, `{
+		paid: conn(first: 5) { edges { node { id } } }
+		free: conn { edges { node { id } } }
+	}`)
+	// paid: 1 + (1 + 2*1)*5 = 16.  free: 1 + (1 + 2*10) = 22.
+	if cost != 38 {
+		t.Fatalf("cost = %d, want 38 (16 paid + 22 unpaid); 20 or 128 means one visit's figure was reused for the other", cost)
+	}
+}
