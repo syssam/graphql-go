@@ -38,6 +38,18 @@ func TestUpdatePostAppliesThreeValuedPatch(t *testing.T) {
 	}
 }
 
+// TestUpdatePostClearsTitleBecauseAppIsNotHere is the other half of
+// TestRulesCannotBeBypassed: the repository applies a clear that the schema
+// forbids, so the rule refusing it has to live somewhere every caller passes
+// through. A repository that quietly declined would make app look optional.
+func TestUpdatePostClearsTitleBecauseAppIsNotHere(t *testing.T) {
+	s := NewStore()
+	s.UpdatePost("12", domain.PostUpdate{Title: domain.Present[string](nil)})
+	if got := s.Post("12"); got.Title != "" {
+		t.Fatalf("repository declined the clear on its own (title %q); the rule is in the wrong layer", got.Title)
+	}
+}
+
 func TestSubscriberIsRemovedOnCancel(t *testing.T) {
 	s := NewStore()
 	ctx, cancel := context.WithCancel(context.Background())

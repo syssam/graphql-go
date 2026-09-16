@@ -161,7 +161,9 @@ func (s *Store) CreatePost(authorID, title, body string, tags []string) *domain.
 }
 
 // UpdatePost applies a partial update and returns the post, or nil if there is
-// no such post. Rejecting a clear the schema does not allow happens in app.
+// no such post. It applies what it is given, including a clear the schema does
+// not allow: refusing that is app's rule, and enforcing it here too would leave
+// two half-answers to the same question.
 func (s *Store) UpdatePost(id string, u domain.PostUpdate) *domain.Post {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -169,8 +171,12 @@ func (s *Store) UpdatePost(id string, u domain.PostUpdate) *domain.Post {
 	if p == nil {
 		return nil
 	}
-	if u.Title.Present && u.Title.Value != nil {
-		p.Title = *u.Title.Value
+	if u.Title.Present {
+		if u.Title.Value == nil {
+			p.Title = ""
+		} else {
+			p.Title = *u.Title.Value
+		}
 	}
 	if u.Body.Present {
 		if u.Body.Value == nil {
