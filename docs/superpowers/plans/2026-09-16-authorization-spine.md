@@ -1761,45 +1761,62 @@ func benchRun(b *testing.B, e *Executor, q string) {
 
 `shapeSchema` already takes `testing.TB` (Task 5), so call it directly.
 
-- [ ] **Step 3: Compare against the captured pre-change baseline**
+- [ ] **Step 3: Compare interleaved against the pre-change binary**
 
-**Do not use `git stash`.** The stash stack is shared with the main checkout
-and every other worktree, and another session may push or pop it
-concurrently. The baseline was therefore captured before any of this work
-existed, at commit `483c62d`, and lives at:
+**Do not use `git stash`.** The stash stack is shared with the main checkout and
+every other worktree, and another session may push or pop it concurrently.
 
-```
-.superpowers/sdd/2026-09-16-authorization-spine/baseline-483c62d.txt
-```
+**Do not compare two sequential runs either.** `CLAUDE.md` gained a section on
+exactly this while the branch was in flight: two sequential runs measure the
+machine as much as the change, because contention arriving between them lands
+entirely on one side. This machine currently hosts six concurrent agent sessions
+and their language servers. A sequential comparison there reported a change that
+does strictly less work as 50% *slower*.
 
-It holds `-count=10` runs of `BenchmarkExecuteUsers` and
-`BenchmarkExecuteConcurrentList` (`exec_conformance_test.go`). Those two are
-the gate rather than the new benchmarks above, because they exist unchanged
-on both sides of the comparison — a benchmark introduced by this branch has
-no "before" to compare against. Recorded baseline for
-`BenchmarkExecuteUsers`: ~1200 ns/op, 1025 B/op, 19 allocs/op.
+So build two binaries and alternate them, sharing every unit of contention:
 
 ```bash
-go test -count=10 -run '^$' -bench 'BenchmarkExecuteUsers|BenchmarkExecuteConcurrentList' -benchmem . \
-  > .superpowers/sdd/2026-09-16-authorization-spine/after.txt
-benchstat .superpowers/sdd/2026-09-16-authorization-spine/baseline-483c62d.txt \
-          .superpowers/sdd/2026-09-16-authorization-spine/after.txt
+WS=.superpowers/sdd/2026-09-16-authorization-spine
+BENCH='BenchmarkExecuteUsers|BenchmarkExecuteConcurrentList'
+
+# "before" = the commit this branch started from, which predates every
+# authorization change.
+git worktree add --detach "$WS/base" 483c62d
+( cd "$WS/base" && go test -c -o ../before.exe . )
+go test -c -o "$WS/after.exe" .
+
+rm -f "$WS/before.txt" "$WS/after.txt"
+for i in $(seq 1 12); do
+  "$WS/before.exe" -test.run xxx -test.bench "$BENCH" -test.benchmem -test.count=1 >> "$WS/before.txt"
+  "$WS/after.exe"  -test.run xxx -test.bench "$BENCH" -test.benchmem -test.count=1 >> "$WS/after.txt"
+done
+benchstat "$WS/before.txt" "$WS/after.txt"
+
+git worktree remove "$WS/base"
 ```
 
-**Acceptance:** no statistically significant regression on either benchmark.
-Both run with no authorizer registered, which is the case that must stay
-free. CLAUDE.md records single samples on this machine being wrong by
-20-77%, so `-count=10` and `benchstat` are the gate, not a reading.
+`BenchmarkExecuteUsers` and `BenchmarkExecuteConcurrentList`
+(`exec_conformance_test.go`) are the gate rather than the new benchmarks above,
+because they exist unchanged on both sides — a benchmark this branch introduced
+has no "before" to build. Both run with no authorizer registered, which is the
+case that must stay free.
+
+A sequential capture taken at 483c62d before the work began is kept at
+`$WS/baseline-483c62d.txt` (`BenchmarkExecuteUsers` ~1200 ns/op, 1025 B/op,
+19 allocs/op). It is a sanity reference only — **it is not the gate**, for the
+reason above. If the interleaved comparison and that file disagree, the
+interleaved comparison wins.
+
+**Acceptance:** no statistically significant regression on either benchmark,
+reported with the benchstat table pasted into your report. Per-sample spread of
+±25% on this machine is expected and is not a failure; the comparison is what
+must hold. A passing gate with no numbers shown is not a measurement.
 
 If `benchstat` is not installed: `go install golang.org/x/perf/cmd/benchstat@latest`.
 
 **If it regresses:** the spec's fallback is to pack `decision` into existing
-padding in `execState`, or to reach it through `oc` rather than storing a
-second pointer. Do that and re-measure before proceeding. Report the
-benchstat table either way — a passing gate with no numbers shown is not a
-measurement.
-
-**If it regresses:** the fallback in the spec is to pack `decision` into existing padding in `execState`, or to reach it through `oc` rather than storing a second pointer. Do that and re-measure before proceeding.
+padding in `execState`, or to reach it through `oc` rather than storing a second
+pointer. Do that and re-measure before proceeding.
 
 - [ ] **Step 4: Commit**
 
