@@ -445,12 +445,28 @@ Two pins beyond that:
   `Resolve` binding of the same coordinate. Defect B existed precisely because
   those two paths differed.
 
-## 8. Open Questions
+## 8. Resolved Questions
 
-- Whether to migrate the consumer's `@auth(requires:)` to Apollo's
-  `@requiresScopes(scopes: [[String!]!]!)`. Mechanical over 1,589 sites; buys
-  tooling recognition and AND composition, costs verbosity. Not required by
-  this design — P1 accepts any directive that yields a `Requirement`.
-- Whether `SiteInputWrite` should walk input objects at plan compile or at
-  decision time. Compile-time is faster but the walk depends on which keys the
-  client actually sent, which is a variable.
+**The consumer keeps `@auth(requires:)`; `ext/authz` ships the Apollo spelling.**
+Migrating 1,589 sites to `@requiresScopes(scopes: [[String!]!]!)` is mechanical
+but buys the consumer nothing it needs — it is not a federated graph, and the
+only capability it gains is AND composition, which none of its 1,589 sites use.
+P1 accepts any directive that yields a `Requirement`, so the core package is
+indifferent. `ext/authz` binds the Apollo vocabulary (`@authenticated`,
+`@requiresScopes`, `@policy`) so a new user gets the standard by default and an
+existing one is not forced through a rename to adopt the engine.
+
+**`SiteInputWrite` is split: coordinates at compile, values at decision time.**
+The walk cannot be fully compiled, because a mutation's input object usually
+arrives in a variable and the set of keys the client actually sent is not known
+until the request. What *is* static is the input type rooted at each argument,
+so plan compile records the root coordinate and its input type, and the decision
+walks the supplied value against it. This matters for correctness, not just
+speed: an omitted key is not a write, but a key sent as explicit null is, and
+only the request can tell those apart.
+
+### Still open
+
+- Whether `Redact(fn)` should receive the `AuthSite` as well as the value. It
+  is free to add later and speculative to add now; deferred until a caller
+  needs it.
