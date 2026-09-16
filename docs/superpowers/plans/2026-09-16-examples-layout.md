@@ -146,7 +146,7 @@ Expected: no output.
 
 `examples/echo/resolvers.go` and `examples/fiber/resolvers.go` each mention
 `examples/basic` twice (lines 75 and 135) and are deliberately excluded here —
-Task 8 owns those two files and rewrites both references to their final paths.
+Task 7 owns those two files and rewrites both references to their final paths.
 Do not edit them in this task; an intermediate value written here would only be
 rewritten again.
 
@@ -948,9 +948,12 @@ EOF
 
 `internal/transport/graphql` implements `graph.Resolver` over domain types; `blog.go` composes everything and is the only public surface.
 
-**This task adds only.** The old `examples/blog/schema/` package stays in place and keeps working, so this commit is green and the 12 original tests still pass against the *old* implementation. Task 6 does the switch-over and the deletion in one green commit. Do not delete anything here — a commit whose test package does not compile is not independently reviewable.
+**Move `main.go` first.** `examples/blog/main.go` is `package main`, and `blog.go` is `package blog`. Go permits one package per directory, so adding `blog.go` beside `main.go` makes the directory refuse to build — `found packages blog (blog.go) and main (main.go)`. Relocating `main.go` under `cmd/server/` is therefore step one of this task, not a later tidy-up. (An earlier draft of this plan scheduled that move after the switch-over; it was caught by an implementer when the build broke.)
+
+**Otherwise this task adds only.** The old `examples/blog/schema/` package stays in place and keeps serving the relocated `main.go`, so this commit is green and the 12 original tests still pass against the *old* implementation. Task 6 does the switch-over and the deletion in one green commit. Do not delete anything else here — a commit whose test package does not compile is not independently reviewable.
 
 **Files:**
+- Move: `examples/blog/main.go` → `examples/blog/cmd/server/main.go`
 - Create: `examples/blog/internal/transport/graphql/resolver.go`
 - Create: `examples/blog/blog.go`
 
@@ -960,8 +963,29 @@ EOF
   - `resolver.New(svc *app.Service) *resolver.Resolver`, satisfying `graph.Resolver`
   - `blog.NewSchema(opts ...graphql.SchemaOption) (*graphql.Schema, error)`
   - unexported `blog.newSchema(repo *repository.Store, opts ...graphql.SchemaOption) (*graphql.Schema, error)`
+  - the binary `./examples/blog/cmd/server`
 
-- [ ] **Step 1: Write the adapter**
+- [ ] **Step 1: Move `main.go` out of the way**
+
+```bash
+cd "$(git rev-parse --show-toplevel)"
+mkdir -p examples/blog/cmd/server
+git mv examples/blog/main.go examples/blog/cmd/server/main.go
+```
+
+Leave its contents alone for now — it still imports `examples/blog/schema` and still
+calls `schema.NewSchema(schema.NewStore())`. Task 6 switches it over. Moving it now is
+purely to free the directory.
+
+- [ ] **Step 2: Move the `go:generate` directive**
+
+`examples/blog/cmd/server/main.go` carries `//go:generate go tool gqlc -config gqlc.yaml`.
+Delete that line from it — `go generate` runs a directive in the directory of the file
+holding it, so from `cmd/server/` the relative `gqlc.yaml` path would not resolve. The
+`blog.go` you write in Step 4 carries the directive instead, at the example's root
+where `gqlc.yaml` lives.
+
+- [ ] **Step 3: Write the adapter**
 
 Create `examples/blog/internal/transport/graphql/resolver.go`:
 
@@ -1181,7 +1205,7 @@ func (r *Resolver) stream(ctx context.Context, keep func(*domain.Post) bool) <-c
 }
 ```
 
-- [ ] **Step 2: Write the composition root**
+- [ ] **Step 4: Write the composition root**
 
 Create `examples/blog/blog.go`:
 
@@ -1243,7 +1267,7 @@ func unmarshalTime(v any) (time.Time, error) {
 }
 ```
 
-- [ ] **Step 3: Verify the adapter satisfies the generated interface**
+- [ ] **Step 5: Verify the adapter satisfies the generated interface**
 
 Run: `cd "$(git rev-parse --show-toplevel)" && go build ./examples/...`
 Expected: builds. The `var _ graph.Resolver = (*Resolver)(nil)` line makes a
@@ -1253,17 +1277,31 @@ This is the check CLAUDE.md exists for: generated bindings that read correctly
 and do not compile have shipped twice in this repository, and reading never
 caught either.
 
-- [ ] **Step 4: Confirm the old path still works, untouched**
+If this reports `found packages blog (blog.go) and main (main.go)`, Step 1 did
+not happen — go back and move `main.go` before debugging anything else.
+
+- [ ] **Step 6: Confirm the old path still works, untouched**
 
 Run: `cd "$(git rev-parse --show-toplevel)" && go test -race -count=1 ./examples/...`
 Expected: PASS. The 12 original tests still run against `examples/blog/schema`,
 which this task has not modified. The new adapter is compiled but not yet wired.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Confirm generate still works from the example root**
+
+```bash
+cd examples/blog && go generate ./...
+cd "$(git rev-parse --show-toplevel)" && git diff --quiet -- examples/blog && echo "generate is idempotent and the tree is clean"
+```
+Expected: `generate is idempotent and the tree is clean`. This proves the directive
+moved from `main.go` to `blog.go` without losing its working directory — the failure
+mode is a `gqlc.yaml` path that no longer resolves.
+
+- [ ] **Step 8: Commit**
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"
-git add examples/blog/internal/transport examples/blog/blog.go
+git add examples/blog/internal/transport examples/blog/blog.go examples/blog/cmd
+git add -u examples/blog
 git commit -m "$(cat <<'EOF'
 feat: add the blog example's GraphQL adapter and composition root
 
@@ -1271,8 +1309,9 @@ internal/transport/graphql implements graph.Resolver over domain types and
 owns the author DataLoader; blog.NewSchema is the only public surface, so a
 transport example can wire the schema without reaching into internal/.
 
-Not yet wired: the existing schema package still serves main, so this
-commit is green on its own. The switch-over is one commit away.
+main.go moves to cmd/server because a directory holds one package, and
+blog.go claims this one. It still calls the old schema package: that stays
+serving until the next commit, so this one is green on its own.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Wsx2gLrrQkLMK744k1gz2n
@@ -1290,7 +1329,7 @@ The safety net, and the moment the old implementation goes away. Expectations ar
 - Create: `examples/blog/blog_test.go` (from `examples/blog/schema/schema_test.go`)
 - Create: `examples/blog/subscription_test.go` (from `examples/blog/schema/subscription_test.go`)
 - Delete: `examples/blog/schema/` entirely
-- Modify: `examples/blog/main.go`
+- Modify: `examples/blog/cmd/server/main.go` (Task 5 moved it there)
 
 **Interfaces:**
 - Consumes: `blog.newSchema` and `blog.NewSchema` from Task 5; `repository.NewStore`, `repository.Store.InsertPost`, `repository.Store.Subscribers`, `repository.Store.CreatePost`, `repository.Store.PostsCreated` from Task 3; `domain.Post` from Task 2.
@@ -1298,7 +1337,11 @@ The safety net, and the moment the old implementation goes away. Expectations ar
 
 - [ ] **Step 1: Point main.go at the composition root and drop the old package**
 
-In `examples/blog/main.go`, replace the import
+`main.go` now lives at `examples/blog/cmd/server/main.go` — Task 5 moved it there,
+because `blog.go` claims `package blog` in the example's root directory and Go allows
+one package per directory.
+
+In `examples/blog/cmd/server/main.go`, replace the import
 
 ```go
 	"github.com/syssam/graphql-go/examples/blog/schema"
@@ -1453,61 +1496,7 @@ EOF
 
 ---
 
-### Task 7: Move `main.go` under `cmd/server`
-
-**Files:**
-- Move: `examples/blog/main.go` → `examples/blog/cmd/server/main.go`
-
-**Interfaces:**
-- Consumes: `blog.NewSchema` from Task 5.
-- Produces: the binary `./examples/blog/cmd/server`.
-
-- [ ] **Step 1: Move the file**
-
-```bash
-cd "$(git rev-parse --show-toplevel)"
-mkdir -p examples/blog/cmd/server
-git mv examples/blog/main.go examples/blog/cmd/server/main.go
-```
-
-- [ ] **Step 2: Remove the now-duplicated go:generate directive**
-
-`blog.go` carries `//go:generate go tool gqlc -config gqlc.yaml`. Delete the
-line from `examples/blog/cmd/server/main.go` — from `cmd/server` the relative
-config path would not resolve.
-
-- [ ] **Step 3: Confirm generate still works from the example root**
-
-```bash
-cd examples/blog && go generate ./... && git -C "$(git rev-parse --show-toplevel)" diff --quiet -- examples/blog && echo "generate is idempotent and the tree is clean"
-```
-Expected: `generate is idempotent and the tree is clean`.
-
-- [ ] **Step 4: Build and test**
-
-Run: `cd "$(git rev-parse --show-toplevel)" && go build ./examples/... && go test -race -count=1 ./examples/...`
-Expected: builds, 12 tests plus the layer tests pass.
-
-- [ ] **Step 5: Commit**
-
-```bash
-cd "$(git rev-parse --show-toplevel)"
-git add examples/blog
-git commit -m "$(cat <<'EOF'
-refactor: move the blog example's server under cmd/server
-
-Leaves room for the transport examples to be entrypoints over the same
-service rather than copies of it.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01Wsx2gLrrQkLMK744k1gz2n
-EOF
-)"
-```
-
----
-
-### Task 8: Extract `quickstart` and point `echo`/`fiber` at `blog`
+### Task 7: Extract `quickstart` and point `echo`/`fiber` at `blog`
 
 Deletes the duplication. `examples/echo/resolvers.go` and
 `examples/fiber/resolvers.go` are byte-identical today; one copy becomes
@@ -1729,7 +1718,7 @@ EOF
 
 ---
 
-### Task 9: READMEs, full gate, and serving all three for real
+### Task 8: READMEs, full gate, and serving all three for real
 
 **Files:**
 - Create: `examples/README.md`
