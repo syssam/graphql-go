@@ -159,6 +159,14 @@ type costWalk struct {
 	cfg  QueryCost
 	// paid reports that an enclosing connection's page size has already
 	// counted the elements of a list at this level.
+	//
+	// A memo over this walk must key on paid as well, and the reason that is
+	// insurance rather than a live bug is one line below: childPaid is set in
+	// exactly one place, and only for a field that is not itself a list. So a
+	// selection set shared between two visits is the sub-selection of one AST
+	// field node, and paid for it follows from that node alone. Add a second
+	// place that sets it, or set it for a list, and the key stops being
+	// insurance.
 	paid bool
 }
 
