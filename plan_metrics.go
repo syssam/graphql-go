@@ -106,10 +106,12 @@ func (w *metricWalker) walkConcrete(obj *objectType, sels ast.SelectionSet) plan
 		if fd == nil {
 			// buildField drops this group and reports an error, so it
 			// contributes nothing to either number. buildField can also drop
-			// a field whose literal arguments fail to decode, but that path
-			// is unreachable here: compilePlan returns that error itself, so
-			// complexityOf/depthOf (the spec this walk must match) are never
-			// reached for such a document, and neither is this one.
+			// a field whose literal arguments fail to decode, but that
+			// disagreement is unobservable: operationMetrics runs before
+			// compilePlan and may reject the operation on depth or
+			// complexity before compilePlan ever produces that argument
+			// error, so there is no document for which the two walks are
+			// compared and found to differ.
 			continue
 		}
 		if fd.leaf {

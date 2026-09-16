@@ -474,16 +474,14 @@ func variantKey(condVars []string, vars map[string]any) (uint16, map[string]bool
 	return key, values
 }
 
-// planFor returns the plan for op under the given variables, compiling and
-// caching it on first use.
-// planFor returns the plan for this operation and variant, reporting whether
-// it was already compiled. The caller must not inspect d.plans itself: it is
-// written under d.mu, and reading it unlocked is a data race that concurrent
-// requests for the same query will hit.
 // planUncacheable reports that this document has too many @skip/@include
 // variables for the variant cache, so every request recompiles its plan.
 func (d *docEntry) planUncacheable() bool { return len(d.condVars) > maxCondVars }
 
+// planFor returns the plan for this operation and variant, reporting whether
+// it was already compiled. The caller must not inspect d.plans itself: it is
+// written under d.mu, and reading it unlocked is a data race that concurrent
+// requests for the same query will hit.
 func (d *docEntry) planFor(s *Schema, e *Executor, op *ast.OperationDefinition, vars map[string]any) (*plan, bool, []*Error) {
 	if d.planUncacheable() {
 		cond := make(map[string]bool, len(d.condVars))

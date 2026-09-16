@@ -12,8 +12,7 @@ import (
 // Field-bound and always returned nil, so writeValue (exec_object.go:154-155)
 // wrote {"root": null} before ever touching the shared selectionSet the race
 // tests exist to cover, and neither test noticed because neither looked at
-// the data. A resolver that stops recursing early, or an abstract-dispatch
-// bug that resolves the wrong type partway down, fails here instead of
+// the data. A resolver that stops recursing early fails here instead of
 // silently passing as "no errors".
 func verifyFanChain(t *testing.T, data []byte, depth int) {
 	t.Helper()
