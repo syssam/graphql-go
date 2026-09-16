@@ -241,3 +241,111 @@ type Query { hello: String! }
 		t.Fatalf("err = %v, want one explaining the concrete __typename", err)
 	}
 }
+
+// A @key naming a field the type does not have composes into a router that
+// fetches nothing. The SDL is in hand at start-up, so say so then.
+func TestSubgraphRejectsAKeyFieldThatDoesNotExist(t *testing.T) {
+	const sdl = `
+type User @key(fields: "nope") { id: ID! }
+type Query { hello: String! }
+`
+	type u struct{ ID string }
+	_, _, err := fed.Subgraph(sdl, fed.Resolver("User", func(context.Context, fed.Representation) (*u, error) {
+		return nil, nil
+	}))
+	if err == nil || !strings.Contains(err.Error(), "nope") || !strings.Contains(err.Error(), "User") {
+		t.Fatalf("err = %v, want one naming User and nope", err)
+	}
+}
+
+// A compound key selects into another type, and that nesting is checked too.
+func TestSubgraphAcceptsANestedKey(t *testing.T) {
+	const sdl = `
+type Org { id: ID! }
+type User @key(fields: "id org { id }") { id: ID! org: Org! }
+type Query { hello: String! }
+`
+	type u struct{ ID string }
+	if _, _, err := fed.Subgraph(sdl, fed.Resolver("User", func(context.Context, fed.Representation) (*u, error) {
+		return nil, nil
+	})); err != nil {
+		t.Fatalf("a valid nested key was rejected: %v", err)
+	}
+}
+
+func TestSubgraphRejectsANestedKeyFieldThatDoesNotExist(t *testing.T) {
+	const sdl = `
+type Org { id: ID! }
+type User @key(fields: "org { nope }") { id: ID! org: Org! }
+type Query { hello: String! }
+`
+	type u struct{ ID string }
+	_, _, err := fed.Subgraph(sdl, fed.Resolver("User", func(context.Context, fed.Representation) (*u, error) {
+		return nil, nil
+	}))
+	if err == nil || !strings.Contains(err.Error(), "nope") || !strings.Contains(err.Error(), "Org") {
+		t.Fatalf("err = %v, want one naming Org and nope", err)
+	}
+}
+
+func TestSubgraphRejectsAMalformedKey(t *testing.T) {
+	const sdl = `
+type User @key(fields: "id {") { id: ID! }
+type Query { hello: String! }
+`
+	type u struct{ ID string }
+	if _, _, err := fed.Subgraph(sdl, fed.Resolver("User", func(context.Context, fed.Representation) (*u, error) {
+		return nil, nil
+	})); err == nil {
+		t.Fatal("a field set that does not parse was accepted")
+	}
+}
+
+// The pattern beyond a plain key lookup: a field this subgraph owns computed
+// from one it does not, declared @external and named in @requires. The router
+// sends the external value in the representation, so the entity resolver
+// reads it from there rather than from this subgraph's own data.
+func TestRequiresRoundTripsThroughTheRepresentation(t *testing.T) {
+	const sdl = `
+type Product @key(fields: "sku") {
+  sku: String!
+  weight: Float! @external
+  shippingCost: Float! @requires(fields: "weight")
+}
+type Query { hello: String! }
+`
+	type prod struct {
+		SKU    string
+		Weight float64
+	}
+	src, bindings, err := fed.Subgraph(sdl, fed.Resolver("Product",
+		func(_ context.Context, r fed.Representation) (*prod, error) {
+			sku, _ := r["sku"].(string)
+			w, _ := r.Float("weight")
+			return &prod{SKU: sku, Weight: w}, nil
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := graphql.NewSchema(src, bindings,
+		graphql.Object[prod]("Product",
+			graphql.Field("sku", func(p *prod) string { return p.SKU }),
+			graphql.Field("weight", func(p *prod) float64 { return p.Weight }),
+			graphql.Field("shippingCost", func(p *prod) float64 { return p.Weight * 2 }),
+		),
+		graphql.Query(graphql.Resolve("hello", func(context.Context, graphql.Root) (string, error) {
+			return "hi", nil
+		})))
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	resp := entities(t, graphql.NewExecutor(s),
+		`[{"__typename":"Product","sku":"abc","weight":3}]`,
+		`... on Product { sku shippingCost }`)
+	if len(resp.Errors) > 0 {
+		t.Fatalf("errors: %v", resp.Errors)
+	}
+	if got := string(resp.Data); got != `{"_entities":[{"sku":"abc","shippingCost":6}]}` {
+		t.Fatalf("data = %s", got)
+	}
+}

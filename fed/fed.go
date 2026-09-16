@@ -13,18 +13,6 @@ import (
 	graphql "github.com/syssam/graphql-go"
 )
 
-// Representation is one entry of the representations argument: the entity's
-// __typename plus whatever its @key selects. Values arrive as they decode
-// from JSON, so a key field declared ID! is a string here.
-type Representation map[string]any
-
-// Typename is the __typename the router sent, which names the entity type
-// this representation stands for.
-func (r Representation) Typename() string {
-	s, _ := r["__typename"].(string)
-	return s
-}
-
 // Entity binds one entity type's resolver. Build one with Resolver.
 type Entity struct {
 	typename string
@@ -110,6 +98,9 @@ func keyTypes(sdl string) (objects, interfaces map[string]struct{}, err error) {
 	doc, err := parser.ParseSchema(&ast.Source{Name: "subgraph.graphql", Input: sdl})
 	if err != nil {
 		return nil, nil, fmt.Errorf("fed: %w", err)
+	}
+	if err := checkKeys(doc); err != nil {
+		return nil, nil, err
 	}
 	objects, interfaces = map[string]struct{}{}, map[string]struct{}{}
 	collect := func(defs ast.DefinitionList) {
