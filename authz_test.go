@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestRequirementSatisfied(t *testing.T) {
@@ -1273,3 +1274,99 @@ type authzPet interface{ authzPetName() string }
 type authzDog struct{}
 
 func (d *authzDog) authzPetName() string { return "dog" }
+
+// authSubGuardedSDL guards the subscription root field itself, which
+// authSubSDL deliberately does not: only a site on the root can decide
+// whether the source opens.
+const authSubGuardedSDL = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+type Message { id: ID! secret: String! }
+type Query { ping: String! }
+type Subscription { messages: Message! @requiresScopes(scopes: [["msg:read"]]) }
+`
+
+func newAuthSubGuardedExecutor(t *testing.T, held map[string]bool) (*authSubSource, *Executor) {
+	t.Helper()
+	src := &authSubSource{ch: make(chan *authSubMessage)}
+	s, err := NewSchema(SDL(authSubGuardedSDL),
+		Query(Field("ping", func(Root) string { return "pong" })),
+		Object[authSubMessage]("Message",
+			Field("id", func(m *authSubMessage) ID { return ID(m.ID) }),
+			Field("secret", func(m *authSubMessage) string { return m.Secret }),
+		),
+		Subscription(
+			Subscribe("messages", func(context.Context) (<-chan *authSubMessage, error) {
+				src.opens.Add(1)
+				return src.ch, nil
+			}),
+		),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	return src, NewExecutor(s, WithAuthorizer(ScopeAuthorizer(
+		func(context.Context) map[string]bool { return held })))
+}
+
+// sendEvent feeds one event, failing rather than hanging the suite when the
+// stream has stopped draining its source.
+func sendEvent(t *testing.T, ch chan<- *authSubMessage, m *authSubMessage) {
+	t.Helper()
+	select {
+	case ch <- m:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out sending an event")
+	}
+}
+
+// The default policy denies by recording an Outcome, not by returning an
+// error, so an open-time gate that only looks at the error lets the source
+// open for a client that holds none of its scopes: its side effects run, and
+// a source reporting "not found" answers before authorization does.
+func TestSubscribeDenyOnRootFieldDoesNotOpenTheSource(t *testing.T) {
+	src, e := newAuthSubGuardedExecutor(t, nil)
+
+	_, err := e.Subscribe(t.Context(), &Request{Query: `subscription { messages { id } }`})
+	if n := src.opens.Load(); n != 0 {
+		t.Errorf("source opened %d times, want 0: a denied client must never reach it", n)
+	}
+	if err == nil {
+		t.Fatal("Subscribe returned no error for a denied root field")
+	}
+	var serr *SubscribeError
+	if !errors.As(err, &serr) {
+		t.Fatalf("error is not a *SubscribeError: %v", err)
+	}
+	if len(serr.Response.Errors) != 1 {
+		t.Fatalf("got %d errors, want 1: %s", len(serr.Response.Errors), errorsJSON(serr.Response.Errors))
+	}
+	got := serr.Response.Errors[0]
+	if got.Extensions["code"] != CodeForbidden {
+		t.Errorf("code = %v, want %v", got.Extensions["code"], CodeForbidden)
+	}
+	if got, want := got.Path.String(), (Path{{Key: "messages"}}).String(); got != want {
+		t.Errorf("path = %s, want %s", got, want)
+	}
+}
+
+// The positive control for the test above: the same schema with the scope
+// held must open and deliver, or the gate would pass by refusing everyone.
+func TestSubscribeRootFieldWithHeldScopeOpensAndDelivers(t *testing.T) {
+	src, e := newAuthSubGuardedExecutor(t, map[string]bool{"msg:read": true})
+
+	ch, err := e.Subscribe(t.Context(), &Request{Query: `subscription { messages { id } }`})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	if n := src.opens.Load(); n != 1 {
+		t.Errorf("source opened %d times, want 1", n)
+	}
+	sendEvent(t, src.ch, &authSubMessage{ID: "1"})
+	resp := nextResponse(t, ch)
+	if len(resp.Errors) != 0 {
+		t.Fatalf("event errored: %s", errorsJSON(resp.Errors))
+	}
+	if got, want := string(resp.Data), `{"messages":{"id":"1"}}`; got != want {
+		t.Errorf("data = %s, want %s", got, want)
+	}
+}

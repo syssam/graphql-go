@@ -194,14 +194,24 @@ func (e *Executor) Subscribe(ctx context.Context, req *Request) (<-chan *Respons
 	// interceptor refusing the subscription sees the same operation context a
 	// successful one would.
 	open := SubscriptionHandler(func(ctx context.Context, oc *OperationContext) (<-chan *Response, error) {
-		// Gates opening the source itself: an unauthorized client must never
-		// reach it. This is independent of, and does not replace, the
-		// per-event re-authorization in runOperation — that one guards what
-		// each event's Response contains and re-evaluates on every event, so
-		// a mid-stream revocation takes effect without tearing the stream
-		// down; this one guards whether the stream opens at all.
-		if _, err := e.authorize(ctx, p); err != nil {
+		// Gates opening the source itself, so an unauthorized client never
+		// runs its side effects or learns what it reports. Two things refuse
+		// here: an Authorize error, and a Deny recorded for the subscription
+		// root field. The default policy denies by recording rather than by
+		// erroring, so checking the error alone would let it open the source.
+		// Null, Zero and Redact on the root still open: they shape what an
+		// event says, not whether the client may subscribe. Fields below the
+		// root are left to the per-event re-authorization in runOperation,
+		// which re-evaluates on every event so a mid-stream revocation takes
+		// effect without tearing the stream down.
+		d, err := e.authorize(ctx, p)
+		if err != nil {
 			return nil, e.subscribeError(ctx, toError(err))
+		}
+		if f.authIdx >= 0 {
+			if o := d.Outcome(int(f.authIdx)); o.act == actionDeny {
+				return nil, e.subscribeError(ctx, o.denial().WithPath(Path{{Key: f.alias}}))
+			}
 		}
 		stream, serr := f.def.subscribe(ctx, args)
 		if serr != nil {
