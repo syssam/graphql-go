@@ -246,13 +246,24 @@ produce engine values directly.
 ## Design documents
 
 `docs/superpowers/specs/2026-09-11-graphql-go-design.md` is the design rationale, but its
-**"Phase 1 Deviations" and "Phase 2 Deviations" sections are the authoritative behaviour**
-where they disagree with the body (e.g. `Object[User]` not `Object[*User]`; nullable input
-positions require a pointer/slice even with a default; complexity/depth/cost are `Executor`
-options, not an `ext/complexity` package; `Manifest`/`AutoBind` codegen are not implemented).
-Read the deviations before trusting the prose. `docs/superpowers/plans/` holds the phase
-implementation plans; `docs/benchmarks.md` holds the gqlgen comparison.
+**"Phase N Deviations" sections are the authoritative behaviour** where they disagree with
+the body (e.g. `Object[User]` not `Object[*User]`; nullable input positions require a
+pointer/slice even with a default; complexity/depth/cost are `Executor` options, not an
+`ext/complexity` package; `Manifest` and `AutoBind` landed in phase 4 rather than phase 2,
+and the phase 4 deviations describe how). Read the deviations before trusting the prose.
+`docs/superpowers/plans/` holds the phase implementation plans; `docs/benchmarks.md` holds
+the gqlgen comparison and `docs/module-layout.md` the decision to stay one module until
+publication.
 
-Status: phases 1-3 complete and merged to `main`; phase 4 in progress — `ext/otel`,
-result-based actual query cost and both codegen binding modes are built. Not yet built: APQ
-over WebSocket, subscription load testing.
+Status: phases 1-4 complete and merged to `main` — engine, both codegen binding modes,
+subscriptions, three transports, DataLoader, APQ, limits with actual cost accounting,
+OpenTelemetry, and the `lint/` analyzer. Not built: APQ over WebSocket, which belongs in the
+`graphql-transport-ws` state machine. Not measured, both needing Linux: latency percentiles,
+which this machine's ~522us clock granularity makes impossible, and behaviour under a
+cgroup memory limit.
+
+Keep this section honest. It said "subscription load testing not yet built" while the
+architecture section above described `transport/gqlws/load_test.go` in detail, and called
+`Manifest`/`AutoBind` unimplemented while documenting both — a file that contradicts itself
+is worse than one that says nothing, because a reader trusts the half that happens to agree
+with them.
