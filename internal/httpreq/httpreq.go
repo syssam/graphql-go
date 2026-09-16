@@ -70,7 +70,7 @@ func ParseGET(r *http.Request, queryOptional bool) (*graphql.Request, error) {
 	}
 	if e := q.Get("extensions"); e != "" {
 		if err := json.Unmarshal([]byte(e), &req.Extensions); err != nil {
-			return nil, fmt.Errorf(`"extensions" must be a JSON object: %v`, err)
+			return nil, fmt.Errorf(`"extensions" must be a JSON object: %w`, err)
 		}
 	}
 	return req, nil
@@ -87,14 +87,14 @@ func RequireJSONBody(r *http.Request) error {
 
 // ReadBody reads at most max bytes. The returned status applies when err is
 // non-nil, and distinguishes an over-long body from an unreadable one.
-func ReadBody(w http.ResponseWriter, r *http.Request, max int64) ([]byte, int, error) {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, max))
+func ReadBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, int, error) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
-			return nil, http.StatusRequestEntityTooLarge, fmt.Errorf("request body exceeds %d bytes.", max)
+			return nil, http.StatusRequestEntityTooLarge, fmt.Errorf("request body exceeds %d bytes.", limit)
 		}
-		return nil, http.StatusBadRequest, fmt.Errorf("reading request body: %v", err)
+		return nil, http.StatusBadRequest, fmt.Errorf("reading request body: %w", err)
 	}
 	return body, 0, nil
 }
@@ -110,7 +110,7 @@ func Decode(body []byte, queryOptional bool) (*graphql.Request, error) {
 	}
 	var req graphql.Request
 	if err := json.Unmarshal(body, &req); err != nil {
-		return nil, fmt.Errorf("invalid JSON body: %v", err)
+		return nil, fmt.Errorf("invalid JSON body: %w", err)
 	}
 	if req.Query == "" && !queryOptional {
 		return nil, ErrMissingQuery

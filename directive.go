@@ -96,7 +96,7 @@ func supportedDirectiveLocation(locs []ast.DirectiveLocation) bool {
 	return false
 }
 
-func (b *schemaBuilder) wrapWithDirective(s *Schema, fd *fieldDef, d *ast.Directive, coord string) {
+func (b *schemaBuilder) wrapWithDirective(_ *Schema, fd *fieldDef, d *ast.Directive, coord string) {
 	db := b.directives[d.Name]
 	if db == nil {
 		if !builtinDirectives[d.Name] {

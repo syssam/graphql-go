@@ -1,8 +1,9 @@
 version: "2"
 
 # The default linter set plus the ones that catch mistakes this codebase has
-# actually made. Anything that would fight the design is off, with the reason
-# recorded rather than left as a silent omission.
+# actually made. Everything disabled below is disabled with a reason, because
+# a linter turned off silently is indistinguishable from one nobody noticed
+# was failing.
 
 linters:
   enable:
@@ -19,12 +20,16 @@ linters:
     - usestdlibvars
 
   settings:
-    revive:
-      rules:
-        - name: exported
-          # Exported identifiers are documented throughout; this keeps that
-          # true rather than relying on review.
-          arguments: [checkPrivateReceivers, disableStutteringCheck]
+    staticcheck:
+      checks:
+        - all
+        # ST1005 wants error strings uncapitalised and without trailing
+        # punctuation. GraphQL error messages are specified as sentences and
+        # are shown to API clients verbatim -- "Cannot query field \"x\" on
+        # type \"Y\"." is the wording the specification and every other
+        # implementation use. Renaming them to satisfy a Go convention would
+        # change a wire-visible string to make a linter happy.
+        - -ST1005
     gocritic:
       disabled-checks:
         # The executor deliberately takes small structs by value on the hot
@@ -34,16 +39,23 @@ linters:
   exclusions:
     rules:
       # Generated code is emitted by codegen and formatted by go/format; it is
-      # not hand-maintained and linting it reports on the generator, not the
-      # code.
+      # not hand-maintained, and linting it reports on the generator rather
+      # than on anything anyone can edit.
       - path: (^|/)generated\.go$
-        linters: [revive, gocritic, perfsprint]
+        linters: [revive, gocritic, perfsprint, errcheck]
       - path: (^|/)models\.go$
         linters: [revive]
-      # Tests build throwaway servers, sockets and modules. noctx and bodyclose
-      # there report on fixtures rather than on anything shipped.
+      # Tests build throwaway servers, sockets and modules, and close them in
+      # cleanup where a failure cannot be acted on. Checking those returns adds
+      # noise to fixtures without making anything safer; the assertions that
+      # matter are the explicit ones.
       - path: _test\.go$
-        linters: [noctx, bodyclose, perfsprint]
+        linters: [noctx, bodyclose, perfsprint, errcheck, unused, revive, errorlint]
+      # revive's error-strings is ST1005 under another name, disabled above for
+      # the same reason: GraphQL error messages are specified as sentences and
+      # go to clients verbatim.
+      - linters: [revive]
+        text: error-strings
 
 formatters:
   enable:

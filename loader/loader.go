@@ -10,7 +10,7 @@ package loader
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -260,8 +260,8 @@ func (s *requestScope[K, V]) flush() {
 			return
 		}
 		n := len(s.pending)
-		if max := s.loader.maxBatch; max > 0 && n > max {
-			n = max
+		if lim := s.loader.maxBatch; lim > 0 && n > lim {
+			n = lim
 		}
 		keys := append([]K(nil), s.pending[:n]...)
 		s.pending = s.pending[n:]
@@ -295,7 +295,7 @@ func (s *requestScope[K, V]) flush() {
 
 func (s *requestScope[K, V]) invoke(keys []K) (map[K]V, error) {
 	if s.loader.batch == nil {
-		return nil, fmt.Errorf("loader: no batch function")
+		return nil, errors.New("loader: no batch function")
 	}
 	ctx := context.Background()
 	return s.loader.batch(ctx, keys)

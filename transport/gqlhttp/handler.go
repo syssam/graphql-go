@@ -53,7 +53,7 @@ func WithMaxBodyBytes(n int64) Option { return func(h *Handler) { h.maxBody = n 
 
 // WithBatching accepts JSON arrays of requests with at most max entries,
 // executed sequentially. Batching is disabled by default.
-func WithBatching(max int) Option { return func(h *Handler) { h.batchMax = max } }
+func WithBatching(maxEntries int) Option { return func(h *Handler) { h.batchMax = maxEntries } }
 
 // WithCSRFPrevention controls the check that rejects requests a browser could
 // send cross-origin without a CORS preflight. When enabled (the default),
@@ -238,7 +238,7 @@ func (h *Handler) parsePOST(w http.ResponseWriter, r *http.Request) (reqs []*gra
 		}
 		var items []json.RawMessage
 		if err := json.Unmarshal(trimmed, &items); err != nil {
-			return nil, false, http.StatusBadRequest, fmt.Errorf("invalid JSON body: %v", err)
+			return nil, false, http.StatusBadRequest, fmt.Errorf("invalid JSON body: %w", err)
 		}
 		if len(items) > h.batchMax {
 			return nil, false, http.StatusBadRequest, fmt.Errorf("batch of %d exceeds the limit of %d.", len(items), h.batchMax)
@@ -247,7 +247,7 @@ func (h *Handler) parsePOST(w http.ResponseWriter, r *http.Request) (reqs []*gra
 		for i, item := range items {
 			req, err := httpreq.Decode(item, h.apq != nil)
 			if err != nil {
-				return nil, false, http.StatusBadRequest, fmt.Errorf("batch entry %d: %v", i, err)
+				return nil, false, http.StatusBadRequest, fmt.Errorf("batch entry %d: %w", i, err)
 			}
 			reqs = append(reqs, req)
 		}

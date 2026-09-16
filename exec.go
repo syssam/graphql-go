@@ -137,13 +137,15 @@ func (e *Executor) document(query string) (*docEntry, []*Error) {
 
 func gqlErrors(err error, code string) []*Error {
 	var out []*Error
-	switch v := err.(type) {
-	case gqlerror.List:
-		for _, ge := range v {
+	var list gqlerror.List
+	var gerr *gqlerror.Error
+	switch {
+	case errors.As(err, &list):
+		for _, ge := range list {
 			out = append(out, fromGQLError(ge).WithCode(code))
 		}
-	case *gqlerror.Error:
-		out = append(out, fromGQLError(v).WithCode(code))
+	case errors.As(err, &gerr):
+		out = append(out, fromGQLError(gerr).WithCode(code))
 	default:
 		out = append(out, Errorf("%v", err).WithCode(code))
 	}
@@ -380,12 +382,6 @@ func (st *execState) fieldError(ctx context.Context, err error, path *pathNode, 
 		pos = f.ast.Position
 	}
 	st.addError(ctx, err, full.materialize(), pos)
-}
-
-// nonNullError records a null value in a non-null position that was
-// detected by the executor rather than by a writer.
-func (st *execState) nonNullError(ctx context.Context, path *pathNode, f *planField) {
-	st.fieldError(ctx, errNonNull, path, f)
 }
 
 // recovered converts a panic into a field error and logs the stack.

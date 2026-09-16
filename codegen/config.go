@@ -2,7 +2,7 @@ package codegen
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"os"
 	"path/filepath"
 )
@@ -52,13 +52,13 @@ func Generate(ctx context.Context, cfg Config) error {
 		return err
 	}
 	if len(cfg.SchemaGlobs) == 0 {
-		return fmt.Errorf("codegen: SchemaGlobs is empty")
+		return errors.New("codegen: SchemaGlobs is empty")
 	}
 	if cfg.Output == "" {
-		return fmt.Errorf("codegen: Output is empty")
+		return errors.New("codegen: Output is empty")
 	}
 	if cfg.Package == "" {
-		return fmt.Errorf("codegen: Package is empty")
+		return errors.New("codegen: Package is empty")
 	}
 	dir := cfg.Dir
 	if dir == "" {

@@ -100,10 +100,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.logger.Debug("gqlws: upgrade refused", "error", err)
 		return
 	}
-	defer ws.CloseNow()
+	defer func() { _ = ws.CloseNow() }()
 
 	if ws.Subprotocol() != Subprotocol {
-		ws.Close(StatusSubprotocolNotAcceptable, "Subprotocol not acceptable")
+		_ = ws.Close(StatusSubprotocolNotAcceptable, "Subprotocol not acceptable")
 		return
 	}
 	ws.SetReadLimit(h.readLimit)

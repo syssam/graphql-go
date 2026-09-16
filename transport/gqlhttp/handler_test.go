@@ -238,7 +238,7 @@ func TestMalformedRequests(t *testing.T) {
 }
 
 func TestBatching(t *testing.T) {
-	h, counter := newHandler(t)
+	h, _ := newHandler(t)
 	got := do(h, post(`[{"query":"{ hello }"}]`))
 	expect(t, got, 400, gqlJSON, "")
 	if !strings.Contains(got.body, "batching is not enabled") {

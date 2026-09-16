@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -29,13 +30,21 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		slog.Error("server", "error", err)
+		os.Exit(1)
+	}
+}
+
+// run holds every deferred cleanup, so that main can exit non-zero without
+// skipping any of it.
+func run() error {
 	addr := flag.String("addr", ":8080", "listen address")
 	flag.Parse()
 
 	s, err := schema.NewSchema(schema.NewStore())
 	if err != nil {
-		slog.Error("building schema", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("building schema: %w", err)
 	}
 
 	exec := graphql.NewExecutor(s)
@@ -64,7 +73,7 @@ func main() {
 	slog.Info("serving GraphQL", "addr", *addr,
 		"http", "/graphql", "sse", "/graphql/stream", "ws", "/graphql/ws")
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		slog.Error("server", "error", err)
-		os.Exit(1)
+		return err
 	}
+	return nil
 }

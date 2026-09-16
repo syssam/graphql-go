@@ -1,3 +1,6 @@
+// Command gqlc generates GraphQL bindings from SDL, driven by a gqlc.yaml.
+//
+//	gqlc -config gqlc.yaml
 package main
 
 import (

@@ -205,6 +205,7 @@ func DefaultErrorPresenter(_ context.Context, err error) *Error {
 	switch {
 	case errors.As(err, &gerr):
 		out = gerr.clone()
+		//nolint:errorlint // identity, not equality: did As unwrap anything?
 		if out.Err == nil && gerr != err {
 			out.Err = err
 		}
@@ -217,7 +218,7 @@ func DefaultErrorPresenter(_ context.Context, err error) *Error {
 	if errors.As(err, &ep) {
 		for k, v := range ep.GraphQLExtensions() {
 			if _, exists := out.Extensions[k]; !exists {
-				out.WithExtension(k, v)
+				out = out.WithExtension(k, v)
 			}
 		}
 	}

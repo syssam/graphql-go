@@ -38,6 +38,7 @@ type FieldInterceptor interface {
 // RequestInterceptorFunc adapts a function to RequestInterceptor.
 type RequestInterceptorFunc func(ctx context.Context, req *Request, next RequestHandler) *Response
 
+// InterceptRequest implements RequestInterceptor.
 func (f RequestInterceptorFunc) InterceptRequest(ctx context.Context, req *Request, next RequestHandler) *Response {
 	return f(ctx, req, next)
 }
@@ -45,6 +46,7 @@ func (f RequestInterceptorFunc) InterceptRequest(ctx context.Context, req *Reque
 // OperationInterceptorFunc adapts a function to OperationInterceptor.
 type OperationInterceptorFunc func(ctx context.Context, oc *OperationContext, next OperationHandler) *Response
 
+// InterceptOperation implements OperationInterceptor.
 func (f OperationInterceptorFunc) InterceptOperation(ctx context.Context, oc *OperationContext, next OperationHandler) *Response {
 	return f(ctx, oc, next)
 }
@@ -52,6 +54,7 @@ func (f OperationInterceptorFunc) InterceptOperation(ctx context.Context, oc *Op
 // FieldInterceptorFunc adapts a function to FieldInterceptor.
 type FieldInterceptorFunc func(ctx context.Context, fc *FieldContext, next FieldHandler) (any, error)
 
+// InterceptField implements FieldInterceptor.
 func (f FieldInterceptorFunc) InterceptField(ctx context.Context, fc *FieldContext, next FieldHandler) (any, error) {
 	return f(ctx, fc, next)
 }

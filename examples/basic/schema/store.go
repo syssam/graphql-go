@@ -1,7 +1,11 @@
+// Package schema binds the example's generated graph types to an in-memory
+// store, and holds the options codegen does not emit: Time, @upper and the
+// author DataLoader.
 package schema
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -181,7 +185,7 @@ func (s *Store) UpdatePost(id graphql.ID, title, body graphql.Omittable[*string]
 	}
 	if v, ok := title.ValueOK(); ok {
 		if v == nil {
-			return nil, fmt.Errorf("title cannot be cleared")
+			return nil, errors.New("title cannot be cleared")
 		}
 		p.Title = *v
 	}

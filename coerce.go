@@ -85,7 +85,7 @@ func (s *Schema) validateInput(t *ast.Type, v any, path string) error {
 	case ast.Scalar:
 		if validate := s.reg.leafValidators[def.Name]; validate != nil {
 			if err := validate(v); err != nil {
-				return fmt.Errorf("%v at %s.", err, path)
+				return fmt.Errorf("%w at %s.", err, path)
 			}
 		}
 		return nil
