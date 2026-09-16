@@ -24,8 +24,13 @@ func BenchmarkExecuteNoAuthorizer(b *testing.B) {
 
 func BenchmarkExecuteWithAuthorizer(b *testing.B) {
 	s := shapeSchema(b)
+	// held is built once, outside the per-call closure: ScopeAuthorizer only
+	// reads it (Satisfied), never mutates it, so a fresh map on every
+	// Authorize call would be the harness's own allocation counted as the
+	// authorizer's cost, not the feature's.
+	held := map[string]bool{"pay:read": true}
 	e := NewExecutor(s, WithAuthorizer(ScopeAuthorizer(
-		func(context.Context) map[string]bool { return map[string]bool{"pay:read": true} })))
+		func(context.Context) map[string]bool { return held })))
 	benchRun(b, e, `{ me { id salary } open }`)
 }
 
