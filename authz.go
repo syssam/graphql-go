@@ -133,12 +133,14 @@ func (s *AuthShape) Sites() []AuthSite {
 }
 
 // Scopes returns every scope named anywhere in the operation, sorted and
-// deduplicated, so an Authorizer can load them in one round trip.
+// deduplicated, so an Authorizer can load them in one round trip. Like
+// Sites, this is a copy of the plan's own slice, for the same reason: the
+// shape is cached with the plan and shared by every later request.
 func (s *AuthShape) Scopes() []string {
 	if s == nil {
 		return nil
 	}
-	return s.scopes
+	return slices.Clone(s.scopes)
 }
 
 // IsEmpty reports whether the operation touches nothing that declares a
@@ -302,7 +304,10 @@ func (d *Decision) Outcome(site int) Outcome {
 func ScopeAuthorizer(held func(context.Context) map[string]bool) Authorizer {
 	return AuthorizerFunc(func(ctx context.Context, shape *AuthShape, d *Decision) error {
 		have := held(ctx)
-		for i, site := range shape.Sites() {
+		// shape.sites directly, not shape.Sites(): this is in-package,
+		// read-only iteration, so it has no reason to pay for the defensive
+		// copy Sites() makes for caller-supplied code.
+		for i, site := range shape.sites {
 			if site.Requires.Satisfied(have) {
 				continue
 			}

@@ -194,6 +194,15 @@ func (e *Executor) Subscribe(ctx context.Context, req *Request) (<-chan *Respons
 	// interceptor refusing the subscription sees the same operation context a
 	// successful one would.
 	open := SubscriptionHandler(func(ctx context.Context, oc *OperationContext) (<-chan *Response, error) {
+		// Gates opening the source itself: an unauthorized client must never
+		// reach it. This is independent of, and does not replace, the
+		// per-event re-authorization in runOperation — that one guards what
+		// each event's Response contains and re-evaluates on every event, so
+		// a mid-stream revocation takes effect without tearing the stream
+		// down; this one guards whether the stream opens at all.
+		if _, err := e.authorize(ctx, p); err != nil {
+			return nil, e.subscribeError(ctx, toError(err))
+		}
 		stream, serr := f.def.subscribe(ctx, args)
 		if serr != nil {
 			return nil, e.subscribeError(ctx, Errorf("%v", serr).WithPath(Path{{Key: f.alias}}))
@@ -270,7 +279,7 @@ type subEvent struct {
 // Substituting the executor also bypasses field interceptors and field
 // directives on the subscription root field itself: there is no per-event
 // resolver call for them to wrap. Both still observe every field beneath it.
-func (e *Executor) runSubscriptionEvent(ctx context.Context, oc *OperationContext) *Response {
+func (e *Executor) runSubscriptionEvent(ctx context.Context, oc *OperationContext, decision *Decision) *Response {
 	src := oc.event.field
 	event := oc.event.value
 	fd := src.def
@@ -287,7 +296,7 @@ func (e *Executor) runSubscriptionEvent(ctx context.Context, oc *OperationContex
 	sel := &selectionSet{fields: []*planField{&f}}
 
 	w := jsonw.Get()
-	st := &execState{e: e, s: e.schema, vars: oc.Variables}
+	st := &execState{e: e, vars: oc.Variables, decision: decision}
 	if !st.writeObject(ctx, w, oc.plan.root, sel, &Root{}, nil, true) {
 		w.Reset()
 		w.Null()

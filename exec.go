@@ -250,7 +250,11 @@ func (e *Executor) execute(ctx context.Context, req *Request) *Response {
 	return e.opChain(withOperation(ctx, oc), oc)
 }
 
-// requestError builds a response for errors raised before execution.
+// requestError builds a response for errors raised before execution. Each
+// err is presented exactly once here: a caller must pass a raw, unpresented
+// *Error (Errorf(...).WithCode(...), or toError of some other error), never
+// the output of e.presenter itself, or a custom ErrorPresenter that logs or
+// attaches an incident ID would run twice per rejection.
 func (e *Executor) requestError(ctx context.Context, errs ...*Error) *Response {
 	resp := &Response{Errors: make([]*Error, 0, len(errs))}
 	for _, err := range errs {
@@ -259,23 +263,55 @@ func (e *Executor) requestError(ctx context.Context, errs ...*Error) *Response {
 	return resp
 }
 
+// toError converts a generic error into an *Error without presenting it, so
+// it can be handed to requestError (which presents) without a double
+// presentation. It preserves an existing *Error's code and extensions rather
+// than discarding them behind a generic wrapper.
+func toError(err error) *Error {
+	var e *Error
+	if errors.As(err, &e) {
+		return e
+	}
+	return &Error{Message: err.Error(), Err: err}
+}
+
+// authorize runs the Authorizer against p's shape and returns the resulting
+// Decision, or nil when no Authorizer is configured or the shape is empty —
+// which is also what makes the call free for an operation that touches
+// nothing requiring authorization. A non-nil error means the whole
+// operation (or, for a subscription, the one event being evaluated) must be
+// rejected without resolving any field.
+func (e *Executor) authorize(ctx context.Context, p *plan) (*Decision, error) {
+	if e.authorizer == nil || p.shape.IsEmpty() {
+		return nil, nil
+	}
+	d := newDecision(p.shape)
+	if err := e.authorizer.Authorize(ctx, p.shape, d); err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
 // runOperation executes a planned operation and produces the response. It is
 // the bottom of the operation chain for one query or mutation, and for one
-// event of a subscription.
+// event of a subscription. The Authorizer runs here, above the event branch,
+// so a subscription gets a fresh Decision for every event: each event builds
+// its own OperationContext and runs the whole operation chain, which is what
+// lets a mid-stream scope revocation take effect on the very next event
+// without tearing down the stream — an Authorize error rejects that one
+// event's Response, and runSubscriptionEvent returns normally either way, so
+// pump keeps draining the source.
 func (e *Executor) runOperation(ctx context.Context, oc *OperationContext) *Response {
-	if oc.event != nil {
-		return e.runSubscriptionEvent(ctx, oc)
-	}
 	p := oc.plan
-	if e.authorizer != nil && !p.shape.IsEmpty() {
-		d := newDecision(p.shape)
-		if err := e.authorizer.Authorize(ctx, p.shape, d); err != nil {
-			return e.requestError(ctx, e.presenter(ctx, err))
-		}
-		oc.decision = d
+	decision, err := e.authorize(ctx, p)
+	if err != nil {
+		return e.requestError(ctx, toError(err))
+	}
+	if oc.event != nil {
+		return e.runSubscriptionEvent(ctx, oc, decision)
 	}
 	w := jsonw.Get()
-	st := &execState{e: e, s: e.schema, vars: oc.Variables}
+	st := &execState{e: e, vars: oc.Variables, decision: decision}
 	ok := st.writeObject(ctx, w, p.root, p.sel, &Root{}, nil, p.op.Operation == ast.Mutation)
 	if !ok {
 		w.Reset()
@@ -339,9 +375,16 @@ func (n *pathNode) materialize() Path {
 // execState is the per-request execution state shared by all goroutines
 // working on one operation.
 type execState struct {
-	e    *Executor
-	s    *Schema
-	vars map[string]any
+	e *Executor
+	// decision replaces the redundant s *Schema this field used to be (every
+	// construction site set s to e.schema, which is reachable through e
+	// anyway): the size class this struct sits in has no slack, so a new
+	// pointer needed a field to displace rather than one to add. Filled once
+	// in runOperation, before any field resolves; nil when no Authorizer is
+	// configured or the operation's shape is empty. Task 6 reads it against
+	// planField.authIdx.
+	decision *Decision
+	vars     map[string]any
 
 	mu   sync.Mutex
 	errs []*Error

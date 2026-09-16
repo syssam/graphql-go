@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -325,11 +326,30 @@ func TestAuthorizerRunsOncePerOperation(t *testing.T) {
 	}
 }
 
+// This does not use shapeSchema: it needs to count calls to the me
+// resolver, which the shared helper has no way to expose without changing
+// its signature for every other test that uses it.
 func TestAuthorizerErrorRejectsTheOperation(t *testing.T) {
-	s := shapeSchema(t)
+	var meCalls atomic.Int64
+	s, err := NewSchema(SDL(shapeSDL),
+		Query(
+			Resolve("me", func(context.Context, Root) (*shapeUser, error) {
+				meCalls.Add(1)
+				return &shapeUser{ID: "1", Salary: 100}, nil
+			}),
+			Field("open", func(Root) string { return "ok" }),
+		),
+		Object[shapeUser]("User",
+			Field("id", func(u *shapeUser) ID { return ID(u.ID) }),
+			Field("salary", func(u *shapeUser) int { return u.Salary }),
+		),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
 	e := NewExecutor(s, WithAuthorizer(AuthorizerFunc(
 		func(ctx context.Context, shape *AuthShape, d *Decision) error {
-			return Errorf("nope").WithCode("FORBIDDEN")
+			return Errorf("nope").WithCode(CodeForbidden)
 		})))
 	resp := run(t, e, `{ me { salary } }`, "")
 	if len(resp.Errors) == 0 {
@@ -337,6 +357,37 @@ func TestAuthorizerErrorRejectsTheOperation(t *testing.T) {
 	}
 	if resp.Data != nil && string(resp.Data) != "null" {
 		t.Errorf("rejected operation returned data: %s", resp.Data)
+	}
+	if got, want := resp.Errors[0].Extensions["code"], CodeForbidden; got != want {
+		t.Errorf("rejected operation's error code = %v, want %v", got, want)
+	}
+	if n := meCalls.Load(); n != 0 {
+		t.Errorf("me resolver ran %d times, want 0: rejection must happen before any field resolves", n)
+	}
+}
+
+// A custom ErrorPresenter may log or attach an incident ID; running it twice
+// for one rejected operation would double both. requestError must present
+// the Authorizer's error exactly once.
+func TestAuthorizerRejectionPresentsTheErrorExactlyOnce(t *testing.T) {
+	var presented atomic.Int64
+	s := shapeSchema(t)
+	e := NewExecutor(s,
+		WithAuthorizer(AuthorizerFunc(
+			func(ctx context.Context, shape *AuthShape, d *Decision) error {
+				return Errorf("nope").WithCode(CodeForbidden)
+			})),
+		WithErrorPresenter(func(ctx context.Context, err error) *Error {
+			presented.Add(1)
+			return DefaultErrorPresenter(ctx, err)
+		}),
+	)
+	resp := run(t, e, `{ me { salary } }`, "")
+	if len(resp.Errors) != 1 {
+		t.Fatalf("got %d errors, want 1", len(resp.Errors))
+	}
+	if n := presented.Load(); n != 1 {
+		t.Errorf("ErrorPresenter ran %d times, want 1", n)
 	}
 }
 
@@ -408,5 +459,137 @@ func TestAuthShapeSitesReturnsAnIndependentCopy(t *testing.T) {
 	}
 	if !again[0].Requires.Satisfied(map[string]bool{"pay:read": true}) {
 		t.Error("mutating a returned site's Requires changed the plan's own requirement")
+	}
+
+	scopes := p.shape.Scopes()
+	scopes[0] = "corrupted"
+	if got := p.shape.Scopes(); len(got) != 1 || got[0] != "pay:read" {
+		t.Errorf("mutating a returned Scopes() slice changed the plan's own scopes: %v", got)
+	}
+}
+
+// authSubMessage/authSubSDL/newAuthSubExecutor give the two subscription
+// authorization tests below their own minimal, self-contained fixture
+// instead of extending subscription_test.go's shared subSDL/subSource: those
+// are read by every test in that file, and this task's ruling was explicit
+// that an existing subscription test's behaviour must not shift as a side
+// effect of this change.
+type authSubMessage struct {
+	ID     string
+	Secret string
+}
+
+const authSubSDL = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+type Message { id: ID! secret: String! @requiresScopes(scopes: [["msg:read"]]) }
+type Query { ping: String! }
+type Subscription { messages: Message! }
+`
+
+// authSubSource holds the channel a test feeds events through and counts
+// how many times the source was actually opened, mirroring subSource's
+// discipline in subscription_test.go: an error return alone does not prove
+// the source was never reached.
+type authSubSource struct {
+	ch      chan *authSubMessage
+	opens   atomic.Int64
+	openErr error
+}
+
+func newAuthSubExecutor(t *testing.T, opts ...ExecutorOption) (*authSubSource, *Executor) {
+	t.Helper()
+	src := &authSubSource{ch: make(chan *authSubMessage)}
+	s, err := NewSchema(SDL(authSubSDL),
+		Query(Field("ping", func(Root) string { return "pong" })),
+		Object[authSubMessage]("Message",
+			Field("id", func(m *authSubMessage) ID { return ID(m.ID) }),
+			Field("secret", func(m *authSubMessage) string { return m.Secret }),
+		),
+		Subscription(
+			Subscribe("messages", func(context.Context) (<-chan *authSubMessage, error) {
+				src.opens.Add(1)
+				if src.openErr != nil {
+					return nil, src.openErr
+				}
+				return src.ch, nil
+			}),
+		),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	return src, NewExecutor(s, opts...)
+}
+
+// Spec §5.7 / case #20: each subscription event builds its own
+// OperationContext and runs the whole operation chain, so the Authorizer
+// must re-run per event and a mid-stream scope revocation must take effect
+// on the very next event — without tearing the stream down, since a
+// transient policy blip should not disconnect every other event on the
+// same subscription.
+func TestSubscriptionReauthorizesEveryEvent(t *testing.T) {
+	var allow atomic.Bool
+	allow.Store(true)
+	src, e := newAuthSubExecutor(t, WithAuthorizer(AuthorizerFunc(
+		func(ctx context.Context, shape *AuthShape, d *Decision) error {
+			if !allow.Load() {
+				return Errorf("nope").WithCode(CodeForbidden)
+			}
+			return nil
+		})))
+
+	ch, err := e.Subscribe(context.Background(), &Request{Query: `subscription { messages { id secret } }`})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	src.ch <- &authSubMessage{ID: "1", Secret: "a"}
+	resp1 := <-ch
+	if len(resp1.Errors) != 0 {
+		t.Fatalf("first event errored: %s", errorsJSON(resp1.Errors))
+	}
+
+	allow.Store(false)
+	src.ch <- &authSubMessage{ID: "2", Secret: "b"}
+	resp2 := <-ch
+	if len(resp2.Errors) == 0 {
+		t.Fatal("second event was not rejected after scopes were revoked")
+	}
+	if resp2.Data != nil && string(resp2.Data) != "null" {
+		t.Errorf("rejected event returned data: %s", resp2.Data)
+	}
+
+	// The stream must stay open across a rejected event: a later, authorized
+	// event still arrives rather than the channel having been closed.
+	allow.Store(true)
+	src.ch <- &authSubMessage{ID: "3", Secret: "c"}
+	resp3 := <-ch
+	if len(resp3.Errors) != 0 {
+		t.Fatalf("third event errored though scopes were restored: %s", errorsJSON(resp3.Errors))
+	}
+}
+
+// Case #20's other half: an unauthorized client must not even open the
+// source. Per-event re-authorization alone is not enough, because the
+// source is opened once, before the first event, by Subscribe itself.
+func TestSubscribeAuthorizesBeforeOpeningTheSource(t *testing.T) {
+	src, e := newAuthSubExecutor(t, WithAuthorizer(AuthorizerFunc(
+		func(ctx context.Context, shape *AuthShape, d *Decision) error {
+			return Errorf("nope").WithCode(CodeForbidden)
+		})))
+
+	_, err := e.Subscribe(context.Background(), &Request{Query: `subscription { messages { id secret } }`})
+	if err == nil {
+		t.Fatal("Subscribe did not return an error")
+	}
+	var serr *SubscribeError
+	if !errors.As(err, &serr) {
+		t.Fatalf("error is not a *SubscribeError: %v", err)
+	}
+	if len(serr.Response.Errors) == 0 || serr.Response.Errors[0].Extensions["code"] != CodeForbidden {
+		t.Errorf("SubscribeError does not carry the FORBIDDEN code: %+v", serr.Response.Errors)
+	}
+	if n := src.opens.Load(); n != 0 {
+		t.Errorf("source opened %d times, want 0: an unauthorized client must never reach it", n)
 	}
 }

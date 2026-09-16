@@ -153,7 +153,7 @@ func (st *execState) writeValue(ctx context.Context, w *jsonw.Writer, v any, t *
 	} else {
 		var err error
 		var isNil bool
-		obj, v, isNil, err = st.s.concreteValue(f.abstract, v)
+		obj, v, isNil, err = st.e.schema.concreteValue(f.abstract, v)
 		if err != nil {
 			st.addError(ctx, err, path.materialize(), f.ast.Position)
 			if t.NonNull {
