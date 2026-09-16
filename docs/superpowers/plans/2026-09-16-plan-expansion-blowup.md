@@ -841,8 +841,11 @@ func TestOperationMetricsIsBounded(t *testing.T) {
 	}
 	// Depth 9 is fanTypes^9 unfolded; if this returns at all, the walk is
 	// memoized. The plan is deliberately never compiled here.
-	if m := operationMetrics(s, entry.doc, entry.doc.Operations[0], nil); m.depth != 10 {
-		t.Fatalf("depth = %d, want 10", m.depth)
+	//
+	// fanQuery(n) is the single chain root -> next^n -> id, and depthOf adds
+	// one per link, so the depth is n+2.
+	if m := operationMetrics(s, entry.doc, entry.doc.Operations[0], nil); m.depth != 11 {
+		t.Fatalf("depth = %d, want 11", m.depth)
 	}
 }
 ```
