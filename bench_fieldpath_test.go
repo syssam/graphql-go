@@ -40,3 +40,15 @@ func BenchmarkFieldPathInterceptor(b *testing.B) {
 			return next(ctx)
 		})))
 }
+
+// BenchmarkFieldPathObserver is the counterpart to
+// BenchmarkFieldPathInterceptor: the same no-op observation, against an
+// observer that cannot see the value and so does not force type erasure.
+func BenchmarkFieldPathObserver(b *testing.B) {
+	benchFieldPath(b, WithFieldObserver(noopObserver{}))
+}
+
+type noopObserver struct{}
+
+func (noopObserver) BeginField(ctx context.Context, _ FieldInfo) context.Context { return ctx }
+func (noopObserver) EndField(context.Context, FieldInfo, error)                  {}

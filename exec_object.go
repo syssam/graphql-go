@@ -116,9 +116,30 @@ func (st *execState) fieldContext(ctx context.Context, f *planField, parent, arg
 	return withField(ctx, fc), fc
 }
 
+// fieldInfo builds a FieldInfo from the plan, allocating nothing: everything
+// it reads already lives on f.def.
+func (st *execState) fieldInfo(f *planField, path *pathNode) FieldInfo {
+	fd := f.def
+	return FieldInfo{Object: fd.object.name, Field: fd.name, Alias: f.alias, pathParent: path}
+}
+
 // callLeaf invokes a leaf executor with panic protection and a FieldContext.
 func (st *execState) callLeaf(ctx context.Context, w *jsonw.Writer, f *planField, parent, args any, path *pathNode) (err error) {
 	ctx, fc := st.fieldContext(ctx, f, parent, args, path)
+	// The observer's deferred EndField must be registered before the recovery
+	// defer below, so it runs after recovery has converted a panic into err --
+	// otherwise EndField would see a nil error for a field that panicked.
+	if len(st.e.fieldObservers) > 0 {
+		fi := st.fieldInfo(f, path)
+		for _, o := range st.e.fieldObservers {
+			ctx = o.BeginField(ctx, fi)
+		}
+		defer func() {
+			for i := len(st.e.fieldObservers) - 1; i >= 0; i-- {
+				st.e.fieldObservers[i].EndField(ctx, fi, err)
+			}
+		}()
+	}
 	if st.e.recover {
 		defer func() {
 			if r := recover(); r != nil {
@@ -132,6 +153,17 @@ func (st *execState) callLeaf(ctx context.Context, w *jsonw.Writer, f *planField
 // callResolve invokes a composite executor with the same protections.
 func (st *execState) callResolve(ctx context.Context, f *planField, parent, args any, path *pathNode) (v any, err error) {
 	ctx, fc := st.fieldContext(ctx, f, parent, args, path)
+	if len(st.e.fieldObservers) > 0 {
+		fi := st.fieldInfo(f, path)
+		for _, o := range st.e.fieldObservers {
+			ctx = o.BeginField(ctx, fi)
+		}
+		defer func() {
+			for i := len(st.e.fieldObservers) - 1; i >= 0; i-- {
+				st.e.fieldObservers[i].EndField(ctx, fi, err)
+			}
+		}()
+	}
 	if st.e.recover {
 		defer func() {
 			if r := recover(); r != nil {
