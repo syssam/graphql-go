@@ -1,3 +1,4 @@
+# Source of truth. gqlc copies this into graph/schema/ for the //go:embed -- edit this file, at the example root, not the copy.
 """A small blog: users write posts."""
 schema {
   query: Query

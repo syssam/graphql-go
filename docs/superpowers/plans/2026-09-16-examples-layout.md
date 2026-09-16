@@ -19,11 +19,15 @@
 - **`-race` is not optional** on any test run in this plan.
 - **Comments explain why, not what. English only. No code-narrating comments.**
 - **Commit messages:** imperative, lower-case type prefix (`feat:`, `fix:`, `test:`, `refactor:`, `docs:`).
-- **Attribution.** End every commit message with:
+- **Attribution.** End every commit message with the `Co-Authored-By:` line for
+  **your own** model, as your session's attribution instruction gives it — not a
+  model name copied from this plan — followed verbatim by:
   ```
-  Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
   Claude-Session: https://claude.ai/code/session_01Wsx2gLrrQkLMK744k1gz2n
   ```
+  The session line is constant across every commit; the model line names whoever
+  actually wrote the code. Where a task's example commit below shows a specific
+  `Co-Authored-By:` model, substitute your own and copy the rest verbatim.
 - **The working tree has unrelated uncommitted changes**, someone else's work in progress on `loader.NewMapped` and plan cacheability: `context.go`, `exec.go`, `plan.go`, `plan_test.go`, `subscription.go`, `loader/`, `ext/otel/`, and **`README.md`**. Never `git add -A` or `git commit -a`. Stage only the exact paths each task names.
 - **`README.md` is being edited concurrently.** That work is at line ~149 (the `loader.New` / `loader.NewMapped` row); Tasks 1 and 9 touch lines ~136 and ~177. Re-read the file immediately before editing it rather than trusting a line number from this plan, and stage `README.md` alone — never alongside a wildcard.
 
@@ -134,9 +138,17 @@ Do **not** touch dated files under `docs/superpowers/plans/` or `docs/superpower
 cd "$(git rev-parse --show-toplevel)"
 grep -rn 'examples/basic' --include='*.go' --include='*.md' --include='*.yml' --include='*.yaml' . \
   | grep -v '^./ref/' | grep -v '^./docs/superpowers/plans/2026-09-1[15]' \
-  | grep -v '^./docs/superpowers/specs/2026-09-1[15]'
+  | grep -v '^./docs/superpowers/specs/2026-09-1[15]' \
+  | grep -v '^./docs/superpowers/plans/2026-09-16' \
+  | grep -v '^./examples/echo/' | grep -v '^./examples/fiber/'
 ```
 Expected: no output.
+
+`examples/echo/resolvers.go` and `examples/fiber/resolvers.go` each mention
+`examples/basic` twice (lines 75 and 135) and are deliberately excluded here —
+Task 7 owns those two files and rewrites both references to their final paths.
+Do not edit them in this task; an intermediate value written here would only be
+rewritten again.
 
 - [ ] **Step 9: Commit**
 
@@ -367,6 +379,18 @@ func TestUpdatePostAppliesThreeValuedPatch(t *testing.T) {
 	s.UpdatePost("12", domain.PostUpdate{Body: domain.Present[string](nil)})
 	if got := s.Post("12"); got.Body != "" {
 		t.Fatalf("present-nil body did not clear, got %q", got.Body)
+	}
+}
+
+// TestUpdatePostClearsTitleBecauseAppIsNotHere is the other half of
+// TestRulesCannotBeBypassed: the repository applies a clear that the schema
+// forbids, so the rule refusing it has to live somewhere every caller passes
+// through. A repository that quietly declined would make app look optional.
+func TestUpdatePostClearsTitleBecauseAppIsNotHere(t *testing.T) {
+	s := NewStore()
+	s.UpdatePost("12", domain.PostUpdate{Title: domain.Present[string](nil)})
+	if got := s.Post("12"); got.Title != "" {
+		t.Fatalf("repository declined the clear on its own (title %q); the rule is in the wrong layer", got.Title)
 	}
 }
 
@@ -659,7 +683,9 @@ func (s *Store) CreatePost(authorID, title, body string, tags []string) *domain.
 }
 
 // UpdatePost applies a partial update and returns the post, or nil if there is
-// no such post. Rejecting a clear the schema does not allow happens in app.
+// no such post. It applies what it is given, including a clear the schema does
+// not allow: refusing that is app's rule, and enforcing it here too would leave
+// two half-answers to the same question.
 func (s *Store) UpdatePost(id string, u domain.PostUpdate) *domain.Post {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -667,8 +693,12 @@ func (s *Store) UpdatePost(id string, u domain.PostUpdate) *domain.Post {
 	if p == nil {
 		return nil
 	}
-	if u.Title.Present && u.Title.Value != nil {
-		p.Title = *u.Title.Value
+	if u.Title.Present {
+		if u.Title.Value == nil {
+			p.Title = ""
+		} else {
+			p.Title = *u.Title.Value
+		}
 	}
 	if u.Body.Present {
 		if u.Body.Value == nil {
@@ -918,9 +948,12 @@ EOF
 
 `internal/transport/graphql` implements `graph.Resolver` over domain types; `blog.go` composes everything and is the only public surface.
 
-**This task adds only.** The old `examples/blog/schema/` package stays in place and keeps working, so this commit is green and the 12 original tests still pass against the *old* implementation. Task 6 does the switch-over and the deletion in one green commit. Do not delete anything here — a commit whose test package does not compile is not independently reviewable.
+**Move `main.go` first.** `examples/blog/main.go` is `package main`, and `blog.go` is `package blog`. Go permits one package per directory, so adding `blog.go` beside `main.go` makes the directory refuse to build — `found packages blog (blog.go) and main (main.go)`. Relocating `main.go` under `cmd/server/` is therefore step one of this task, not a later tidy-up. (An earlier draft of this plan scheduled that move after the switch-over; it was caught by an implementer when the build broke.)
+
+**Otherwise this task adds only.** The old `examples/blog/schema/` package stays in place and keeps serving the relocated `main.go`, so this commit is green and the 12 original tests still pass against the *old* implementation. Task 6 does the switch-over and the deletion in one green commit. Do not delete anything else here — a commit whose test package does not compile is not independently reviewable.
 
 **Files:**
+- Move: `examples/blog/main.go` → `examples/blog/cmd/server/main.go`
 - Create: `examples/blog/internal/transport/graphql/resolver.go`
 - Create: `examples/blog/blog.go`
 
@@ -930,8 +963,29 @@ EOF
   - `resolver.New(svc *app.Service) *resolver.Resolver`, satisfying `graph.Resolver`
   - `blog.NewSchema(opts ...graphql.SchemaOption) (*graphql.Schema, error)`
   - unexported `blog.newSchema(repo *repository.Store, opts ...graphql.SchemaOption) (*graphql.Schema, error)`
+  - the binary `./examples/blog/cmd/server`
 
-- [ ] **Step 1: Write the adapter**
+- [ ] **Step 1: Move `main.go` out of the way**
+
+```bash
+cd "$(git rev-parse --show-toplevel)"
+mkdir -p examples/blog/cmd/server
+git mv examples/blog/main.go examples/blog/cmd/server/main.go
+```
+
+Leave its contents alone for now — it still imports `examples/blog/schema` and still
+calls `schema.NewSchema(schema.NewStore())`. Task 6 switches it over. Moving it now is
+purely to free the directory.
+
+- [ ] **Step 2: Move the `go:generate` directive**
+
+`examples/blog/cmd/server/main.go` carries `//go:generate go tool gqlc -config gqlc.yaml`.
+Delete that line from it — `go generate` runs a directive in the directory of the file
+holding it, so from `cmd/server/` the relative `gqlc.yaml` path would not resolve. The
+`blog.go` you write in Step 4 carries the directive instead, at the example's root
+where `gqlc.yaml` lives.
+
+- [ ] **Step 3: Write the adapter**
 
 Create `examples/blog/internal/transport/graphql/resolver.go`:
 
@@ -1151,7 +1205,7 @@ func (r *Resolver) stream(ctx context.Context, keep func(*domain.Post) bool) <-c
 }
 ```
 
-- [ ] **Step 2: Write the composition root**
+- [ ] **Step 4: Write the composition root**
 
 Create `examples/blog/blog.go`:
 
@@ -1213,7 +1267,7 @@ func unmarshalTime(v any) (time.Time, error) {
 }
 ```
 
-- [ ] **Step 3: Verify the adapter satisfies the generated interface**
+- [ ] **Step 5: Verify the adapter satisfies the generated interface**
 
 Run: `cd "$(git rev-parse --show-toplevel)" && go build ./examples/...`
 Expected: builds. The `var _ graph.Resolver = (*Resolver)(nil)` line makes a
@@ -1223,17 +1277,31 @@ This is the check CLAUDE.md exists for: generated bindings that read correctly
 and do not compile have shipped twice in this repository, and reading never
 caught either.
 
-- [ ] **Step 4: Confirm the old path still works, untouched**
+If this reports `found packages blog (blog.go) and main (main.go)`, Step 1 did
+not happen — go back and move `main.go` before debugging anything else.
+
+- [ ] **Step 6: Confirm the old path still works, untouched**
 
 Run: `cd "$(git rev-parse --show-toplevel)" && go test -race -count=1 ./examples/...`
 Expected: PASS. The 12 original tests still run against `examples/blog/schema`,
 which this task has not modified. The new adapter is compiled but not yet wired.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Confirm generate still works from the example root**
+
+```bash
+cd examples/blog && go generate ./...
+cd "$(git rev-parse --show-toplevel)" && git diff --quiet -- examples/blog && echo "generate is idempotent and the tree is clean"
+```
+Expected: `generate is idempotent and the tree is clean`. This proves the directive
+moved from `main.go` to `blog.go` without losing its working directory — the failure
+mode is a `gqlc.yaml` path that no longer resolves.
+
+- [ ] **Step 8: Commit**
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"
-git add examples/blog/internal/transport examples/blog/blog.go
+git add examples/blog/internal/transport examples/blog/blog.go examples/blog/cmd
+git add -u examples/blog
 git commit -m "$(cat <<'EOF'
 feat: add the blog example's GraphQL adapter and composition root
 
@@ -1241,8 +1309,9 @@ internal/transport/graphql implements graph.Resolver over domain types and
 owns the author DataLoader; blog.NewSchema is the only public surface, so a
 transport example can wire the schema without reaching into internal/.
 
-Not yet wired: the existing schema package still serves main, so this
-commit is green on its own. The switch-over is one commit away.
+main.go moves to cmd/server because a directory holds one package, and
+blog.go claims this one. It still calls the old schema package: that stays
+serving until the next commit, so this one is green on its own.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Wsx2gLrrQkLMK744k1gz2n
@@ -1260,7 +1329,7 @@ The safety net, and the moment the old implementation goes away. Expectations ar
 - Create: `examples/blog/blog_test.go` (from `examples/blog/schema/schema_test.go`)
 - Create: `examples/blog/subscription_test.go` (from `examples/blog/schema/subscription_test.go`)
 - Delete: `examples/blog/schema/` entirely
-- Modify: `examples/blog/main.go`
+- Modify: `examples/blog/cmd/server/main.go` (Task 5 moved it there)
 
 **Interfaces:**
 - Consumes: `blog.newSchema` and `blog.NewSchema` from Task 5; `repository.NewStore`, `repository.Store.InsertPost`, `repository.Store.Subscribers`, `repository.Store.CreatePost`, `repository.Store.PostsCreated` from Task 3; `domain.Post` from Task 2.
@@ -1268,7 +1337,11 @@ The safety net, and the moment the old implementation goes away. Expectations ar
 
 - [ ] **Step 1: Point main.go at the composition root and drop the old package**
 
-In `examples/blog/main.go`, replace the import
+`main.go` now lives at `examples/blog/cmd/server/main.go` — Task 5 moved it there,
+because `blog.go` claims `package blog` in the example's root directory and Go allows
+one package per directory.
+
+In `examples/blog/cmd/server/main.go`, replace the import
 
 ```go
 	"github.com/syssam/graphql-go/examples/blog/schema"
@@ -1423,61 +1496,7 @@ EOF
 
 ---
 
-### Task 7: Move `main.go` under `cmd/server`
-
-**Files:**
-- Move: `examples/blog/main.go` → `examples/blog/cmd/server/main.go`
-
-**Interfaces:**
-- Consumes: `blog.NewSchema` from Task 5.
-- Produces: the binary `./examples/blog/cmd/server`.
-
-- [ ] **Step 1: Move the file**
-
-```bash
-cd "$(git rev-parse --show-toplevel)"
-mkdir -p examples/blog/cmd/server
-git mv examples/blog/main.go examples/blog/cmd/server/main.go
-```
-
-- [ ] **Step 2: Remove the now-duplicated go:generate directive**
-
-`blog.go` carries `//go:generate go tool gqlc -config gqlc.yaml`. Delete the
-line from `examples/blog/cmd/server/main.go` — from `cmd/server` the relative
-config path would not resolve.
-
-- [ ] **Step 3: Confirm generate still works from the example root**
-
-```bash
-cd examples/blog && go generate ./... && git -C "$(git rev-parse --show-toplevel)" diff --quiet -- examples/blog && echo "generate is idempotent and the tree is clean"
-```
-Expected: `generate is idempotent and the tree is clean`.
-
-- [ ] **Step 4: Build and test**
-
-Run: `cd "$(git rev-parse --show-toplevel)" && go build ./examples/... && go test -race -count=1 ./examples/...`
-Expected: builds, 12 tests plus the layer tests pass.
-
-- [ ] **Step 5: Commit**
-
-```bash
-cd "$(git rev-parse --show-toplevel)"
-git add examples/blog
-git commit -m "$(cat <<'EOF'
-refactor: move the blog example's server under cmd/server
-
-Leaves room for the transport examples to be entrypoints over the same
-service rather than copies of it.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01Wsx2gLrrQkLMK744k1gz2n
-EOF
-)"
-```
-
----
-
-### Task 8: Extract `quickstart` and point `echo`/`fiber` at `blog`
+### Task 7: Extract `quickstart` and point `echo`/`fiber` at `blog`
 
 Deletes the duplication. `examples/echo/resolvers.go` and
 `examples/fiber/resolvers.go` are byte-identical today; one copy becomes
@@ -1585,12 +1604,48 @@ func run() error {
 }
 ```
 
-- [ ] **Step 3: Update the comment in notes.go that points at the old layout**
+- [ ] **Step 3: Update both stale references in notes.go**
 
-In `examples/quickstart/notes.go`, the doc comment on `newSchema` reads
-"see examples/basic and cmd/gqlc for the codegen path this example deliberately
-skips, to stay copyable as a single small package." Replace `examples/basic`
-with `examples/blog`.
+`examples/quickstart/notes.go` (moved from `examples/echo/resolvers.go`) mentions
+the old layout **twice**. Fix both, to their final post-refactor paths.
+
+Around line 75, in the `broker` doc comment:
+
+```go
+// the same two rules as examples/basic/schema/broker.go: a subscriber that
+```
+
+becomes:
+
+```go
+// the same two rules as examples/blog/internal/repository/broker.go: a
+// subscriber that
+```
+
+Re-wrap the following lines of that comment if the reflow needs it — the
+sentence continues "is not keeping up is dropped rather than allowed to block a
+mutation".
+
+Around line 135, in the `newSchema` doc comment:
+
+```go
+// hand-written rather than generated -- see examples/basic and cmd/gqlc for
+```
+
+becomes:
+
+```go
+// hand-written rather than generated -- see examples/blog and cmd/gqlc for
+```
+
+Verify both landed:
+
+```bash
+cd "$(git rev-parse --show-toplevel)"
+grep -n 'examples/' examples/quickstart/notes.go
+```
+Expected: two lines, naming `examples/blog/internal/repository/broker.go` and
+`examples/blog`. No occurrence of `examples/basic` anywhere in the file.
 
 - [ ] **Step 4: Point both transport examples at blog**
 
@@ -1663,7 +1718,7 @@ EOF
 
 ---
 
-### Task 9: READMEs, full gate, and serving all three for real
+### Task 8: READMEs, full gate, and serving all three for real
 
 **Files:**
 - Create: `examples/README.md`
@@ -1775,7 +1830,28 @@ Note: the working tree carries unrelated modifications in `context.go`,
 `git diff` reports only those, the generated code is current — scope the check
 with `git diff --quiet -- examples/` instead.
 
-- [ ] **Step 5: Serve all three for real**
+This narrowing was a temporary accommodation for that unrelated uncommitted
+work in this one execution; it is not part of the check the plan specifies.
+CI runs the unnarrowed `git diff --quiet` and is the real gate.
+
+- [ ] **Step 5: Confirm the docs name paths that exist**
+
+Task 1 updated `cmd/gqlc/README.md` to describe the *finished* layout, so from
+Task 1 until Task 6 it named a directory that did not exist yet. That is
+deliberate, but it only stays harmless if the path really does come to exist.
+
+```bash
+cd "$(git rev-parse --show-toplevel)"
+test -d examples/blog/internal/transport/graphql && echo "cmd/gqlc/README.md path exists"
+test -f examples/blog/gqlc.yaml && echo "gqlc.yaml path exists"
+test -d examples/blog/graph && echo "graph output path exists"
+grep -rn 'examples/' cmd/gqlc/README.md CONTRIBUTING.md docs/module-layout.md
+```
+Expected: all three `exists` lines, and every `examples/…` path printed by the
+grep resolves on disk. Check each one — a doc naming a directory that was never
+created is the failure mode this step exists to catch.
+
+- [ ] **Step 6: Serve all three for real**
 
 This is the step the others cannot replace. Three mains that compile against one
 schema prove nothing about serving it.
@@ -1807,7 +1883,7 @@ If Echo or Fiber answers the query but never delivers the subscription event,
 the transport is wired but the schema's subscription is not reaching it — report
 that rather than moving on.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"

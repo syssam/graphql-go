@@ -1,12 +1,12 @@
-// Command fiber serves the example note-board schema through Fiber v3, on
-// every transport:
+// Command fiber serves the examples/blog schema through Fiber v3, on every
+// transport:
 //
 //	/graphql         queries and mutations
 //	/graphql/stream  Server-Sent Events
 //	/graphql/ws      graphql-transport-ws
 //
-// Subscribe to noteCreated on either streaming endpoint, then run the
-// createNote mutation against /graphql to see the event arrive.
+// Subscribe to postCreated on either streaming endpoint, then run the
+// createPost mutation against /graphql to see the event arrive.
 package main
 
 import (
@@ -22,6 +22,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 
 	"github.com/syssam/graphql-go"
+	"github.com/syssam/graphql-go/examples/blog"
 	"github.com/syssam/graphql-go/transport/gqlfiber"
 )
 
@@ -38,7 +39,7 @@ func run() error {
 	addr := flag.String("addr", ":8080", "listen address")
 	flag.Parse()
 
-	s, err := newSchema(newStore())
+	s, err := blog.NewSchema()
 	if err != nil {
 		return fmt.Errorf("building schema: %w", err)
 	}

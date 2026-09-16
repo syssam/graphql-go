@@ -1,12 +1,12 @@
-// Command echo serves the example note-board schema through Echo v5, on
-// every transport:
+// Command echo serves the examples/blog schema through Echo v5, on every
+// transport:
 //
 //	/graphql         queries and mutations
 //	/graphql/stream  Server-Sent Events
 //	/graphql/ws      graphql-transport-ws
 //
-// Subscribe to noteCreated on either streaming endpoint, then run the
-// createNote mutation against /graphql to see the event arrive.
+// Subscribe to postCreated on either streaming endpoint, then run the
+// createPost mutation against /graphql to see the event arrive.
 package main
 
 import (
@@ -24,12 +24,13 @@ import (
 	"github.com/labstack/echo/v5"
 
 	"github.com/syssam/graphql-go"
+	"github.com/syssam/graphql-go/examples/blog"
 	"github.com/syssam/graphql-go/transport/gqlecho"
 )
 
 // timeout is used both for ReadHeaderTimeout (Slowloris mitigation) and for
-// how long shutdown waits for in-flight requests, matching the other two
-// example servers.
+// how long shutdown waits for in-flight requests, matching the other example
+// servers.
 const timeout = 5 * time.Second
 
 func main() {
@@ -45,7 +46,7 @@ func run() error {
 	addr := flag.String("addr", ":8080", "listen address")
 	flag.Parse()
 
-	s, err := newSchema(newStore())
+	s, err := blog.NewSchema()
 	if err != nil {
 		return fmt.Errorf("building schema: %w", err)
 	}

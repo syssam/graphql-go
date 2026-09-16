@@ -72,11 +72,11 @@ func (s *store) NotesCreated(ctx context.Context) <-chan *Note {
 }
 
 // broker fans each created note out to every open subscription. It follows
-// the same two rules as examples/basic/schema/broker.go: a subscriber that
-// is not keeping up is dropped rather than allowed to block a mutation
-// (the send is non-blocking, and a full buffer loses the event), and a
-// subscriber is removed when its context ends, which is how the transports
-// report both an unsubscribe and a disconnect.
+// the same two rules as examples/blog/internal/repository/broker.go: a
+// subscriber that is not keeping up is dropped rather than allowed to block
+// a mutation (the send is non-blocking, and a full buffer loses the event),
+// and a subscriber is removed when its context ends, which is how the
+// transports report both an unsubscribe and a disconnect.
 type broker struct {
 	mu   sync.Mutex
 	next int
@@ -132,7 +132,7 @@ type createNoteArgs struct {
 }
 
 // newSchema binds the note board to the embedded SDL. Everything here is
-// hand-written rather than generated -- see examples/basic and cmd/gqlc for
+// hand-written rather than generated -- see examples/blog and cmd/gqlc for
 // the codegen path this example deliberately skips, to stay copyable as a
 // single small package.
 func newSchema(st *store) (*graphql.Schema, error) {

@@ -64,11 +64,11 @@ for both people and coding agents. The short version:
 
 ## Generated code
 
-`examples/basic` is generated. If you change its SDL, regenerate and commit the
+`examples/blog` is generated. If you change its SDL, regenerate and commit the
 result:
 
 ```sh
-cd examples/basic && go generate
+cd examples/blog && go generate
 ```
 
 CI fails if the checked-in output differs from what the generator produces.

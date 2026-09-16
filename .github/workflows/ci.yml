@@ -52,10 +52,10 @@ jobs:
       - name: Generated code is current
         shell: bash
         run: |
-          cd examples/basic && go generate ./...
+          cd examples/blog && go generate ./...
           cd "$GITHUB_WORKSPACE"
           if ! git diff --quiet; then
-            echo "generated code is stale; run go generate in examples/basic"
+            echo "generated code is stale; run go generate in examples/blog"
             git diff --stat; exit 1
           fi
 

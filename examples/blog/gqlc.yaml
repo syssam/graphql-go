@@ -1,0 +1,7 @@
+schema:
+  - schema.graphql
+output: graph
+package: github.com/syssam/graphql-go/examples/blog/graph
+nullableInputOmittable: true
+models:
+  Time: time.Time

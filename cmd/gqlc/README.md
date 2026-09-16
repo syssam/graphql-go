@@ -37,5 +37,6 @@ reference each other. Input objects can, and a reference cycle between two
 groups' inputs falls back to a single shared `model` package. A single group
 stays flat. Auto-bind and manifest mode are not generated yet.
 
-The blog example is generated this way: `examples/basic/gqlc.yaml` writes
-`examples/basic/graph`, and `examples/basic/schema` implements `graph.Resolver`.
+The blog example is generated this way: `examples/blog/gqlc.yaml` writes
+`examples/blog/graph`, and `examples/blog/internal/transport/graphql`
+implements `graph.Resolver`.

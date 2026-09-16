@@ -1,10 +1,10 @@
-package schema
+package repository
 
 import (
 	"context"
 	"sync"
 
-	"github.com/syssam/graphql-go/examples/basic/graph/model"
+	"github.com/syssam/graphql-go/examples/blog/internal/domain"
 )
 
 // broker fans each created post out to every open subscription.
@@ -19,16 +19,15 @@ import (
 type broker struct {
 	mu   sync.Mutex
 	next int
-	subs map[int]chan *model.Post
+	subs map[int]chan *domain.Post
 }
 
-// subscribe returns a channel of posts, closed when ctx ends.
-func (b *broker) subscribe(ctx context.Context) <-chan *model.Post {
-	ch := make(chan *model.Post, 16)
+func (b *broker) subscribe(ctx context.Context) <-chan *domain.Post {
+	ch := make(chan *domain.Post, 16)
 
 	b.mu.Lock()
 	if b.subs == nil {
-		b.subs = make(map[int]chan *model.Post)
+		b.subs = make(map[int]chan *domain.Post)
 	}
 	id := b.next
 	b.next++
@@ -53,7 +52,7 @@ func (b *broker) remove(id int) {
 	}
 }
 
-func (b *broker) publish(p *model.Post) {
+func (b *broker) publish(p *domain.Post) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for _, ch := range b.subs {
@@ -64,7 +63,6 @@ func (b *broker) publish(p *model.Post) {
 	}
 }
 
-// subscribers reports how many subscriptions are open, for tests.
 func (b *broker) subscribers() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()

@@ -1,14 +1,13 @@
-// Command basic serves the example blog schema on every transport:
+// Command quickstart is the smallest thing in this repository that runs: one
+// SDL file, hand-written bindings, no code generation and no layers.
 //
 //	/graphql         queries and mutations over HTTP
 //	/graphql/stream  Server-Sent Events
-//	/graphql/ws      graphql-transport-ws
 //
-// Subscribe to postCreated on either streaming endpoint, then run the
-// createPost mutation against /graphql to see the event arrive.
+// Subscribe to noteCreated on the streaming endpoint, then run the createNote
+// mutation against /graphql to see the event arrive. For what this looks like
+// once a service grows a database and a wire format, read examples/blog.
 package main
-
-//go:generate go tool gqlc -config gqlc.yaml
 
 import (
 	"context"
@@ -23,10 +22,8 @@ import (
 	"time"
 
 	"github.com/syssam/graphql-go"
-	"github.com/syssam/graphql-go/examples/basic/schema"
 	"github.com/syssam/graphql-go/transport/gqlhttp"
 	"github.com/syssam/graphql-go/transport/gqlsse"
-	"github.com/syssam/graphql-go/transport/gqlws"
 )
 
 func main() {
@@ -42,7 +39,7 @@ func run() error {
 	addr := flag.String("addr", ":8080", "listen address")
 	flag.Parse()
 
-	s, err := schema.NewSchema(schema.NewStore())
+	s, err := newSchema(newStore())
 	if err != nil {
 		return fmt.Errorf("building schema: %w", err)
 	}
@@ -51,7 +48,6 @@ func run() error {
 	mux := http.NewServeMux()
 	mux.Handle("/graphql", gqlhttp.New(exec))
 	mux.Handle("/graphql/stream", gqlsse.New(exec))
-	mux.Handle("/graphql/ws", gqlws.New(exec))
 
 	srv := &http.Server{
 		Addr:              *addr,
@@ -70,8 +66,7 @@ func run() error {
 		}
 	}()
 
-	slog.Info("serving GraphQL", "addr", *addr,
-		"http", "/graphql", "sse", "/graphql/stream", "ws", "/graphql/ws")
+	slog.Info("serving GraphQL", "addr", *addr, "http", "/graphql", "sse", "/graphql/stream")
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
