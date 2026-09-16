@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/syssam/graphql-go"
-	"github.com/syssam/graphql-go/examples/basic/graph/model"
+	"github.com/syssam/graphql-go/examples/blog/graph/model"
 )
 
 func newExecutor(t *testing.T) *graphql.Executor {

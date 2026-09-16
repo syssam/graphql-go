@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/syssam/graphql-go"
-	"github.com/syssam/graphql-go/examples/basic/graph/model"
+	"github.com/syssam/graphql-go/examples/blog/graph/model"
 )
 
 type CreatePostArgs struct {

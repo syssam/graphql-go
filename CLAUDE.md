@@ -53,7 +53,7 @@ cd benchmarks && go generate    # regenerate graph/generated.go via go tool gqlg
 Regenerate the example's bindings after editing its SDL:
 
 ```sh
-cd examples/basic && go generate    # go tool gqlc -config gqlc.yaml
+cd examples/blog && go generate    # go tool gqlc -config gqlc.yaml
 ```
 
 `codegen` tests write a temp module, run `go build`/`go test` in it, and take ~20s; they

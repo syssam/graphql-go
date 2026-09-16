@@ -133,7 +133,7 @@ so a broker can drop the subscriber and stop producing.
 A fuller example with interfaces, unions, enums, custom scalars, input objects,
 `Omittable` PATCH semantics, a schema directive, a DataLoader for `Post.author`
 and a subscription fed by the `createPost` mutation lives in
-[`examples/basic`](examples/basic).
+[`examples/blog`](examples/blog).
 
 ## Concepts
 
@@ -174,7 +174,7 @@ Phases 1 and 2 of the
 [design](docs/superpowers/specs/2026-09-11-graphql-go-design.md) are complete:
 `cmd/gqlc` emits models, args, a `Resolver` interface and bindings from SDL,
 splitting into per-group packages when more than one group is present, and
-[`examples/basic`](examples/basic) uses the generated package.
+[`examples/blog`](examples/blog) uses the generated package.
 
 Phase 3 is under way. Subscriptions execute, and both streaming transports are
 built: `transport/gqlsse` over Server-Sent Events and `transport/gqlws` over

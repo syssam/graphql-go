@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/syssam/graphql-go/examples/basic/graph/model"
+	"github.com/syssam/graphql-go/examples/blog/graph/model"
 )
 
 // broker fans each created post out to every open subscription.

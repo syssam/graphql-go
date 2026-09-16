@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/syssam/graphql-go"
-	"github.com/syssam/graphql-go/examples/basic/graph"
-	"github.com/syssam/graphql-go/examples/basic/graph/model"
+	"github.com/syssam/graphql-go/examples/blog/graph"
+	"github.com/syssam/graphql-go/examples/blog/graph/model"
 	"github.com/syssam/graphql-go/loader"
 )
 

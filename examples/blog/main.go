@@ -23,7 +23,7 @@ import (
 	"time"
 
 	"github.com/syssam/graphql-go"
-	"github.com/syssam/graphql-go/examples/basic/schema"
+	"github.com/syssam/graphql-go/examples/blog/schema"
 	"github.com/syssam/graphql-go/transport/gqlhttp"
 	"github.com/syssam/graphql-go/transport/gqlsse"
 	"github.com/syssam/graphql-go/transport/gqlws"
