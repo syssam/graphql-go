@@ -276,6 +276,16 @@ memo is gone.
   reviewable rather than incidental.
 - **`Selection` values may share pointers.** Not user-visible: plan structures
   are read-only at runtime (section 3.1).
+- **A guard-rejected query loses `extensions.cost`.** `attachCost`
+  (`limits.go:112`) requires `oc.plan`. Today a query rejected for depth or
+  complexity still has a compiled plan, so cost is reported alongside the
+  rejection. Once the guard rejects before compiling there is no plan and no
+  cost to report. This is unavoidable rather than incidental — the cost is
+  computed from the plan the guard exists to refuse to build — and it applies
+  only to queries rejected by `WithMaxDepth` or `WithMaxComplexity`. Queries
+  rejected by `QueryCost.Max` are unaffected: that check stays in
+  `rejectIfOverLimit`, after compilation, because it depends on request
+  variables.
 - **Plan memory for polymorphic queries drops sharply.** The plan cache holds
   documents, so this also reduces steady-state RSS on schemas with wide
   interfaces.
