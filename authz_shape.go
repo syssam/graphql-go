@@ -135,9 +135,15 @@ func (b *schemaBuilder) validateAuthDirectives() {
 // walks s.objects (concrete, bound object types) rather than the raw SDL:
 // validateCoverage already rejects an unbound type or field regardless of
 // this option, so every field reachable here is guaranteed to have a
-// fieldDef, and an interface's own field directive is never consulted -- a
-// requirement declared only on an interface field produces no site (Task 4),
-// so accepting it here would pass a field authorization never enforces.
+// fieldDef, and neither an interface's nor an object's own @requiresScopes is
+// treated as covering a field -- requirementOf is read only off a field
+// definition in shapeBuilder.field, and neither SiteObject nor an
+// ObjectAuthorizer is ever constructed, so an object-level declaration builds
+// no enforcement site (interface fields are the same limitation, Task 4).
+// Accepting either here would certify a field authorization never actually
+// checks, which is the false coverage this primitive exists to prevent.
+// Object-level @public is unaffected: it has always meant "every field here
+// is exempt", not "every field here is guarded", so it still exempts.
 func (b *schemaBuilder) validateAuthCoverage(s *Schema) {
 	if !b.authCoverage {
 		return
@@ -149,9 +155,7 @@ func (b *schemaBuilder) validateAuthCoverage(s *Schema) {
 		if obj.def.Directives.ForName("public") != nil {
 			continue
 		}
-		if _, ok := requirementOf(obj.def.Directives); ok {
-			continue
-		}
+		_, objDeclared := requirementOf(obj.def.Directives)
 		for _, fd := range obj.fields {
 			if strings.HasPrefix(fd.name, "__") {
 				continue
@@ -160,6 +164,10 @@ func (b *schemaBuilder) validateAuthCoverage(s *Schema) {
 				continue
 			}
 			if _, ok := requirementOf(fd.def.Directives); ok {
+				continue
+			}
+			if objDeclared {
+				b.errorf("field %s declares no authorization; the object-level @requiresScopes on %s is not yet enforced, add a field-level @requiresScopes or @public", coordinate(obj.name, fd.name), obj.name)
 				continue
 			}
 			b.errorf("field %s declares no authorization; add @requiresScopes or @public", coordinate(obj.name, fd.name))
