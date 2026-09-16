@@ -109,6 +109,26 @@ func (e *Executor) rejectIfOverLimit(oc *OperationContext) *Error {
 	return nil
 }
 
+// rejectByMetrics applies the static limits to metrics computed before the
+// plan is compiled. rejectIfOverLimit applies the same two limits per request
+// from the cached plan; this one exists so that a query over the limit is
+// never compiled at all.
+func (e *Executor) rejectByMetrics(m planMetrics) *Error {
+	if e.maxComplexity > 0 && m.complexity > e.maxComplexity {
+		return Errorf("query exceeds complexity limit: %d > %d", m.complexity, e.maxComplexity).
+			WithCode(CodeTooComplex).
+			WithExtension("complexity", m.complexity).
+			WithExtension("maxComplexity", e.maxComplexity)
+	}
+	if e.maxDepth > 0 && m.depth > e.maxDepth {
+		return Errorf("query exceeds maximum depth: %d > %d", m.depth, e.maxDepth).
+			WithCode(CodeMaxDepth).
+			WithExtension("depth", m.depth).
+			WithExtension("maxDepth", e.maxDepth)
+	}
+	return nil
+}
+
 func (e *Executor) attachCost(oc *OperationContext, resp *Response) {
 	if e.cost == nil || !e.cost.Report || oc == nil || oc.plan == nil {
 		return
@@ -224,38 +244,4 @@ func asCostInt(v any) (int, bool) {
 	default:
 		return 0, false
 	}
-}
-
-func depthOf(sel *selectionSet) int {
-	return depthMemo(sel, make(map[*selectionSet]int))
-}
-
-func depthMemo(sel *selectionSet, memo map[*selectionSet]int) int {
-	if sel == nil {
-		return 0
-	}
-	if n, ok := memo[sel]; ok {
-		return n
-	}
-	walk := func(fields []*planField) int {
-		d := 0
-		for _, f := range fields {
-			fd := 1
-			if f.sub != nil {
-				fd += depthMemo(f.sub, memo)
-			}
-			d = max(d, fd)
-		}
-		return d
-	}
-	d := 0
-	if sel.byType == nil {
-		d = walk(sel.fields)
-	} else {
-		for _, c := range sel.byType {
-			d = max(d, walk(c.fields))
-		}
-	}
-	memo[sel] = d
-	return d
 }

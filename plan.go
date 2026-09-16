@@ -167,8 +167,6 @@ func compilePlan(s *Schema, e *Executor, doc *ast.QueryDocument, op *ast.Operati
 	if len(c.errs) > 0 {
 		return nil, c.errs
 	}
-	p.complexity = complexityOf(p.sel)
-	p.depth = depthOf(p.sel)
 	return p, nil
 }
 
@@ -419,38 +417,6 @@ func argsHaveVariables(args ast.ArgumentList) bool {
 	return false
 }
 
-func complexityOf(sel *selectionSet) int {
-	return complexityMemo(sel, make(map[*selectionSet]int))
-}
-
-// complexityMemo carries the memo that makes the walk linear in the DAG rather
-// than in the tree the DAG unfolds to.
-func complexityMemo(sel *selectionSet, memo map[*selectionSet]int) int {
-	if sel == nil {
-		return 0
-	}
-	if n, ok := memo[sel]; ok {
-		return n
-	}
-	count := func(fields []*planField) int {
-		n := 0
-		for _, f := range fields {
-			n += 1 + complexityMemo(f.sub, memo)
-		}
-		return n
-	}
-	n := 0
-	if sel.byType == nil {
-		n = count(sel.fields)
-	} else {
-		for _, concrete := range sel.byType {
-			n = max(n, count(concrete.fields))
-		}
-	}
-	memo[sel] = n
-	return n
-}
-
 // condVariables returns the sorted names of Boolean variables used by @skip
 // or @include anywhere in the document.
 func condVariables(doc *ast.QueryDocument) []string {
@@ -524,8 +490,7 @@ func (d *docEntry) planFor(s *Schema, e *Executor, op *ast.OperationDefinition, 
 		for _, name := range d.condVars {
 			cond[name], _ = vars[name].(bool)
 		}
-		p, errs := compilePlan(s, e, d.doc, op, cond)
-		return p, false, errs
+		return d.compile(s, e, op, cond, planKey{}, false)
 	}
 	variant, cond := variantKey(d.condVars, vars)
 	key := planKey{op: op.Name, variant: variant}
@@ -535,14 +500,31 @@ func (d *docEntry) planFor(s *Schema, e *Executor, op *ast.OperationDefinition, 
 	if p, ok := d.plans[key]; ok {
 		return p, true, nil
 	}
+	return d.compile(s, e, op, cond, key, true)
+}
+
+// compile runs the pre-compile guard and then compiles. store is false for the
+// uncached path taken when the document has more conditional variables than
+// maxCondVars. e is never nil on any path that reaches here: planFor's only
+// callers (exec.go, subscription.go) pass the receiver Executor, and every
+// direct plan_test.go caller of compilePlan supplies a real *Executor too.
+func (d *docEntry) compile(s *Schema, e *Executor, op *ast.OperationDefinition, cond map[string]bool, key planKey, store bool) (*plan, bool, []*Error) {
+	m := operationMetrics(s, d.doc, op, cond)
+	if err := e.rejectByMetrics(m); err != nil {
+		return nil, false, []*Error{err}
+	}
 	p, errs := compilePlan(s, e, d.doc, op, cond)
 	if errs != nil {
 		return nil, false, errs
 	}
-	if d.plans == nil {
-		d.plans = make(map[planKey]*plan, 1)
+	p.complexity = m.complexity
+	p.depth = m.depth
+	if store {
+		if d.plans == nil {
+			d.plans = make(map[planKey]*plan, 1)
+		}
+		d.plans[key] = p
 	}
-	d.plans[key] = p
 	return p, false, nil
 }
 

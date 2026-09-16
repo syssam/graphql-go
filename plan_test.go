@@ -26,6 +26,13 @@ func compileFixture(t *testing.T, e *Executor, query string, cond map[string]boo
 	if perrs != nil {
 		t.Fatal(perrs[0])
 	}
+	// compilePlan no longer fills p.complexity/p.depth itself: planFor's
+	// compile helper supplies them from operationMetrics before compiling, so
+	// a test bypassing planFor has to do the same to see the numbers a real
+	// request would.
+	m := operationMetrics(e.schema, doc, doc.Operations[0], cond)
+	p.complexity = m.complexity
+	p.depth = m.depth
 	return p
 }
 

@@ -205,3 +205,27 @@ func TestFanOutQueryCostIsBounded(t *testing.T) {
 		t.Fatalf("50 cost walks took %v; the walk is not memoized", d)
 	}
 }
+
+// TestDepthLimitRejectsBeforeCompiling is the point of the guard. Before it,
+// WithMaxDepth(3) against this query still built 8^5 selection sets and only
+// then reported that the query was three levels too deep.
+func TestDepthLimitRejectsBeforeCompiling(t *testing.T) {
+	s, e := newFanExecutor(t, WithMaxDepth(3))
+	_ = s
+
+	start := time.Now()
+	resp := e.Execute(t.Context(), &Request{Query: fanQuery(8)})
+	elapsed := time.Since(start)
+
+	if len(resp.Errors) == 0 {
+		t.Fatal("want a depth limit error")
+	}
+	if got := resp.Errors[0].Message; !strings.Contains(got, "maximum depth") {
+		t.Fatalf("error = %q, want a maximum depth error", got)
+	}
+	// Depth 8 is 16 million selection sets unmemoized and tens of thousands
+	// memoized. Rejecting without compiling should be neither.
+	if elapsed > 50*time.Millisecond {
+		t.Fatalf("rejection took %v; the query was compiled before being refused", elapsed)
+	}
+}

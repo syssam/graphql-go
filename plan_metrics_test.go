@@ -53,12 +53,13 @@ func TestOperationMetricsMatchesPlan(t *testing.T) {
 			// variantKey is the same decode planFor uses internally, so cond
 			// here matches the variant p was actually compiled for.
 			_, cond := variantKey(entry.condVars, tc.vars)
+			want := planMetricsOracle(p)
 			got := operationMetrics(s, entry.doc, op, cond)
-			if got.complexity != p.complexity {
-				t.Errorf("complexity = %d, plan says %d", got.complexity, p.complexity)
+			if got.complexity != want.complexity {
+				t.Errorf("complexity = %d, oracle says %d", got.complexity, want.complexity)
 			}
-			if got.depth != p.depth {
-				t.Errorf("depth = %d, plan says %d", got.depth, p.depth)
+			if got.depth != want.depth {
+				t.Errorf("depth = %d, oracle says %d", got.depth, want.depth)
 			}
 		})
 	}

@@ -13,9 +13,11 @@ type planMetrics struct {
 // this once did, means the limits can only report on an expansion that has
 // already happened rather than prevent it.
 //
-// It must agree exactly with the plan-tree walk it replaces: complexityOf
-// (plan.go) and depthOf (limits.go). TestOperationMetricsMatchesPlan checks
-// that agreement directly against a compiled plan.
+// It must agree exactly with the plan-tree walk it replaces: planMetricsOracle
+// (plan_metrics_oracle_test.go), built from complexityOf and depthOf, the
+// same functions this walk once was before this task moved them there.
+// TestOperationMetricsMatchesPlan checks that agreement directly against a
+// compiled plan.
 func operationMetrics(s *Schema, doc *ast.QueryDocument, op *ast.OperationDefinition, cond map[string]bool) planMetrics {
 	root := s.rootFor(op.Operation)
 	if root == nil {
