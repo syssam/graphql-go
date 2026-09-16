@@ -149,6 +149,7 @@ and a subscription fed by the `createPost` mutation lives in
 | `Directive` / `DirectiveArgs[A]` | Schema-directive middleware on `FIELD_DEFINITION` and `OBJECT`. |
 | `Query` / `Mutation` / `Subscription` | Bind the schema's root types without repeating their names. |
 | `Subscribe` / `SubscribeArgs` | Bind a subscription root field to a `<-chan R` source. `Executor.Subscribe` yields one response per event. |
+| `fed.Subgraph` | Apollo Federation subgraph in `graphql-go/fed`: `_service`, `_entities`, the federation directives and an `_Entity` union derived from the `@key` types. No engine change; the author's SDL is never rewritten. |
 | `relay.Node` / `relay.Bind[T]` | Relay global object identification and cursor connections in `graphql-go/relay`. `ToGlobalID`/`FromGlobalID`, `IDField`, `Pagination`, `FromSlice`/`FromPage`. The SDL still declares the types. |
 | `loader.New` / `loader.NewMapped` | Per-request batch+cache (Facebook DataLoader) in `graphql-go/loader`. `Load` coalesces concurrent Resolve fields in one execution wave, driven by `graphql.WaveCoordinator`. `NewMapped` reports failure per key, so one bad id does not null its siblings. |
 

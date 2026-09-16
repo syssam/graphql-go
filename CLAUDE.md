@@ -283,6 +283,14 @@ subscription on that connection. The init timeout likewise closes the connection
 timer rather than bounding the read, because a read aborted by its own context leaves no
 way to send the 4408 close frame.
 
+`fed/` makes a schema an Apollo Federation subgraph and needs no engine change: `_entities`
+is an ordinary root field returning a union, and a union resolves its concrete type from the
+dynamic Go type, the same path `Query.node` takes. The prelude adds only protocol
+scaffolding no author writes in any implementation, and `_service` returns the author's text
+verbatim because that text is what the router composes from. **Only object types with `@key`
+are `_Entity` members** — a union's members must be objects, and an interface carrying `@key`
+is reached through its implementing types, so a resolver for one is rejected at build time.
+
 `relay/` binds the Relay contract: global ids (`base64("Type:id")`, byte for byte what
 graphql-relay-js and graphql-java produce), `Node`, and cursor connections. It emits no
 types — the SDL still declares `Node`, the connection and the edge, as in every reference
