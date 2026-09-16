@@ -620,7 +620,7 @@ In `registerAbstractShapes`, alongside the existing `[]T` registration:
 Run: `go test -race -count=1 ./...`
 Expected: PASS.
 
-Then substantiate the claim, interleaved and through `benchstat` — single samples on this machine have been wrong by 20-77%:
+Then substantiate the claim through `benchstat` — single samples on this machine have been wrong by 20-77%. The command below is not interleaved: `-count` runs every count of one benchmark before the next. Its B/op and allocs/op are deterministic and sound; for timings, build the binary once and alternate separate invocations:
 
 ```
 go test -run '^$' -bench 'BenchmarkSeqListAllocs|BenchmarkExecuteUsers' -benchmem -count=10 .

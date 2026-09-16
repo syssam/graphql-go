@@ -22,7 +22,7 @@
 - **Commit messages: imperative, lower-case type prefix.**
 - **The gate is `sh scripts/gate.sh`** — this repository has four modules and `go test ./...` reaches one.
 - **`-race` is not optional.**
-- **Benchmark comparisons are interleaved, never two sequential sets.** Build two test binaries and alternate them, or put both configurations in one binary and let `-count` alternate them. A sequential comparison on this machine reported +8.66% for a change measured at −1.23% interleaved, and separately reported 50% slower for a change that does strictly less work.
+- **Benchmark comparisons are interleaved, never two sequential sets.** Build two test binaries and alternate them, or build one test binary holding both configurations and alternate separate invocations of it. `-count` does **not** alternate: `go test -bench ... -count=N` runs all N counts of one benchmark before starting the next, which is a sequential comparison — a batched pair on this machine read +40% where alternated runs read about +16%. A sequential comparison on this machine reported +8.66% for a change measured at −1.23% interleaved, and separately reported 50% slower for a change that does strictly less work.
 - **Undo a deliberate break with a reverse edit, not `git checkout -- <file>`** — on a file whose real change is not yet committed that reverts to HEAD and destroys the work.
 
 ---
@@ -89,7 +89,7 @@ func BenchmarkFieldPathInterceptor(b *testing.B) {
 
 Run: `go test -run '^$' -bench BenchmarkFieldPath -benchmem -count=12 .`
 
-`-count=12` runs the whole set twelve times, so the two configurations alternate — that is the interleaving the global constraints require. Record allocs/op for both. Expected, from the spike this plan is built on: about 19 for bare and about 105 for the interceptor. If your numbers differ materially, report them — they are the baseline every later task is measured against, and the spike's figures are not privileged over yours.
+This command batches: `-count=12` runs all twelve counts of one benchmark before the next, so the configurations are **not** interleaved, whatever an earlier version of this step said. Allocation counts are deterministic, so the allocs/op this step records are sound; a timing comparison needs the binary built once (`go test -c`) and separate invocations alternated. Record allocs/op for both. Expected, from the spike this plan is built on: about 19 for bare and about 105 for the interceptor. If your numbers differ materially, report them — they are the baseline every later task is measured against, and the spike's figures are not privileged over yours.
 
 - [ ] **Step 3: Commit**
 

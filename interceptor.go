@@ -29,8 +29,12 @@ type OperationInterceptor interface {
 }
 
 // FieldInterceptor wraps every field executor in the plan. It routes field
-// results through any, so enable it only when field-level observation is
-// worth the cost.
+// results through any, so use it only to change or replace a result; to watch
+// fields without doing that, use WithFieldObserver, which keeps them typed.
+//
+// Read the field from the fc parameter. The FieldContext is attached to the
+// context only for Resolve and ResolveArgs fields, so inside a pure field
+// FieldFrom, PathFrom and SelectionFrom find nothing.
 type FieldInterceptor interface {
 	InterceptField(ctx context.Context, fc *FieldContext, next FieldHandler) (any, error)
 }
@@ -73,7 +77,7 @@ func WithOperationInterceptor(is ...OperationInterceptor) ExecutorOption {
 
 // WithFieldInterceptor registers field interceptors. The first is the
 // outermost. Field interceptors force every field through the type-erased
-// path; register them only when observation is worth that cost.
+// path; to observe fields without that cost, use WithFieldObserver.
 func WithFieldInterceptor(is ...FieldInterceptor) ExecutorOption {
 	return func(e *Executor) { e.fieldInterceptors = append(e.fieldInterceptors, is...) }
 }

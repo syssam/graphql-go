@@ -145,7 +145,10 @@ func (oc *OperationContext) SetExtension(key string, value any) {
 }
 
 // FieldContext describes the field a resolver is executing. It is attached
-// to the context passed to Resolve and ResolveArgs functions.
+// to the context passed to Resolve and ResolveArgs functions only: a Field or
+// FieldArgs accessor takes no context, so nothing is attached for one, and a
+// FieldInterceptor must use the FieldContext it is handed as a parameter
+// rather than FieldFrom.
 type FieldContext struct {
 	Field  *ast.FieldDefinition
 	Object *ast.Definition

@@ -131,8 +131,11 @@ for "null reached a non-null position"; `indexedError` carries a list index so e
 can be reconstructed.
 
 **The pure/resolver split is the core scheduling contract.** `Field`/`FieldArgs` are pure
-data access and always run inline with no goroutine and (absent field interceptors) no
-context allocation. `Resolve`/`ResolveArgs` may do I/O and are scheduled concurrently under
+data access and always run inline with no goroutine and no context allocation: the
+`FieldContext` is attached to the context only for resolver fields, and a field interceptor
+receives it as its `fc` parameter instead (so `FieldFrom`/`PathFrom`/`SelectionFrom` find
+nothing inside a pure field, interceptor or not). A registered interceptor still builds a
+`FieldContext` per field; an observer builds none. `Resolve`/`ResolveArgs` may do I/O and are scheduled concurrently under
 the bounded semaphore; `Inline()`/`Concurrent()` override per field. `loader.Loader` (`loader/`)
 coalesces `Load` calls within one concurrent wave — the executor announces a wave before
 launching sibling tasks (`pushWave`), which is what makes DataLoader batching work.
@@ -153,7 +156,8 @@ ctx is cancelled. Each event builds its own `OperationContext` and runs the whol
 chain, so a DataLoader cache cannot outlive the event that filled it. The per-event writer
 substitutes the root field's executor with one that yields the event and then calls the
 ordinary `writeObject`, which is why null bubbling and error paths need no special case —
-and why field interceptors do not see that one field. A subscription root field bound with
+and why field interceptors do not see that one field. A `FieldObserver` runs before that
+substitution in `callLeaf`/`callResolve`, so it does see the root field, once per event. A subscription root field bound with
 `Field` or `Resolve` is rejected at `NewSchema`.
 
 **Codegen (`codegen/`, `cmd/gqlc`).** SDL-only: it never loads Go packages. It emits models,
@@ -249,7 +253,10 @@ allocated per request and both sit exactly on a size-class boundary. An `atomic.
 counter on `execState` measured +3.2% B/op with the feature disabled; as an `atomic.Int32`
 packed beside `cancelled` it measures zero. Check with `unsafe.Sizeof` and `benchstat`
 before growing either, and interleave the runs — a non-interleaved comparison on this
-machine reported a 13.8% regression that vanished at n=18.
+machine reported a 13.8% regression that vanished at n=18. **`-count=N` does not
+interleave**: `go test -bench` runs all N counts of one benchmark before the next. Build the
+test binary once (`go test -c`) and alternate separate invocations, or alternate two
+binaries. Allocation counts are deterministic, so batched runs are fine for those.
 
 `ext/otel` instruments an executor with OpenTelemetry: `graphql.NewExecutor(s, otel.New()...)`.
 One span per request, started before parsing so a parse failure still produces one and
@@ -257,10 +264,12 @@ renamed once the operation is known. **Metrics are recorded at the operation lay
 the request layer only when the operation chain never ran** — recording at both double-counts
 every request, which the metric test caught. Field spans (`WithFieldSpans`) are opt-in and
 are wired through a `FieldObserver`, not a `FieldInterceptor`. `BenchmarkFieldPathBare`,
-`BenchmarkFieldPathInterceptor` and `BenchmarkFieldPathObserver` (root package,
-`-count=12`) measure 18, 74 and 18 allocs/op (993, 3900 and 993 B/op) over the same query —
-but the observer benchmark registers a no-op observer, so what it measures is the engine's
-observer call sites costing nothing when the observer itself does nothing. The interceptor's
+`BenchmarkFieldPathInterceptor` and `BenchmarkFieldPathObserver` (root package) measure 18,
+74 and 18 allocs/op (993, 3900 and 993 B/op) over the same query — but the observer benchmark
+registers a no-op observer, so what it measures is the engine's observer call sites costing
+no allocations when the observer itself does nothing. They are not free in time: two
+interface calls and a defer per field, which a reviewer's alternated runs on a loaded machine
+put at roughly +16% over bare — small, not zero, and not a settled figure. The interceptor's
 74 allocs/op is the cost of the type-erased write path forced on every field so the
 interceptor is able to replace a result, whether or not it uses that ability; an observer
 cannot change a result, so the engine never routes a field through that path for one, and a
@@ -270,7 +279,8 @@ pure field keeps its typed writer regardless of what the observer does. What `ex
 `SetStatus` when the field errors, on every field including pure ones once `WithFieldSpans`
 is on — is real cost that these benchmarks do not measure and this file does not have a
 number for. One behaviour changed with the switch: the observer's `EndField` runs
-after panic recovery sets the field error, so a panicking field's span now gets error status
+after panic recovery sets the field error, so with recovery on (`WithRecover`, the default) a
+panicking field's span now gets error status
 — the interceptor's plain `defer span.End()` ran during the panic's unwind, before recovery
 converted it, so a crashed field used to produce a span that looked clean.
 

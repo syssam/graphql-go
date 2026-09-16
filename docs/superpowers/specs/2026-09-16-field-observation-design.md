@@ -2,7 +2,7 @@
 
 - **Date:** 2026-09-16
 - **Module:** `github.com/syssam/graphql-go`
-- **Status:** Approved design; not yet implemented
+- **Status:** Implemented on branch `field-observer`
 - **Files:** `interceptor.go`, `exec_object.go`, `context.go`, `ext/otel/otel.go`
 
 ## 1. What this costs today, measured
@@ -10,7 +10,7 @@
 `CLAUDE.md` says field spans "cost more than they look". They cost four times
 what the request costs without them. Measured on `{ users { id name nick tags
 role } }` — the shape `BenchmarkExecuteUsers` uses — with a **no-op** field
-interceptor registered, twelve interleaved rounds:
+interceptor registered, `-count=12`:
 
 | configuration | allocs/op | B/op | ns/op |
 |---|---:|---:|---:|
@@ -20,6 +20,15 @@ interceptor registered, twelve interleaved rounds:
 +453% allocations and +302% time for an interceptor that does nothing. The
 allocation figures carry ±0% variance across samples, so they are not a
 property of a loaded machine.
+
+`-count=12` is not interleaving, although this section first called it that:
+`go test -bench` runs every count of one benchmark before starting the next,
+so the two configurations were measured back to back, not alternated. The
+allocation figures are unaffected, because allocations are deterministic. The
+timings are batched and should be read as such; interleaving means building the
+test binary once and alternating separate invocations of it (or of two
+binaries). A later batched pair on this machine read +40% where alternated runs
+of the same pair read about +16%.
 
 ### 1.1 Where the 86 extra allocations go
 
@@ -67,7 +76,12 @@ interceptor — which already has the value as an argument.
 1. Let an extension observe every field — including pure ones — without routing
    any field through the type-erased path.
 2. Keep `ext/otel`'s field spans nesting as they do today: a field's span is the
-   parent of its children's and of any span its resolver starts.
+   parent of any span its resolver starts. It is not the parent of its
+   children's spans, and was not under the interceptor either: the resolver
+   returns and the span ends before the sub-selection is written, and the
+   sub-selection runs under the context the field itself received. Nesting
+   children would change what a composite field's span duration means, and
+   needs its own design.
 3. Make the existing `FieldInterceptor` cheaper as a side effect, without
    changing its contract for interceptors that use their `fc` parameter.
 4. Land a benchmark first, so every later claim in this design has an
@@ -91,11 +105,13 @@ interceptor — which already has the value as an argument.
 // keep each field on its typed write path.
 type FieldObserver interface {
 	// BeginField runs before the field. The returned context is the one the
-	// field and its children run under, so an observer that starts a span
-	// returns the context carrying it.
+	// field's own resolver runs under, so a span the resolver starts nests
+	// beneath the observer's. Children do not run under it.
 	BeginField(ctx context.Context, f FieldInfo) context.Context
 
-	// EndField runs after the field, with the context BeginField returned.
+	// EndField runs when the resolver returns, before a composite field's
+	// sub-selection is written, with the context this observer's BeginField
+	// returned.
 	EndField(ctx context.Context, f FieldInfo, err error)
 }
 ```
@@ -111,7 +127,10 @@ An earlier draft had `BeginField` return `(context.Context, func(error))`. It
 was rejected: the closure is an allocation per field that the engine imposes on
 every observer, and it buys nothing, because the state an observer wants to
 carry is already in the context it returned. The two-method form costs the
-machinery nothing — no closure, no `any` boxing, no map.
+machinery no allocations — no closure, no `any` boxing, no map. It is not free
+in time: two interface calls and a defer per observed field. A reviewer's
+alternated runs on a loaded machine put that at roughly +16% on the benchmark
+query with a no-op observer; treat the figure as indicative, not settled.
 
 ### 3.2 `FieldInfo` is a value
 
@@ -121,14 +140,14 @@ type FieldInfo struct {
 	Field  string
 	Alias  string
 
-	path *pathNode
+	pathParent *pathNode
 }
 
 func (f FieldInfo) Path() Path
 ```
 
-A struct passed by value, with the response path materialized only if `Path()`
-is called. Nothing here allocates on the way to an observer that does not ask
+A struct passed by value, holding the parent path node and the alias, with the
+response path materialized only if `Path()` is called. Nothing here allocates on the way to an observer that does not ask
 for the path. It deliberately carries no `Args` and no `Parent`: those are what
 a `FieldContext` is for, and an observer that needs them wants an interceptor.
 
@@ -148,7 +167,8 @@ Two changes, neither touching the public interceptor contract:
 **Observable change, and it is a real one:** an interceptor that ignores its
 `fc` parameter and calls `FieldFrom(ctx)` instead currently works on pure
 fields and will stop, because the context no longer carries a `FieldContext`
-there. The parameter has always been the documented way in and carries the same
+there. `PathFrom` and `SelectionFrom` read the same attachment and break the
+same way: inside a pure field they return nil and an empty `Selection`. The parameter has always been the documented way in and carries the same
 value. This is a pre-1.0 break, taken deliberately, and it is the reason this
 change is in the spec rather than being called an optimization.
 
@@ -158,8 +178,11 @@ change is in the spec rather than being called an optimization.
 like the other interceptor options.
 
 The executor calls observers around a field's execution in `callLeaf` and in
-the composite path, keeping the returned context in a local and passing it to
-`EndField`. When no observer is registered, neither call site does anything the
+the composite path. It keeps the context each observer's `BeginField` returned
+and hands that one back to the same observer's `EndField` — not the innermost
+context, which with two observers would give the outer one the inner one's
+span. Up to four contexts are kept in a stack array, so the common case
+allocates nothing. When no observer is registered, neither call site does anything the
 current code does not already do.
 
 `ext/otel`'s `WithFieldSpans` switches from `WithFieldInterceptor` to
@@ -176,7 +199,7 @@ recording — and field spans stop forcing every field onto the type-erased path
 |---|---|
 | **Benchmark, landed first** | `BenchmarkFieldPathBare` / `WithInterceptor` / `WithObserver` on one fixture. This is the instrument; it must exist before either change so both can be measured against it, and because nothing in the repository benchmarks this path today |
 | Observer sees every field | Including pure ones, in selection order, with correct object/field/alias |
-| Observer nesting | `EndField` receives the context `BeginField` returned; a value put in by `BeginField` is readable in `EndField` and in a child field's `BeginField` |
+| Observer context | `EndField` receives the context `BeginField` returned; a value put in by `BeginField` is readable in `EndField`. With several observers sharing a key, each `EndField` reads its own observer's value. A child field's `BeginField` does **not** see it (goal 2), and no test claims otherwise |
 | Typed path preserved | With an observer registered, a leaf must still use `fd.writeLeaf`. **Assert this structurally, not by timing** — inspect the compiled `fieldExec`, or count allocations against a bound. A timing assertion cannot distinguish the two paths reliably on this machine |
 | Interceptor still works | Existing field interceptor tests pass unchanged, including one that replaces a value |
 | `FieldFrom` contract | Still returns a `FieldContext` inside a resolver field; a test pins that it returns nil inside a pure accessor, which is already true without interceptors |
