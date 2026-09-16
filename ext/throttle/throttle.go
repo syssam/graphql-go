@@ -3,6 +3,10 @@
 // a query is quoted before it runs, and what it really cost is charged
 // afterwards.
 //
+// A subscription is charged per event, not once at open: each event runs the
+// whole operation chain, and a stream billed once would be an unmetered
+// firehose. Size the bucket for that, or key subscriptions separately.
+//
 // Register it before any other operation interceptor. Interceptors wrap in
 // registration order, so one registered earlier runs even for a request the
 // limiter rejects.
