@@ -2,6 +2,8 @@ package graphql
 
 import (
 	"context"
+	"iter"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -167,5 +169,289 @@ func TestFieldOpts(t *testing.T) {
 	}
 	if s.query.fields["b"].schedulable {
 		t.Fatal("Inline() must keep a resolver inline")
+	}
+}
+
+func TestSeqShapeAcceptedAtBuild(t *testing.T) {
+	type post struct{ Title string }
+	s, err := NewSchema(SDL(`type Post { title: String! } type Query { posts: [Post!]! }`),
+		Object[post]("Post",
+			Field("title", func(v *post) string { return v.Title }),
+		),
+		Query(
+			Resolve("posts", func(ctx context.Context, _ Root) (iter.Seq[*post], error) {
+				return nil, nil
+			}),
+		),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema rejected an iter.Seq result: %v", err)
+	}
+	if s == nil {
+		t.Fatal("nil schema")
+	}
+}
+
+// Only the innermost seq shapes get a traverser registered. Any other seq
+// would reach the reflective traverser, which cannot index a func and would
+// panic in writeValue, after the resolver returned and outside the executor's
+// recovery — so these have to be build errors.
+func TestSeqWithoutTraverserRejectedAtBuild(t *testing.T) {
+	type post struct{ Title string }
+	build := func(q FieldOption) error {
+		_, err := NewSchema(SDL(`type Post { title: String! } type Query { posts: [[Post!]!]! }`),
+			Object[post]("Post", Field("title", func(v *post) string { return v.Title })),
+			Query(q),
+		)
+		return err
+	}
+	cases := []struct {
+		name string
+		opt  FieldOption
+		typ  reflect.Type
+	}{
+		{
+			"seq of slice",
+			Resolve("posts", func(context.Context, Root) (iter.Seq[[]*post], error) { return nil, nil }),
+			reflect.TypeFor[iter.Seq[[]*post]](),
+		},
+		{
+			"seq of seq",
+			Resolve("posts", func(context.Context, Root) (iter.Seq[iter.Seq[*post]], error) { return nil, nil }),
+			reflect.TypeFor[iter.Seq[iter.Seq[*post]]](),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := build(tc.opt)
+			if err == nil {
+				t.Fatalf("NewSchema accepted %s", tc.typ)
+			}
+			if !strings.Contains(err.Error(), tc.typ.String()) {
+				t.Fatalf("error does not name %s: %v", tc.typ, err)
+			}
+		})
+	}
+}
+
+// A seq as the innermost level under a slice does have a traverser, so the
+// build error above must not swallow it.
+func TestSliceOfSeqList(t *testing.T) {
+	type post struct{ Title string }
+	s, err := NewSchema(SDL(`type Post { title: String! } type Query { posts: [[Post!]!]! }`),
+		Object[post]("Post", Field("title", func(v *post) string { return v.Title })),
+		Query(Field("posts", func(_ Root) []iter.Seq[*post] {
+			return []iter.Seq[*post]{func(yield func(*post) bool) { yield(&post{Title: "a"}) }}
+		})),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema rejected []iter.Seq: %v", err)
+	}
+	expectData(t, run(t, NewExecutor(s), `{posts{title}}`, ""), `{"posts":[[{"title":"a"}]]}`)
+}
+
+// A seq has no length, so its traverser counts the element index itself. The
+// index reaches nothing in the response but the error path — writeList appends
+// in yield order regardless — so only this pins it.
+func TestSeqListErrorPathCarriesIndex(t *testing.T) {
+	type post struct{ Title *string }
+	a, b := "a", "b"
+	posts := []*post{{Title: &a}, {Title: &b}, {Title: nil}}
+	s, err := NewSchema(SDL(`type Post { title: String! } type Query { posts: [Post] }`),
+		Object[post]("Post", Field("title", func(v *post) *string { return v.Title })),
+		Query(Field("posts", func(_ Root) iter.Seq[*post] {
+			return func(yield func(*post) bool) {
+				for _, p := range posts {
+					if !yield(p) {
+						return
+					}
+				}
+			}
+		})),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	resp := run(t, NewExecutor(s), `{posts{title}}`, "")
+	expectError(t, resp, `{"posts":[{"title":"a"},{"title":"b"},null]}`, "posts[2].title", "")
+}
+
+// The seq and slice spellings of the same list must be indistinguishable in
+// the response, which is the whole contract of this feature.
+func TestSeqListMatchesSliceList(t *testing.T) {
+	_, e := newFixtureExecutor(t)
+	slice := run(t, e, `{users{id name}}`, "")
+	seq := run(t, e, `{usersSeq{id name}}`, "")
+	if len(seq.Errors) != 0 {
+		t.Fatalf("seq list errored: %v", seq.Errors)
+	}
+	want := strings.Replace(string(slice.Data), `"users"`, `"usersSeq"`, 1)
+	if got := string(seq.Data); got != want {
+		t.Fatalf("seq list = %s, want %s", got, want)
+	}
+}
+
+// The spec puts Field/FieldArgs in scope alongside Resolve. Shapes are
+// registered per Go type, not per constructor, so a pure field must accept a
+// seq too; this pins that rather than assuming it.
+func TestSeqListFromPureField(t *testing.T) {
+	type post struct{ Title string }
+	posts := []*post{{Title: "a"}, {Title: "b"}}
+	s, err := NewSchema(SDL(`type Post { title: String! } type Query { posts: [Post!]! }`),
+		Object[post]("Post", Field("title", func(v *post) string { return v.Title })),
+		Query(Field("posts", func(_ Root) iter.Seq[*post] {
+			return func(yield func(*post) bool) {
+				for _, p := range posts {
+					if !yield(p) {
+						return
+					}
+				}
+			}
+		})),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema rejected a pure seq field: %v", err)
+	}
+	resp := run(t, NewExecutor(s), `{posts{title}}`, "")
+	if got := string(resp.Data); got != `{"posts":[{"title":"a"},{"title":"b"}]}` {
+		t.Fatalf("data = %s", got)
+	}
+}
+
+// A nil seq is null, not a call into a nil func.
+func TestNilSeqWritesNull(t *testing.T) {
+	type post struct{ Title string }
+	s, err := NewSchema(SDL(`type Post { title: String! } type Query { posts: [Post!] }`),
+		Object[post]("Post", Field("title", func(v *post) string { return v.Title })),
+		Query(Resolve("posts", func(ctx context.Context, _ Root) (iter.Seq[*post], error) {
+			return nil, nil
+		})),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	resp := run(t, NewExecutor(s), `{posts{title}}`, "")
+	if len(resp.Errors) != 0 {
+		t.Fatalf("nil seq errored: %v", resp.Errors)
+	}
+	if got := string(resp.Data); got != `{"posts":null}` {
+		t.Fatalf("data = %s, want {\"posts\":null}", got)
+	}
+}
+
+// A consumer that stops must stop the producer. A seq that keeps yielding
+// after a non-null element fails would do unbounded work for a dead list.
+func TestSeqStopsWhenConsumerStops(t *testing.T) {
+	type post struct{ Title string }
+	yielded := 0
+	s, err := NewSchema(SDL(`type Post { title: String! } type Query { posts: [Post!]! }`),
+		Object[post]("Post", Field("title", func(v *post) string { return v.Title })),
+		Query(Resolve("posts", func(ctx context.Context, _ Root) (iter.Seq[*post], error) {
+			return func(yield func(*post) bool) {
+				for i := 0; i < 100; i++ {
+					yielded++
+					var p *post // nil fails the non-null element position
+					if i != 3 {
+						p = &post{Title: "t"}
+					}
+					if !yield(p) {
+						return
+					}
+				}
+			}, nil
+		})),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	resp := run(t, NewExecutor(s), `{posts{title}}`, "")
+	if len(resp.Errors) == 0 {
+		t.Fatal("want an error for a null element in a non-null position")
+	}
+	if yielded > 5 {
+		t.Fatalf("producer yielded %d times after the consumer stopped", yielded)
+	}
+}
+
+// A single-pass seq (a cursor, a channel, a paginated read) cannot be
+// replayed, so a list value must be traversed exactly once whichever path
+// handles it. Lists shorter than two elements are declined by the concurrent
+// path, which is where a second traversal would silently write an empty list.
+func TestSinglePassSeqTraversedOnce(t *testing.T) {
+	type post struct{ Title string }
+	newExec := func(items []*post, calls *int) *Executor {
+		s, err := NewSchema(SDL(`type Post { title: String! author: String! } type Query { posts: [Post!]! }`),
+			Object[post]("Post",
+				Field("title", func(v *post) string { return v.Title }),
+				// A resolver field makes the element selection deeply
+				// schedulable, so the concurrent list path is attempted.
+				Resolve("author", func(context.Context, *post) (string, error) { return "a", nil }),
+			),
+			Query(Resolve("posts", func(context.Context, Root) (iter.Seq[*post], error) {
+				return func(yield func(*post) bool) {
+					*calls++
+					if *calls > 1 {
+						return
+					}
+					for _, p := range items {
+						if !yield(p) {
+							return
+						}
+					}
+				}, nil
+			})),
+		)
+		if err != nil {
+			t.Fatalf("NewSchema: %v", err)
+		}
+		return NewExecutor(s)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		items []*post
+		want  string
+	}{
+		{"one element", []*post{{Title: "a"}}, `{"posts":[{"title":"a","author":"a"}]}`},
+		{"zero elements", nil, `{"posts":[]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			resp := run(t, newExec(tc.items, &calls), `{posts{title author}}`, "")
+			if len(resp.Errors) != 0 {
+				t.Fatalf("errors: %v", resp.Errors)
+			}
+			if got := string(resp.Data); got != tc.want {
+				t.Fatalf("data = %s, want %s", got, tc.want)
+			}
+			if calls != 1 {
+				t.Fatalf("producer called %d times, want 1", calls)
+			}
+		})
+	}
+}
+
+// BenchmarkListResultsSlice and BenchmarkListResultsSeq are a matched pair:
+// same fixture, same field selection, differing only in whether the query
+// hits the slice-backed "users" resolver or the seq-backed "usersSeq" one.
+// Run them together with -benchmem so a benchstat comparison of the pair
+// measures the seq path's allocation claim rather than two unrelated numbers.
+func BenchmarkListResultsSlice(b *testing.B) {
+	_, e := newFixtureExecutor(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		resp := run(b, e, `{users{id name}}`, "")
+		resp.Release()
+	}
+}
+
+func BenchmarkListResultsSeq(b *testing.B) {
+	_, e := newFixtureExecutor(b)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		resp := run(b, e, `{usersSeq{id name}}`, "")
+		resp.Release()
 	}
 }

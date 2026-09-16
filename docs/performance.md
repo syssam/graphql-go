@@ -70,6 +70,105 @@ tested, and only the idle one is decisive — writes use the connection context,
 so a subscription with an event pending is reclaimed by that write failing
 whether or not cancellation works at all.
 
+## List results
+
+`iter.Seq[E]` list fields were added so a resolver can hand the executor
+elements one at a time instead of building a `[]E` first. Measured whether
+that shows up as fewer allocations per request: `BenchmarkListResultsSlice`
+(`{users{id name}}`) against `BenchmarkListResultsSeq` (`{usersSeq{id name}}`),
+same fixture, same field selection, `benchstat`, `n=10`, both benchmarks run
+in one process so machine state is shared:
+
+| | slice (`users`) | seq (`usersSeq`) | delta |
+|---|---:|---:|---:|
+| B/op | 1.064Ki | 1.188Ki | +11.65% (p=0.000) |
+| allocs/op | 20.00 | 23.00 | +15.00% (p=0.000) |
+
+**The seq path does not allocate less here — it allocates measurably more**,
+both by bytes and by count, with p=0.000 across 10 runs each side. This is the
+opposite of the feature's original allocation claim, and the honest result to
+report rather than the hoped-for one.
+
+The extra 3 allocations match `usersSeq`'s shape: it still builds an `ids`
+slice up front and closes over it in the yield func, so the executor pays for
+a slice *and* a closure plus the range-over-func state machine the compiler
+generates to drive `iter.Seq`, where the plain `users` resolver pays for the
+slice alone. `iter.Seq` only wins the allocation argument for a resolver that
+would otherwise have to materialize a full `[]E` before it can start
+returning results — a paginated store read, a database cursor, a
+generator — not for a resolver, like this fixture's, that already holds a
+slice and merely wraps it in a yield loop. The feature's value there is API
+shape (streaming without a slice type), not fewer allocations.
+
+Reproduce (benchstat compares same-named benchmarks across files, so split the
+combined output in two, renaming both to a shared name):
+
+```sh
+go test -run '^$' -bench 'BenchmarkListResultsSlice|BenchmarkListResultsSeq' -benchmem -count=10 . > raw.txt
+grep -E '^(goos|goarch|pkg|cpu|BenchmarkListResultsSlice)' raw.txt | sed 's/Slice//' > slice.txt
+grep -E '^(goos|goarch|pkg|cpu|BenchmarkListResultsSeq)' raw.txt | sed 's/Seq//' > seq.txt
+benchstat slice.txt seq.txt
+```
+
+### A resolver that never materializes
+
+`usersSeq` above wraps a slice it already built, which measures wrapping
+overhead, not the design doc's actual claim — a resolver that "stops building
+a slice it only ever hands to the writer once", motivated by a database
+cursor or paginated API that would otherwise force a `[]E` into existence
+just to satisfy the return type. `BenchmarkLazySeqSlice` and
+`BenchmarkLazySeqLazy` isolate that claim: both generate the same 1000
+elements with the same per-element work (`newLazyItem`, an allocation plus an
+`Itoa`), against a `LazyItem` type with only pure `Field` bindings so the list
+takes `writeList`'s sequential path — the only path where streaming actually
+happens, since the concurrent path drains a seq into a `[]any` up front by
+design. `BenchmarkLazySeqSlice` builds a `[]*lazyItem` of all 1000 before
+returning it; `BenchmarkLazySeqLazy` yields each element as it is generated
+and never holds a backing array. 1000 elements is large enough that a
+1000-pointer backing array (8 bytes each, ~8 KiB) is not lost in the noise of
+schema lookup, plan-cache hit and JSON encoding that every iteration also
+pays for. `TestLazySeqBenchmarkUsesSequentialPath` in `bench_lazyseq_test.go`
+checks the sequential-path assumption directly, by failing a non-null element
+partway through and confirming the generator stops within a couple of
+elements rather than running to completion — the signature of the concurrent
+path's eager drain.
+
+`benchstat`, `n=10`, both benchmarks run in one process:
+
+| | slice (materializes) | lazy (never materializes) | delta |
+|---|---:|---:|---:|
+| B/op | 94.12Ki | 86.20Ki | -8.41% (p=0.000) |
+| allocs/op | 3.914k | 3.915k | +0.03% (p=0.000) |
+| sec/op | 181.0µ ± 17% | 195.6µ ± 4% | ~ (p=0.063, not significant) |
+
+**Here the saving is real, and it is exactly the backing array**: dropping a
+1000-element `[]*lazyItem` saves ~7.9 KiB, which is what 1000 eight-byte
+pointers plus a slice header costs, and nothing else changes since both sides
+build the same 1000 `*lazyItem` values. But it shows up only in bytes, not in
+allocation count: the lazy side spends the array's one allocation on the
+`iter.Seq` closure and range-over-func state instead, netting +1 alloc
+(3915 vs 3914) — a wash on the count that this project's CLAUDE.md says to
+trust over timing. The timing delta is not significant (p=0.063) and should
+not be read as a conclusion either way.
+
+So both measurements are true at once, for different resolver shapes: a
+resolver that already holds a slice pays more to wrap it in `iter.Seq` (the
+first benchmark), and a resolver that would otherwise have to build a slice
+purely to satisfy the return type saves that slice's bytes, though not a
+whole allocation, by not building it (this one). `iter.Seq` is worth reaching
+for when the source is genuinely incremental — a cursor, a paginated fetch, a
+generator that cannot produce a length up front — not as a reflexive
+replacement for a resolver that already has a `[]E` in hand.
+
+Reproduce:
+
+```sh
+go test -run '^$' -bench 'BenchmarkLazySeqSlice|BenchmarkLazySeqLazy' -benchmem -count=10 . > raw.txt
+grep -E '^(goos|goarch|pkg|cpu|BenchmarkLazySeqSlice)' raw.txt | sed 's/LazySeqSlice/LazySeq/' > slice.txt
+grep -E '^(goos|goarch|pkg|cpu|BenchmarkLazySeqLazy)' raw.txt | sed 's/LazySeqLazy/LazySeq/' > lazy.txt
+benchstat slice.txt lazy.txt
+```
+
 ## Reproducing
 
 ```sh
@@ -87,6 +186,45 @@ Compare two versions with `benchstat`, never by eye: single samples on this
 codebase have been wrong by 20-77% on a warm machine, in both directions.
 Allocation counts and retained heap are deterministic and are the figures to
 trust when timings are noisy.
+
+## Profile-guided optimization
+
+PGO cannot be shipped with this library. `go build` selects `default.pgo` from
+the directory of each *main package* and applies it to that binary's
+dependencies; a profile checked in here would be read only if someone built a
+main package inside this repository. The profile has to be collected from the
+consumer's own server and live beside their `main`.
+
+Measured on this machine, runs interleaved, `n=10`, profile collected from the
+root benchmarks themselves:
+
+| Benchmark | vs `-pgo=off` |
+|---|---|
+| `ExecuteUsers` | -11.96% (p=0.027) |
+| `ExecuteConcurrentList` | no change (p=0.853) |
+
+Allocation counts and bytes do not move at all: PGO changes inlining and
+devirtualization, not what gets allocated.
+
+The split is the useful part. `ExecuteUsers` is one goroutine walking a plan
+through indirect closure calls, which is exactly what PGO devirtualizes.
+`ExecuteConcurrentList` spends its time in `runtime.lock2`, `semasleep` and
+`semawakeup` under the bounded semaphore — scheduler contention that PGO cannot
+reach. Expect a gain on CPU-bound, resolver-light queries and nothing on queries
+dominated by concurrent fan-out.
+
+Treat -11.96% as an upper bound. The profile was collected from the same
+benchmarks it was then measured against, which flatters it; a profile taken from
+a real workload predicts that workload, not this one. The confidence intervals
+are also wide (+/-13% and +/-23%), which is the usual warning about this machine.
+
+To enable it, from the server's own main package:
+
+```sh
+curl -o cpu.prof 'http://localhost:6060/debug/pprof/profile?seconds=30'
+mv cpu.prof default.pgo   # beside main.go
+go build                  # -pgo=auto is already the default
+```
 
 ## What is not measured
 

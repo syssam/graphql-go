@@ -47,13 +47,13 @@ depends on gqlgen:
 
 ```sh
 cd benchmarks && go test -run '^$' -bench . -benchmem -count=5
-cd benchmarks && go generate    # regenerate graph/generated.go via the gqlgen CLI
+cd benchmarks && go generate    # regenerate graph/generated.go via go tool gqlgen
 ```
 
 Regenerate the example's bindings after editing its SDL:
 
 ```sh
-cd examples/basic && go generate    # go run ../../cmd/gqlc -config gqlc.yaml
+cd examples/basic && go generate    # go tool gqlc -config gqlc.yaml
 ```
 
 `codegen` tests write a temp module, run `go build`/`go test` in it, and take ~20s; they
@@ -224,6 +224,11 @@ produce engine values directly.
 - **No reflection on the request hot path.** Reflection is allowed at `NewSchema`, in
   `Args[T]`/`Input[T]` decode, and in the one documented composite nested-list traverser
   (which logs `slog.Warn` at start-up). Adding reflection to the write path is a regression.
+- **Generated code is driven through `tool` directives, not a `tools.go` blank-import file.**
+  `go tool gqlc` (root) and `go tool gqlgen` (`benchmarks`) pin the CLI and its
+  dependencies in `go.mod`, so a generate step cannot silently resolve a different version
+  than the one the module records. The two `tools.go` files this replaced were redundant:
+  every package they pinned was already reached by a real import.
 - Go 1.27 minimum (generic methods, `reflect.TypeFor`).
 - Tests live beside the code in `package graphql`; the shared fixture schema and executor
   are in `fixture_test.go` (`newFixtureExecutor`, `run`, `expectData`) — reuse them instead

@@ -138,3 +138,18 @@ func TestAbstractShapeChecks(t *testing.T) {
 		t.Fatalf("duplicate abstract binding should fail, got %v", err)
 	}
 }
+
+// A union list is traversed by the same machinery as an object list, so the
+// seq spelling must be indistinguishable here too.
+func TestSeqAbstractListMatchesSlice(t *testing.T) {
+	_, e := newFixtureExecutor(t)
+	slice := run(t, e, `{search(term:"a"){__typename}}`, "")
+	seq := run(t, e, `{searchSeq(term:"a"){__typename}}`, "")
+	if len(seq.Errors) != 0 {
+		t.Fatalf("seq union list errored: %v", seq.Errors)
+	}
+	want := strings.Replace(string(slice.Data), `"search"`, `"searchSeq"`, 1)
+	if got := string(seq.Data); got != want {
+		t.Fatalf("seq union list = %s, want %s", got, want)
+	}
+}

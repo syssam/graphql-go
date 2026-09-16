@@ -62,10 +62,23 @@ func checkInputShape(r *registry, key typeKey, sdl *ast.Type) error {
 func checkOutputCompositeShape(s *Schema, goType reflect.Type, sdl *ast.Type) (*objectType, error) {
 	t := goType
 	for sdlT := sdl; sdlT.Elem != nil; sdlT = sdlT.Elem {
+		if e, isSeq := seqElem(t); isSeq {
+			// Without a registered traverser the executor would fall back to the
+			// reflective one, which cannot index a func and panics after the
+			// resolver has already returned.
+			if _, ok := s.reg.traversers[t]; !ok {
+				return nil, fmt.Errorf("Go type %s cannot be traversed: iter.Seq is supported only as the innermost list level over a bound Go type", t)
+			}
+			t = e
+			continue
+		}
 		if t.Kind() != reflect.Slice && t.Kind() != reflect.Array {
 			return nil, fmt.Errorf("Go type %s has fewer list levels than %s", goType, sdl.String())
 		}
 		t = t.Elem()
+	}
+	if _, isSeq := seqElem(t); isSeq {
+		return nil, fmt.Errorf("Go type %s has more list levels than %s", goType, sdl.String())
 	}
 	if t.Kind() == reflect.Slice && t.Elem().Kind() != reflect.Uint8 {
 		return nil, fmt.Errorf("Go type %s has more list levels than %s", goType, sdl.String())

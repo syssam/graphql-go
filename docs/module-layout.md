@@ -1,9 +1,9 @@
-# Decision needed: one module or five
+# Decision: one module now, five at publication
 
-This is a question for the project owner, written once so it does not arrive
-three times from three directions. Two implementation sessions have each
-deferred it and recorded the same reasoning; the numbers below are measured,
-not estimated.
+Settled 2026-09-15. Written once so it does not arrive a fourth time: two
+implementation sessions each deferred this and recorded the same reasoning,
+and the numbers below are measured, not estimated. The decision is at the
+bottom.
 
 **The question.** Should `codegen`, `ext/otel`, and the Echo and Fiber
 transports become their own Go modules, or stay in the root module?
@@ -61,8 +61,10 @@ splitting trades a dependency problem for a coverage problem.
 
 Secondary costs: users of `codegen` or `ext/otel` need a second `go get`;
 `cmd/gqlc` has to move into the codegen module or the root keeps `x/tools`
-through it; and `examples/basic`'s `//go:generate go run ../../cmd/gqlc` path
-changes. Import paths for library users do **not** change.
+through it; and the root `tool` directive that backs `go tool gqlc` has to
+point at whichever module `cmd/gqlc` ends up in, which also means
+`examples/basic` generates through a tool the root module no longer contains.
+Import paths for library users do **not** change.
 
 ## The options
 
@@ -77,7 +79,7 @@ growing. Defensible while unpublished — nobody is resolving this module yet.
 module, do it as part of the first tagged release when the gate script and CI
 exist anyway.
 
-## Recommendation
+## Decision: C, with B's scope
 
 **C, with B's scope.** The costs are real but every one of them is paid at
 resolution time by consumers, and there are no consumers yet. Splitting now
@@ -93,6 +95,40 @@ that also has to invent its own safety net.
 If the answer is B instead, the four should go together rather than in two
 passes, so that `gqlecho` and `gqlfiber` are not created in the root module and
 moved out a month later.
+
+**The cheap half is done.** `scripts/gate.sh` walks every `go.mod` and is the
+gate for all four modules, so `benchmarks/`, `compare/` and `lint/` are no
+longer tested by memory. That was the stated prerequisite, which makes the
+split a mechanical change at the first tag rather than one that has to invent
+its own safety net. The trigger is the first tagged release; there is nothing
+to revisit before then.
+
+**Where `x/tools` actually lands**, measured with `go list -deps`:
+
+| package | `x/tools` packages linked |
+|---|---:|
+| engine (root package) | 0 |
+| `codegen` | 18 |
+| `cmd/gqlc` | 18 |
+
+The engine does not link it, so no server pays for it at runtime. The two costs
+are the ones named above: every consumer resolves `x/tools` because the root
+`go.mod` requires it, and `gqlc` itself is 9.2 MB with 82 MB peak RSS.
+
+An earlier revision of this file claimed that was fixable inside the root module
+by making the import conditional, since `x/tools` enters through exactly one
+file (`codegen/autobind.go`) and `autoBind` returns nothing but a `*Manifest`.
+That is wrong, and the reason is worth keeping. Moving `autoBind` into its own
+package fixes neither number: `gqlc` offers `AutoBind`, so it still links the
+dependency, and the package would still live in the root module, so `go.mod`
+would still require it. This is a module-boundary problem, not an import one.
+
+What the thin coupling does buy is a better split. Because discovery's only
+output is a `Manifest`, and `Manifest` is already public configuration,
+`autobind` can become a module separate from `codegen` — so the `codegen`
+module does not require `x/tools` either, and only consumers who opt into
+discovery resolve the gopls tail. Add it to B's scope; it is the same
+"buys nothing today" reasoning that put the split at publication.
 
 ## What is not in question
 

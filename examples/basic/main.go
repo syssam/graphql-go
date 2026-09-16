@@ -8,7 +8,7 @@
 // createPost mutation against /graphql to see the event arrive.
 package main
 
-//go:generate go run ../../cmd/gqlc -config gqlc.yaml
+//go:generate go tool gqlc -config gqlc.yaml
 
 import (
 	"context"

@@ -11,7 +11,9 @@
 // writers are typed function values. Args[T]() / Input[T](name) may use
 // reflection once per input value to fill struct fields; that is decode
 // only and is not on the JSON write path. Composite lists deeper than one
-// level also use a reflective traverser recorded at start-up.
+// level also use a reflective traverser recorded at start-up. A composite
+// list field may return iter.Seq[E] or iter.Seq[*E] wherever it may return
+// []E or []*E.
 //
 // An Executor compiles each operation into an immutable, cached plan and
 // writes the response directly into a pooled JSON buffer. Fields bound with

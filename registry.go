@@ -3,6 +3,7 @@ package graphql
 import (
 	"errors"
 	"fmt"
+	"iter"
 	"log/slog"
 	"reflect"
 	"sync"
@@ -282,6 +283,30 @@ func registerObjectShapes[E any](r *registry) objectShapes {
 			}
 		}
 	}
+	tQE := reflect.TypeFor[iter.Seq[E]]()
+	tQPE := reflect.TypeFor[iter.Seq[*E]]()
+	r.nilChecks[tQE] = func(v any) bool { q, _ := v.(iter.Seq[E]); return q == nil }
+	r.nilChecks[tQPE] = func(v any) bool { q, _ := v.(iter.Seq[*E]); return q == nil }
+	// The executor's traverser contract carries an index for error paths and
+	// a seq does not, so it is counted here.
+	r.traversers[tQE] = func(v any, yield func(int, any) bool) {
+		i := 0
+		for e := range v.(iter.Seq[E]) {
+			if !yield(i, e) {
+				return
+			}
+			i++
+		}
+	}
+	r.traversers[tQPE] = func(v any, yield func(int, any) bool) {
+		i := 0
+		for e := range v.(iter.Seq[*E]) {
+			if !yield(i, e) {
+				return
+			}
+			i++
+		}
+	}
 	return objectShapes{
 		elem:  tE,
 		ptr:   tPE,
@@ -306,6 +331,19 @@ func registerAbstractShapes[T any](r *registry) {
 			}
 		}
 	}
+	tQT := reflect.TypeFor[iter.Seq[T]]()
+	r.nilChecks[tQT] = func(v any) bool { q, _ := v.(iter.Seq[T]); return q == nil }
+	// See registerObjectShapes: the seq has no length, so the index is counted
+	// here to satisfy the traverser contract's error-path requirement.
+	r.traversers[tQT] = func(v any, yield func(int, any) bool) {
+		i := 0
+		for e := range v.(iter.Seq[T]) {
+			if !yield(i, e) {
+				return
+			}
+			i++
+		}
+	}
 }
 
 // valueShape describes how the executor inspects a composite result whose
@@ -328,7 +366,7 @@ func (r *registry) shapeFor(t reflect.Type, sdl *ast.Type, obj *objectType) *val
 	s := &valueShape{isNil: r.nilChecks[t]}
 	if s.isNil == nil {
 		switch t.Kind() {
-		case reflect.Pointer, reflect.Slice, reflect.Interface, reflect.Map:
+		case reflect.Pointer, reflect.Slice, reflect.Interface, reflect.Map, reflect.Func:
 			s.isNil = reflectIsNil
 		}
 	}
@@ -341,9 +379,12 @@ func (r *registry) shapeFor(t reflect.Type, sdl *ast.Type, obj *objectType) *val
 			}
 			s.traverse = reflectTraverse
 		}
-		if t.Kind() == reflect.Slice || t.Kind() == reflect.Array {
+		switch e, isSeq := seqElem(t); {
+		case t.Kind() == reflect.Slice || t.Kind() == reflect.Array:
 			s.elem = r.shapeFor(t.Elem(), sdl.Elem, obj)
-		} else {
+		case isSeq:
+			s.elem = r.shapeFor(e, sdl.Elem, obj)
+		default:
 			s.elem = &valueShape{isNil: reflectIsNil}
 		}
 		return s
@@ -364,6 +405,24 @@ func reflectIsNil(v any) bool {
 		return rv.IsNil()
 	}
 	return false
+}
+
+// seqElem reports the element type of an iter.Seq-shaped function type,
+// func(yield func(E) bool). Matching is structural rather than on iter's
+// package path: a caller's own equivalent behaves identically and there is
+// no reason to reject it. Schema build time only.
+func seqElem(t reflect.Type) (reflect.Type, bool) {
+	if t.Kind() != reflect.Func || t.IsVariadic() || t.NumIn() != 1 || t.NumOut() != 0 {
+		return nil, false
+	}
+	y := t.In(0)
+	if y.Kind() != reflect.Func || y.IsVariadic() || y.NumIn() != 1 || y.NumOut() != 1 {
+		return nil, false
+	}
+	if y.Out(0).Kind() != reflect.Bool {
+		return nil, false
+	}
+	return y.In(0), true
 }
 
 func reflectTraverse(v any, yield func(int, any) bool) {

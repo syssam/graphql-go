@@ -203,15 +203,19 @@ func (s *Schema) concreteValue(at *abstractType, v any) (obj *objectType, ptr an
 // writeList writes list elements, nulling failed nullable elements and
 // failing the whole list when a non-null element fails.
 func (st *execState) writeList(ctx context.Context, w *jsonw.Writer, v any, t *ast.Type, shape *valueShape, f *planField, path *pathNode) bool {
+	var drained []any
+	drainedList := false
 	if f.sub != nil && f.sub.deepSchedulable && st.e.sem != nil {
-		if ok, handled := st.writeListConcurrent(ctx, w, v, t, shape, f, path); handled {
+		ok, handled, elems := st.writeListConcurrent(ctx, w, v, t, shape, f, path)
+		if handled {
 			return ok
 		}
+		drained, drainedList = elems, true
 	}
 	mark := w.Mark()
 	w.BeginArray()
 	failed := false
-	shape.traverse(v, func(i int, e any) bool {
+	writeElem := func(i int, e any) bool {
 		em := w.Mark()
 		if !st.writeValue(ctx, w, e, t.Elem, shape.elem, f, &pathNode{parent: path, index: i, isIndex: true}) {
 			if t.Elem.NonNull {
@@ -222,7 +226,16 @@ func (st *execState) writeList(ctx context.Context, w *jsonw.Writer, v any, t *a
 			w.Null()
 		}
 		return true
-	})
+	}
+	if drainedList {
+		for i, e := range drained {
+			if !writeElem(i, e) {
+				break
+			}
+		}
+	} else {
+		shape.traverse(v, writeElem)
+	}
 	if failed {
 		w.Rewind(mark)
 		return false
@@ -356,16 +369,17 @@ func (st *execState) writeFieldsConcurrent(ctx context.Context, w *jsonw.Writer,
 }
 
 // writeListConcurrent writes list elements in parallel when there are at
-// least two. handled is false when the list is too short, in which case the
-// caller writes sequentially.
-func (st *execState) writeListConcurrent(ctx context.Context, w *jsonw.Writer, v any, t *ast.Type, shape *valueShape, f *planField, path *pathNode) (ok, handled bool) {
+// least two. handled is false when the list is too short; the drained
+// elements come back with it so the caller can write them without traversing
+// the value again, which a single-pass iter.Seq would answer with nothing.
+func (st *execState) writeListConcurrent(ctx context.Context, w *jsonw.Writer, v any, t *ast.Type, shape *valueShape, f *planField, path *pathNode) (ok, handled bool, drained []any) {
 	var elems []any
 	shape.traverse(v, func(_ int, e any) bool {
 		elems = append(elems, e)
 		return true
 	})
 	if len(elems) < 2 {
-		return false, false
+		return false, false, elems
 	}
 	results := make([]taskResult, len(elems))
 	defer func() {
@@ -399,13 +413,13 @@ func (st *execState) writeListConcurrent(ctx context.Context, w *jsonw.Writer, v
 			w.Raw(r.buf.Bytes())
 		case t.Elem.NonNull:
 			w.Rewind(mark)
-			return false, true
+			return false, true, nil
 		default:
 			w.Null()
 		}
 	}
 	w.EndArray()
-	return true, true
+	return true, true, nil
 }
 
 func (st *execState) pushWave(ctx context.Context, n int) func() {
