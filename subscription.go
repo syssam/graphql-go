@@ -259,6 +259,9 @@ type subEvent struct {
 // Substituting the executor also bypasses field interceptors and field
 // directives on the subscription root field itself: there is no per-event
 // resolver call for them to wrap. Both still observe every field beneath it.
+// A FieldObserver still sees the root field, once per event, because it runs
+// in callLeaf/callResolve before dispatch to f.exec -- the substituted
+// executor -- rather than being that executor.
 func (e *Executor) runSubscriptionEvent(ctx context.Context, oc *OperationContext) *Response {
 	src := oc.event.field
 	event := oc.event.value

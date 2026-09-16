@@ -110,12 +110,16 @@ func (o *panicObserver) EndField(ctx context.Context, f FieldInfo, err error) {
 	o.errByField[f.Object+"."+f.Field] = err
 }
 
-// TestFieldObserverSeesPanicAsError pins the defer ordering in callLeaf and
-// callResolve: the observer's EndField must run after panic recovery has
-// converted the panic into the named error return, not before. Registering
-// the observer's defer after the recovery defer would make EndField run
-// first (defers are LIFO) and see err == nil for a field that panicked --
-// which would make ext/otel record a crashed field as a successful span.
+// TestFieldObserverSeesPanicAsError pins the defer ordering in callLeaf: the
+// observer's EndField must run after panic recovery has converted the panic
+// into the named error return, not before. Registering the observer's defer
+// after the recovery defer would make EndField run first (defers are LIFO)
+// and see err == nil for a field that panicked -- which would make ext/otel
+// record a crashed field as a successful span. The fixture's "panics" field
+// returns Int, so fd.leaf is true regardless of it being Resolve-bound, and
+// it dispatches through callLeaf -- see
+// TestFieldObserverSeesPanicAsErrorForCompositeResolve for the callResolve
+// side of the same ordering.
 func TestFieldObserverSeesPanicAsError(t *testing.T) {
 	o := &panicObserver{}
 	_, e := newFixtureExecutor(t, WithFieldObserver(o), WithRecover(true))
@@ -127,5 +131,52 @@ func TestFieldObserverSeesPanicAsError(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatal("EndField saw a nil error for a field that panicked")
+	}
+}
+
+type panicComposite struct{ Name string }
+
+// newPanicResolveSchema is a dedicated minimal schema rather than an addition
+// to the shared fixture: a Resolve field with a composite return type that
+// always panics would be a landmine for every other test that walks the
+// fixture schema looking for coverage.
+func newPanicResolveSchema(t *testing.T) *Schema {
+	t.Helper()
+	s, err := NewSchema(SDL(`
+		type Boom { name: String! }
+		type Query { boom: Boom }
+	`),
+		Object[panicComposite]("Boom",
+			Field("name", func(b *panicComposite) string { return b.Name }),
+		),
+		Query(
+			Resolve("boom", func(context.Context, Root) (*panicComposite, error) {
+				panic("kaboom-composite")
+			}),
+		),
+	)
+	if err != nil {
+		t.Fatalf("panic-resolve schema: %v", err)
+	}
+	return s
+}
+
+// TestFieldObserverSeesPanicAsErrorForCompositeResolve is
+// TestFieldObserverSeesPanicAsError's counterpart for callResolve: "boom"
+// returns a composite type, so it dispatches through callResolve rather than
+// callLeaf, and that function has its own copy of the observer-before-
+// recovery ordering that needs its own regression coverage.
+func TestFieldObserverSeesPanicAsErrorForCompositeResolve(t *testing.T) {
+	s := newPanicResolveSchema(t)
+	o := &panicObserver{}
+	e := NewExecutor(s, WithFieldObserver(o), WithRecover(true))
+	run(t, e, `{ boom { name } }`, "")
+
+	err, ok := o.errByField["Query.boom"]
+	if !ok {
+		t.Fatal("observer never saw Query.boom")
+	}
+	if err == nil {
+		t.Fatal("EndField saw a nil error for a composite field that panicked")
 	}
 }

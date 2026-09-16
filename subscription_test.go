@@ -322,6 +322,49 @@ func TestSubscribeNullableEventNulls(t *testing.T) {
 	expectClosed(t, out)
 }
 
+// TestSubscribeFieldObserverSeesRootFieldPerEvent pins FINDING-9's ruling: a
+// FieldObserver runs in callLeaf/callResolve before dispatch to f.exec, so
+// substituting f.exec per event (see the comment on runSubscriptionEvent)
+// does not hide the root field from it the way it hides the root field from
+// a FieldInterceptor. The observer must see the root field once per event,
+// not once for the whole subscription.
+func TestSubscribeFieldObserverSeesRootFieldPerEvent(t *testing.T) {
+	o := &recordingObserver{}
+	src, e := newSubExecutor(t, WithFieldObserver(o))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	out, err := e.Subscribe(ctx, &Request{Query: `subscription { messages { id body } }`})
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	go func() {
+		src.messages <- &subMessage{ID: "1", Body: "hello"}
+		src.messages <- &subMessage{ID: "2", Body: "world"}
+		close(src.messages)
+	}()
+
+	for range 2 {
+		resp := nextResponse(t, out)
+		if len(resp.Errors) > 0 {
+			t.Fatalf("unexpected errors: %s", errorsJSON(resp.Errors))
+		}
+		resp.Release()
+	}
+	expectClosed(t, out)
+
+	var rootHits int
+	for _, name := range o.begun {
+		if name == "Subscription.messages" {
+			rootHits++
+		}
+	}
+	if rootHits != 2 {
+		t.Fatalf("observer saw the root field %d times, want 2 (once per event); saw %v", rootHits, o.begun)
+	}
+}
+
 // TestSubscribeOperationInterceptorPerEvent asserts every event goes through
 // the operation chain with its own context. That is what lets tracing and
 // limits treat an event like an operation, and it is the observable proof
