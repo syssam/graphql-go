@@ -597,13 +597,12 @@ func TestOutcomeEnforcementWithFieldInterceptor(t *testing.T) {
 }
 
 // A no-op interceptor cannot show whether Redact's resolve actually passed
-// through the field interceptor chain or bypassed it; a counting one can.
-// callLeafRedacted calls fd.anyResolve directly rather than through
-// f.exec.writeLeaf, so a field interceptor never observes a redacted field
-// -- the same trade the architecture already makes for a subscription's
-// root field. This test documents that count, rather than asserting a
-// count of 1 and being surprised by it later.
-func TestOutcomeRedactBypassesFieldInterceptor(t *testing.T) {
+// through the field interceptor chain; a counting one can. callLeafRedacted
+// resolves through f.exec.resolveAny, the plan field's own executor, which
+// interceptedExec wraps exactly like writeLeaf -- so a field interceptor
+// (ext/otel field spans, audit/masking middleware) must see a redacted field
+// exactly once, the same as any other leaf.
+func TestOutcomeRedactObservedByFieldInterceptor(t *testing.T) {
 	var seen atomic.Int64
 	counting := FieldInterceptorFunc(func(ctx context.Context, fc *FieldContext, next FieldHandler) (any, error) {
 		if fc.Field.Name == "salary" {
@@ -625,8 +624,46 @@ func TestOutcomeRedactBypassesFieldInterceptor(t *testing.T) {
 	if got, want := string(resp.Data), `{"me":{"salary":7}}`; got != want {
 		t.Errorf("data = %s, want %s", got, want)
 	}
-	if n := seen.Load(); n != 0 {
-		t.Errorf("field interceptor observed the redacted field %d times, want 0", n)
+	if n := seen.Load(); n != 1 {
+		t.Errorf("field interceptor observed the redacted field %d times, want 1", n)
+	}
+}
+
+// A subscription's per-event root field substitutes pf.exec, not
+// fd.anyResolve (runSubscriptionEvent): fd.anyResolve on a Subscribe-bound
+// field is permanently the errSubscriptionResolved stub. callLeafRedacted
+// must resolve through f.exec.resolveAny to see the substituted event
+// rather than that stub.
+func TestOutcomeRedactOnSubscriptionRootField(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+type Query { ping: String! }
+type Subscription { tick: Int! @requiresScopes(scopes: [["x"]]) }
+`
+	ch := make(chan int)
+	s, err := NewSchema(SDL(sdl),
+		Query(Field("ping", func(Root) string { return "pong" })),
+		Subscription(Subscribe("tick", func(context.Context) (<-chan int, error) { return ch, nil })),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	e := NewExecutor(s, WithAuthorizer(AuthorizerFunc(
+		func(ctx context.Context, shape *AuthShape, d *Decision) error {
+			return d.Set(0, Redact(func(any) any { return 99 }))
+		})))
+
+	respCh, err := e.Subscribe(context.Background(), &Request{Query: `subscription { tick }`})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	ch <- 1
+	resp := <-respCh
+	if len(resp.Errors) > 0 {
+		t.Fatalf("errors: %s", errorsJSON(resp.Errors))
+	}
+	if got, want := string(resp.Data), `{"tick":99}`; got != want {
+		t.Errorf("data = %s, want %s", got, want)
 	}
 }
 
@@ -646,6 +683,242 @@ func TestNullOutcomeRejectedOnNonNullField(t *testing.T) {
 	}
 	if !strings.Contains(resp.Errors[0].Message, "Null is not valid for") {
 		t.Errorf("error = %s, want it to name Null as invalid", resp.Errors[0].Message)
+	}
+}
+
+// enforceAuth's actionNull case is the only thing that makes Null() do
+// anything: deleting it from the switch leaves every other enforcement test
+// green (Deny, Zero and Redact all have their own cases) while Null()
+// silently falls through to the ordinary resolve path. This is that case's
+// own coverage, on a nullable leaf, asserting both the written value and
+// that the resolver underneath never ran.
+func TestNullOutcomeAppliesToNullableLeaf(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+type Query { leaf: Int @requiresScopes(scopes: [["x"]]) }
+`
+	var calls atomic.Int64
+	s, err := NewSchema(SDL(sdl),
+		Query(Resolve("leaf", func(context.Context, Root) (int, error) {
+			calls.Add(1)
+			return 42, nil
+		})),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	e := NewExecutor(s, WithAuthorizer(AuthorizerFunc(
+		func(ctx context.Context, shape *AuthShape, d *Decision) error {
+			return d.Set(0, Null())
+		})))
+	resp := run(t, e, `{ leaf }`, "")
+	if len(resp.Errors) > 0 {
+		t.Fatalf("errors: %s", errorsJSON(resp.Errors))
+	}
+	if got, want := string(resp.Data), `{"leaf":null}`; got != want {
+		t.Errorf("data = %s, want %s", got, want)
+	}
+	if n := calls.Load(); n != 0 {
+		t.Errorf("resolver ran %d times, want 0", n)
+	}
+}
+
+// Same as above, for a nullable composite: Null on an object-typed field
+// must not resolve the object (and so not resolve anything beneath it)
+// either.
+func TestNullOutcomeAppliesToNullableComposite(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+type Query { obj: Nested @requiresScopes(scopes: [["x"]]) }
+type Nested { id: ID! }
+`
+	type nested struct{ ID string }
+	var calls atomic.Int64
+	s, err := NewSchema(SDL(sdl),
+		Query(Resolve("obj", func(context.Context, Root) (*nested, error) {
+			calls.Add(1)
+			return &nested{ID: "1"}, nil
+		})),
+		Object[nested]("Nested",
+			Field("id", func(n *nested) ID { return ID(n.ID) }),
+		),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	e := NewExecutor(s, WithAuthorizer(AuthorizerFunc(
+		func(ctx context.Context, shape *AuthShape, d *Decision) error {
+			return d.Set(0, Null())
+		})))
+	resp := run(t, e, `{ obj { id } }`, "")
+	if len(resp.Errors) > 0 {
+		t.Fatalf("errors: %s", errorsJSON(resp.Errors))
+	}
+	if got, want := string(resp.Data), `{"obj":null}`; got != want {
+		t.Errorf("data = %s, want %s", got, want)
+	}
+	if n := calls.Load(); n != 0 {
+		t.Errorf("resolver ran %d times, want 0", n)
+	}
+}
+
+// A Redact built with a nil function passes every other validFor check
+// (leaf, not a list) and would only panic at write time, on whichever
+// request first reaches it. Reject it at Decision.Set instead, by name.
+func TestRedactNilFunctionRejected(t *testing.T) {
+	s := shapeSchema(t)
+	e := NewExecutor(s, WithAuthorizer(AuthorizerFunc(
+		func(ctx context.Context, shape *AuthShape, d *Decision) error {
+			return d.Set(0, Redact(nil))
+		})))
+	resp := run(t, e, `{ me { salary } }`, "")
+	if len(resp.Errors) == 0 {
+		t.Fatal("operation was not rejected")
+	}
+	msg := resp.Errors[0].Message
+	if !strings.Contains(msg, "User.salary") || !strings.Contains(msg, "nil function") {
+		t.Errorf("error = %s, want it to name the coordinate and a nil function", msg)
+	}
+}
+
+// Zero's rejection message offers Null as an alternative only when Null
+// would itself be valid there -- a non-null field can take neither, so
+// naming Null as an option would send the caller straight into a second
+// rejection.
+func TestZeroRejectionSuggestsNullOnlyWhenNullable(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+enum Role { ADMIN USER }
+type Query {
+  roleNullable: Role @requiresScopes(scopes: [["x"]])
+  roleRequired: Role! @requiresScopes(scopes: [["x"]])
+}
+`
+	s, err := NewSchema(SDL(sdl),
+		Enum("Role", roleNames),
+		Query(
+			Field("roleNullable", func(Root) *role { r := roleAdmin; return &r }),
+			Field("roleRequired", func(Root) role { return roleAdmin }),
+		),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	cases := []struct {
+		name  string
+		query string
+		want  string
+		bad   string
+	}{
+		{"nullable field suggests Null", `{ roleNullable }`, "use Deny or Null", ""},
+		{"non-null field suggests only Deny", `{ roleRequired }`, "use Deny", "or Null"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := NewExecutor(s, WithAuthorizer(AuthorizerFunc(
+				func(ctx context.Context, shape *AuthShape, d *Decision) error {
+					return d.Set(0, Zero())
+				})))
+			resp := run(t, e, tc.query, "")
+			if len(resp.Errors) == 0 {
+				t.Fatal("operation was not rejected")
+			}
+			msg := resp.Errors[0].Message
+			if !strings.Contains(msg, tc.want) {
+				t.Errorf("error = %s, want it to contain %q", msg, tc.want)
+			}
+			if tc.bad != "" && strings.Contains(msg, tc.bad) {
+				t.Errorf("error = %s, want it NOT to contain %q", msg, tc.bad)
+			}
+		})
+	}
+}
+
+// Only Int was ever exercised for Zero; the other four built-in scalars and
+// a list each have their own literal in writeZero and deserve their own
+// case rather than an inference from Int's.
+func TestZeroWritesEveryBuiltinScalarAndAList(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+type Query {
+  str: String! @requiresScopes(scopes: [["x"]])
+  id: ID! @requiresScopes(scopes: [["x"]])
+  num: Int! @requiresScopes(scopes: [["x"]])
+  flt: Float! @requiresScopes(scopes: [["x"]])
+  flag: Boolean! @requiresScopes(scopes: [["x"]])
+  list: [Int!]! @requiresScopes(scopes: [["x"]])
+}
+`
+	s, err := NewSchema(SDL(sdl),
+		Query(
+			Field("str", func(Root) string { return "hi" }),
+			Field("id", func(Root) ID { return ID("abc") }),
+			Field("num", func(Root) int { return 7 }),
+			Field("flt", func(Root) float64 { return 3.5 }),
+			Field("flag", func(Root) bool { return true }),
+			Field("list", func(Root) []int { return []int{1, 2, 3} }),
+		),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	cases := []struct {
+		field string
+		want  string
+	}{
+		{"str", `{"str":""}`},
+		{"id", `{"id":""}`},
+		{"num", `{"num":0}`},
+		{"flt", `{"flt":0}`},
+		{"flag", `{"flag":false}`},
+		{"list", `{"list":[]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.field, func(t *testing.T) {
+			e := NewExecutor(s, WithAuthorizer(AuthorizerFunc(
+				func(ctx context.Context, shape *AuthShape, d *Decision) error {
+					return d.Set(0, Zero())
+				})))
+			resp := run(t, e, "{ "+tc.field+" }", "")
+			if len(resp.Errors) > 0 {
+				t.Fatalf("errors: %s", errorsJSON(resp.Errors))
+			}
+			if got := string(resp.Data); got != tc.want {
+				t.Errorf("data = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// Deny on User.salary (Int!, under User!) bubbles all the way to the root:
+// the field error alone doesn't show that -- the FORBIDDEN code, the full
+// path to the denied coordinate, and the fully-bubbled data are the parts a
+// substring match on the message can miss.
+func TestOutcomeDenyReportsCodePathAndBubbles(t *testing.T) {
+	s := shapeSchema(t)
+	e := NewExecutor(s, WithAuthorizer(AuthorizerFunc(
+		func(ctx context.Context, shape *AuthShape, d *Decision) error {
+			return d.Set(0, Deny("pay:read", "User.salary"))
+		})))
+	resp := run(t, e, `{ me { salary } }`, "")
+	if len(resp.Errors) != 1 {
+		t.Fatalf("errors = %d, want 1: %s", len(resp.Errors), errorsJSON(resp.Errors))
+	}
+	got := resp.Errors[0]
+	if got.Extensions["code"] != CodeForbidden {
+		t.Errorf("code = %v, want %v", got.Extensions["code"], CodeForbidden)
+	}
+	wantPath := Path{{Key: "me"}, {Key: "salary"}}
+	if len(got.Path) != len(wantPath) {
+		t.Fatalf("path = %v, want %v", got.Path, wantPath)
+	}
+	for i := range wantPath {
+		if got.Path[i] != wantPath[i] {
+			t.Errorf("path[%d] = %+v, want %+v", i, got.Path[i], wantPath[i])
+		}
+	}
+	if got, want := string(resp.Data), "null"; got != want {
+		t.Errorf("data = %s, want %s: salary is non-null under a non-null me, so the denial bubbles past both", got, want)
 	}
 }
 

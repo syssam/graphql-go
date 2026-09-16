@@ -290,6 +290,13 @@ func (e *Executor) runSubscriptionEvent(ctx context.Context, oc *OperationContex
 		f.exec.writeLeaf = func(_ context.Context, w *jsonw.Writer, _, _ any) error {
 			return writeAny(w, event, typ)
 		}
+		// Redact resolves through resolveAny rather than writeLeaf, so it
+		// needs its own event-yielding substitute; without this a redacted
+		// subscription root field would fall through to fd.anyResolve's
+		// errSubscriptionResolved stub.
+		f.exec.resolveAny = func(context.Context, any, any) (any, error) {
+			return event, nil
+		}
 	} else {
 		f.exec.resolve = func(context.Context, any, any) (any, error) { return event, nil }
 	}

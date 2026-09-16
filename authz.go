@@ -225,10 +225,11 @@ func (o Outcome) validFor(site AuthSite) error {
 	switch o.act {
 	case actionNull:
 		// A literal null on a non-null field is not a value the schema
-		// allows: writeField would have to bubble it exactly as any other
-		// non-null violation, silently turning an authorization decision
-		// into the same "Cannot return null" error a broken resolver
-		// produces. Reject it here so the policy author's real options
+		// allows, and enforceAuth's actionNull case writes it and reports
+		// success: writeField only bubbles when writeFieldValue reports
+		// failure, so this would reach the client as a silent, spec-
+		// violating null with no error attached -- not as a bubbled
+		// parent. Reject it here so the policy author's real options
 		// (Zero for a leaf, Deny for anything) are the ones the type
 		// system can represent.
 		if site.Field != nil && site.Field.Type.NonNull {
@@ -239,11 +240,20 @@ func (o Outcome) validFor(site AuthSite) error {
 			return Errorf("authorization: Zero is not valid for %s, which is an object site", site.Coord)
 		}
 		if !zeroWritable(site.Field.Type) {
-			return Errorf("authorization: Zero is not valid for %s: %s has no zero value this package can write; use Deny or Null", site.Coord, site.Field.Type.String())
+			alt := "Deny or Null"
+			if site.Field.Type.NonNull {
+				// Null is itself invalid here (see the actionNull case
+				// above), so don't suggest a second dead end.
+				alt = "Deny"
+			}
+			return Errorf("authorization: Zero is not valid for %s: %s has no zero value this package can write; use %s", site.Coord, site.Field.Type.String(), alt)
 		}
 	case actionRedact:
 		if site.Field == nil || site.Field.Type.Elem != nil || !isLeafField(site) {
 			return Errorf("authorization: Redact is valid only on a leaf field, not %s", site.Coord)
+		}
+		if o.redact == nil {
+			return Errorf("authorization: Redact for %s was constructed with a nil function", site.Coord)
 		}
 	case actionDrop:
 		return Errorf("authorization: Drop is not yet implemented")

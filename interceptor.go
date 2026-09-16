@@ -198,13 +198,20 @@ func (e *Executor) interceptedExec(pf *planField) fieldExec {
 	}
 	if fd.leaf {
 		writeAny, typ := fd.writeAny, fd.typ
-		return fieldExec{writeLeaf: func(ctx context.Context, w *jsonw.Writer, parent, args any) error {
-			v, err := chain(ctx, parent, args)
-			if err != nil {
-				return err
-			}
-			return writeAny(w, v, typ)
-		}}
+		return fieldExec{
+			writeLeaf: func(ctx context.Context, w *jsonw.Writer, parent, args any) error {
+				v, err := chain(ctx, parent, args)
+				if err != nil {
+					return err
+				}
+				return writeAny(w, v, typ)
+			},
+			// resolveAny is chain itself, not a wrapper around writeLeaf:
+			// Redact needs the resolved value before it is written, and
+			// chain is exactly that half of writeLeaf, already carrying
+			// the same interceptor wrapping.
+			resolveAny: chain,
+		}
 	}
 	return fieldExec{resolve: chain}
 }

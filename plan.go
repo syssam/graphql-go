@@ -98,10 +98,20 @@ type planField struct {
 
 // fieldExec holds the executor functions used for a field within one plan.
 // They start as copies of the fieldDef functions and are replaced by
-// interceptor-wrapped versions when the executor has field interceptors.
+// interceptor-wrapped versions when the executor has field interceptors, and
+// by event-yielding versions for a subscription's per-event root field.
 type fieldExec struct {
 	writeLeaf func(ctx context.Context, w *jsonw.Writer, parent, args any) error
 	resolve   func(ctx context.Context, parent, args any) (any, error)
+
+	// resolveAny is writeLeaf's value-producing half, type-erased, for a
+	// leaf field only. Redact needs the resolved value before it is
+	// written so it can rewrite it, which writeLeaf's direct
+	// resolve-then-write doesn't expose; resolveAny is this plan field's
+	// own executor, so it carries the same interceptor wrapping and the
+	// same per-event substitution writeLeaf gets, instead of reaching past
+	// both into the shared fieldDef.
+	resolveAny FieldFunc
 }
 
 // compiler holds per-compilation state.
@@ -312,7 +322,7 @@ func (c *compiler) buildField(obj *objectType, g *fieldGroup) *planField {
 		return nil
 	}
 	pf.def = fd
-	pf.exec = fieldExec{writeLeaf: fd.writeLeaf, resolve: fd.resolve}
+	pf.exec = fieldExec{writeLeaf: fd.writeLeaf, resolve: fd.resolve, resolveAny: fd.anyResolve}
 	pf.schedulable = fd.schedulable
 	if c.e != nil && c.e.cost != nil && c.e.cost.Actual {
 		pf.costWeight = c.e.cost.weight(coordinate(obj.name, fd.name))
