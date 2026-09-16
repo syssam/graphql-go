@@ -654,12 +654,16 @@ type Subscription { tick: Int! @requiresScopes(scopes: [["x"]]) }
 			return d.Set(0, Redact(func(any) any { return 99 }))
 		})))
 
-	respCh, err := e.Subscribe(context.Background(), &Request{Query: `subscription { tick }`})
+	respCh, err := e.Subscribe(t.Context(), &Request{Query: `subscription { tick }`})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
-	ch <- 1
-	resp := <-respCh
+	select {
+	case ch <- 1:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out sending an event")
+	}
+	resp := nextResponse(t, respCh)
 	if len(resp.Errors) > 0 {
 		t.Fatalf("errors: %s", errorsJSON(resp.Errors))
 	}
@@ -1036,20 +1040,20 @@ func TestSubscriptionReauthorizesEveryEvent(t *testing.T) {
 			return nil
 		})))
 
-	ch, err := e.Subscribe(context.Background(), &Request{Query: `subscription { messages { id secret } }`})
+	ch, err := e.Subscribe(t.Context(), &Request{Query: `subscription { messages { id secret } }`})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 
-	src.ch <- &authSubMessage{ID: "1", Secret: "a"}
-	resp1 := <-ch
+	sendEvent(t, src.ch, &authSubMessage{ID: "1", Secret: "a"})
+	resp1 := nextResponse(t, ch)
 	if len(resp1.Errors) != 0 {
 		t.Fatalf("first event errored: %s", errorsJSON(resp1.Errors))
 	}
 
 	allow.Store(false)
-	src.ch <- &authSubMessage{ID: "2", Secret: "b"}
-	resp2 := <-ch
+	sendEvent(t, src.ch, &authSubMessage{ID: "2", Secret: "b"})
+	resp2 := nextResponse(t, ch)
 	if len(resp2.Errors) == 0 {
 		t.Fatal("second event was not rejected after scopes were revoked")
 	}
@@ -1060,8 +1064,8 @@ func TestSubscriptionReauthorizesEveryEvent(t *testing.T) {
 	// The stream must stay open across a rejected event: a later, authorized
 	// event still arrives rather than the channel having been closed.
 	allow.Store(true)
-	src.ch <- &authSubMessage{ID: "3", Secret: "c"}
-	resp3 := <-ch
+	sendEvent(t, src.ch, &authSubMessage{ID: "3", Secret: "c"})
+	resp3 := nextResponse(t, ch)
 	if len(resp3.Errors) != 0 {
 		t.Fatalf("third event errored though scopes were restored: %s", errorsJSON(resp3.Errors))
 	}
@@ -1103,13 +1107,13 @@ func TestOutcomeEnforcementThroughSubscriptionEvent(t *testing.T) {
 			return d.Set(0, Zero())
 		})))
 
-	ch, err := e.Subscribe(context.Background(), &Request{Query: `subscription { messages { id secret } }`})
+	ch, err := e.Subscribe(t.Context(), &Request{Query: `subscription { messages { id secret } }`})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 
-	src.ch <- &authSubMessage{ID: "1", Secret: "top-secret"}
-	resp := <-ch
+	sendEvent(t, src.ch, &authSubMessage{ID: "1", Secret: "top-secret"})
+	resp := nextResponse(t, ch)
 	if len(resp.Errors) != 0 {
 		t.Fatalf("event errored: %s", errorsJSON(resp.Errors))
 	}
