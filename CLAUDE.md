@@ -255,6 +255,22 @@ way to send the 4408 close frame.
 compiler and executor deliberately live in the root package so generic constructors can
 produce engine values directly.
 
+**Authorization is compiled, not wrapped.** `AuthShape` is built once at plan compile
+(`buildAuthShape`) and cached with the plan; it does not depend on the principal, so
+`planKey` is unaffected and the plan cache is not multiplied by policy. A field that
+declares `@requiresScopes` gets `planField.authIdx >= 0` at construction; every other field
+gets `-1`, so the ordinary request path pays one integer compare and no allocation.
+`execState` (64 bytes) and `OperationContext` (160 bytes) held those sizes through this
+branch (`TestStructSizes`, `authz_bench_test.go`) — re-measure both, interleaved, before
+adding a field to either; see the `execState`/`OperationContext` entry above for why a
+non-interleaved reading is not evidence. **Object-level and interface-level
+`@requiresScopes` are not enforced**: `shapeBuilder.field` only ever builds a `SiteOutput`
+from a field's own directive, never from its enclosing object or an interface it
+implements, so `RequireAuthCoverage` deliberately refuses to treat either as covering a
+concrete field — a green build under coverage is not evidence that an object- or
+interface-level declaration does anything; only a field's own `@requiresScopes` or
+`@public` does.
+
 ## Conventions
 
 - **Root package may depend only on `gqlparser/v2` and the standard library.** Transports,
