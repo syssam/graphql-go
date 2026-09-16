@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -73,24 +74,7 @@ func TestNewRequirementCopiesItsGroups(t *testing.T) {
 // document yields the same sites regardless of who asks. That is what keeps
 // the plan cache from multiplying by policy.
 func TestAuthShapeListsOnlyDeclaringFields(t *testing.T) {
-	const sdl = `
-directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
-type Query { me: User! open: String! }
-type User { id: ID! salary: Int! @requiresScopes(scopes: [["pay:read"]]) }
-`
-	s, err := NewSchema(SDL(sdl),
-		Query(
-			Resolve("me", func(context.Context, Root) (*shapeUser, error) { return &shapeUser{}, nil }),
-			Field("open", func(Root) string { return "ok" }),
-		),
-		Object[shapeUser]("User",
-			Field("id", func(u *shapeUser) ID { return ID(u.ID) }),
-			Field("salary", func(u *shapeUser) int { return u.Salary }),
-		),
-	)
-	if err != nil {
-		t.Fatalf("NewSchema: %v", err)
-	}
+	s := shapeSchema(t)
 	var shape *AuthShape
 	e := NewExecutor(s, WithOperationInterceptor(OperationInterceptorFunc(
 		func(ctx context.Context, oc *OperationContext, next OperationHandler) *Response {
@@ -294,4 +278,135 @@ func planForTest(t *testing.T, e *Executor, query string) (*plan, bool, []*Error
 type shapeUser struct {
 	ID     string
 	Salary int
+}
+
+const shapeSDL = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+type Query { me: User! open: String! }
+type User { id: ID! salary: Int! @requiresScopes(scopes: [["pay:read"]]) }
+`
+
+func shapeSchema(t testing.TB) *Schema {
+	t.Helper()
+	s, err := NewSchema(SDL(shapeSDL),
+		Query(
+			Resolve("me", func(context.Context, Root) (*shapeUser, error) {
+				return &shapeUser{ID: "1", Salary: 100}, nil
+			}),
+			Field("open", func(Root) string { return "ok" }),
+		),
+		Object[shapeUser]("User",
+			Field("id", func(u *shapeUser) ID { return ID(u.ID) }),
+			Field("salary", func(u *shapeUser) int { return u.Salary }),
+		),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	return s
+}
+
+func TestAuthorizerRunsOncePerOperation(t *testing.T) {
+	var calls atomic.Int64
+	s := shapeSchema(t)
+	e := NewExecutor(s, WithAuthorizer(AuthorizerFunc(
+		func(ctx context.Context, shape *AuthShape, d *Decision) error {
+			calls.Add(1)
+			return nil
+		})))
+	// Two User values, each selecting the declaring field: a per-field or
+	// per-row authorizer would run more than once.
+	resp := run(t, e, `{ a: me { salary } b: me { salary } }`, "")
+	if len(resp.Errors) > 0 {
+		t.Fatalf("errors: %s", errorsJSON(resp.Errors))
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("authorizer ran %d times, want 1", got)
+	}
+}
+
+func TestAuthorizerErrorRejectsTheOperation(t *testing.T) {
+	s := shapeSchema(t)
+	e := NewExecutor(s, WithAuthorizer(AuthorizerFunc(
+		func(ctx context.Context, shape *AuthShape, d *Decision) error {
+			return Errorf("nope").WithCode("FORBIDDEN")
+		})))
+	resp := run(t, e, `{ me { salary } }`, "")
+	if len(resp.Errors) == 0 {
+		t.Fatal("operation was not rejected")
+	}
+	if resp.Data != nil && string(resp.Data) != "null" {
+		t.Errorf("rejected operation returned data: %s", resp.Data)
+	}
+}
+
+// An operation touching nothing that declares must not pay for an authorizer
+// call at all.
+func TestAuthorizerSkippedForAnEmptyShape(t *testing.T) {
+	var calls atomic.Int64
+	s := shapeSchema(t)
+	e := NewExecutor(s, WithAuthorizer(AuthorizerFunc(
+		func(ctx context.Context, shape *AuthShape, d *Decision) error {
+			calls.Add(1)
+			return nil
+		})))
+	run(t, e, `{ open }`, "")
+	if got := calls.Load(); got != 0 {
+		t.Errorf("authorizer ran %d times for an operation with no sites, want 0", got)
+	}
+}
+
+// ScopeAuthorizer records a Deny for a site whose scopes are not held. What
+// the write path then does with that Deny is Task 6; this asserts only that
+// the decision was recorded, which is all that exists yet.
+func TestScopeAuthorizerRecordsDenyForUnheldScopes(t *testing.T) {
+	var recorded Outcome
+	s := shapeSchema(t)
+	base := ScopeAuthorizer(func(context.Context) map[string]bool {
+		return map[string]bool{"other": true}
+	})
+	e := NewExecutor(s, WithAuthorizer(AuthorizerFunc(
+		func(ctx context.Context, shape *AuthShape, d *Decision) error {
+			if err := base.Authorize(ctx, shape, d); err != nil {
+				return err
+			}
+			recorded = d.Outcome(0)
+			return nil
+		})))
+	run(t, e, `{ me { salary } }`, "")
+	if recorded.act != actionDeny {
+		t.Errorf("outcome for an unheld scope = %v, want actionDeny", recorded.act)
+	}
+	if !strings.Contains(recorded.denial().Message, "or it might not exist") {
+		t.Errorf("denial does not use the AIP-211 wording: %s", recorded.denial().Message)
+	}
+}
+
+// AuthShape.Sites() must not hand back the plan's own backing slice: the
+// shape is cached with the plan and reused by every later request, and
+// Authorize hands it to user-supplied code. A caller that mutates a
+// returned AuthSite must not be able to corrupt authorization for a later
+// request that reuses the same plan.
+func TestAuthShapeSitesReturnsAnIndependentCopy(t *testing.T) {
+	s := shapeSchema(t)
+	e := NewExecutor(s)
+	p, _, perrs := planForTest(t, e, `{ me { salary } }`)
+	if perrs != nil {
+		t.Fatalf("plan: %v", perrs)
+	}
+
+	sites := p.shape.Sites()
+	if len(sites) != 1 {
+		t.Fatalf("got %d sites, want 1", len(sites))
+	}
+	sites[0].Coord = "corrupted"
+	sites[0].Requires = NewRequirement([]string{"corrupted"})
+
+	again := p.shape.Sites()
+	if again[0].Coord != "User.salary" {
+		t.Errorf("mutating a returned site changed the plan's own site: Coord = %q", again[0].Coord)
+	}
+	if !again[0].Requires.Satisfied(map[string]bool{"pay:read": true}) {
+		t.Error("mutating a returned site's Requires changed the plan's own requirement")
+	}
 }

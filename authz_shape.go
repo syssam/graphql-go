@@ -68,6 +68,7 @@ func (b *shapeBuilder) field(f *planField) {
 				Object:   f.def.object.def,
 				Kind:     SiteOutput,
 				Requires: req,
+				leaf:     f.def.leaf,
 			})
 			b.scopes = append(b.scopes, req.Scopes()...)
 		}

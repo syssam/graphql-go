@@ -1,7 +1,9 @@
 package graphql
 
 import (
+	"context"
 	"slices"
+	"strings"
 
 	"github.com/vektah/gqlparser/v2/ast"
 )
@@ -87,6 +89,14 @@ type AuthSite struct {
 	Kind     SiteKind
 	Requires Requirement
 	Grants   []string
+
+	// leaf records whether Field is a scalar or enum, precomputed at shape
+	// build from fieldDef.leaf (object.go). AuthSite carries only the AST,
+	// and a field's own ast.FieldDefinition cannot answer this on its own:
+	// a custom scalar's name is syntactically indistinguishable from an
+	// object type's without walking the schema's type registry, which is
+	// exactly what fieldDef.leaf already did once, at schema build.
+	leaf bool
 }
 
 // AuthShape is what an operation touches, independent of who is asking. It
@@ -99,11 +109,27 @@ type AuthShape struct {
 
 // Sites returns the positions needing a decision, indexed by site index.
 // planField.authIdx indexes into this slice.
+//
+// The shape is cached with its plan and shared by every request that reuses
+// it, and Authorize hands it to caller-supplied code, so this returns an
+// independent copy rather than the plan's own slice: a caller that mutates
+// a returned AuthSite's Coord, Requires or Grants must not corrupt
+// authorization for a later request. Field and Object remain shared
+// *ast.FieldDefinition/*ast.Definition pointers into the parsed schema —
+// cloning gqlparser's AST per call would be its own, larger cost, and
+// nothing in this package ever mutates that AST after NewSchema returns, so
+// a caller would have to go out of its way to reach for a mutation this
+// package itself never performs.
 func (s *AuthShape) Sites() []AuthSite {
 	if s == nil {
 		return nil
 	}
-	return s.sites
+	out := make([]AuthSite, len(s.sites))
+	copy(out, s.sites)
+	for i := range out {
+		out[i].Grants = slices.Clone(out[i].Grants)
+	}
+	return out
 }
 
 // Scopes returns every scope named anywhere in the operation, sorted and
@@ -118,3 +144,173 @@ func (s *AuthShape) Scopes() []string {
 // IsEmpty reports whether the operation touches nothing that declares a
 // requirement. An Authorizer is not consulted for such an operation.
 func (s *AuthShape) IsEmpty() bool { return s == nil || len(s.sites) == 0 }
+
+type action uint8
+
+const (
+	actionAllow action = iota
+	actionDeny
+	actionNull
+	actionZero
+	actionRedact
+	actionDrop
+)
+
+// Outcome is what the executor does with a site. The zero Outcome allows, so
+// a Decision an Authorizer leaves untouched changes nothing.
+type Outcome struct {
+	act        action
+	redact     func(any) any
+	permission string
+	resource   string
+}
+
+// Allow resolves the field normally.
+func Allow() Outcome { return Outcome{} }
+
+// Deny refuses the field. The message follows AIP-211: it reveals neither the
+// value nor whether the resource exists, because choosing between
+// PERMISSION_DENIED and NOT_FOUND is itself an existence oracle.
+func Deny(permission, resource string) Outcome {
+	return Outcome{act: actionDeny, permission: permission, resource: resource}
+}
+
+// Null writes null without resolving the field.
+func Null() Outcome { return Outcome{act: actionNull} }
+
+// Zero writes the zero value of the field's type without resolving it. It is
+// how a non-null field is withheld without null-bubbling its parent.
+func Zero() Outcome { return Outcome{act: actionZero} }
+
+// Redact resolves the field and rewrites the result.
+func Redact(fn func(any) any) Outcome { return Outcome{act: actionRedact, redact: fn} }
+
+// Drop omits the value from its enclosing list.
+func Drop() Outcome { return Outcome{act: actionDrop} }
+
+func (o Outcome) denial() *Error {
+	return Errorf("Permission %q denied on resource %q (or it might not exist).", o.permission, o.resource).
+		WithCode(CodeForbidden)
+}
+
+// zeroWritable reports whether t has a zero value this package can write
+// without reflection. A list's zero is the empty list. Among leaves only the
+// built-in scalars have one: an enum's zero would have to be a member the
+// schema may not define, and a custom scalar's is the author's to decide.
+func zeroWritable(t *ast.Type) bool {
+	if t.Elem != nil {
+		return true
+	}
+	switch t.NamedType {
+	case "String", "ID", "Int", "Float", "Boolean":
+		return true
+	}
+	return false
+}
+
+// isLeafField reports whether site's field is a leaf (scalar or enum) as
+// opposed to a list or a composite (object/interface/union) type. It reuses
+// the leaf-ness fieldDef already computed at schema build (object.go) via
+// the existing isLeaf(schema, type) helper, rather than re-deriving it here
+// from the AST alone, which cannot distinguish a custom scalar's name from
+// an object type's without the schema's type registry.
+func isLeafField(site AuthSite) bool { return site.leaf }
+
+// validFor rejects an outcome the site cannot represent, so a policy mistake
+// surfaces once per request with the coordinate attached rather than as a
+// null-bubbled parent at write time.
+func (o Outcome) validFor(site AuthSite) error {
+	switch o.act {
+	case actionZero:
+		if site.Field == nil {
+			return Errorf("authorization: Zero is not valid for %s, which is an object site", site.Coord)
+		}
+		if !zeroWritable(site.Field.Type) {
+			return Errorf("authorization: Zero is not valid for %s: %s has no zero value this package can write; use Deny or Null", site.Coord, site.Field.Type.String())
+		}
+	case actionRedact:
+		if site.Field == nil || site.Field.Type.Elem != nil || !isLeafField(site) {
+			return Errorf("authorization: Redact is valid only on a leaf field, not %s", site.Coord)
+		}
+	case actionDrop:
+		return Errorf("authorization: Drop is not yet implemented")
+	}
+	return nil
+}
+
+// Authorizer turns an operation's shape into a decision for one principal.
+// It runs once per operation, before any field resolves, and is not called
+// at all when the operation touches nothing that declares a requirement.
+//
+// A returned error rejects the whole operation. The interface deliberately
+// holds no policy of its own: it is the adapter to whatever decides, be that
+// OPA, Cedar, OpenFGA, Casbin or a hand-written checker.
+type Authorizer interface {
+	Authorize(ctx context.Context, shape *AuthShape, d *Decision) error
+}
+
+// AuthorizerFunc adapts a function to Authorizer.
+type AuthorizerFunc func(ctx context.Context, shape *AuthShape, d *Decision) error
+
+// Authorize implements Authorizer.
+func (f AuthorizerFunc) Authorize(ctx context.Context, shape *AuthShape, d *Decision) error {
+	return f(ctx, shape, d)
+}
+
+// WithAuthorizer sets the authorizer consulted once per operation.
+func WithAuthorizer(a Authorizer) ExecutorOption {
+	return func(e *Executor) { e.authorizer = a }
+}
+
+// Decision records the outcome for each site in a shape. It is passed to the
+// Authorizer rather than returned by it so the framework owns the allocation
+// and sizes it from the shape. The zero value of every entry allows.
+type Decision struct {
+	shape    *AuthShape
+	outcomes []Outcome
+}
+
+func newDecision(shape *AuthShape) *Decision {
+	return &Decision{shape: shape, outcomes: make([]Outcome, len(shape.sites))}
+}
+
+// Set records the outcome for one site. It reports an error for an outcome
+// the site cannot represent, so a policy mistake surfaces once per request
+// with the coordinate attached rather than as a null-bubbled parent.
+func (d *Decision) Set(site int, o Outcome) error {
+	if d == nil || site < 0 || site >= len(d.outcomes) {
+		return Errorf("authorization: site %d is out of range", site)
+	}
+	if err := o.validFor(d.shape.sites[site]); err != nil {
+		return err
+	}
+	d.outcomes[site] = o
+	return nil
+}
+
+// Outcome returns the recorded outcome for a site.
+func (d *Decision) Outcome(site int) Outcome {
+	if d == nil || site < 0 || site >= len(d.outcomes) {
+		return Outcome{}
+	}
+	return d.outcomes[site]
+}
+
+// ScopeAuthorizer is the default policy: a site is allowed when held covers
+// its Requirement, and denied with the AIP-211 wording otherwise. It exists
+// so the common case needs no Authorizer of its own.
+func ScopeAuthorizer(held func(context.Context) map[string]bool) Authorizer {
+	return AuthorizerFunc(func(ctx context.Context, shape *AuthShape, d *Decision) error {
+		have := held(ctx)
+		for i, site := range shape.Sites() {
+			if site.Requires.Satisfied(have) {
+				continue
+			}
+			scopes := site.Requires.Scopes()
+			if err := d.Set(i, Deny(strings.Join(scopes, " or "), site.Coord)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}

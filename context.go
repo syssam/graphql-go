@@ -23,6 +23,11 @@ type OperationContext struct {
 	entry *docEntry
 	hub   *WaveCoordinator
 
+	// decision holds the Authorizer's output for this operation, filled once
+	// in runOperation before any field resolves. Nil when no Authorizer is
+	// configured or the operation's shape is empty.
+	decision *Decision
+
 	// event is set only while executing one event of a subscription, and is
 	// what routes the operation chain to the per-event writer.
 	event *subEvent

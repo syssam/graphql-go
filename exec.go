@@ -43,6 +43,7 @@ type Executor struct {
 	maxComplexity int
 	maxDepth      int
 	cost          *QueryCost
+	authorizer    Authorizer
 }
 
 // ExecutorOption configures an Executor.
@@ -266,6 +267,13 @@ func (e *Executor) runOperation(ctx context.Context, oc *OperationContext) *Resp
 		return e.runSubscriptionEvent(ctx, oc)
 	}
 	p := oc.plan
+	if e.authorizer != nil && !p.shape.IsEmpty() {
+		d := newDecision(p.shape)
+		if err := e.authorizer.Authorize(ctx, p.shape, d); err != nil {
+			return e.requestError(ctx, e.presenter(ctx, err))
+		}
+		oc.decision = d
+	}
 	w := jsonw.Get()
 	st := &execState{e: e, s: e.schema, vars: oc.Variables}
 	ok := st.writeObject(ctx, w, p.root, p.sel, &Root{}, nil, p.op.Operation == ast.Mutation)
