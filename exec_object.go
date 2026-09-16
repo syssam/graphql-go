@@ -123,20 +123,33 @@ func (st *execState) fieldInfo(f *planField, path *pathNode) FieldInfo {
 	return FieldInfo{Object: fd.object.name, Field: fd.name, Alias: f.alias, pathParent: path}
 }
 
+// observerContexts is how many observers' contexts a field keeps on the stack
+// before it needs a heap slice. Each observer's EndField must get back the
+// context its own BeginField returned, not the innermost one, so every one is
+// kept; registering more observers than this is unusual enough that the
+// allocation is acceptable.
+const observerContexts = 4
+
 // callLeaf invokes a leaf executor with panic protection and a FieldContext.
 func (st *execState) callLeaf(ctx context.Context, w *jsonw.Writer, f *planField, parent, args any, path *pathNode) (err error) {
 	ctx, fc := st.fieldContext(ctx, f, parent, args, path)
 	// The observer's deferred EndField must be registered before the recovery
 	// defer below, so it runs after recovery has converted a panic into err --
 	// otherwise EndField would see a nil error for a field that panicked.
-	if len(st.e.fieldObservers) > 0 {
+	if obs := st.e.fieldObservers; len(obs) > 0 {
 		fi := st.fieldInfo(f, path)
-		for _, o := range st.e.fieldObservers {
+		var inline [observerContexts]context.Context
+		begun := inline[:0]
+		if len(obs) > len(inline) {
+			begun = make([]context.Context, 0, len(obs))
+		}
+		for _, o := range obs {
 			ctx = o.BeginField(ctx, fi)
+			begun = append(begun, ctx)
 		}
 		defer func() {
-			for i := len(st.e.fieldObservers) - 1; i >= 0; i-- {
-				st.e.fieldObservers[i].EndField(ctx, fi, err)
+			for i := len(obs) - 1; i >= 0; i-- {
+				obs[i].EndField(begun[i], fi, err)
 			}
 		}()
 	}
@@ -153,14 +166,20 @@ func (st *execState) callLeaf(ctx context.Context, w *jsonw.Writer, f *planField
 // callResolve invokes a composite executor with the same protections.
 func (st *execState) callResolve(ctx context.Context, f *planField, parent, args any, path *pathNode) (v any, err error) {
 	ctx, fc := st.fieldContext(ctx, f, parent, args, path)
-	if len(st.e.fieldObservers) > 0 {
+	if obs := st.e.fieldObservers; len(obs) > 0 {
 		fi := st.fieldInfo(f, path)
-		for _, o := range st.e.fieldObservers {
+		var inline [observerContexts]context.Context
+		begun := inline[:0]
+		if len(obs) > len(inline) {
+			begun = make([]context.Context, 0, len(obs))
+		}
+		for _, o := range obs {
 			ctx = o.BeginField(ctx, fi)
+			begun = append(begun, ctx)
 		}
 		defer func() {
-			for i := len(st.e.fieldObservers) - 1; i >= 0; i-- {
-				st.e.fieldObservers[i].EndField(ctx, fi, err)
+			for i := len(obs) - 1; i >= 0; i-- {
+				obs[i].EndField(begun[i], fi, err)
 			}
 		}()
 	}

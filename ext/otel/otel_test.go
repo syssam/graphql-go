@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -44,6 +45,22 @@ func newHarness(t *testing.T, opts ...gqlotel.Option) *harness {
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 
 	ticks := make(chan int)
+	s := newSchema(t, ticks)
+
+	opts = append([]gqlotel.Option{
+		gqlotel.WithTracerProvider(tp),
+		gqlotel.WithMeterProvider(mp),
+	}, opts...)
+	return &harness{
+		spans:   sr,
+		metrics: reader,
+		exec:    graphql.NewExecutor(s, gqlotel.New(opts...)...),
+		ticks:   ticks,
+	}
+}
+
+func newSchema(t *testing.T, ticks chan int) *graphql.Schema {
+	t.Helper()
 	s, err := graphql.NewSchema(graphql.SDL(sdl),
 		graphql.Object[user]("User",
 			graphql.Field("id", func(u *user) string { return u.ID }),
@@ -67,17 +84,7 @@ func newHarness(t *testing.T, opts ...gqlotel.Option) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	opts = append([]gqlotel.Option{
-		gqlotel.WithTracerProvider(tp),
-		gqlotel.WithMeterProvider(mp),
-	}, opts...)
-	return &harness{
-		spans:   sr,
-		metrics: reader,
-		exec:    graphql.NewExecutor(s, gqlotel.New(opts...)...),
-		ticks:   ticks,
-	}
+	return s
 }
 
 func (h *harness) run(t *testing.T, query, opName string) *graphql.Response {
@@ -223,6 +230,46 @@ func TestFieldSpansAreOptional(t *testing.T) {
 	if got := attrOf(t, field, gqlotel.AttrFieldPath).AsString(); got != "me.name" {
 		t.Fatalf("field path = %q", got)
 	}
+}
+
+// TestFieldSpansEndUnderTwoProviders registers ext/otel twice on one
+// executor. Each configuration's EndField has to be handed the context its own
+// BeginField returned; given the innermost one instead, the outer
+// configuration ends the inner span and leaves every span of its own open.
+func TestFieldSpansEndUnderTwoProviders(t *testing.T) {
+	var recorders []*tracetest.SpanRecorder
+	var opts []graphql.ExecutorOption
+	for range 2 {
+		sr := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+		recorders = append(recorders, sr)
+		opts = append(opts, gqlotel.New(gqlotel.WithTracerProvider(tp), gqlotel.WithFieldSpans(true))...)
+	}
+	e := graphql.NewExecutor(newSchema(t, make(chan int)), opts...)
+	resp := e.Execute(context.Background(), &graphql.Request{Query: `{ me { id name } }`})
+	t.Cleanup(resp.Release)
+
+	for i, sr := range recorders {
+		started, ended := fieldSpanNames(sr.Started()), fieldSpanNames(sr.Ended())
+		if len(started) != 3 {
+			t.Errorf("provider %d started field spans %v, want Query.me, User.id and User.name", i+1, started)
+		}
+		if strings.Join(started, ",") != strings.Join(ended, ",") {
+			t.Errorf("provider %d started field spans %v but ended %v", i+1, started, ended)
+		}
+	}
+}
+
+func fieldSpanNames[S interface{ Name() string }](spans []S) []string {
+	var names []string
+	for _, s := range spans {
+		switch s.Name() {
+		case "Query.me", "User.id", "User.name":
+			names = append(names, s.Name())
+		}
+	}
+	slices.Sort(names)
+	return names
 }
 
 // TestFieldSpansRecordAPanicAsAnError pins the property this task exists for:

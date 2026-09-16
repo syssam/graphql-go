@@ -2,6 +2,8 @@ package graphql
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 )
 
@@ -178,5 +180,55 @@ func TestFieldObserverSeesPanicAsErrorForCompositeResolve(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatal("EndField saw a nil error for a composite field that panicked")
+	}
+}
+
+// taggingObserver stores its own tag under a key every instance shares, so a
+// context handed to the wrong observer's EndField reads back another's tag.
+type taggingObserver struct {
+	tag string
+	mu  sync.Mutex
+	bad []string
+}
+
+type sharedObsKey struct{}
+
+func (o *taggingObserver) BeginField(ctx context.Context, f FieldInfo) context.Context {
+	return context.WithValue(ctx, sharedObsKey{}, o.tag)
+}
+
+func (o *taggingObserver) EndField(ctx context.Context, f FieldInfo, err error) {
+	if got, _ := ctx.Value(sharedObsKey{}).(string); got != o.tag {
+		o.mu.Lock()
+		o.bad = append(o.bad, f.Object+"."+f.Field+" saw "+got)
+		o.mu.Unlock()
+	}
+}
+
+// TestFieldObserversEachGetTheirOwnContext covers more than one observer:
+// each EndField must receive the context its own BeginField returned, not the
+// innermost observer's. Handing every observer the final context made ext/otel
+// end the inner span twice and never end the outer one.
+func TestFieldObserversEachGetTheirOwnContext(t *testing.T) {
+	// Two is the case that regressed; nine outgrows any small fixed store the
+	// engine keeps the contexts in, so both storage paths are covered.
+	for _, n := range []int{2, 9} {
+		t.Run(fmt.Sprint(n), func(t *testing.T) {
+			var obs []*taggingObserver
+			var opts []FieldObserver
+			for i := range n {
+				o := &taggingObserver{tag: fmt.Sprint("observer-", i)}
+				obs = append(obs, o)
+				opts = append(opts, o)
+			}
+			_, e := newFixtureExecutor(t, WithFieldObserver(opts...))
+			run(t, e, `{ users { id name } }`, "")
+
+			for _, o := range obs {
+				if len(o.bad) > 0 {
+					t.Errorf("observer %q got another observer's context: %v", o.tag, o.bad)
+				}
+			}
+		})
 	}
 }
