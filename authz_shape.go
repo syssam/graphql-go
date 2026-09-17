@@ -29,7 +29,9 @@ func buildAuthShape(root *objectType, sel *selectionSet) *AuthShape {
 		return nil
 	}
 	slices.Sort(b.scopes)
-	return &AuthShape{sites: b.sites, scopes: slices.Compact(b.scopes), hasArgSites: b.hasArgSites}
+	s := &AuthShape{sites: b.sites, scopes: slices.Compact(b.scopes), hasArgSites: b.hasArgSites}
+	s.src.shape = s
+	return s
 }
 
 type shapeBuilder struct {

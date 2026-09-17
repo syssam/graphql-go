@@ -23,6 +23,14 @@ func TestStructSizes(t *testing.T) {
 	if got := unsafe.Sizeof(planField{}); got != 176 {
 		t.Errorf("planField = %d bytes, want 176 (argSites must stay a count, not a slice)", got)
 	}
+
+	// Every authorized request allocates a Decision. Holding the argument
+	// input table inline ([][]InputKey) took it from 32 to 56 bytes, the
+	// 64-byte size class: +32 B/op on BenchmarkExecuteWithAuthorizer for a
+	// plan with no argument site at all. The table sits behind src instead.
+	if got := unsafe.Sizeof(Decision{}); got != 32 {
+		t.Errorf("Decision = %d bytes, want 32 (argument input must stay behind a pointer)", got)
+	}
 }
 
 func BenchmarkExecuteNoAuthorizer(b *testing.B) {

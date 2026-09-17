@@ -172,6 +172,11 @@ type AuthShape struct {
 	// hasArgSites gates the per-request input walk, so a plan without
 	// argument sites pays nothing for it.
 	hasArgSites bool
+
+	// src is the input-free decisionSource every Decision over this shape
+	// shares when there is no input to carry, so newDecision allocates no
+	// source of its own.
+	src decisionSource
 }
 
 // Sites returns the positions needing a decision, indexed by site index.
@@ -295,6 +300,11 @@ func (o Outcome) validFor(site AuthSite) error {
 	if site.Kind == SiteObject && o.act != actionAllow && o.act != actionDeny {
 		return Errorf("authorization: only Allow and Deny are valid for %s, an object site guarding __typename", site.Coord)
 	}
+	// An argument site decides whether the field may run with the input it
+	// was given; there is no value of its own to null, zero or redact.
+	if (site.Kind == SiteFilterArg || site.Kind == SiteInputWrite) && o.act != actionAllow && o.act != actionDeny {
+		return Errorf("authorization: only Allow and Deny are valid for %s, an argument site", site.Coord)
+	}
 	switch o.act {
 	case actionNull:
 		// A literal null on a non-null field is not a value the schema
@@ -366,12 +376,35 @@ func WithAuthorizer(a Authorizer) ExecutorOption {
 // Authorizer rather than returned by it so the framework owns the allocation
 // and sizes it from the shape. The zero value of every entry allows.
 type Decision struct {
-	shape    *AuthShape
+	src      *decisionSource
 	outcomes []Outcome
 }
 
+// decisionSource is what a Decision reads besides its own outcomes. It sits
+// behind a pointer rather than inline so Decision stays in the 32-byte size
+// class: every authorized request allocates one, and a plan with no argument
+// site shares the source cached on its AuthShape instead of paying for an
+// input table it never fills.
+type decisionSource struct {
+	shape *AuthShape
+
+	// inputs holds, per site, what the client supplied for an argument site.
+	// Nil when the plan has no argument sites.
+	inputs [][]InputKey
+}
+
+// Input returns what the client supplied for an argument site: key paths,
+// enum values and explicit nulls, never scalar values. It is empty for any
+// other site and for an argument the client did not supply.
+func (d *Decision) Input(site int) []InputKey {
+	if d == nil || d.src == nil || site < 0 || site >= len(d.src.inputs) {
+		return nil
+	}
+	return d.src.inputs[site]
+}
+
 func newDecision(shape *AuthShape) *Decision {
-	return &Decision{shape: shape, outcomes: make([]Outcome, len(shape.sites))}
+	return &Decision{src: &shape.src, outcomes: make([]Outcome, len(shape.sites))}
 }
 
 // Set records the outcome for one site. It reports an error for an outcome
@@ -381,7 +414,7 @@ func (d *Decision) Set(site int, o Outcome) error {
 	if d == nil || site < 0 || site >= len(d.outcomes) {
 		return Errorf("authorization: site %d is out of range", site)
 	}
-	if err := o.validFor(d.shape.sites[site]); err != nil {
+	if err := o.validFor(d.src.shape.sites[site]); err != nil {
 		return err
 	}
 	d.outcomes[site] = o

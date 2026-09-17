@@ -14,6 +14,17 @@ import (
 // Redact is the only outcome that still runs the resolver, so it is the only
 // one not decided here; it is handled at the leaf call in exec_object.go.
 func (st *execState) enforceAuth(ctx context.Context, w *jsonw.Writer, f *planField, path *pathNode) (done, ok bool) {
+	// A denied argument refuses the field whatever its output outcome is:
+	// checked first because Redact would otherwise run the resolver with the
+	// input the policy refused, and Null or Zero would hide that the request
+	// was refused at all. The argument sites follow the output site
+	// contiguously (see planField.argSites).
+	for i := f.authIdx + 1; i <= f.authIdx+f.argSites; i++ {
+		if o := st.decision.Outcome(int(i)); o.act == actionDeny {
+			st.fieldError(ctx, o.denial(), path, f)
+			return true, false
+		}
+	}
 	o := st.decision.Outcome(int(f.authIdx))
 	switch o.act {
 	case actionDeny:

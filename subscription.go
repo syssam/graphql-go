@@ -195,22 +195,29 @@ func (e *Executor) Subscribe(ctx context.Context, req *Request) (<-chan *Respons
 	// successful one would.
 	open := SubscriptionHandler(func(ctx context.Context, oc *OperationContext) (<-chan *Response, error) {
 		// Gates opening the source itself, so an unauthorized client never
-		// runs its side effects or learns what it reports. Two things refuse
-		// here: an Authorize error, and a Deny recorded for the subscription
-		// root field. The default policy denies by recording rather than by
-		// erroring, so checking the error alone would let it open the source.
-		// Null, Zero and Redact on the root still open: they shape what an
-		// event says, not whether the client may subscribe. Fields below the
-		// root are left to the per-event re-authorization in runOperation,
-		// which re-evaluates on every event so a mid-stream revocation takes
-		// effect without tearing the stream down.
-		d, err := e.authorize(ctx, p)
+		// runs its side effects or learns what it reports. Three things refuse
+		// here: an Authorize error, a Deny recorded for the subscription root
+		// field, and a Deny recorded for any of its argument sites -- a
+		// filter the client may not use must not open a stream filtered by
+		// it. The default policy denies by recording rather than by erroring,
+		// so checking the error alone would let it open the source. Null,
+		// Zero and Redact on the root still open: they shape what an event
+		// says, not whether the client may subscribe. Fields below the root
+		// are left to the per-event re-authorization in runOperation, which
+		// re-evaluates on every event so a mid-stream revocation takes effect
+		// without tearing the stream down.
+		d, err := e.authorize(ctx, p, oc.Variables)
 		if err != nil {
 			return nil, e.subscribeError(ctx, authorizerError(ctx, err))
 		}
 		if f.authIdx >= 0 {
 			if o := d.Outcome(int(f.authIdx)); o.act == actionDeny {
 				return nil, e.subscribeError(ctx, o.denial().WithPath(Path{{Key: f.alias}}))
+			}
+			for i := f.authIdx + 1; i <= f.authIdx+f.argSites; i++ {
+				if o := d.Outcome(int(i)); o.act == actionDeny {
+					return nil, e.subscribeError(ctx, o.denial().WithPath(Path{{Key: f.alias}}))
+				}
 			}
 		}
 		stream, serr := f.def.subscribe(ctx, args)

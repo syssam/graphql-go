@@ -380,18 +380,18 @@ func authorizerError(ctx context.Context, err error) *Error {
 // nothing requiring authorization. A non-nil error rejects the whole
 // operation, one subscription event, or — when called as the stream opens —
 // the subscription itself.
-func (e *Executor) authorize(ctx context.Context, p *plan) (*Decision, error) {
+func (e *Executor) authorize(ctx context.Context, p *plan, vars map[string]any) (*Decision, error) {
 	if e.authorizer == nil || p.shape.IsEmpty() {
 		return nil, nil
 	}
-	return e.runAuthorizer(ctx, p)
+	return e.runAuthorizer(ctx, p, vars)
 }
 
 // runAuthorizer is split from authorize so the disabled path carries no
 // deferred recover. The recover matters beyond tidiness: per-event
 // authorization runs in pump's goroutine, where a panicking policy client
 // would end the process rather than one request.
-func (e *Executor) runAuthorizer(ctx context.Context, p *plan) (d *Decision, err error) {
+func (e *Executor) runAuthorizer(ctx context.Context, p *plan, vars map[string]any) (d *Decision, err error) {
 	if e.recover {
 		defer func() {
 			if r := recover(); r != nil {
@@ -404,6 +404,18 @@ func (e *Executor) runAuthorizer(ctx context.Context, p *plan) (d *Decision, err
 		}()
 	}
 	d = newDecision(p.shape)
+	// The walk sits inside the recover above, so a panic in it is handled
+	// like an Authorizer's. It is gated so a plan with no argument site walks
+	// and allocates nothing.
+	if p.shape.hasArgSites {
+		src := &decisionSource{shape: p.shape, inputs: make([][]InputKey, len(p.shape.sites))}
+		for i, s := range p.shape.sites {
+			if s.argValue != nil {
+				src.inputs[i] = inputKeys(e.schema.ast.Types, s.argType, s.argValue, vars)
+			}
+		}
+		d.src = src
+	}
 	if err := e.authorizer.Authorize(ctx, p.shape, d); err != nil {
 		return nil, err
 	}
@@ -421,7 +433,7 @@ func (e *Executor) runAuthorizer(ctx context.Context, p *plan) (d *Decision, err
 // pump keeps draining the source.
 func (e *Executor) runOperation(ctx context.Context, oc *OperationContext) *Response {
 	p := oc.plan
-	decision, err := e.authorize(ctx, p)
+	decision, err := e.authorize(ctx, p, oc.Variables)
 	if err != nil {
 		return e.requestError(ctx, authorizerError(ctx, err))
 	}

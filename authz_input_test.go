@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -543,5 +544,276 @@ func TestPlanWithoutArgumentSitesIsUnchanged(t *testing.T) {
 	}
 	if !p.shape.IsEmpty() {
 		t.Errorf("a plan touching no guarded field or argument built sites: %v", p.shape.Sites())
+	}
+}
+
+// taxPolicy denies any filter or ordering that touches taxNumber, and any write
+// that sets it -- the consumer's field control in miniature.
+func taxPolicy(seen *[]InputKey) Authorizer {
+	return AuthorizerFunc(func(ctx context.Context, shape *AuthShape, d *Decision) error {
+		for i, s := range shape.Sites() {
+			if s.Kind != SiteFilterArg && s.Kind != SiteInputWrite {
+				continue
+			}
+			for _, k := range d.Input(i) {
+				if seen != nil {
+					*seen = append(*seen, k)
+				}
+				if slices.Contains(k.Path, "taxNumber") || k.Enum == "TAX_NUMBER" {
+					if err := d.Set(i, Deny("customer:taxNumber", s.Coord)); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		return nil
+	})
+}
+
+func TestArgumentSiteDenyRefusesTheField(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+		vars  string
+		deny  bool
+	}{
+		{"filtering by a restricted key", `{ customers(where: {taxNumber: "1"}) { name } }`, "", true},
+		{"ordering by a restricted enum value", `{ customers(orderBy: [{field: TAX_NUMBER}]) { name } }`, "", true},
+		{"ordering via a variable", `query($o: [Order!]) { customers(orderBy: $o) { name } }`, `{"o":[{"field":"TAX_NUMBER"}]}`, true},
+		{"writing a restricted field to null", `mutation { update(patch: {taxNumber: null}) }`, "", true},
+		{"an unrestricted filter runs", `{ customers(where: {nameContains: "a"}) { name } }`, "", false},
+		{"an unrestricted write runs", `mutation { update(patch: {name: "a"}) }`, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			argResolverCalls.Store(0)
+			e := NewExecutor(argSiteSchema(t), WithAuthorizer(taxPolicy(nil)))
+			resp := run(t, e, tc.query, tc.vars)
+			if !tc.deny {
+				if len(resp.Errors) > 0 {
+					t.Fatalf("unexpected errors: %s", errorsJSON(resp.Errors))
+				}
+				if argResolverCalls.Load() != 1 {
+					t.Errorf("resolver ran %d times, want 1", argResolverCalls.Load())
+				}
+				return
+			}
+			if len(resp.Errors) != 1 {
+				t.Fatalf("errors = %s, want exactly one denial", errorsJSON(resp.Errors))
+			}
+			if got := resp.Errors[0].Extensions["code"]; got != CodeForbidden {
+				t.Errorf("code = %v, want %v", got, CodeForbidden)
+			}
+			if n := argResolverCalls.Load(); n != 0 {
+				t.Errorf("resolver ran %d times; a denied argument must refuse before it runs", n)
+			}
+		})
+	}
+}
+
+func TestArgumentSiteInputIsReportedOnlyWhenPlanHasArgumentSites(t *testing.T) {
+	var seen []InputKey
+	e := NewExecutor(argSiteSchema(t), WithAuthorizer(taxPolicy(&seen)))
+	run(t, e, `{ customers(where: {nameContains: "SECRET"}, orderBy: [{field: NAME}]) { name } }`, "")
+	got := render(seen)
+	if !slices.Contains(got, "nameContains") || !slices.Contains(got, "field=NAME") {
+		t.Errorf("reported inputs = %v", got)
+	}
+	for _, k := range got {
+		if strings.Contains(k, "SECRET") {
+			t.Errorf("a scalar value reached the Authorizer: %v", got)
+		}
+	}
+}
+
+func TestArgumentSiteAdmitsOnlyAllowAndDeny(t *testing.T) {
+	for _, o := range []struct {
+		name    string
+		out     Outcome
+		wantErr bool
+	}{
+		{"Allow", Allow(), false},
+		{"Deny", Deny("p", "r"), false},
+		{"Null", Null(), true},
+		{"Zero", Zero(), true},
+		{"Redact", Redact(func(v any) any { return v }), true},
+	} {
+		t.Run(o.name, func(t *testing.T) {
+			var setErr error
+			e := NewExecutor(argSiteSchema(t), WithAuthorizer(AuthorizerFunc(
+				func(ctx context.Context, shape *AuthShape, d *Decision) error {
+					for i, s := range shape.Sites() {
+						if s.Kind == SiteFilterArg {
+							setErr = d.Set(i, o.out)
+							return nil
+						}
+					}
+					return nil
+				})))
+			run(t, e, `{ customers(where: {nameContains: "a"}) { name } }`, "")
+			if (setErr != nil) != o.wantErr {
+				t.Errorf("Set(%s) error = %v, wantErr %v", o.name, setErr, o.wantErr)
+			}
+		})
+	}
+}
+
+// A field that carries both an output requirement and an argument site must
+// honour both: an allowed output with a denied argument is still refused.
+func TestArgumentDenyAppliesAlongsideAnOutputRequirement(t *testing.T) {
+	argResolverCalls.Store(0)
+	e := NewExecutor(argSiteSchema(t), WithAuthorizer(AuthorizerFunc(
+		func(ctx context.Context, shape *AuthShape, d *Decision) error {
+			if err := ScopeAuthorizer(func(context.Context) map[string]bool {
+				return map[string]bool{"c:read": true}
+			}).Authorize(ctx, shape, d); err != nil {
+				return err
+			}
+			return taxPolicy(nil).Authorize(ctx, shape, d)
+		})))
+	resp := run(t, e, `{ guarded(where: {taxNumber: "1"}) { name } }`, "")
+	if len(resp.Errors) == 0 || argResolverCalls.Load() != 0 {
+		t.Fatalf("argument denial ignored when the output site allowed: errors=%s calls=%d", errorsJSON(resp.Errors), argResolverCalls.Load())
+	}
+}
+
+// argSubSDL puts an argument site on a subscription root field that declares
+// no requirement of its own, so the only thing that can refuse the stream is
+// the argument.
+const argSubSDL = `
+directive @authorizeInput(kind: AuthorizeInputKind!) on ARGUMENT_DEFINITION
+enum AuthorizeInputKind { FILTER WRITE }
+input Where { nameContains: String taxNumber: String }
+type Message { id: ID! secret: String! }
+type Query { ping: String! }
+type Subscription { messages(where: Where @authorizeInput(kind: FILTER)): Message! }
+`
+
+type argSubArgs struct {
+	Where *argWhereIn
+}
+
+func newArgSubExecutor(t *testing.T, a Authorizer) (*authSubSource, *Executor) {
+	t.Helper()
+	src := &authSubSource{ch: make(chan *authSubMessage)}
+	s, err := NewSchema(SDL(argSubSDL),
+		Query(Field("ping", func(Root) string { return "pong" })),
+		Input[argWhereIn]("Where",
+			InputField("nameContains", func(w *argWhereIn, v *string) { w.NameContains = v }),
+			InputField("taxNumber", func(w *argWhereIn, v *string) { w.TaxNumber = v }),
+		),
+		Args[argSubArgs](InputField("where", func(a *argSubArgs, v *argWhereIn) { a.Where = v })),
+		Object[authSubMessage]("Message",
+			Field("id", func(m *authSubMessage) ID { return ID(m.ID) }),
+			Field("secret", func(m *authSubMessage) string { return m.Secret }),
+		),
+		Subscription(
+			SubscribeArgs("messages", func(context.Context, argSubArgs) (<-chan *authSubMessage, error) {
+				src.opens.Add(1)
+				return src.ch, nil
+			}),
+		),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	return src, NewExecutor(s, WithAuthorizer(a))
+}
+
+// The argument arrives through a variable, so this also proves the open
+// handler hands the Authorizer the operation's variables.
+func TestSubscribeArgumentDenyDoesNotOpenTheSource(t *testing.T) {
+	src, e := newArgSubExecutor(t, taxPolicy(nil))
+	_, err := e.Subscribe(t.Context(), &Request{
+		Query:     `subscription($w: Where) { messages(where: $w) { id } }`,
+		Variables: []byte(`{"w":{"taxNumber":"1"}}`),
+	})
+	if n := src.opens.Load(); n != 0 {
+		t.Errorf("source opened %d times, want 0: a denied argument must never reach it", n)
+	}
+	var serr *SubscribeError
+	if !errors.As(err, &serr) {
+		t.Fatalf("error = %v, want a *SubscribeError", err)
+	}
+	if len(serr.Response.Errors) != 1 {
+		t.Fatalf("got %d errors, want 1: %s", len(serr.Response.Errors), errorsJSON(serr.Response.Errors))
+	}
+	got := serr.Response.Errors[0]
+	if got.Extensions["code"] != CodeForbidden {
+		t.Errorf("code = %v, want %v", got.Extensions["code"], CodeForbidden)
+	}
+	if got, want := got.Path.String(), (Path{{Key: "messages"}}).String(); got != want {
+		t.Errorf("path = %s, want %s", got, want)
+	}
+}
+
+func TestSubscribeAllowedArgumentOpensTheSource(t *testing.T) {
+	src, e := newArgSubExecutor(t, taxPolicy(nil))
+	ch, err := e.Subscribe(t.Context(), &Request{
+		Query:     `subscription($w: Where) { messages(where: $w) { id } }`,
+		Variables: []byte(`{"w":{"nameContains":"a"}}`),
+	})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	if n := src.opens.Load(); n != 1 {
+		t.Errorf("source opened %d times, want 1", n)
+	}
+	sendEvent(t, src.ch, &authSubMessage{ID: "1"})
+	resp := nextResponse(t, ch)
+	if len(resp.Errors) != 0 {
+		t.Fatalf("event errored: %s", errorsJSON(resp.Errors))
+	}
+	if got, want := string(resp.Data), `{"messages":{"id":"1"}}`; got != want {
+		t.Errorf("data = %s, want %s", got, want)
+	}
+}
+
+// Each event re-authorizes, and runSubscriptionEvent substitutes the root
+// field's executor on a copy of its planField. An argument Deny recorded for
+// an event must still refuse that event, as a root output Deny does, or a
+// policy revoked mid-stream would keep delivering what it now forbids.
+func TestSubscriptionEventArgumentDenyRefusesTheEvent(t *testing.T) {
+	var revoked atomic.Bool
+	src, e := newArgSubExecutor(t, AuthorizerFunc(
+		func(ctx context.Context, shape *AuthShape, d *Decision) error {
+			if !revoked.Load() {
+				return nil
+			}
+			return taxPolicy(nil).Authorize(ctx, shape, d)
+		}))
+	ch, err := e.Subscribe(t.Context(), &Request{
+		Query:     `subscription($w: Where) { messages(where: $w) { id } }`,
+		Variables: []byte(`{"w":{"taxNumber":"1"}}`),
+	})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	sendEvent(t, src.ch, &authSubMessage{ID: "1"})
+	if resp := nextResponse(t, ch); len(resp.Errors) != 0 {
+		t.Fatalf("first event errored: %s", errorsJSON(resp.Errors))
+	}
+
+	revoked.Store(true)
+	sendEvent(t, src.ch, &authSubMessage{ID: "2"})
+	resp := nextResponse(t, ch)
+	if len(resp.Errors) != 1 {
+		t.Fatalf("errors = %s, want exactly one denial after revocation", errorsJSON(resp.Errors))
+	}
+	if got := resp.Errors[0].Extensions["code"]; got != CodeForbidden {
+		t.Errorf("code = %v, want %v", got, CodeForbidden)
+	}
+	if got, want := resp.Errors[0].Path.String(), (Path{{Key: "messages"}}).String(); got != want {
+		t.Errorf("path = %s, want %s", got, want)
+	}
+	if resp.Data != nil && string(resp.Data) != "null" {
+		t.Errorf("denied event returned data: %s", resp.Data)
+	}
+
+	revoked.Store(false)
+	sendEvent(t, src.ch, &authSubMessage{ID: "3"})
+	if resp := nextResponse(t, ch); len(resp.Errors) != 0 {
+		t.Fatalf("stream did not recover once the policy allowed again: %s", errorsJSON(resp.Errors))
 	}
 }
