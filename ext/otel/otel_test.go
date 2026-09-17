@@ -17,6 +17,7 @@ import (
 
 	"github.com/syssam/graphql-go"
 	gqlotel "github.com/syssam/graphql-go/ext/otel"
+	"github.com/syssam/graphql-go/loader"
 )
 
 const sdl = `
@@ -510,5 +511,120 @@ func TestCacheablePlanCarriesNoUncacheableAttribute(t *testing.T) {
 		if kv.Key == gqlotel.AttrPlanUncacheable {
 			t.Fatalf("cacheable plan carries %s", kv.Key)
 		}
+	}
+}
+
+type loadItem struct{ OwnerID string }
+
+// newLoaderHarness builds a schema whose owner field goes through a loader,
+// so the batch call is a real one made by the executor rather than a direct
+// call in the test.
+func newLoaderHarness(t *testing.T, batch loader.BatchFunc[string, *user]) (*tracetest.SpanRecorder, *graphql.Executor) {
+	t.Helper()
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	ld := loader.New(gqlotel.Batch("user", batch, gqlotel.WithTracerProvider(tp)))
+
+	s, err := graphql.NewSchema(graphql.SDL(`
+		type User { id: ID! name: String! }
+		type Item { owner: User! }
+		type Query { items: [Item!]! }
+	`),
+		graphql.Object[user]("User",
+			graphql.Field("id", func(u *user) string { return u.ID }),
+			graphql.Field("name", func(u *user) string { return u.Name }),
+		),
+		graphql.Object[loadItem]("Item",
+			graphql.Resolve("owner", func(ctx context.Context, it *loadItem) (*user, error) {
+				return ld.Load(ctx, it.OwnerID)
+			}),
+		),
+		graphql.Query(graphql.Resolve("items", func(context.Context, graphql.Root) ([]*loadItem, error) {
+			return []*loadItem{{"1"}, {"2"}, {"1"}}, nil
+		})),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sr, graphql.NewExecutor(s, gqlotel.New(gqlotel.WithTracerProvider(tp))...)
+}
+
+// The batch span has to hang under the request that caused it. That only
+// works because the loader hands the batch function the request's context;
+// a batch started from a background context is an orphan span, which is the
+// one an operator cannot use.
+func TestLoaderBatchSpanHangsUnderTheRequest(t *testing.T) {
+	sr, e := newLoaderHarness(t, func(_ context.Context, keys []string) (map[string]*user, error) {
+		out := make(map[string]*user, len(keys))
+		for _, k := range keys {
+			out[k] = &user{ID: k, Name: "n" + k}
+		}
+		return out, nil
+	})
+	resp := e.Execute(context.Background(), &graphql.Request{Query: `{ items { owner { id name } } }`})
+	if len(resp.Errors) > 0 {
+		t.Fatalf("errors: %v", resp.Errors)
+	}
+
+	spans := sr.Ended()
+	batch := named(t, spans, "loader user")
+	op := named(t, spans, "query")
+	if batch.Parent().SpanID() != op.SpanContext().SpanID() {
+		t.Fatal("the batch span is not a child of the request span")
+	}
+	if got := attrOf(t, batch, gqlotel.AttrLoaderKeys).AsInt64(); got != 2 {
+		t.Fatalf("key count = %d, want 2 (three loads, two distinct ids)", got)
+	}
+}
+
+func TestLoaderBatchErrorMarksTheSpan(t *testing.T) {
+	sr, e := newLoaderHarness(t, func(context.Context, []string) (map[string]*user, error) {
+		return nil, errors.New("database unavailable")
+	})
+	e.Execute(context.Background(), &graphql.Request{Query: `{ items { owner { id } } }`})
+
+	batch := named(t, sr.Ended(), "loader user")
+	if batch.Status().Code != codes.Error {
+		t.Fatalf("span status = %v, want error", batch.Status())
+	}
+}
+
+// The mapped form reports per-key failure, and a batch where only one key
+// failed is not a failed batch.
+func TestMappedLoaderBatchSpanIsNotFailedByOneKey(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	ld := loader.NewMapped(gqlotel.MappedBatch("user",
+		func(_ context.Context, keys []string) (map[string]*user, map[string]error, error) {
+			return map[string]*user{"1": {ID: "1", Name: "n1"}}, map[string]error{"2": errors.New("gone")}, nil
+		}, gqlotel.WithTracerProvider(tp)))
+
+	s, err := graphql.NewSchema(graphql.SDL(`
+		type User { id: ID! }
+		type Item { owner: User }
+		type Query { items: [Item!]! }
+	`),
+		graphql.Object[user]("User", graphql.Field("id", func(u *user) string { return u.ID })),
+		graphql.Object[loadItem]("Item",
+			graphql.Resolve("owner", func(ctx context.Context, it *loadItem) (*user, error) {
+				return ld.Load(ctx, it.OwnerID)
+			}),
+		),
+		graphql.Query(graphql.Resolve("items", func(context.Context, graphql.Root) ([]*loadItem, error) {
+			return []*loadItem{{"1"}, {"2"}}, nil
+		})),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	graphql.NewExecutor(s, gqlotel.New(gqlotel.WithTracerProvider(tp))...).
+		Execute(context.Background(), &graphql.Request{Query: `{ items { owner { id } } }`})
+
+	batch := named(t, sr.Ended(), "loader user")
+	if batch.Status().Code == codes.Error {
+		t.Fatal("one failed key marked the whole batch span as failed")
+	}
+	if got := attrOf(t, batch, gqlotel.AttrLoaderKeyErrors).AsInt64(); got != 1 {
+		t.Fatalf("key error count = %d, want 1", got)
 	}
 }

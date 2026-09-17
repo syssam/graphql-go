@@ -241,3 +241,47 @@ func TestConcurrentRequestsShareOneBucketExactly(t *testing.T) {
 		t.Fatalf("currentlyAvailable = %v, want %d", st["currentlyAvailable"], 1000-(n+1)*5)
 	}
 }
+
+// A subscription runs the whole operation chain once per event, so each
+// event is charged. That is deliberate: a stream billed once at open is an
+// unmetered firehose, which is the hole a cost limiter exists to close.
+func TestSubscriptionEventsAreChargedIndividually(t *testing.T) {
+	ticks := make(chan int, 4)
+	s, err := graphql.NewSchema(graphql.SDL(`
+		type Query { hello: String! }
+		type Subscription { ticks: Int! }
+	`),
+		graphql.Query(graphql.Resolve("hello", func(context.Context, graphql.Root) (string, error) {
+			return "hi", nil
+		})),
+		graphql.Subscription(graphql.Subscribe("ticks", func(context.Context) (<-chan int, error) {
+			return ticks, nil
+		})),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Unix(0, 0)
+	e := graphql.NewExecutor(s,
+		graphql.WithQueryCost(graphql.QueryCost{DefaultListSize: 10}),
+		throttle.New(throttle.Config{
+			MaximumAvailable: 100, RestoreRate: 0, Key: keyFunc, Now: fixedClock(&now),
+		}))
+
+	ctx, cancel := context.WithCancel(shopCtx("shop-1"))
+	defer cancel()
+	out, err := e.Subscribe(ctx, &graphql.Request{Query: `subscription { ticks }`})
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	// subscription { ticks } costs one point, so each event takes one.
+	for i, want := range []int{99, 98, 97} {
+		ticks <- i
+		resp := <-out
+		if got := status(t, resp)["currentlyAvailable"]; got != want {
+			t.Fatalf("event %d: currentlyAvailable = %v, want %d", i, got, want)
+		}
+	}
+}

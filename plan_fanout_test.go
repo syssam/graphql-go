@@ -256,7 +256,7 @@ func TestFanOutQueryCostIsBounded(t *testing.T) {
 
 	start := time.Now()
 	for i := 0; i < 50; i++ {
-		if n := queryCostOf(p.sel, nil, QueryCost{}, false); n <= 0 {
+		if n := queryCostOf(p.sel, costWalk{cfg: QueryCost{}}); n <= 0 {
 			t.Fatalf("cost = %d, want positive", n)
 		}
 	}

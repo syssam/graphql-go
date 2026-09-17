@@ -109,7 +109,7 @@ type connArgs struct{ First, Last *int }
 
 // connCostSchema is Relay-shaped: the pagination arguments sit on the
 // connection field, one level above the list they actually bound.
-func connCostSchema(t *testing.T) *Schema {
+func connCostSchema(t testing.TB) *Schema {
 	t.Helper()
 	s, err := NewSchema(SDL(`
 		type User { id: ID! friends: [User!]! }
@@ -220,4 +220,67 @@ func TestCostSeenByAnOperationInterceptorUsesTheConfiguredModel(t *testing.T) {
 	if seen != 22 {
 		t.Fatalf("cost seen by the interceptor = %d, want 22 (the configured DefaultListSize)", seen)
 	}
+}
+
+// The same selection set costs differently paid and unpaid, so anything that
+// memoizes this walk must key on paid as well as on the selection set.
+//
+// Both aliases below select an identical sub-selection on the same type. One
+// reaches it through a connection carrying a page size, which pays for the
+// edges list beneath it; the other reaches it through the same connection
+// field with no page size, where that list takes DefaultListSize as any list
+// would. Today those are two distinct *selectionSet values, so the question
+// cannot arise and this test cannot fail for that reason — it is here for the
+// branch that memoizes compileSelection, where one pointer becomes reachable
+// from both parents and a memo keyed on the pointer alone returns whichever
+// visit ran first.
+func TestQueryCostConnectionsPaidAndUnpaidReachTheSameShape(t *testing.T) {
+	cost := connCost(t, connCostSchema(t), QueryCost{DefaultListSize: 10, Connections: true}, `{
+		paid: conn(first: 5) { edges { node { id } } }
+		free: conn { edges { node { id } } }
+	}`)
+	// paid: 1 + (1 + 2*1)*5 = 16.  free: 1 + (1 + 2*10) = 22.
+	if cost != 38 {
+		t.Fatalf("cost = %d, want 38 (16 paid + 22 unpaid); 20 or 128 means one visit's figure was reused for the other", cost)
+	}
+}
+
+// Interleaved against the same code without the leaf short-circuit, twelve
+// alternating rounds of two pre-built binaries: Disabled ~ (p=0.887),
+// Reported ~ (p=0.713), Connections -3.76% (p=0.040), allocations equal
+// sample for sample. The improvement lands only where it was predicted to,
+// on the configuration that was reading arguments off every scalar.
+//
+// The cost walk runs once per request whenever a cost model is configured,
+// and until now nothing measured it. These three are the configurations that
+// differ: no model at all, a model that walks, and a model that also reads
+// connection arguments. The connection resolver returns an empty page on
+// purpose, so what is left is the walk rather than the data.
+func benchCost(b *testing.B, cfg *QueryCost) {
+	b.Helper()
+	var opts []ExecutorOption
+	if cfg != nil {
+		opts = append(opts, WithQueryCost(*cfg))
+	}
+	e := NewExecutor(connCostSchema(b), opts...)
+	req := &Request{Query: `{ conn(first: 5) { edges { node { id friends { id } } } } }`}
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		resp := e.Execute(ctx, req)
+		if len(resp.Errors) > 0 {
+			b.Fatal(resp.Errors[0])
+		}
+		resp.Release()
+	}
+}
+
+func BenchmarkQueryCostDisabled(b *testing.B) { benchCost(b, nil) }
+
+func BenchmarkQueryCostReported(b *testing.B) {
+	benchCost(b, &QueryCost{DefaultListSize: 10, Report: true})
+}
+
+func BenchmarkQueryCostConnections(b *testing.B) {
+	benchCost(b, &QueryCost{DefaultListSize: 10, Report: true, Connections: true})
 }

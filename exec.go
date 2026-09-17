@@ -17,6 +17,7 @@ import (
 	"github.com/vektah/gqlparser/v2/gqlerror"
 	"github.com/vektah/gqlparser/v2/parser"
 	"github.com/vektah/gqlparser/v2/validator"
+	"github.com/vektah/gqlparser/v2/validator/core"
 	"github.com/vektah/gqlparser/v2/validator/rules"
 )
 
@@ -32,6 +33,7 @@ type Executor struct {
 	presenter      ErrorPresenter
 	recover        bool
 	rules          *rules.Rules
+	noSuggestions  bool
 
 	reqInterceptors   []RequestInterceptor
 	opInterceptors    []OperationInterceptor
@@ -82,6 +84,29 @@ func WithErrorPresenter(p ErrorPresenter) ExecutorOption {
 	return func(e *Executor) { e.presenter = p }
 }
 
+// suggestionFree pairs each gqlparser rule that volunteers a "Did you mean"
+// clause with the variant that does not. gqlparser ships five; gqlgen swaps
+// two, leaving argument names, type names and input field names disclosed.
+var suggestionFree = []struct {
+	suggesting string
+	quiet      core.Rule
+}{
+	{"FieldsOnCorrectType", rules.FieldsOnCorrectTypeRuleWithoutSuggestions},
+	{"KnownArgumentNames", rules.KnownArgumentNamesRuleWithoutSuggestions},
+	{"KnownTypeNames", rules.KnownTypeNamesRuleWithoutSuggestions},
+	{"ScalarLeafs", rules.ScalarLeafsRuleWithoutSuggestions},
+	{"ValuesOfCorrectType", rules.ValuesOfCorrectTypeRuleWithoutSuggestions},
+}
+
+// DisableSuggestions withholds the "Did you mean" clause from validation
+// errors. DisableIntrospection alone does not close that channel: the
+// suggestions name neighbouring fields, types, arguments and input fields,
+// so a schema stays enumerable one typo at a time. The errors still report
+// what was wrong, only without naming what would have been right.
+func DisableSuggestions() ExecutorOption {
+	return func(e *Executor) { e.noSuggestions = true }
+}
+
 // WithRecover controls whether resolver panics are converted into
 // INTERNAL_SERVER_ERROR field errors. It is enabled by default; disable it
 // only in tests that want panics to surface.
@@ -109,6 +134,12 @@ func NewExecutor(s *Schema, opts ...ExecutorOption) *Executor {
 		e.sem = make(chan struct{}, e.maxConcurrency)
 	}
 	e.rules = rules.NewDefaultRules()
+	if e.noSuggestions {
+		for _, r := range suggestionFree {
+			e.rules.RemoveRule(r.suggesting)
+			e.rules.AddRule(r.quiet.Name, r.quiet.RuleFunc)
+		}
+	}
 	if !s.introspection {
 		e.rules.AddRule(noIntrospectionRule.Name, noIntrospectionRule.RuleFunc)
 	}

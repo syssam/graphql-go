@@ -432,3 +432,77 @@ func TestMappedLoaderBatchErrorFailsEveryKey(t *testing.T) {
 		t.Fatalf("errors = %d, want 2 (one per key)", len(resp.Errors))
 	}
 }
+
+// WithMaxBatchSize splits one flush into chunks. Five distinct keys under a
+// limit of two is three calls, not one call of five and not five of one.
+func TestLoaderMaxBatchSizeSplitsAFlush(t *testing.T) {
+	var mu sync.Mutex
+	var sizes []int
+	ld := loader.New(func(_ context.Context, keys []graphql.ID) (map[graphql.ID]*loadOwner, error) {
+		mu.Lock()
+		sizes = append(sizes, len(keys))
+		mu.Unlock()
+		out := make(map[graphql.ID]*loadOwner, len(keys))
+		for _, k := range keys {
+			out[k] = &loadOwner{Name: "u" + string(k)}
+		}
+		return out, nil
+	}, loader.WithMaxBatchSize(2))
+
+	e := newLoaderSchema(t, ld, []*loadItem{{"1"}, {"2"}, {"3"}, {"4"}, {"5"}})
+	expectData(t, run(t, e, `{ items { owner { name } } }`, ""),
+		`{"items":[{"owner":{"name":"u1"}},{"owner":{"name":"u2"}},{"owner":{"name":"u3"}},{"owner":{"name":"u4"}},{"owner":{"name":"u5"}}]}`)
+
+	mu.Lock()
+	defer mu.Unlock()
+	total := 0
+	for _, n := range sizes {
+		if n > 2 {
+			t.Fatalf("a chunk of %d exceeds the limit of 2: %v", n, sizes)
+		}
+		total += n
+	}
+	if len(sizes) != 3 || total != 5 {
+		t.Fatalf("chunks = %v, want three summing to five", sizes)
+	}
+}
+
+// The per-request cache is what makes a second Load of one key free. Without
+// it the batch function sees the key again.
+func TestLoaderWithoutCacheReloadsTheSameKey(t *testing.T) {
+	var calls atomic.Int32
+	newLoader := func(opts ...loader.Option) *loader.Loader[graphql.ID, string] {
+		return loader.New(func(_ context.Context, keys []graphql.ID) (map[graphql.ID]string, error) {
+			calls.Add(1)
+			out := make(map[graphql.ID]string, len(keys))
+			for _, k := range keys {
+				out[k] = "v" + string(k)
+			}
+			return out, nil
+		}, opts...)
+	}
+	// Two sequential Loads of one key in one resolver: the second is a cache
+	// hit when there is a cache, and a second batch when there is not.
+	twice := func(ld *loader.Loader[graphql.ID, string]) int32 {
+		calls.Store(0)
+		s, err := graphql.NewSchema(graphql.SDL(`type Query { pair: String! }`),
+			graphql.Query(graphql.Resolve("pair", func(ctx context.Context, _ graphql.Root) (string, error) {
+				if _, err := ld.Load(ctx, "a"); err != nil {
+					return "", err
+				}
+				return ld.Load(ctx, "a")
+			})))
+		if err != nil {
+			t.Fatal(err)
+		}
+		expectData(t, run(t, graphql.NewExecutor(s), `{ pair }`, ""), `{"pair":"va"}`)
+		return calls.Load()
+	}
+
+	if n := twice(newLoader()); n != 1 {
+		t.Fatalf("with a cache the batch ran %d times, want 1", n)
+	}
+	if n := twice(newLoader(loader.WithoutCache())); n != 2 {
+		t.Fatalf("without a cache the batch ran %d times, want 2", n)
+	}
+}

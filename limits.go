@@ -163,7 +163,7 @@ func (oc *OperationContext) ensureCost(cfg QueryCost) int {
 	if oc.costOK {
 		return oc.costValue
 	}
-	oc.costValue = queryCostOf(oc.plan.sel, oc.Variables, cfg, false)
+	oc.costValue = queryCostOf(oc.plan.sel, costWalk{vars: oc.Variables, cfg: cfg})
 	oc.costOK = true
 	return oc.costValue
 }
@@ -177,25 +177,51 @@ type costKey struct {
 	paid bool
 }
 
-func queryCostOf(sel *selectionSet, vars map[string]any, cfg QueryCost, paid bool) int {
-	return queryCostMemo(sel, vars, cfg, paid, make(map[costKey]int))
+// costWalk is the state of one cost walk.
+type costWalk struct {
+	vars map[string]any
+	cfg  QueryCost
+	// paid reports that an enclosing connection's page size has already
+	// counted the elements of a list at this level.
+	//
+	// The memo below keys on it, and the reason that is insurance rather than
+	// a live bug is one line further down: childPaid is set in exactly one
+	// place, and only for a field that is not itself a list. So a selection
+	// set shared between two visits is the sub-selection of one AST field
+	// node, and paid for it follows from that node alone. Add a second place
+	// that sets it, or set it for a list, and the key stops being insurance.
+	paid bool
+	// memo keeps the walk linear in the plan's DAG rather than in the tree
+	// that DAG unfolds to. It lives for exactly one request, because vars and
+	// cfg are fixed only within one, and it is shared through the recursion
+	// because copying a costWalk copies the map header rather than the map.
+	memo map[costKey]int
 }
 
-// queryCostMemo carries the memo that keeps the walk linear in the plan's DAG
-// rather than in the tree that DAG unfolds to. The memo lives for exactly one
-// call: vars and cfg are fixed only within one request.
-func queryCostMemo(sel *selectionSet, vars map[string]any, cfg QueryCost, paid bool, memo map[costKey]int) int {
+func (w costWalk) withPaid(paid bool) costWalk {
+	w.paid = paid
+	return w
+}
+
+func queryCostOf(sel *selectionSet, w costWalk) int {
+	if w.memo == nil {
+		w.memo = make(map[costKey]int)
+	}
+	return queryCostMemo(sel, w)
+}
+
+func queryCostMemo(sel *selectionSet, w costWalk) int {
 	if sel == nil {
 		return 0
 	}
-	key := costKey{sel: sel, paid: paid}
-	if n, ok := memo[key]; ok {
+	key := costKey{sel: sel, paid: w.paid}
+	if n, ok := w.memo[key]; ok {
 		return n
 	}
 	sum := func(fields []*planField) int {
 		n := 0
 		for _, f := range fields {
-			n += fieldCost(f, vars, cfg, paid, memo)
+			n += fieldCost(f, w)
 		}
 		return n
 	}
@@ -207,61 +233,63 @@ func queryCostMemo(sel *selectionSet, vars map[string]any, cfg QueryCost, paid b
 			n = max(n, sum(concrete.fields))
 		}
 	}
-	memo[key] = n
+	w.memo[key] = n
 	return n
 }
 
-// fieldCost prices one field. paid reports that an enclosing connection's
-// page size has already counted this field's elements when it is a list,
-// which is what stops first: 200 from multiplying with the edges list's own
-// default and pricing a page of 200 as one of 2000.
-func fieldCost(f *planField, vars map[string]any, cfg QueryCost, paid bool, memo map[costKey]int) int {
+// fieldCost prices one field. w.paid is what stops first: 200 from
+// multiplying with the edges list's own default and pricing a page of 200 as
+// one of 2000: the connection's page size counted those elements already.
+func fieldCost(f *planField, w costWalk) int {
 	if f.kind == fieldTypename {
 		return 0
 	}
 	weight := 1
 	if f.def != nil && f.def.object != nil {
-		weight = cfg.weight(coordinate(f.def.object.name, f.def.name))
+		weight = w.cfg.weight(coordinate(f.def.object.name, f.def.name))
+	}
+	// A leaf multiplies nothing, so its multiplier need not be computed.
+	// Working one out means reading arguments off every scalar field in the
+	// query, and scalars are most of the fields in most queries.
+	if f.sub == nil {
+		return weight
 	}
 
 	mult, childPaid := 1, false
 	switch isList := f.def != nil && f.def.typ != nil && f.def.typ.Elem != nil; {
-	case isList && paid:
+	case isList && w.paid:
 	case isList:
-		mult = listMultiplier(f, vars, cfg)
-	case cfg.Connections:
-		if n, ok := pageArg(f, vars, cfg); ok {
+		mult = listMultiplier(f, w)
+	case w.cfg.Connections:
+		if n, ok := pageArg(f, w); ok {
 			mult, childPaid = n, true
 		}
 	}
 
-	child := 0
-	if f.sub != nil {
-		child = queryCostMemo(f.sub, vars, cfg, childPaid, memo)
-	}
-	return weight + child*mult
+	// f.sub is non-nil: a leaf returned above.
+	return weight + queryCostMemo(f.sub, w.withPaid(childPaid))*mult
 }
 
-func listMultiplier(f *planField, vars map[string]any, cfg QueryCost) int {
-	if n, ok := pageArg(f, vars, cfg); ok {
+func listMultiplier(f *planField, w costWalk) int {
+	if n, ok := pageArg(f, w); ok {
 		return n
 	}
-	return cfg.defaultList()
+	return w.cfg.defaultList()
 }
 
 // pageArg returns the first positive pagination argument on f, reporting
 // whether there was one. Absent is not zero: no first at all asks for every
 // element, while first: 0 asks for none.
-func pageArg(f *planField, vars map[string]any, cfg QueryCost) (int, bool) {
+func pageArg(f *planField, w costWalk) (int, bool) {
 	if f.ast == nil {
 		return 0, false
 	}
-	for _, name := range cfg.listArgs() {
+	for _, name := range w.cfg.listArgs() {
 		a := f.ast.Arguments.ForName(name)
 		if a == nil {
 			continue
 		}
-		raw, err := a.Value.Value(vars)
+		raw, err := a.Value.Value(w.vars)
 		if err != nil {
 			continue
 		}

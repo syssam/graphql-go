@@ -152,6 +152,7 @@ compares the two.
 | `Directive` / `DirectiveArgs[A]` | Schema-directive middleware on `FIELD_DEFINITION` and `OBJECT`. |
 | `Query` / `Mutation` / `Subscription` | Bind the schema's root types without repeating their names. |
 | `Subscribe` / `SubscribeArgs` | Bind a subscription root field to a `<-chan R` source. `Executor.Subscribe` yields one response per event. |
+| `fed.Subgraph` | Apollo Federation subgraph in `graphql-go/fed`: `_service`, `_entities`, the federation directives and an `_Entity` union derived from the `@key` types. No engine change; the author's SDL is never rewritten. |
 | `relay.Node` / `relay.Bind[T]` | Relay global object identification and cursor connections in `graphql-go/relay`. `ToGlobalID`/`FromGlobalID`, `IDField`, `Pagination`, `FromSlice`/`FromPage`. The SDL still declares the types. |
 | `loader.New` / `loader.NewMapped` | Per-request batch+cache (Facebook DataLoader) in `graphql-go/loader`. `Load` coalesces concurrent Resolve fields in one execution wave, driven by `graphql.WaveCoordinator`. `NewMapped` reports failure per key, so one bad id does not null its siblings. |
 
@@ -190,8 +191,13 @@ built: `transport/gqlsse` over Server-Sent Events and `transport/gqlws` over
 init timeout and a per-connection operation cap. Both serve queries and
 mutations too -- one `next` then `complete` -- so a client needs only one
 endpoint. Automatic persisted queries are in `ext/apq`, opt-in on either HTTP transport
-with `WithPersistedQueries(apq.NewCache(1000))`. OpenTelemetry traces and
-metrics are in `ext/otel`: `graphql.NewExecutor(s, otel.New()...)`. Cost-based rate
+with `WithPersistedQueries(apq.NewCache(1000))`. `ext/trusted` turns the
+same wiring into a safelist — the server runs only documents a build step
+registered and refuses query text whatever hash accompanies it, which is what
+Relay's --persist-output and Apollo's manifest are for. OpenTelemetry traces and
+metrics are in `ext/otel`: `graphql.NewExecutor(s, otel.New()...)`, which also wraps a
+DataLoader batch function (`otel.Batch("user", loadUsers)`) so each flush gets a
+span under the request that caused it. Cost-based rate
 limiting is in `ext/throttle`: a bucket of points per caller refilled at a fixed
 rate, quoted before the query runs and charged what it really cost afterwards,
 reporting `extensions.cost.throttleStatus` the way Shopify's Admin API does.
