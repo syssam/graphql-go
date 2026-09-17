@@ -1,6 +1,8 @@
 package graphql
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -152,5 +154,41 @@ func TestDocumentFlightSurvivesLeaderPanic(t *testing.T) {
 		if again, errs := e.document(query); again == nil || errs != nil {
 			t.Fatalf("after the panic the text did not parse again: %v", errs)
 		}
+	})
+}
+
+// TestDocumentFlightPresenterMayMutate pins that sharing a failed parse is
+// invisible to an ErrorPresenter that annotates the *Error it is given, which
+// was safe before failures were shared at all. The leader's errors and the
+// copies handed to waiters must not be the same objects, or the leader's
+// presenter writes while a waiter clones.
+func TestDocumentFlightPresenterMayMutate(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		presenter := func(_ context.Context, err error) *Error {
+			var e *Error
+			if errors.As(err, &e) {
+				e.Message += " (annotated)"
+				return e.WithExtension("request", "seen")
+			}
+			return DefaultErrorPresenter(context.Background(), err)
+		}
+		_, e := newFixtureExecutor(t, WithErrorPresenter(presenter))
+		const query = `{ me { nope } }`
+
+		release := make(chan struct{})
+		withParseHook(t, func() { <-release })
+
+		var wg sync.WaitGroup
+		for range 2 {
+			wg.Go(func() {
+				resp := e.Execute(context.Background(), &Request{Query: query})
+				if len(resp.Errors) == 0 {
+					t.Error("want validation errors")
+				}
+			})
+			synctest.Wait()
+		}
+		close(release)
+		wg.Wait()
 	})
 }

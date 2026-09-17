@@ -266,8 +266,18 @@ func (e *Executor) document(query string) (*docEntry, []*Error) {
 		e.docMu.Unlock()
 		close(call.done)
 	}()
-	call.entry, call.errs = e.parseDocument(query)
-	return call.entry, call.errs
+	entry, errs := e.parseDocument(query)
+	call.entry = entry
+	// Waiters get copies of copies: the leader presents errs itself, and a
+	// presenter that annotates its *Error would otherwise be writing while a
+	// waiter reads the same object.
+	if errs != nil {
+		call.errs = make([]*Error, len(errs))
+		for i, err := range errs {
+			call.errs[i] = err.clone()
+		}
+	}
+	return entry, errs
 }
 
 // docCall is one in-progress parse of a query text.

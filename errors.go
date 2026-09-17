@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -151,6 +152,10 @@ func (e *Error) clone() *Error {
 	if e.Extensions != nil {
 		c.Extensions = maps.Clone(e.Extensions)
 	}
+	// Path and Locations are copied too: built by append they can have spare
+	// capacity, and an append on one copy would write into the other's array.
+	c.Path = slices.Clone(e.Path)
+	c.Locations = slices.Clone(e.Locations)
 	return &c
 }
 

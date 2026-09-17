@@ -127,9 +127,15 @@ this. **Concurrent misses for one query text share a single parse** (`Executor.d
 requests on a cold cache took 19 times the wall time of one. Plan compilation already had this
 property through `docEntry.mu`; parsing did not. Only a success is cached — a failure is shared
 with requests already waiting and no further, so distinct invalid queries cannot evict valid
-documents, which is why caching validation failures was declined. Waiters get cloned errors
-(a presenter may annotate its `*Error`) and an internal error rather than a nil entry if the parse
-panicked. The tests hold the parse open with `testHookParseDocument` inside `testing/synctest`,
+documents, which is why caching validation failures was declined. **The leader keeps its errors
+and stores clones for the waiters**, who clone again: the first version handed waiters the
+leader's own `*Error`s to clone while the leader's presenter was annotating them, a race only a
+presenter that mutates its argument hits (`DefaultErrorPresenter` copies first) and only `-race`
+shows (`TestDocumentFlightPresenterMayMutate`). `Error.clone` copies `Path` and `Locations` as
+well, since an append on a shallow copy writes into the other's array. A waiter gets an internal
+error rather than a nil entry if the parse panicked. Known and accepted: `docMu` is one lock for
+the executor, and a miss hashes the query text under it, so misses for very large different
+texts queue briefly behind each other. The tests hold the parse open with `testHookParseDocument` inside `testing/synctest`,
 so "concurrent" is exact. Each `(operation, @skip/@include variant)` compiles to an
 immutable `plan` with fragments flattened, directives constant-folded per variant (up to
 `maxCondVars` boolean variables), arguments pre-decoded and response keys pre-serialized.
