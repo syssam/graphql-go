@@ -197,14 +197,25 @@ holding concurrency slots shared by every request on the executor
 (`TestLoaderResponseLimitDoesNotStrandWave`, in `loader/` because the root package's tests
 cannot import it). The late tasks fail at their first checkpoint instead. The final size check
 is otherwise exact; the in-flight bound is about one field's output per concurrently written buffer. The errors
-list is not counted, so a million failing nullable elements are still a million errors in
-memory. The default was set by measurement: interleaved n=12, `BenchmarkResponseLimitOff`
+list is not counted by this limit; `WithMaxErrors` bounds it separately. The default was set by measurement: interleaved n=12, `BenchmarkResponseLimitOff`
 against `On` was 15.51µs vs 15.65µs (p=0.347) with 92 allocs/op both, and
 `BenchmarkFieldPathBare` against `main` 1.218µs vs 1.281µs (p=0.219) at 18 allocs/op both,
 measured with no limit before the default changed —
 not distinguishable on this machine, which is a bound on the cost, not a proof it is zero.
 The benchmark is one request writing 393 bytes, so neither larger responses nor contention on the
 shared counter from a wide concurrent list were measured.
+
+**`WithMaxErrors` (1000 by default) bounds the errors list, and checks before it allocates.**
+Field errors — `fieldError`, a null in a non-null position, an unresolvable abstract type — go
+through `addFieldError`, which returns before materializing the path or calling the presenter
+once the list is full, and re-checks under `st.mu` before appending so concurrent fields cannot
+overshoot. The first error past the limit becomes one `ERROR_LIMIT_EXCEEDED` notice, which is not
+presented, so its code is what `fullLocked` finds it by — `execState` has no room for a flag.
+Engine errors that say why a request stopped (cancellation, timeout, an oversized response) go
+through `addError` and are never dropped. `requestError` cuts parse and validation errors the
+same way. Not bounded: a leaf list's per-element failures are gathered into one `elementErrors`
+before `fieldError` sees them, so a million failing scalars still allocate a million
+`indexedError`s first.
 
 **`WithOperationTimeout` is off by default and bounds work, not latency.** It derives a
 `context.WithTimeoutCause` in `Execute` (so parsing and every interceptor are inside it) and

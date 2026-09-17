@@ -51,6 +51,7 @@ type Executor struct {
 	maxComplexity    int
 	maxDepth         int
 	maxResponseBytes int64
+	maxErrors        int
 	operationTimeout time.Duration
 	// timeoutCause is the context cause of this executor's own deadline, nil
 	// without one. Compared by identity, it tells the timeout apart from a
@@ -139,6 +140,7 @@ func NewExecutor(s *Schema, opts ...ExecutorOption) *Executor {
 		cacheBytes:     16 << 20,
 
 		maxResponseBytes: 64 << 20,
+		maxErrors:        1000,
 	}
 	for _, o := range opts {
 		o(e)
@@ -409,11 +411,25 @@ func (e *Executor) execute(ctx context.Context, req *Request) *Response {
 // error), never the output of e.presenter itself, or a custom ErrorPresenter
 // that logs or attaches an incident ID would run twice per rejection.
 func (e *Executor) requestError(ctx context.Context, errs ...*Error) *Response {
-	resp := &Response{Errors: make([]*Error, 0, len(errs))}
+	omitted := e.maxErrors > 0 && len(errs) > e.maxErrors
+	if omitted {
+		errs = errs[:e.maxErrors]
+	}
+	resp := &Response{Errors: make([]*Error, 0, len(errs)+1)}
 	for _, err := range errs {
 		resp.Errors = append(resp.Errors, e.presenter(ctx, err))
 	}
+	if omitted {
+		resp.Errors = append(resp.Errors, errorLimitNotice())
+	}
 	return resp
+}
+
+// errorLimitNotice stands in for the errors dropped past WithMaxErrors. It is
+// not presented: it carries nothing a presenter could need to mask, and an
+// unpresented code is what lets the executor find it again.
+func errorLimitNotice() *Error {
+	return Errorf("Too many errors: further errors were omitted.").WithCode(CodeErrorLimitExceeded)
 }
 
 // authorizerCause holds a non-*Error Authorize failure behind Error's Err
@@ -645,8 +661,25 @@ func (e *elementErrors) add(i int, err error) *elementErrors {
 	return e
 }
 
-// addError presents err and appends it with the given path and location.
+// addError presents err and appends it with the given path and location. It
+// is for errors that explain why a request stopped, which WithMaxErrors never
+// drops; field errors go through addFieldError.
 func (st *execState) addError(ctx context.Context, err error, path Path, pos *ast.Position) {
+	st.appendError(ctx, err, path, pos, false)
+}
+
+// addFieldError records a field error unless the error limit is full. The
+// check before presenting is what saves the work; the one under the lock in
+// appendError is what makes the limit exact when concurrent fields race past
+// the first.
+func (st *execState) addFieldError(ctx context.Context, err error, path *pathNode, pos *ast.Position) {
+	if st.fieldErrorsFull() {
+		return
+	}
+	st.appendError(ctx, err, path.materialize(), pos, true)
+}
+
+func (st *execState) appendError(ctx context.Context, err error, path Path, pos *ast.Position, limited bool) {
 	presented := st.e.presenter(ctx, err)
 	if presented == nil {
 		return
@@ -658,8 +691,39 @@ func (st *execState) addError(ctx context.Context, err error, path Path, pos *as
 		presented.Locations = []Location{{Line: pos.Line, Column: pos.Column}}
 	}
 	st.mu.Lock()
+	defer st.mu.Unlock()
+	if limited && st.fullLocked() {
+		return
+	}
 	st.errs = append(st.errs, presented)
-	st.mu.Unlock()
+}
+
+// fieldErrorsFull reports whether the field error limit is reached.
+func (st *execState) fieldErrorsFull() bool {
+	if st.e.maxErrors <= 0 {
+		return false
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.fullLocked()
+}
+
+// fullLocked reports whether the error limit is reached and, the first time
+// it is, appends the notice. The notice needs no field of its own on
+// execState, which has no room: past the limit only engine errors and the
+// notice are ever appended, so a short scan of that tail finds it.
+func (st *execState) fullLocked() bool {
+	limit := st.e.maxErrors
+	if limit <= 0 || len(st.errs) < limit {
+		return false
+	}
+	for _, e := range st.errs[limit:] {
+		if e.Extensions["code"] == CodeErrorLimitExceeded {
+			return true
+		}
+	}
+	st.errs = append(st.errs, errorLimitNotice())
+	return true
 }
 
 // fieldError records an error raised while producing the value of f. List
@@ -702,7 +766,7 @@ func (st *execState) fieldError(ctx context.Context, err error, path *pathNode, 
 	if f != nil && f.ast != nil {
 		pos = f.ast.Position
 	}
-	st.addError(ctx, err, full.materialize(), pos)
+	st.addFieldError(ctx, err, full, pos)
 }
 
 // recovered converts a panic into a field error and logs the stack.

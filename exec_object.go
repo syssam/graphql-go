@@ -238,7 +238,7 @@ func (st *execState) writeValue(ctx context.Context, w *jsonw.Writer, v any, t *
 		var isNil bool
 		obj, v, isNil, err = st.e.schema.concreteValue(f.abstract, v)
 		if err != nil {
-			st.addError(ctx, err, path.materialize(), f.ast.Position)
+			st.addFieldError(ctx, err, path, f.ast.Position)
 			if t.NonNull {
 				return false
 			}
@@ -256,7 +256,7 @@ func (st *execState) writeValue(ctx context.Context, w *jsonw.Writer, v any, t *
 // non-null violation and returns false.
 func (st *execState) writeNullValue(ctx context.Context, w *jsonw.Writer, t *ast.Type, f *planField, path *pathNode) bool {
 	if t.NonNull {
-		st.addError(ctx, Errorf("Cannot return null for non-nullable field %s.", coordinate(f.def.object.name, f.def.name)), path.materialize(), f.ast.Position)
+		st.addFieldError(ctx, Errorf("Cannot return null for non-nullable field %s.", coordinate(f.def.object.name, f.def.name)), path, f.ast.Position)
 		return false
 	}
 	w.Null()

@@ -40,6 +40,9 @@ const (
 	// WithOperationTimeout. When a deadline the caller set ends execution,
 	// the executor reports CodeRequestCancelled instead.
 	CodeOperationTimeout = "OPERATION_TIMEOUT"
+	// CodeErrorLimitExceeded marks the one error that stands in for those
+	// omitted past WithMaxErrors.
+	CodeErrorLimitExceeded = "ERROR_LIMIT_EXCEEDED"
 )
 
 // Location is a line/column position in the request document.
