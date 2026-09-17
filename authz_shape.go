@@ -108,26 +108,89 @@ func requirementOf(ds ast.DirectiveList) (Requirement, bool) {
 	return NewRequirement(groups...), true
 }
 
-// validateAuthDirectives rejects a malformed @requiresScopes usage at schema
-// build, joined into NewSchema's errors like every other Go-vs-SDL shape
-// mismatch. gqlparser validates the directive's name, location and required
-// argument presence, but never checks the "scopes" value's shape against
-// [[String!]!]!: a value one nesting level short of Apollo's syntax (a flat
-// list of strings) decodes to a Requirement satisfied by everyone — an AND
-// over zero scopes is vacuous — while still creating a site, so the field
-// looks guarded and an Authorizer is consulted, but every caller passes.
-// Catching this here, once, is what keeps that failure mode from reaching a
-// request.
+// validateAuthDirectives rejects a malformed or misplaced @requiresScopes at
+// schema build, joined into NewSchema's errors like every other Go-vs-SDL
+// shape mismatch. gqlparser checks the directive's name, location and
+// argument presence but never the "scopes" value's shape: a flat list of
+// strings decodes to a requirement satisfied by everyone while still creating
+// a site. And a placement the engine does not enforce -- a union, enum, enum
+// value, scalar, input object, input field or argument -- would read as
+// guarded while guarding nothing, so it is an error rather than a no-op.
 func (b *schemaBuilder) validateAuthDirectives() {
 	for name, def := range b.ast.Types {
 		if def.BuiltIn {
 			continue
 		}
-		if def.Kind == ast.Object {
+		switch def.Kind {
+		case ast.Object, ast.Interface:
 			b.checkRequiresScopes(name, def.Directives)
+			for _, f := range def.Fields {
+				coord := coordinate(name, f.Name)
+				b.checkRequiresScopes(coord, f.Directives)
+				for _, a := range f.Arguments {
+					b.rejectUnenforced(coord, "an argument", a.Directives)
+				}
+			}
+		case ast.InputObject:
+			b.rejectUnenforced(name, "an input object", def.Directives)
+			for _, f := range def.Fields {
+				b.rejectUnenforced(coordinate(name, f.Name), "an input field", f.Directives)
+			}
+		case ast.Enum:
+			b.rejectUnenforced(name, "an enum", def.Directives)
+			for _, v := range def.EnumValues {
+				b.rejectUnenforced(coordinate(name, v.Name), "an enum value", v.Directives)
+			}
+		case ast.Union:
+			b.rejectUnenforced(name, "a union", def.Directives)
+		case ast.Scalar:
+			b.rejectUnenforced(name, "a scalar", def.Directives)
 		}
-		for _, f := range def.Fields {
-			b.checkRequiresScopes(coordinate(name, f.Name), f.Directives)
+	}
+}
+
+func (b *schemaBuilder) rejectUnenforced(coord, what string, ds ast.DirectiveList) {
+	if ds.ForName(authDirective) != nil {
+		b.errorf("%s: @%s is not enforced on %s; declare it on an object, interface or field", coord, authDirective, what)
+	}
+}
+
+// resolveAuthRequirements stores each bound field's effective requirement on
+// its fieldDef and each object's type-level one on its objectType. Every input
+// is schema-level and immutable after build, so the value is identical on
+// every path that reaches a field -- which is what keeps a memoized selection
+// set shared between parents safe to index once.
+func (b *schemaBuilder) resolveAuthRequirements(s *Schema) {
+	for name, obj := range s.objects {
+		typeReq, _ := requirementOf(obj.def.Directives)
+		for _, iname := range obj.def.Interfaces {
+			if idef := b.ast.Types[iname]; idef != nil {
+				r, _ := requirementOf(idef.Directives)
+				typeReq = typeReq.And(r)
+			}
+		}
+		if typeReq.groupCount() > maxRequirementGroups {
+			b.errorf("%s: effective @%s has %d groups, more than %d", name, authDirective, typeReq.groupCount(), maxRequirementGroups)
+		}
+		obj.requires = typeReq
+
+		for _, fd := range obj.fields {
+			req, _ := requirementOf(fd.def.Directives)
+			req = req.And(typeReq)
+			for _, iname := range obj.def.Interfaces {
+				idef := b.ast.Types[iname]
+				if idef == nil {
+					continue
+				}
+				if ifd := idef.Fields.ForName(fd.name); ifd != nil {
+					r, _ := requirementOf(ifd.Directives)
+					req = req.And(r)
+				}
+			}
+			if req.groupCount() > maxRequirementGroups {
+				b.errorf("%s: effective @%s has %d groups, more than %d", coordinate(name, fd.name), authDirective, req.groupCount(), maxRequirementGroups)
+			}
+			fd.requires = req
 		}
 	}
 }
