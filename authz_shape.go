@@ -48,8 +48,9 @@ func (b *shapeBuilder) walk(obj *objectType, abs *abstractType, sel *selectionSe
 	// keeps the walk linear in the plan's DAG rather than in the tree it
 	// unfolds to. It is also what stops a shared field being indexed twice,
 	// which would be silent: the second index would win. Sharing does not
-	// conflate decisions, because a site's requirement is read off the field
-	// definition alone and so is the same on every path that reaches it.
+	// conflate decisions, because a site's requirement is the field's or
+	// object's stored effective requirement (fieldDef.requires / objectType.requires,
+	// computed once at NewSchema) and so is the same on every path that reaches it.
 	if b.seen == nil {
 		b.seen = make(map[*selectionSet]bool)
 	}

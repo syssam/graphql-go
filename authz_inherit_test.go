@@ -518,14 +518,24 @@ func TestInheritedRequirementDeniesField(t *testing.T) {
 }
 
 // Apollo clients add __typename to every selection. Unguarded, it counts the
-// rows of a guarded type and confirms a given one exists.
+// rows of a guarded type and confirms a given one exists. An Authorize
+// request error would also leave data null with a non-empty Errors slice, so
+// this pins the specific code and path a denied object site must produce --
+// not just that something went wrong.
 func TestTypenameIsGuardedByTheObjectRequirement(t *testing.T) {
 	resp := run(t, inheritExec(t), `{ pet { __typename } }`, "")
-	if len(resp.Errors) == 0 {
-		t.Fatalf("__typename of a guarded type was not denied; data = %s", resp.Data)
+	if len(resp.Errors) != 1 {
+		t.Fatalf("want exactly 1 error denying __typename, got %d: %s", len(resp.Errors), errorsJSON(resp.Errors))
 	}
-	if string(resp.Data) != "null" && resp.Data != nil {
+	if string(resp.Data) != "null" {
 		t.Errorf("__typename is String!, so its denial must bubble; data = %s", resp.Data)
+	}
+	e := resp.Errors[0]
+	if got := e.Extensions["code"]; got != CodeForbidden {
+		t.Errorf("code = %v, want %v", got, CodeForbidden)
+	}
+	if got, want := e.Path.String(), "pet.__typename"; got != want {
+		t.Errorf("path = %q, want %q", got, want)
 	}
 
 	resp = run(t, inheritExec(t, "dog:read", "pet:read"), `{ pet { __typename } }`, "")
@@ -552,12 +562,15 @@ func TestTypenameOfAnUnguardedTypeHasNoSite(t *testing.T) {
 
 func TestObjectSiteAdmitsOnlyAllowAndDeny(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		o    Outcome
+		name    string
+		o       Outcome
+		wantErr bool
 	}{
-		{"Null", Null()},
-		{"Zero", Zero()},
-		{"Redact", Redact(func(v any) any { return v })},
+		{"Allow", Allow(), false},
+		{"Deny", Deny("dog:read or pet:read", "Dog"), false},
+		{"Null", Null(), true},
+		{"Zero", Zero(), true},
+		{"Redact", Redact(func(v any) any { return v }), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var setErr error
@@ -571,9 +584,200 @@ func TestObjectSiteAdmitsOnlyAllowAndDeny(t *testing.T) {
 					return nil
 				})))
 			run(t, e, `{ pet { __typename } }`, "")
-			if setErr == nil {
+			if tc.wantErr && setErr == nil {
 				t.Errorf("Decision.Set accepted %s on an object site", tc.name)
 			}
+			if !tc.wantErr && setErr != nil {
+				t.Errorf("Decision.Set rejected %s on an object site: %v", tc.name, setErr)
+			}
 		})
+	}
+}
+
+// typenameOne, typenameItem, typenameSecret and typenameOpen back
+// TestTypenameGuardWritePaths' schema: a nullable concrete parent, a nullable
+// list, a non-null list element and a union with one guarded and one
+// unguarded member, so the write-path probes below exercise every shape
+// __typename's object-site enforcement has to bubble through correctly.
+type typenameOne struct{}
+type typenameItem struct{}
+type typenameSecret struct{}
+type typenameOpen struct{}
+
+const typenameSDL = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+type One @requiresScopes(scopes: [["one:read"]]) { name: String! }
+type Item @requiresScopes(scopes: [["item:read"]]) { name: String! }
+type Secret @requiresScopes(scopes: [["secret:read"]]) { name: String! }
+type Open { name: String! }
+union Mixed = Open | Secret
+type Query {
+  one: One
+  list: [Item]
+  secrets: [Secret!]
+  mixed: [Mixed]
+}
+`
+
+func typenameSchema(t testing.TB) *Schema {
+	t.Helper()
+	s, err := NewSchema(SDL(typenameSDL),
+		Query(
+			Field("one", func(Root) *typenameOne { return &typenameOne{} }),
+			Field("list", func(Root) []*typenameItem { return []*typenameItem{{}, {}} }),
+			Field("secrets", func(Root) []*typenameSecret { return []*typenameSecret{{}, {}} }),
+			Field("mixed", func(Root) []any { return []any{&typenameOpen{}, &typenameSecret{}} }),
+		),
+		Object[typenameOne]("One", Field("name", func(*typenameOne) string { return "" })),
+		Object[typenameItem]("Item", Field("name", func(*typenameItem) string { return "" })),
+		Object[typenameSecret]("Secret", Field("name", func(*typenameSecret) string { return "" })),
+		Object[typenameOpen]("Open", Field("name", func(*typenameOpen) string { return "" })),
+		Union[any]("Mixed"),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	return s
+}
+
+func typenameExec(t testing.TB, held ...string) *Executor {
+	t.Helper()
+	have := map[string]bool{}
+	for _, h := range held {
+		have[h] = true
+	}
+	return NewExecutor(typenameSchema(t), WithAuthorizer(ScopeAuthorizer(
+		func(context.Context) map[string]bool { return have })))
+}
+
+// TestTypenameGuardWritePaths pins the exact data and error path a denied
+// __typename object site produces through every write shape it can be
+// reached from, and that holding the guarding scope produces the full data
+// with no errors for the same query.
+func TestTypenameGuardWritePaths(t *testing.T) {
+	cases := []struct {
+		name        string
+		query       string
+		full        []string // scopes that satisfy every guarded site this query touches
+		deniedData  string
+		deniedPaths []string // dotted Path.String() form, in the order Errors reports them
+		allowedData string
+	}{
+		{
+			name:        "nullable concrete parent bubbles the parent to null",
+			query:       `{ one { __typename } }`,
+			full:        []string{"one:read"},
+			deniedData:  `{"one":null}`,
+			deniedPaths: []string{"one.__typename"},
+			allowedData: `{"one":{"__typename":"One"}}`,
+		},
+		{
+			name:        "nullable list nulls each denied element and keeps walking",
+			query:       `{ list { __typename } }`,
+			full:        []string{"item:read"},
+			deniedData:  `{"list":[null,null]}`,
+			deniedPaths: []string{"list[0].__typename", "list[1].__typename"},
+			allowedData: `{"list":[{"__typename":"Item"},{"__typename":"Item"}]}`,
+		},
+		{
+			name:        "a non-null list element nulls the whole list and stops at the first failure",
+			query:       `{ secrets { __typename } }`,
+			full:        []string{"secret:read"},
+			deniedData:  `{"secrets":null}`,
+			deniedPaths: []string{"secrets[0].__typename"},
+			allowedData: `{"secrets":[{"__typename":"Secret"},{"__typename":"Secret"}]}`,
+		},
+		{
+			name:        "a union nulls only the guarded member",
+			query:       `{ mixed { __typename } }`,
+			full:        []string{"secret:read"},
+			deniedData:  `{"mixed":[{"__typename":"Open"},null]}`,
+			deniedPaths: []string{"mixed[1].__typename"},
+			allowedData: `{"mixed":[{"__typename":"Open"},{"__typename":"Secret"}]}`,
+		},
+		{
+			name:        "an alias is used in the error path",
+			query:       `{ one { x: __typename } }`,
+			full:        []string{"one:read"},
+			deniedData:  `{"one":null}`,
+			deniedPaths: []string{"one.x"},
+			allowedData: `{"one":{"x":"One"}}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := run(t, typenameExec(t), tc.query, "")
+			if got := string(resp.Data); got != tc.deniedData {
+				t.Fatalf("denied data = %s, want %s (errors: %s)", got, tc.deniedData, errorsJSON(resp.Errors))
+			}
+			if len(resp.Errors) != len(tc.deniedPaths) {
+				t.Fatalf("got %d errors, want %d: %s", len(resp.Errors), len(tc.deniedPaths), errorsJSON(resp.Errors))
+			}
+			for i, e := range resp.Errors {
+				if got := e.Path.String(); got != tc.deniedPaths[i] {
+					t.Errorf("error[%d].path = %q, want %q", i, got, tc.deniedPaths[i])
+				}
+				if got := e.Extensions["code"]; got != CodeForbidden {
+					t.Errorf("error[%d].code = %v, want %v", i, got, CodeForbidden)
+				}
+			}
+
+			resp = run(t, typenameExec(t, tc.full...), tc.query, "")
+			if len(resp.Errors) > 0 {
+				t.Fatalf("held scopes still denied: %s", errorsJSON(resp.Errors))
+			}
+			if got := string(resp.Data); got != tc.allowedData {
+				t.Errorf("allowed data = %s, want %s", got, tc.allowedData)
+			}
+		})
+	}
+}
+
+// TestTypenameGuardsAGuardedRoot covers a type-level requirement on the root
+// type itself: the operation's own top-level object has no parent to bubble
+// into, so a denied root __typename must null the whole response.
+func TestTypenameGuardsAGuardedRoot(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+type Query @requiresScopes(scopes: [["root:read"]]) { ok: String! }
+`
+	build := func(t testing.TB) *Schema {
+		t.Helper()
+		s, err := NewSchema(SDL(sdl), Query(Field("ok", func(Root) string { return "fine" })))
+		if err != nil {
+			t.Fatalf("NewSchema: %v", err)
+		}
+		return s
+	}
+	exec := func(t testing.TB, held ...string) *Executor {
+		t.Helper()
+		have := map[string]bool{}
+		for _, h := range held {
+			have[h] = true
+		}
+		return NewExecutor(build(t), WithAuthorizer(ScopeAuthorizer(
+			func(context.Context) map[string]bool { return have })))
+	}
+
+	resp := run(t, exec(t), `{ __typename }`, "")
+	if string(resp.Data) != "null" {
+		t.Fatalf("data = %s, want null", resp.Data)
+	}
+	if len(resp.Errors) != 1 {
+		t.Fatalf("want 1 error, got %d: %s", len(resp.Errors), errorsJSON(resp.Errors))
+	}
+	if got, want := resp.Errors[0].Path.String(), "__typename"; got != want {
+		t.Errorf("path = %q, want %q", got, want)
+	}
+	if got := resp.Errors[0].Extensions["code"]; got != CodeForbidden {
+		t.Errorf("code = %v, want %v", got, CodeForbidden)
+	}
+
+	resp = run(t, exec(t, "root:read"), `{ __typename }`, "")
+	if len(resp.Errors) > 0 {
+		t.Fatalf("held scope still denied: %s", errorsJSON(resp.Errors))
+	}
+	if got, want := string(resp.Data), `{"__typename":"Query"}`; got != want {
+		t.Errorf("data = %s, want %s", got, want)
 	}
 }
