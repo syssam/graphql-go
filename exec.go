@@ -46,8 +46,13 @@ type Executor struct {
 	maxComplexity    int
 	maxDepth         int
 	maxResponseBytes int64
-	cost             *QueryCost
-	authorizer       Authorizer
+	operationTimeout time.Duration
+	// timeoutCause is the context cause of this executor's own deadline, nil
+	// without one. Compared by identity, it tells the timeout apart from a
+	// deadline the caller set.
+	timeoutCause error
+	cost         *QueryCost
+	authorizer   Authorizer
 }
 
 // ExecutorOption configures an Executor.
@@ -136,6 +141,9 @@ func NewExecutor(s *Schema, opts ...ExecutorOption) *Executor {
 	// Built after every option has run, so WithPlanCache and WithPlanCacheBytes
 	// compose in either order.
 	e.cache = newPlanCache(e.cacheSize, e.cacheBytes)
+	if e.operationTimeout > 0 {
+		e.timeoutCause = &timeoutError{d: e.operationTimeout}
+	}
 	if e.maxConcurrency > 0 {
 		e.sem = make(chan struct{}, e.maxConcurrency)
 	}
@@ -159,7 +167,43 @@ func (e *Executor) Schema() *Schema { return e.schema }
 // Execute runs a query or mutation and returns its response. Call
 // Response.Release once the response has been serialized.
 func (e *Executor) Execute(ctx context.Context, req *Request) *Response {
+	if e.timeoutCause != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeoutCause(ctx, e.operationTimeout, e.timeoutCause)
+		defer cancel()
+	}
 	return e.reqChain(ctx, req)
+}
+
+// timeoutError is the cause attached to the executor's own deadline.
+type timeoutError struct{ d time.Duration }
+
+func (t *timeoutError) Error() string {
+	return fmt.Sprintf("operation exceeded its timeout of %v", t.d)
+}
+
+// Is makes the cause match context.DeadlineExceeded, as ctx.Err() does, so a
+// resolver returning context.Cause(ctx) is recognised as timed out too.
+func (t *timeoutError) Is(target error) bool { return target == context.DeadlineExceeded }
+
+// timeoutFieldError reports err as the operation timeout without losing what
+// the resolver said: err stays in the chain for a presenter, and an *Error's
+// extensions are kept beside the code.
+func (e *Executor) timeoutFieldError(err error) *Error {
+	out := &Error{Message: e.timeoutCause.Error(), Err: err}
+	var inner *Error
+	if errors.As(err, &inner) {
+		for k, v := range inner.Extensions {
+			out = out.WithExtension(k, v)
+		}
+	}
+	return out.WithCode(CodeOperationTimeout)
+}
+
+// timedOut reports whether ctx ended because of this executor's timeout
+// rather than anything the caller did.
+func (e *Executor) timedOut(ctx context.Context) bool {
+	return e.timeoutCause != nil && context.Cause(ctx) == e.timeoutCause
 }
 
 // OperationKind reports the kind of the operation a request would execute,
@@ -526,6 +570,12 @@ func (st *execState) fieldError(ctx context.Context, err error, path *pathNode, 
 		}
 		full = &pathNode{parent: full, index: ie.index, isIndex: true}
 		err = ie.err
+	}
+	// A resolver that honours its context returns the bare deadline error,
+	// which would reach the client as "context deadline exceeded" with no
+	// code; say what actually happened.
+	if errors.Is(err, context.DeadlineExceeded) && st.e.timedOut(ctx) {
+		err = st.e.timeoutFieldError(err)
 	}
 	if errors.Is(err, errNonNull) {
 		coord := "field"

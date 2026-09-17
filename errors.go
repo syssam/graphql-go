@@ -35,6 +35,10 @@ const (
 	// CodeResponseTooLarge is returned when a response's data exceeds
 	// WithMaxResponseBytes.
 	CodeResponseTooLarge = "RESPONSE_TOO_LARGE"
+	// CodeOperationTimeout is returned for work cut short by
+	// WithOperationTimeout. When a deadline the caller set ends execution,
+	// the executor reports CodeRequestCancelled instead.
+	CodeOperationTimeout = "OPERATION_TIMEOUT"
 )
 
 // Location is a line/column position in the request document.
