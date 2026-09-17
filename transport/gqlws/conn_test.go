@@ -651,14 +651,14 @@ func TestDrainClosesWithGoingAway(t *testing.T) {
 // TestDrainWaitsForConnectionThenGivesUp proves the connection is registered
 // with the drain and runs under the context the drain cancels. A query that
 // ignores Closing keeps the connection's drain waiting, so Shutdown returns
-// DeadlineExceeded only if it was waiting for this connection, and the socket
-// ends promptly only if giving up reaches the protocol. Closing alone produces
+// DeadlineExceeded only if it was waiting for this connection, and the client
+// gets 1001 only if giving up reaches the protocol. Closing alone produces
 // neither.
 //
-// Unlike gqlfiber's counterpart this does not require 1001: the protocol reads
-// under the context the drain cancels, and coder/websocket closes the
-// underlying connection as soon as a read context is cancelled, so the
-// client sees EOF before the watcher's close frame can be written.
+// The 1001 is the part coder/websocket makes easy to lose: it closes the
+// connection with no frame as soon as a read's context is cancelled, so a
+// protocol reading under the context the drain cancels ends the connection
+// before its own close frame is written.
 func TestDrainWaitsForConnectionThenGivesUp(t *testing.T) {
 	started := make(chan struct{}, 1)
 	s, err := graphql.NewSchema(graphql.SDL(`type Query { block: String! }`),
@@ -688,15 +688,8 @@ func TestDrainWaitsForConnectionThenGivesUp(t *testing.T) {
 		t.Fatalf("Shutdown = %v, want DeadlineExceeded", err)
 	}
 
-	readCtx, readCancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer readCancel()
-	for {
-		if _, _, err := c.ws.Read(readCtx); err != nil {
-			if readCtx.Err() != nil {
-				t.Fatalf("connection still open 2s after Shutdown gave up: %v", err)
-			}
-			break
-		}
+	if code := c.recvErr(); code != gqlws.StatusGoingAway {
+		t.Fatalf("close code = %d after Shutdown gave up, want %d", code, gqlws.StatusGoingAway)
 	}
 }
 

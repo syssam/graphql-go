@@ -483,7 +483,12 @@ func (c *conn) startPings() func() {
 // connection with StatusBadRequest, because the protocol has no way to report
 // a malformed message against an operation.
 func (c *conn) read(ctx context.Context) (InMessage, error) {
-	data, err := c.sock.Read(ctx)
+	// The read never ends by cancellation, only by the socket closing, which
+	// every path that ends a connection already does. coder/websocket closes
+	// the connection without a frame when a read's context is cancelled, so
+	// reading under a cancellable context let a drain that gave up drop the
+	// connection before watch could send 1001. The values are kept.
+	data, err := c.sock.Read(context.WithoutCancel(ctx))
 	if err != nil {
 		if errors.Is(err, ErrBinaryFrame) {
 			c.close(StatusBadRequest, "Messages must be text frames")

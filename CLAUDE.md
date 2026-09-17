@@ -334,7 +334,14 @@ goroutine outlives that return until handlers call `leave`. **`gqlwsproto.watch`
 socket itself** when its parent context is cancelled, including mid-drain while an operation
 ignores cancellation: `gqlfiber`'s `Read` ignores its context, so closing the socket is the only
 thing that ends it, and the first version of the drain waited on the operations with nothing
-watching the parent and never closed at all. Two guards in `gqlwsproto` have no deterministic
+watching the parent and never closed at all. **`gqlwsproto` reads under
+`context.WithoutCancel`**: coder/websocket closes a connection with no frame the moment a read's
+context is cancelled, so on `gqlws` a drain giving up produced EOF instead of 1001 — caught only by
+a transport-level test, since the protocol's fake socket cannot close anything. A read now ends
+only when the socket closes, which every path that ends a connection already does. One
+consequence: a cancelled `OnConnect` context no longer drops a `gqlws` connection by itself (its
+operations are still cancelled), which is what `gqlfiber`, whose `Read` always ignored its
+context, already did. Two guards in `gqlwsproto` have no deterministic
 test and say so beside them (`closed(cfg.Closing)` in `subscribe`, and `Serve` waiting for
 `watch`); a reviewer's 50-run break of each failed 0 and 3 times. `gqlhttp` needs nothing.
 
