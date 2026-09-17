@@ -17,11 +17,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/syssam/graphql-go"
 	"github.com/syssam/graphql-go/examples/blog"
+	"github.com/syssam/graphql-go/transport/drain"
 	"github.com/syssam/graphql-go/transport/gqlhttp"
 	"github.com/syssam/graphql-go/transport/gqlsse"
 	"github.com/syssam/graphql-go/transport/gqlws"
@@ -48,8 +50,12 @@ func run() error {
 	exec := graphql.NewExecutor(s)
 	mux := http.NewServeMux()
 	mux.Handle("/graphql", gqlhttp.New(exec))
-	mux.Handle("/graphql/stream", gqlsse.New(exec))
-	mux.Handle("/graphql/ws", gqlws.New(exec))
+	// The drain winds down what the server's own Shutdown cannot: SSE streams
+	// never end by themselves, and WebSockets are hijacked, which Shutdown
+	// neither closes nor waits for.
+	d := drain.New()
+	mux.Handle("/graphql/stream", gqlsse.New(exec, gqlsse.WithDrain(d)))
+	mux.Handle("/graphql/ws", gqlws.New(exec, gqlws.WithDrain(d)))
 
 	srv := &http.Server{
 		Addr:              *addr,
@@ -63,9 +69,19 @@ func run() error {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		// srv.Shutdown waits for every open SSE stream, and a stream only ends
+		// once the drain ends it, so the two run together rather than one
+		// after the other.
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			if err := d.Shutdown(shutdownCtx); err != nil {
+				slog.Error("drain", "error", err)
+			}
+		})
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			slog.Error("shutdown", "error", err)
 		}
+		wg.Wait()
 	}()
 
 	slog.Info("serving GraphQL", "addr", *addr,

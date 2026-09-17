@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 
 	"github.com/syssam/graphql-go"
 	"github.com/syssam/graphql-go/examples/blog"
+	"github.com/syssam/graphql-go/transport/drain"
 	"github.com/syssam/graphql-go/transport/gqlfiber"
 )
 
@@ -63,26 +65,37 @@ func run() error {
 	// example, would let Fiber's router answer a DELETE with a bare 405
 	// instead of the handler's envelope.
 	app.All("/graphql", gqlfiber.New(exec))
-	app.All("/graphql/stream", gqlfiber.SSE(exec))
+	d := drain.New()
+	app.All("/graphql/stream", gqlfiber.SSE(exec, gqlfiber.WithDrain(d)))
 
 	// WS refuses a cross-origin upgrade unless WithOriginPatterns names it;
 	// a request with no Origin header (curl, websocat, same-origin pages) is
 	// always accepted. That default is left as-is here rather than loosened
 	// with WithInsecureSkipOriginCheck, which would only teach a copy of
 	// this example to disable the one browser-facing check it has.
-	app.All("/graphql/ws", gqlfiber.WS(exec))
+	app.All("/graphql/ws", gqlfiber.WS(exec, gqlfiber.WithDrain(d)))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() {
 		<-ctx.Done()
-		// A bare context.Background() here would never force-close: Fiber
-		// only forces a shutdown once the context's deadline passes, so an
-		// open SSE or WebSocket subscription -- exactly what this example
-		// exists to demonstrate -- would hold the process open forever.
-		if err := app.ShutdownWithTimeout(5 * time.Second); err != nil {
+		// The drain ends open SSE streams and WebSockets so Fiber's shutdown
+		// can finish early instead of waiting out its timeout; both run
+		// together, and the timeout still bounds the pair. A bare
+		// context.Background() would never force-close: Fiber only forces a
+		// shutdown once the context's deadline passes.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			if err := d.Shutdown(shutdownCtx); err != nil {
+				slog.Error("drain", "error", err)
+			}
+		})
+		if err := app.ShutdownWithContext(shutdownCtx); err != nil {
 			slog.Error("shutdown", "error", err)
 		}
+		wg.Wait()
 	}()
 
 	slog.Info("serving GraphQL", "addr", *addr,

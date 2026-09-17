@@ -317,6 +317,27 @@ layer (`gofiber/contrib/v3/websocket`, over `fasthttp/websocket`) has no origin-
 its own, so `transport/gqlfiber/ws.go` hand-rolls one mirroring `coder/websocket`'s semantics
 branch for branch — keep it a mirror; divergence there is a security divergence.
 
+**Long-lived connections are drained by `transport/drain`, not by the servers.** `net/http`'s
+`Shutdown` says so in as many words ("does not attempt to close nor wait for hijacked
+connections such as WebSockets"), and an SSE stream is an active request that never ends, so
+`Shutdown` waited out its whole deadline and the process then cut the stream. One `drain.Drain`
+is handed to `gqlws`/`gqlsse`/`gqlfiber` through `WithDrain` (a shared object rather than a
+method, because `gqlfiber` and `gqlecho` return handler functions) and shut down *alongside* the
+server, never before or after: `srv.Shutdown` waits for SSE handlers that only the drain ends.
+On `Closing`, a WebSocket (`internal/gqlwsproto`, both drivers) refuses new operations with an
+`error`, cancels subscriptions without `complete`, lets queries and mutations finish so their
+clients learn the result, and closes 1001; an SSE subscription stream returns without a
+`complete` event. Omitting `complete` is the point — it would tell graphql-ws and graphql-sse
+clients the subscription ended for good instead of reconnecting. New connections get 503. Past
+its deadline `Shutdown` cancels every entered context and returns without waiting; the wait
+goroutine outlives that return until handlers call `leave`. **`gqlwsproto.watch` closes the
+socket itself** when its parent context is cancelled, including mid-drain while an operation
+ignores cancellation: `gqlfiber`'s `Read` ignores its context, so closing the socket is the only
+thing that ends it, and the first version of the drain waited on the operations with nothing
+watching the parent and never closed at all. Two guards in `gqlwsproto` have no deterministic
+test and say so beside them (`closed(cfg.Closing)` in `subscribe`, and `Serve` waiting for
+`watch`); a reviewer's 50-run break of each failed 0 and 3 times. `gqlhttp` needs nothing.
+
 `internal/gqlwsproto` is `graphql-transport-ws` extracted so `gqlws` and `gqlfiber`'s
 WebSocket layer both drive it. It locks around every write: `coder/websocket` serializes
 writers itself, but `fasthttp/websocket` (a gorilla derivative) does not, and concurrent
@@ -528,7 +549,7 @@ from it, because the timings it first recorded were single samples and have been
 Status: phases 1-4 complete and merged to `main` — engine, both codegen binding modes,
 subscriptions, five transports, DataLoader, APQ, limits with actual cost accounting,
 OpenTelemetry with field observation, bounded plan expansion, a plan cache bounded by
-query text, a response size limit and an operation timeout, the authorization spine (`Authorizer`, `AuthShape`, `RequireAuthCoverage`,
+query text, a response size limit, an operation timeout and a shutdown drain for WebSocket and SSE, the authorization spine (`Authorizer`, `AuthShape`, `RequireAuthCoverage`,
 `SubscriptionInterceptor`), and the `lint/` analyzer; plus `relay/`, `fed/`, `ext/throttle`,
 `ext/trusted` and DataLoader tracing. Not built: `ext/authz` (the Apollo directive vocabulary
 and a batched `Guard`) and APQ over WebSocket, which belongs in the

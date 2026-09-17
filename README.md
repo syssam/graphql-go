@@ -130,6 +130,28 @@ curl -N localhost:8080/graphql/stream -H 'content-type: application/json'   -H '
 Closing the connection unsubscribes: the source channel's context is cancelled,
 so a broker can drop the subscriber and stop producing.
 
+On shutdown, the server's own `Shutdown` drains ordinary requests but not these:
+it neither closes nor waits for WebSockets, and an SSE stream never ends by
+itself, so `Shutdown` waits out its whole timeout. A `drain.Drain` handed to both
+streaming handlers winds them down — subscriptions end (WebSocket close 1001, or
+the SSE response ends without `complete`, so clients reconnect), queries and
+mutations already running over a WebSocket finish, and new connections get 503:
+
+```go
+d := drain.New()
+mux.Handle("/graphql/stream", gqlsse.New(exec, gqlsse.WithDrain(d)))
+mux.Handle("/graphql/ws", gqlws.New(exec, gqlws.WithDrain(d)))
+
+// on SIGTERM: both together, under one deadline
+var wg sync.WaitGroup
+wg.Go(func() { _ = d.Shutdown(ctx) })
+_ = srv.Shutdown(ctx)
+wg.Wait()
+```
+
+`gqlecho.SSE`/`WS` take the same options, and `gqlfiber.WithDrain` does the same
+for Fiber. Past the deadline `d.Shutdown` cuts what is left and returns.
+
 A fuller example with interfaces, unions, enums, custom scalars, input objects,
 `Omittable` PATCH semantics, a schema directive, a DataLoader for `Post.author`
 and a subscription fed by the `createPost` mutation lives in
