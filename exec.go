@@ -66,9 +66,10 @@ func WithPlanCache(size int) ExecutorOption {
 // the entry count from WithPlanCache still applies. The default is 16 MiB.
 //
 // The budget is on query text because that is what can be counted cheaply, but
-// what it actually bounds is memory: a parsed and validated document retains
-// roughly 26 times its query text, so without this limit 1024 distinct valid
-// 1 MiB queries hold tens of gigabytes. Ordinary queries are a few kilobytes,
+// what it actually bounds is memory: a parsed and validated document retained
+// roughly 26 times its query text when measured on an alias-heavy query (other
+// shapes will differ), so without this limit 1024 distinct valid 1 MiB queries
+// of that shape hold tens of gigabytes. Ordinary queries are a few kilobytes,
 // so the default entry count binds long before this does and only unusually
 // large queries ever reach it. A query larger than the whole budget is not
 // cached but still executes.

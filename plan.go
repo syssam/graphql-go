@@ -602,7 +602,7 @@ func (c *planCache) put(entry *docEntry) {
 		}
 		return
 	}
-	for c.lru.Len() > 0 && (c.lru.Len() >= c.size || c.maxBytes > 0 && c.used+n > c.maxBytes) {
+	for c.lru.Len() > 0 && (c.lru.Len() >= c.size || (c.maxBytes > 0 && c.used+n > c.maxBytes)) {
 		c.removeOldest()
 	}
 	c.items[h] = c.lru.PushFront(&cacheItem{hash: h, entry: entry})

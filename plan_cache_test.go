@@ -6,6 +6,19 @@ import (
 	"testing"
 )
 
+// cachedQueryBytes sums the query text actually held, independently of the
+// cache's own counter, so a test can tell a counter that drifted from one that
+// is right. A bound alone cannot: a counter that undercounts stays within budget.
+func cachedQueryBytes(c *planCache) int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var n int64
+	for el := c.lru.Front(); el != nil; el = el.Next() {
+		n += int64(len(el.Value.(*cacheItem).entry.query))
+	}
+	return n
+}
+
 // TestPlanCacheEvictsByBytes pins that the byte budget evicts on its own, before
 // the entry count is anywhere near its limit.
 func TestPlanCacheEvictsByBytes(t *testing.T) {
@@ -45,6 +58,26 @@ func TestPlanCacheSkipsOversizedEntry(t *testing.T) {
 	}
 	if got := c.bytes(); got != 4 {
 		t.Errorf("bytes = %d, want 4", got)
+	}
+}
+
+// TestPlanCacheOversizedCollisionLeavesEntry pins the order of two checks in
+// put: the oversized check runs before the hash lookup. Reversed, an oversized
+// query sharing a hash with a cached document would replace it and push the
+// cache over budget.
+func TestPlanCacheOversizedCollisionLeavesEntry(t *testing.T) {
+	c := newPlanCache(100, 10)
+	c.hash = func(string) uint64 { return 42 }
+	kept := &docEntry{query: "aaaa"}
+	c.put(kept)
+
+	c.put(&docEntry{query: strings.Repeat("x", 11)}) // same hash, too large
+
+	if c.get("aaaa") != kept {
+		t.Error("an oversized query must not replace a cached document it collides with")
+	}
+	if got, want := c.bytes(), cachedQueryBytes(c); got != 4 || got != want {
+		t.Errorf("bytes = %d, held = %d, want both 4", got, want)
 	}
 }
 
@@ -143,7 +176,8 @@ func TestExecutorPlanCacheDefaultBytes(t *testing.T) {
 
 // TestPlanCacheBoundsLargeDistinctQueries is the attack the budget exists for:
 // many distinct, valid, large queries. Each validates, so each reaches put, and
-// a parsed document retains roughly 26 times its query text — so without a
+// a parsed document retained roughly 26 times its query text when measured on
+// an alias-heavy query like this one — so without a
 // budget this retains without bound until the entry count saves it, far too
 // late. Asserted on the cache's own byte count rather than the heap, which is
 // too noisy to bound reliably in a test.
@@ -178,5 +212,8 @@ func TestPlanCacheBoundsLargeDistinctQueries(t *testing.T) {
 	}
 	if got > budget {
 		t.Fatalf("cache holds %d bytes of query text against a budget of %d", got, budget)
+	}
+	if held := cachedQueryBytes(e.cache); got != held {
+		t.Fatalf("cache counter says %d bytes but holds %d; the counter has drifted", got, held)
 	}
 }
