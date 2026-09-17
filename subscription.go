@@ -147,6 +147,7 @@ func (e *Executor) Subscribe(ctx context.Context, req *Request) (<-chan *Respons
 	if perrs != nil {
 		return nil, e.subscribeError(ctx, perrs...)
 	}
+	e.countPlan(cacheHit)
 
 	// The validator enforces a single root selection, but @skip and @include
 	// are folded per plan variant and can leave none.

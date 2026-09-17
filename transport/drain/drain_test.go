@@ -119,3 +119,31 @@ func TestNilDrainAdmitsEverything(t *testing.T) {
 		t.Fatalf("nil Shutdown = %v", err)
 	}
 }
+
+// TestActiveCountsEnteredConnections: Active is what a metric reports as the
+// number of long-lived connections open right now.
+func TestActiveCountsEnteredConnections(t *testing.T) {
+	d := drain.New()
+	_, leaveA, _ := d.Enter(context.Background())
+	_, leaveB, _ := d.Enter(context.Background())
+	if got := d.Active(); got != 2 {
+		t.Fatalf("Active = %d with two entered, want 2", got)
+	}
+	leaveA()
+	leaveA() // a repeated leave must not count twice
+	if got := d.Active(); got != 1 {
+		t.Fatalf("Active = %d after one left, want 1", got)
+	}
+	leaveB()
+	_ = d.Shutdown(context.Background())
+	if _, _, ok := d.Enter(context.Background()); ok {
+		t.Fatal("Enter admitted after Shutdown")
+	}
+	if got := d.Active(); got != 0 {
+		t.Fatalf("Active = %d after all left and a refused Enter, want 0", got)
+	}
+	var nilDrain *drain.Drain
+	if got := nilDrain.Active(); got != 0 {
+		t.Fatalf("nil Drain Active = %d, want 0", got)
+	}
+}

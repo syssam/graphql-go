@@ -471,6 +471,33 @@ panicking field's span now gets error status
 — the interceptor's plain `defer span.End()` ran during the panic's unwind, before recovery
 converted it, so a crashed field used to produce a span that looked clean.
 
+**Runtime metrics follow the OpenTelemetry runtime instrumentation, not grpc's channelz**: no
+introspection endpoint, just asynchronous instruments read on collection. `Executor.Stats()` is the
+engine's snapshot (plan cache entries, bytes, hits, misses; concurrency slots in use and limit) and
+`drain.Drain.Active()` the transport's (long-lived connections on handlers with `WithDrain`);
+`otel.ObserveExecutor` and `otel.ObserveDrain` register them after the executor or drain exists,
+returning a `metric.Registration` to unregister, and `otel.New`'s request interceptor adds
+`graphql.server.active_requests`. **Hits and misses are counted after `planFor`, not in
+`document`**: every streaming transport calls `OperationKind` before `Execute`, and counting in
+`document` would count each such request twice (`TestStatsIgnoresRejectedAndKindLookups`); a
+request rejected by parsing, validation or a depth or complexity limit is neither, one refused by
+the cost limit has been planned and counts, and a subscription is one lookup at `Subscribe` though
+its per-event spans repeat `cache_hit`. The counters
+are two `atomic.Int64`s on `Executor`, not per-request state: interleaved n=12 on
+`BenchmarkFieldPathBare` against `main`, 1.698us vs 1.652us (p=0.311) at 18 allocs/op both —
+and a reviewer's `RunParallel` at `-cpu 20` put the shared counters at 671.2ns vs 688.2ns
+(p=0.102, not significant), allocations equal. Names follow the repository's split:
+`graphql.server.*` where the concept is generic, `graphqlgo.*` where it is this engine's. Usage and
+limits are observable UpDownCounters, not gauges, as the OpenTelemetry runtime and connection-pool
+conventions have them, so backends can add them across instances; hits and misses are one
+`graphqlgo.plan_cache.lookups` counter split by `graphqlgo.plan_cache.result`. **The instruments
+carry no identity of their own**: two executors on one meter add every value into one series,
+and one executor observed twice doubles every value, silently — review measured the first
+version's gauges overwriting each other instead — hence `otel.WithAttributes` and "observe each once per meter" in the godoc. No per-operation
+dimension, to keep cardinality bounded. `graphql.server.active_requests` wraps `reqChain`, which
+only `Execute` runs, so subscriptions never show there; `graphqlgo.transport.active_connections` is
+where they do.
+
 `otel.Batch` / `otel.MappedBatch` wrap a `loader.BatchFunc` so every flush gets a span under
 the request that caused it. They live in `ext/otel` rather than as a loader option so
 `loader/` keeps depending on nothing but the engine and the standard library.
@@ -617,7 +644,7 @@ from it, because the timings it first recorded were single samples and have been
 Status: phases 1-4 complete and merged to `main` — engine, both codegen binding modes,
 subscriptions, five transports, DataLoader, APQ, limits with actual cost accounting,
 OpenTelemetry with field observation, bounded plan expansion, a plan cache bounded by
-query text, a response size limit, an operation timeout, a shutdown drain and connection age and idle limits for WebSocket and SSE, the authorization spine (`Authorizer`, `AuthShape`, `RequireAuthCoverage`,
+query text, a response size limit, an operation timeout, a shutdown drain and connection age and idle limits for WebSocket and SSE, runtime metrics (`Executor.Stats`, `otel.ObserveExecutor`, `otel.ObserveDrain`), the authorization spine (`Authorizer`, `AuthShape`, `RequireAuthCoverage`,
 `SubscriptionInterceptor`), and the `lint/` analyzer; plus `relay/`, `fed/`, `ext/throttle`,
 `ext/trusted` and DataLoader tracing. Not built: `ext/authz` (the Apollo directive vocabulary
 and a batched `Guard`) and APQ over WebSocket, which belongs in the

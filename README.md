@@ -230,7 +230,12 @@ registered and refuses query text whatever hash accompanies it, which is what
 Relay's --persist-output and Apollo's manifest are for. OpenTelemetry traces and
 metrics are in `ext/otel`: `graphql.NewExecutor(s, otel.New()...)`, which also wraps a
 DataLoader batch function (`otel.Batch("user", loadUsers)`) so each flush gets a
-span under the request that caused it. Cost-based rate
+span under the request that caused it. Runtime state is exported as asynchronous metrics
+once the executor exists — `otel.ObserveExecutor(exec)` for plan cache size, lookups by hit or miss and
+resolver concurrency, `otel.ObserveDrain(d)` for open WebSocket connections and SSE subscription
+streams, each once per meter and with `otel.WithAttributes` to tell several apart — and
+`graphql.server.active_requests` (queries and mutations; subscriptions are not counted) comes with
+`otel.New`. Cost-based rate
 limiting is in `ext/throttle`: a bucket of points per caller refilled at a fixed
 rate, quoted before the query runs and charged what it really cost afterwards,
 reporting `extensions.cost.throttleStatus` the way Shopify's Admin API does.
