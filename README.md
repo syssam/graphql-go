@@ -154,7 +154,7 @@ wg.Wait()
 for Fiber. Past the deadline `d.Shutdown` cuts what is left and returns.
 
 Behind a load balancer, `gqlws.WithMaxConnectionAge(age, grace)` retires WebSocket connections
-after `age` (±10%) the same way, one at a time, so clients reconnect to wherever the balancer now
+after `age` (±10%, spread out so they do not all reconnect at once) the same way, so clients reconnect to wherever the balancer now
 sends them; `WithMaxConnectionIdle` closes one with nothing in flight, and `gqlsse.WithMaxStreamAge`
 ends SSE subscription streams. `gqlfiber` has the same options; all are off by default.
 

@@ -92,7 +92,9 @@ func WithDrain(d *drain.Drain) Option { return func(h *Handler) { h.drain = d } 
 // StatusGoingAway. It lets a load balancer spread long-lived connections
 // again. grace, when positive, bounds how long the drain waits for those
 // operations before closing anyway; zero waits for them. Zero age means no
-// limit, the default.
+// limit, the default. An operation sent while that drain waits gets a
+// terminal error rather than a retry, which with a long-running query in
+// flight happens on every rotation, not only at shutdown.
 func WithMaxConnectionAge(age, grace time.Duration) Option {
 	return func(h *Handler) { h.maxAge, h.maxAgeGrace = age, grace }
 }

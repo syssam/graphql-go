@@ -8,7 +8,7 @@ import (
 )
 
 // TestWithMaxConnectionAgeDrainsConnection proves the option reaches
-// gqlwsproto: a live subscription gets its connection drained and closed
+// gqlwsproto: a connection with a subscription sent gets drained and closed
 // 1001 once the connection has been open roughly its configured age, not
 // immediately.
 func TestWithMaxConnectionAgeDrainsConnection(t *testing.T) {

@@ -341,7 +341,7 @@ Getting this backwards produces a leak test that cannot fail, which this branch'
 did once, caught in review before it reached a commit. Two related, deliberate limits: `gqlfiber`'s WebSocket sets no read deadline (the
 only candidate interval is `PingInterval`, and the protocol tracks no pongs, so a derived
 deadline would drop slow-but-live clients), and `WithKeepAlive(0)` on its SSE leaves an idle
-subscription with no write that can fail, so it is held open until its source ends — the
+subscription with no write that can fail, so it is held open until its source ends (or `WithMaxStreamAge` ends it) — the
 handler warns at construction rather than reinterpreting the option's meaning. Its WebSocket
 layer (`gofiber/contrib/v3/websocket`, over `fasthttp/websocket`) has no origin-check hook of
 its own, so `transport/gqlfiber/ws.go` hand-rolls one mirroring `coder/websocket`'s semantics
@@ -390,7 +390,9 @@ maximum age.", subscriptions end without `complete`, queries finish, 1001), and 
 closes 1001 anyway once it passes. `Spread` clamps at `MaxInt64`: the first version wrapped
 negative for huge ages, so setting an age of "never" drained every connection at once. Idle means
 no operation in flight — subscriptions count, pings and a `complete` for an unknown id do not — and
-closes 1000, since nothing was lost. **The idle timer's `Stop` in `subscribe` and `closeIfIdle`'s
+closes 1000, since nothing was lost. A rotation is not free for a busy client: an operation sent
+while the age drain waits for a long query gets a terminal `error`, which graphql-ws does not
+retry, and that happens every age period, not only at shutdown. **The idle timer's `Stop` in `subscribe` and `closeIfIdle`'s
 re-check under `mu` are deliberately redundant**: breaking either alone leaves every test green,
 and only breaking both fails, the same shape as `cancelAll`. `closeIfIdle` also refuses to close
 before `idleDeadline`, for a timer that fired just as a fast query started and finished; no test

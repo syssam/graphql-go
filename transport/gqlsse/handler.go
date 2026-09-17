@@ -77,8 +77,8 @@ func WithKeepAlive(d time.Duration) Option { return func(h *Handler) { h.keepAli
 // WithMaxStreamAge ends a subscription stream after d, give or take 10% so
 // that streams opened together do not all end together, without a complete
 // event -- so the client reconnects rather than treating the subscription as
-// finished for good. A single-result query or mutation is unaffected: it
-// streams its one next and complete before the age could ever matter. Zero
+// finished for good. It does not apply to a single-result query or mutation,
+// however long that takes. Zero
 // means no limit, the default.
 func WithMaxStreamAge(d time.Duration) Option { return func(h *Handler) { h.maxStreamAge = d } }
 

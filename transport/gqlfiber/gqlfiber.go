@@ -128,9 +128,8 @@ func WithKeepAlive(d time.Duration) Option { return func(c *config) { c.keepAliv
 // WithMaxStreamAge ends an SSE subscription stream after d, give or take 10%
 // so that streams opened together do not all end together, without a
 // complete event -- so the client reconnects rather than treating the
-// subscription as finished for good. A single-result query or mutation is
-// unaffected: it streams its one next and complete before the age could ever
-// matter. Zero means no limit, the default. It has no effect on the plain
+// subscription as finished for good. It does not apply to a single-result
+// query or mutation, however long that takes. Zero means no limit, the default. It has no effect on the plain
 // HTTP or WebSocket handlers.
 func WithMaxStreamAge(d time.Duration) Option { return func(c *config) { c.maxStreamAge = d } }
 
@@ -205,7 +204,9 @@ func WithDrain(d *drain.Drain) Option { return func(c *config) { c.drain = d } }
 // connections again. grace, when positive, bounds how long the drain waits
 // for those operations before closing anyway; zero waits for them. Zero age
 // means no limit, the default. It has no effect on the plain HTTP or SSE
-// handlers.
+// handlers. An operation sent while that drain waits gets a
+// terminal error rather than a retry, which with a long-running query in
+// flight happens on every rotation, not only at shutdown.
 func WithMaxConnectionAge(age, grace time.Duration) Option {
 	return func(c *config) { c.maxAge, c.maxAgeGrace = age, grace }
 }
