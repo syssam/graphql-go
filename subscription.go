@@ -190,14 +190,44 @@ func (e *Executor) Subscribe(ctx context.Context, req *Request) (<-chan *Respons
 		args = v
 	}
 
-	stream, serr := f.def.subscribe(ctx, args)
-	if serr != nil {
-		return nil, e.subscribeError(ctx, Errorf("%v", serr).WithPath(Path{{Key: f.alias}}))
+	// Arguments are decoded above rather than inside the handler so an
+	// interceptor refusing the subscription sees the same operation context a
+	// successful one would.
+	open := SubscriptionHandler(func(ctx context.Context, oc *OperationContext) (<-chan *Response, error) {
+		// Gates opening the source itself, so an unauthorized client never
+		// runs its side effects or learns what it reports. Two things refuse
+		// here: an Authorize error, and a Deny recorded for the subscription
+		// root field. The default policy denies by recording rather than by
+		// erroring, so checking the error alone would let it open the source.
+		// Null, Zero and Redact on the root still open: they shape what an
+		// event says, not whether the client may subscribe. Fields below the
+		// root are left to the per-event re-authorization in runOperation,
+		// which re-evaluates on every event so a mid-stream revocation takes
+		// effect without tearing the stream down.
+		d, err := e.authorize(ctx, p)
+		if err != nil {
+			return nil, e.subscribeError(ctx, toError(err))
+		}
+		if f.authIdx >= 0 {
+			if o := d.Outcome(int(f.authIdx)); o.act == actionDeny {
+				return nil, e.subscribeError(ctx, o.denial().WithPath(Path{{Key: f.alias}}))
+			}
+		}
+		stream, serr := f.def.subscribe(ctx, args)
+		if serr != nil {
+			return nil, e.subscribeError(ctx, Errorf("%v", serr).WithPath(Path{{Key: f.alias}}))
+		}
+		out := make(chan *Response)
+		go e.pump(ctx, oc, f, stream, out)
+		return out, nil
+	})
+	for i := len(e.subInterceptors) - 1; i >= 0; i-- {
+		next, si := open, e.subInterceptors[i]
+		open = func(ctx context.Context, oc *OperationContext) (<-chan *Response, error) {
+			return si.InterceptSubscription(ctx, oc, next)
+		}
 	}
-
-	out := make(chan *Response)
-	go e.pump(ctx, base, f, stream, out)
-	return out, nil
+	return open(ctx, base)
 }
 
 // pump drains the source stream, executing the selection once per event.
@@ -262,7 +292,7 @@ type subEvent struct {
 // A FieldObserver still sees the root field, once per event, because it runs
 // in callLeaf/callResolve before dispatch to f.exec -- the substituted
 // executor -- rather than being that executor.
-func (e *Executor) runSubscriptionEvent(ctx context.Context, oc *OperationContext) *Response {
+func (e *Executor) runSubscriptionEvent(ctx context.Context, oc *OperationContext, decision *Decision) *Response {
 	src := oc.event.field
 	event := oc.event.value
 	fd := src.def
@@ -273,13 +303,20 @@ func (e *Executor) runSubscriptionEvent(ctx context.Context, oc *OperationContex
 		f.exec.writeLeaf = func(_ context.Context, w *jsonw.Writer, _, _ any, _ *FieldContext) error {
 			return writeAny(w, event, typ)
 		}
+		// Redact resolves through resolveAny rather than writeLeaf, so it
+		// needs its own event-yielding substitute; without this a redacted
+		// subscription root field would fall through to fd.anyResolve's
+		// errSubscriptionResolved stub.
+		f.exec.resolveAny = func(context.Context, any, any, *FieldContext) (any, error) {
+			return event, nil
+		}
 	} else {
 		f.exec.resolve = func(context.Context, any, any, *FieldContext) (any, error) { return event, nil }
 	}
 	sel := &selectionSet{fields: []*planField{&f}}
 
 	w := jsonw.Get()
-	st := &execState{e: e, s: e.schema, vars: oc.Variables}
+	st := &execState{e: e, vars: oc.Variables, decision: decision}
 	if !st.writeObject(ctx, w, oc.plan.root, sel, &Root{}, nil, true) {
 		w.Reset()
 		w.Null()

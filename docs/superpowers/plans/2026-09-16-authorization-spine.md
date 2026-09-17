@@ -22,10 +22,6 @@
 - Commit messages: imperative, lower-case type prefix (`feat:`, `fix:`, `test:`, `refactor:`, `docs:`).
 - The working tree may carry concurrent work from another session. **Stage files explicitly; never `git add -A`.**
 
-### Deviation from the spec
-
-The spec writes `Coord Coordinate`. This codebase has no `Coordinate` type — `coordinate(typeName, field)` (`schema.go:350`) returns a plain `string`. Tasks below use `Coord string`. Update the spec's §5.1 when Task 4 lands.
-
 ## File Structure
 
 | File | Responsibility |
@@ -565,16 +561,13 @@ type User { id: ID! salary: Int! @requiresScopes(scopes: [["pay:read"]]) }
 	if err != nil {
 		t.Fatalf("NewSchema: %v", err)
 	}
-	e := NewExecutor(s)
-
 	var shape *AuthShape
-	e2 := NewExecutor(s, WithOperationInterceptor(OperationInterceptorFunc(
+	e := NewExecutor(s, WithOperationInterceptor(OperationInterceptorFunc(
 		func(ctx context.Context, oc *OperationContext, next OperationHandler) *Response {
 			shape = oc.AuthShape()
 			return next(ctx, oc)
 		})))
-	_ = e
-	resp := run(t, e2, `{ open me { id salary } }`, "")
+	resp := run(t, e, `{ open me { id salary } }`, "")
 	if len(resp.Errors) > 0 {
 		t.Fatalf("errors: %s", errorsJSON(resp.Errors))
 	}
@@ -973,16 +966,29 @@ func TestAuthorizerSkippedForAnEmptyShape(t *testing.T) {
 	}
 }
 
-func TestScopeAuthorizerDeniesUnheldScopes(t *testing.T) {
+// ScopeAuthorizer records a Deny for a site whose scopes are not held. What
+// the write path then does with that Deny is Task 6; this asserts only that
+// the decision was recorded, which is all that exists yet.
+func TestScopeAuthorizerRecordsDenyForUnheldScopes(t *testing.T) {
+	var recorded Outcome
 	s := shapeSchema(t)
-	e := NewExecutor(s, WithAuthorizer(ScopeAuthorizer(
-		func(context.Context) map[string]bool { return map[string]bool{"other": true} })))
-	resp := run(t, e, `{ me { salary } }`, "")
-	if len(resp.Errors) == 0 {
-		t.Fatal("unheld scope was not denied")
+	base := ScopeAuthorizer(func(context.Context) map[string]bool {
+		return map[string]bool{"other": true}
+	})
+	e := NewExecutor(s, WithAuthorizer(AuthorizerFunc(
+		func(ctx context.Context, shape *AuthShape, d *Decision) error {
+			if err := base.Authorize(ctx, shape, d); err != nil {
+				return err
+			}
+			recorded = d.Outcome(0)
+			return nil
+		})))
+	run(t, e, `{ me { salary } }`, "")
+	if recorded.act != actionDeny {
+		t.Errorf("outcome for an unheld scope = %v, want actionDeny", recorded.act)
 	}
-	if !strings.Contains(resp.Errors[0].Message, "or it might not exist") {
-		t.Errorf("denial does not use the AIP-211 wording: %s", resp.Errors[0].Message)
+	if !strings.Contains(recorded.denial().Message, "or it might not exist") {
+		t.Errorf("denial does not use the AIP-211 wording: %s", recorded.denial().Message)
 	}
 }
 ```
@@ -990,7 +996,7 @@ func TestScopeAuthorizerDeniesUnheldScopes(t *testing.T) {
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `go test -race -run 'TestAuthorizer|TestScopeAuthorizer' .`
-Expected: build failure — `undefined: WithAuthorizer`, `undefined: AuthorizerFunc`, `undefined: ScopeAuthorizer`, `undefined: shapeSchema`.
+Expected: build failure — `undefined: WithAuthorizer`, `undefined: AuthorizerFunc`, `undefined: ScopeAuthorizer`, `undefined: Outcome`, `undefined: shapeSchema`.
 
 - [ ] **Step 3: Add the test helper**
 
@@ -1003,7 +1009,7 @@ type Query { me: User! open: String! }
 type User { id: ID! salary: Int! @requiresScopes(scopes: [["pay:read"]]) }
 `
 
-func shapeSchema(t *testing.T) *Schema {
+func shapeSchema(t testing.TB) *Schema {
 	t.Helper()
 	s, err := NewSchema(SDL(shapeSDL),
 		Query(
@@ -1024,7 +1030,106 @@ func shapeSchema(t *testing.T) *Schema {
 }
 ```
 
-- [ ] **Step 4: Implement `Authorizer` and `Decision`**
+- [ ] **Step 4: Implement `Outcome` first**
+
+`Decision.Set` validates against it and `ScopeAuthorizer` calls `Deny`, so
+`Outcome` has to exist before either compiles. Append to `authz.go`:
+
+```go
+type action uint8
+
+const (
+	actionAllow action = iota
+	actionDeny
+	actionNull
+	actionZero
+	actionRedact
+	actionDrop
+)
+
+// Outcome is what the executor does with a site. The zero Outcome allows, so
+// a Decision an Authorizer leaves untouched changes nothing.
+type Outcome struct {
+	act        action
+	redact     func(any) any
+	permission string
+	resource   string
+}
+
+// Allow resolves the field normally.
+func Allow() Outcome { return Outcome{} }
+
+// Deny refuses the field. The message follows AIP-211: it reveals neither the
+// value nor whether the resource exists, because choosing between
+// PERMISSION_DENIED and NOT_FOUND is itself an existence oracle.
+func Deny(permission, resource string) Outcome {
+	return Outcome{act: actionDeny, permission: permission, resource: resource}
+}
+
+// Null writes null without resolving the field.
+func Null() Outcome { return Outcome{act: actionNull} }
+
+// Zero writes the zero value of the field's type without resolving it. It is
+// how a non-null field is withheld without null-bubbling its parent.
+func Zero() Outcome { return Outcome{act: actionZero} }
+
+// Redact resolves the field and rewrites the result.
+func Redact(fn func(any) any) Outcome { return Outcome{act: actionRedact, redact: fn} }
+
+// Drop omits the value from its enclosing list.
+func Drop() Outcome { return Outcome{act: actionDrop} }
+
+func (o Outcome) denial() *Error {
+	return Errorf("Permission %q denied on resource %q (or it might not exist).", o.permission, o.resource).
+		WithCode(CodeForbidden)
+}
+
+// zeroWritable reports whether t has a zero value this package can write
+// without reflection. A list's zero is the empty list. Among leaves only the
+// built-in scalars have one: an enum's zero would have to be a member the
+// schema may not define, and a custom scalar's is the author's to decide.
+func zeroWritable(t *ast.Type) bool {
+	if t.Elem != nil {
+		return true
+	}
+	switch t.NamedType {
+	case "String", "ID", "Int", "Float", "Boolean":
+		return true
+	}
+	return false
+}
+
+// validFor rejects an outcome the site cannot represent, so a policy mistake
+// surfaces once per request with the coordinate attached rather than as a
+// null-bubbled parent at write time.
+func (o Outcome) validFor(site AuthSite) error {
+	switch o.act {
+	case actionZero:
+		if site.Field == nil {
+			return Errorf("authorization: Zero is not valid for %s, which is an object site", site.Coord)
+		}
+		if !zeroWritable(site.Field.Type) {
+			return Errorf("authorization: Zero is not valid for %s: %s has no zero value this package can write; use Deny or Null", site.Coord, site.Field.Type.String())
+		}
+	case actionRedact:
+		if site.Field == nil || site.Field.Type.Elem != nil || !isLeafField(site.Field) {
+			return Errorf("authorization: Redact is valid only on a leaf field, not %s", site.Coord)
+		}
+	case actionDrop:
+		return Errorf("authorization: Drop is not yet implemented")
+	}
+	return nil
+}
+```
+
+`CodeForbidden` may not exist — check `errors.go` for the existing code
+constants and add it beside them following that file's pattern, or reuse the
+closest existing one. `isLeafField` likewise: the plan compiler already knows
+whether a field is a leaf (`fieldDef.leaf`), but `AuthSite` carries only the
+AST; check whether a helper exists for "scalar or enum after unwrapping" and
+reuse it rather than writing a second one.
+
+- [ ] **Step 5: Implement `Authorizer` and `Decision`**
 
 Append to `authz.go`:
 
@@ -1109,7 +1214,7 @@ func ScopeAuthorizer(held func(context.Context) map[string]bool) Authorizer {
 
 Add `"context"` and `"strings"` to `authz.go`'s imports.
 
-- [ ] **Step 5: Add the field and run the decision**
+- [ ] **Step 6: Add the field and run the decision**
 
 In `exec.go`, add to `Executor`:
 
@@ -1131,12 +1236,15 @@ In `runOperation`, before execution begins, build the decision:
 
 Add `decision *Decision` to `OperationContext` **in the unexported block**, and read `exec.go` for the exact spelling of the error helper (`toError` may be named differently — grep for how `runOperation` builds an `*Error` from an `error`).
 
-- [ ] **Step 6: Run to verify it passes**
+- [ ] **Step 7: Run to verify it passes**
 
 Run: `go test -race -run 'TestAuthorizer|TestScopeAuthorizer|TestAuthShape' .`
-Expected: `TestAuthorizerRunsOncePerOperation`, `TestAuthorizerErrorRejectsTheOperation` and `TestAuthorizerSkippedForAnEmptyShape` PASS. `TestScopeAuthorizerDeniesUnheldScopes` still FAILS — `Deny` and `Outcome` arrive in Task 6.
+Expected: all four PASS. `TestScopeAuthorizerDeniesUnheldScopes` asserts only
+that the operation is refused with the AIP-211 wording, which the `Deny`
+outcome carries on its own; Task 6 adds what the *write path* does with the
+other outcomes.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add authz.go exec.go context.go authz_test.go
@@ -1257,111 +1365,139 @@ type User {
 Run: `go test -race -run 'TestOutcome' .`
 Expected: build failure — `undefined: Allow`, `undefined: Zero`, `undefined: Redact`, `undefined: Deny`.
 
-- [ ] **Step 3: Implement `Outcome`**
+- [ ] **Step 3: Enforce at the write path**
 
-Append to `authz.go`:
+`Outcome` and its constructors already exist from Task 5. This task is the
+write path only.
+
+In `exec_object.go`, inside `writeFieldValue`, immediately after the
+`f.kind == fieldTypename` branch and **before** the cost counter and argument
+decoding — a refused field should cost nothing and decode nothing:
 
 ```go
-type action uint8
-
-const (
-	actionAllow action = iota
-	actionDeny
-	actionNull
-	actionZero
-	actionRedact
-	actionDrop
-)
-
-// Outcome is what the executor does with a site. The zero Outcome allows, so
-// a Decision left untouched by an Authorizer changes nothing.
-type Outcome struct {
-	act        action
-	redact     func(any) any
-	permission string
-	resource   string
-}
-
-// Allow resolves the field normally.
-func Allow() Outcome { return Outcome{} }
-
-// Deny refuses the field. The message follows AIP-211: it names neither the
-// value nor whether the resource exists, because choosing between
-// PERMISSION_DENIED and NOT_FOUND is itself an existence oracle.
-func Deny(permission, resource string) Outcome {
-	return Outcome{act: actionDeny, permission: permission, resource: resource}
-}
-
-// Null writes null without resolving the field.
-func Null() Outcome { return Outcome{act: actionNull} }
-
-// Zero writes the zero value of the field's type without resolving it. It is
-// how a non-null leaf is withheld without null-bubbling its parent.
-func Zero() Outcome { return Outcome{act: actionZero} }
-
-// Redact resolves the field and rewrites the result.
-func Redact(fn func(any) any) Outcome { return Outcome{act: actionRedact, redact: fn} }
-
-// Drop omits the value from its enclosing list.
-func Drop() Outcome { return Outcome{act: actionDrop} }
-
-func (o Outcome) err(coord string) *Error {
-	return Errorf("Permission %q denied on resource %q (or it might not exist).", o.permission, o.resource).
-		WithCode(CodeForbidden)
-}
-
-// validFor rejects an outcome the site cannot represent. A non-null
-// composite has no meaningful zero, so Zero there would null-bubble the
-// parent -- which in practice turns a withheld total into a blank page. The
-// site knows the field's type, so this is caught once per request with the
-// coordinate attached.
-func (o Outcome) validFor(site AuthSite) error {
-	switch o.act {
-	case actionZero:
-		if site.Field == nil {
-			return Errorf("authorization: Zero is not valid for %s, which is an object site", site.Coord)
+	// -1 on a field that declares nothing, so the ordinary path pays one
+	// compare on a struct already in cache.
+	if st.decision != nil && f.authIdx >= 0 {
+		if done, ok := st.enforceAuth(ctx, w, f, path); done {
+			return ok
 		}
-		if !isLeafType(site.Field.Type) {
-			return Errorf("authorization: Zero is not valid for %s: %s has no zero value; use Deny or gate the parent", site.Coord, site.Field.Type.String())
-		}
-	case actionDrop:
-		return Errorf("authorization: Drop is not yet implemented")
 	}
-	return nil
+```
+
+Add to `execState`:
+
+```go
+	decision *Decision
+```
+
+and set it from `oc.decision` at every site where an `execState` is built.
+Grep for `&execState{` — `subscription.go` builds one too, and a subscription
+event that skipped the decision would authorize its first event and no other.
+
+- [ ] **Step 4: Write `enforceAuth`**
+
+In `authz_shape.go` (executor internals, not public surface):
+
+```go
+// enforceAuth applies the decision recorded for f. done reports whether it
+// wrote the field itself, in which case ok is writeFieldValue's result.
+//
+// Redact is the only outcome that still runs the resolver, so it is the only
+// one not decided here; it is handled at the leaf call below.
+func (st *execState) enforceAuth(ctx context.Context, w *jsonw.Writer, f *planField, path *pathNode) (done, ok bool) {
+	o := st.decision.Outcome(int(f.authIdx))
+	switch o.act {
+	case actionDeny:
+		st.fieldError(ctx, o.denial(), path, f)
+		return true, false
+	case actionNull:
+		w.Null()
+		return true, true
+	case actionZero:
+		writeZero(w, f.def.typ)
+		return true, true
+	}
+	return false, true
+}
+
+// writeZero writes the zero value of t. validFor has already refused any type
+// this cannot spell, so the unhandled default is unreachable rather than a
+// silent wrong answer.
+func writeZero(w *jsonw.Writer, t *ast.Type) {
+	if t.Elem != nil {
+		w.BeginArray()
+		w.EndArray()
+		return
+	}
+	switch t.NamedType {
+	case "String", "ID":
+		w.String("")
+	case "Int":
+		w.Int64(0)
+	case "Float":
+		_ = w.Float64(0)
+	case "Boolean":
+		w.Bool(false)
+	}
 }
 ```
 
-`CodeForbidden` may not exist — check `errors.go` for the existing code constants and either reuse the closest (`CodeUnauthorized`?) or add `CodeForbidden` beside them, following the file's existing pattern. `isLeafType` likewise: check whether the plan already has a helper for "scalar or enum after unwrapping"; reuse it rather than writing a second one.
-
-- [ ] **Step 4: Enforce at the write path**
-
-In `exec_object.go`, inside the per-field loop of `writeObject`, before the field is executed:
+For `actionRedact`, in `exec_object.go`'s leaf branch of `writeFieldValue`,
+replace `err := st.callLeaf(ctx, w, f, parent, args, path)` with:
 
 ```go
-		// -1 on a field that declares nothing, so this is an integer compare
-		// on a struct already in cache. Growing it beyond that would put the
-		// cost on every field of every request.
-		if st.decision != nil && f.authIdx >= 0 {
-			if handled := st.enforce(ctx, w, f, path); handled {
-				continue
-			}
+		var err error
+		if o := st.authOutcome(f); o.act == actionRedact {
+			err = st.callLeafRedacted(ctx, w, f, parent, args, path, o.redact)
+		} else {
+			err = st.callLeaf(ctx, w, f, parent, args, path)
 		}
 ```
 
-and add `decision *Decision` to `execState`, set from `oc.decision` where `execState` is built.
+and add both helpers to `authz_shape.go`:
 
-Write `enforce` in `authz_shape.go` (it is executor internals, not public surface). It must:
-- read `st.decision.Outcome(int(f.authIdx))`
-- `actionAllow`: return false, letting the normal path run
-- `actionNull`: write the response key and a null, honouring non-null bubbling via the existing `writeNullValue`
-- `actionZero`: write the response key and the zero value for `f.def.typ`
-- `actionRedact`: run the field, then rewrite — this one returns false and instead wraps, so route it through the existing `fieldExec` rather than duplicating the write
-- `actionDeny`: record `o.err(site.Coord)` at `path` via `st.fieldError` and write null
+```go
+// authOutcome is the zero Outcome when no decision covers f, so the caller
+// needs no nil check.
+func (st *execState) authOutcome(f *planField) Outcome {
+	if st.decision == nil || f.authIdx < 0 {
+		return Outcome{}
+	}
+	return st.decision.Outcome(int(f.authIdx))
+}
+
+// callLeafRedacted mirrors callLeaf, rewriting the resolved value before it
+// is written. It repeats callLeaf's panic guard rather than wrapping it
+// because the value has to be intercepted between resolve and write, and
+// callLeaf does both.
+func (st *execState) callLeafRedacted(ctx context.Context, w *jsonw.Writer, f *planField, parent, args any, path *pathNode, fn func(any) any) (err error) {
+	fd := f.def
+	ctx = st.fieldContext(ctx, f, parent, args, path)
+	if st.e.recover {
+		defer func() {
+			if r := recover(); r != nil {
+				err = st.recovered(ctx, r, path, f)
+			}
+		}()
+	}
+	v, rerr := fd.anyResolve(ctx, parent, args)
+	if rerr != nil {
+		return rerr
+	}
+	return fd.writeAny(w, fn(v), fd.typ)
+}
+```
+
+Check `fieldDef`'s field names against `object.go:86-102` before writing this —
+`anyResolve`, `writeAny` and `typ` are read from `wrap`'s leaf branch, which
+does exactly this sequence.
 
 - [ ] **Step 5: Run to verify it passes**
 
 Run: `go test -race -run 'TestOutcome|TestScopeAuthorizer' .`
-Expected: PASS, including `TestScopeAuthorizerDeniesUnheldScopes` from Task 5.
+Expected: PASS. `TestOutcomeEnforcement`'s deny case is the end-to-end
+counterpart of Task 5's `TestScopeAuthorizerRecordsDenyForUnheldScopes`:
+Task 5 proved the outcome was recorded, this proves the write path acts on it.
 
 - [ ] **Step 6: Prove the tests can fail**
 
@@ -1623,21 +1759,64 @@ func benchRun(b *testing.B, e *Executor, q string) {
 }
 ```
 
-`shapeSchemaB` is `shapeSchema` taking `testing.TB`; change `shapeSchema`'s parameter to `testing.TB` and call it from both.
+`shapeSchema` already takes `testing.TB` (Task 5), so call it directly.
 
-- [ ] **Step 3: Compare against the pre-change baseline**
+- [ ] **Step 3: Compare interleaved against the pre-change binary**
+
+**Do not use `git stash`.** The stash stack is shared with the main checkout and
+every other worktree, and another session may push or pop it concurrently.
+
+**Do not compare two sequential runs either.** `CLAUDE.md` gained a section on
+exactly this while the branch was in flight: two sequential runs measure the
+machine as much as the change, because contention arriving between them lands
+entirely on one side. This machine currently hosts six concurrent agent sessions
+and their language servers. A sequential comparison there reported a change that
+does strictly less work as 50% *slower*.
+
+So build two binaries and alternate them, sharing every unit of contention:
 
 ```bash
-git stash
-go test -count=10 -run '^$' -bench 'BenchmarkExecute' -benchmem . > /tmp/old.txt
-git stash pop
-go test -count=10 -run '^$' -bench 'BenchmarkExecuteNoAuthorizer' -benchmem . > /tmp/new.txt
-benchstat /tmp/old.txt /tmp/new.txt
+WS=.superpowers/sdd/2026-09-16-authorization-spine
+BENCH='BenchmarkExecuteUsers|BenchmarkExecuteConcurrentList'
+
+# "before" = the commit this branch started from, which predates every
+# authorization change.
+git worktree add --detach "$WS/base" 483c62d
+( cd "$WS/base" && go test -c -o ../before.exe . )
+go test -c -o "$WS/after.exe" .
+
+rm -f "$WS/before.txt" "$WS/after.txt"
+for i in $(seq 1 12); do
+  "$WS/before.exe" -test.run xxx -test.bench "$BENCH" -test.benchmem -test.count=1 >> "$WS/before.txt"
+  "$WS/after.exe"  -test.run xxx -test.bench "$BENCH" -test.benchmem -test.count=1 >> "$WS/after.txt"
+done
+benchstat "$WS/before.txt" "$WS/after.txt"
+
+git worktree remove "$WS/base"
 ```
 
-**Acceptance:** `BenchmarkExecuteNoAuthorizer` shows no statistically significant regression against the same query before the change. CLAUDE.md records that single samples on this machine have been wrong by 20-77%; `-count=10` and `benchstat` are the gate, not eyeballing.
+`BenchmarkExecuteUsers` and `BenchmarkExecuteConcurrentList`
+(`exec_conformance_test.go`) are the gate rather than the new benchmarks above,
+because they exist unchanged on both sides — a benchmark this branch introduced
+has no "before" to build. Both run with no authorizer registered, which is the
+case that must stay free.
 
-**If it regresses:** the fallback in the spec is to pack `decision` into existing padding in `execState`, or to reach it through `oc` rather than storing a second pointer. Do that and re-measure before proceeding.
+A sequential capture taken at 483c62d before the work began is kept at
+`$WS/baseline-483c62d.txt` (`BenchmarkExecuteUsers` ~1200 ns/op, 1025 B/op,
+19 allocs/op). It is a sanity reference only — **it is not the gate**, for the
+reason above. If the interleaved comparison and that file disagree, the
+interleaved comparison wins.
+
+**Acceptance:** no statistically significant regression on either benchmark,
+reported with the benchstat table pasted into your report. Per-sample spread of
+±25% on this machine is expected and is not a failure; the comparison is what
+must hold. A passing gate with no numbers shown is not a measurement.
+
+If `benchstat` is not installed: `go install golang.org/x/perf/cmd/benchstat@latest`.
+
+**If it regresses:** the spec's fallback is to pack `decision` into existing
+padding in `execState`, or to reach it through `oc` rather than storing a second
+pointer. Do that and re-measure before proceeding.
 
 - [ ] **Step 4: Commit**
 

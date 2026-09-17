@@ -62,6 +62,13 @@ func (st *execState) writeFieldValue(ctx context.Context, w *jsonw.Writer, obj *
 		w.String(obj.name)
 		return true
 	}
+	// -1 on a field that declares nothing, so the ordinary path pays one
+	// compare on a struct already in cache.
+	if st.decision != nil && f.authIdx >= 0 {
+		if done, ok := st.enforceAuth(ctx, w, f, path); done {
+			return ok
+		}
+	}
 	// Zero unless actual cost is enabled, so this is one compare and no
 	// atomic on the ordinary path.
 	if f.costWeight != 0 {
@@ -83,7 +90,12 @@ func (st *execState) writeFieldValue(ctx context.Context, w *jsonw.Writer, obj *
 	}
 
 	if fd.leaf {
-		err := st.callLeaf(ctx, w, f, parent, args, path)
+		var err error
+		if o := st.authOutcome(f); o.act == actionRedact {
+			err = st.callLeafRedacted(ctx, w, f, parent, args, path, o.redact)
+		} else {
+			err = st.callLeaf(ctx, w, f, parent, args, path)
+		}
 		if err == nil {
 			return true
 		}
@@ -210,7 +222,7 @@ func (st *execState) writeValue(ctx context.Context, w *jsonw.Writer, v any, t *
 	} else {
 		var err error
 		var isNil bool
-		obj, v, isNil, err = st.s.concreteValue(f.abstract, v)
+		obj, v, isNil, err = st.e.schema.concreteValue(f.abstract, v)
 		if err != nil {
 			st.addError(ctx, err, path.materialize(), f.ast.Position)
 			if t.NonNull {

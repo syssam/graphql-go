@@ -120,6 +120,15 @@ func (oc *OperationContext) Depth() int {
 	return oc.plan.depth
 }
 
+// AuthShape returns what this operation touches, or nil when it touches
+// nothing that declares an authorization requirement.
+func (oc *OperationContext) AuthShape() *AuthShape {
+	if oc.plan == nil {
+		return nil
+	}
+	return oc.plan.shape
+}
+
 // Cost returns the Shopify-style query cost. Without WithQueryCost it uses
 // a default list size of 1 so callers can still observe a number.
 func (oc *OperationContext) Cost() int {

@@ -377,6 +377,32 @@ implementation. `Query.node` needed no engine change: it binds through the exist
 compiler and executor deliberately live in the root package so generic constructors can
 produce engine values directly.
 
+**Authorization is compiled, not wrapped.** `AuthShape` is built once at plan compile
+(`buildAuthShape`) and cached with the plan; it does not depend on the principal, so
+`planKey` is unaffected and the plan cache is not multiplied by policy. A field that
+declares `@requiresScopes` gets `planField.authIdx >= 0` at construction; every other field
+gets `-1`, so the ordinary request path pays one integer compare and no allocation.
+`execState` (64 bytes) and `OperationContext` (160 bytes) held those sizes through this
+branch (`TestStructSizes`, `authz_bench_test.go`) — re-measure both, interleaved, before
+adding a field to either; see the `execState`/`OperationContext` entry above for why a
+non-interleaved reading is not evidence. **Object-level and interface-level
+`@requiresScopes` are not enforced**: `shapeBuilder.field` only ever builds a `SiteOutput`
+from a field's own directive, never from its enclosing object or an interface it
+implements, so `RequireAuthCoverage` deliberately refuses to treat either as covering a
+concrete field — a green build under coverage is not evidence that an object- or
+interface-level declaration does anything; only a field's own `@requiresScopes` or
+`@public` does.
+
+Two facts only exist because authorization and bounded plan expansion landed together.
+compileSelection's memo makes one `*selectionSet` reachable from several parents, so the
+`seen` set in `shapeBuilder.walk` is load-bearing — it keeps the walk linear in the DAG —
+and sharing does not conflate decisions, because a site's requirement is read off the field
+definition alone. And a Redact outcome runs the resolver, so `callLeafRedacted` carries its
+own copy of `callLeaf`'s `FieldObserver` handling, defer order included; Deny, Null and Zero
+never resolve and are never observed. Drop that copy and a redacted field is invisible to
+`ext/otel`'s field spans while every other test stays green — `TestOutcomeRedactIsObserved`
+is the one that notices.
+
 ## Conventions
 
 - **Root package may depend only on `gqlparser/v2` and the standard library.** Transports,
@@ -444,8 +470,10 @@ from it, because the timings it first recorded were single samples and have been
 Status: phases 1-4 complete and merged to `main` — engine, both codegen binding modes,
 subscriptions, five transports, DataLoader, APQ, limits with actual cost accounting,
 OpenTelemetry with field observation, bounded plan expansion and a plan cache bounded by
-query text, and the `lint/` analyzer; plus `relay/`, `fed/`, `ext/throttle`, `ext/trusted`
-and DataLoader tracing. Not built: APQ over WebSocket, which belongs in the
+query text, the authorization spine (`Authorizer`, `AuthShape`, `RequireAuthCoverage`,
+`SubscriptionInterceptor`), and the `lint/` analyzer; plus `relay/`, `fed/`, `ext/throttle`,
+`ext/trusted` and DataLoader tracing. Not built: `ext/authz` (the Apollo directive vocabulary
+and a batched `Guard`) and APQ over WebSocket, which belongs in the
 `graphql-transport-ws` state machine. `@defer`/`@stream` is not merely unbuilt — the prelude's
 `@defer` is stripped in `introspection.go` so the validator and introspection agree the
 server says no; adding it reverses a decision rather than filling a gap. Not measured, both

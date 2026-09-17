@@ -29,8 +29,10 @@ func (f FieldInfo) Path() Path {
 // typed write path: a FieldInterceptor, which may replace a result, cannot.
 //
 // A field that never runs is never observed: __typename, a field whose
-// arguments fail to decode, and a field skipped because the request context
-// was already cancelled.
+// arguments fail to decode, a field skipped because the request context was
+// already cancelled, and a field an Authorizer's decision denied, nulled or
+// zeroed without resolving it. A redacted field does run -- Redact rewrites
+// the resolved value -- and is observed like any other.
 //
 // Sibling resolver fields are scheduled concurrently, so both methods may be
 // called from several goroutines at once; an observer that holds state of its

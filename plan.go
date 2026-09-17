@@ -40,6 +40,7 @@ type plan struct {
 	sel        *selectionSet
 	complexity int
 	depth      int
+	shape      *AuthShape
 }
 
 // selectionSet is the flattened selection for a composite value. Concrete
@@ -88,14 +89,31 @@ type planField struct {
 	// looking up a schema coordinate. It stays zero unless actual cost is
 	// enabled, which is what keeps the write path unchanged when it is not.
 	costWeight int
+
+	// authIdx indexes this field's site in the plan's AuthShape, or -1 when
+	// the field declares no requirement. An integer compare on a field
+	// already in cache is what keeps authorization free for fields that
+	// declare nothing.
+	authIdx int32
 }
 
 // fieldExec holds the executor functions used for a field within one plan.
 // They start as copies of the fieldDef functions and are replaced by
-// interceptor-wrapped versions when the executor has field interceptors.
+// interceptor-wrapped versions when the executor has field interceptors, and
+// by event-yielding versions for a subscription's per-event root field.
 type fieldExec struct {
 	writeLeaf func(ctx context.Context, w *jsonw.Writer, parent, args any, fc *FieldContext) error
 	resolve   func(ctx context.Context, parent, args any, fc *FieldContext) (any, error)
+
+	// resolveAny is writeLeaf's value-producing half, type-erased, for a
+	// leaf field only. Redact needs the resolved value before it is written
+	// so it can rewrite it, which writeLeaf's direct resolve-then-write does
+	// not expose. It is set where this plan field's executor differs from
+	// the shared fieldDef's -- an interceptor chain, or a subscription's
+	// per-event substitute -- and nil otherwise, meaning fd.anyResolve is
+	// exactly right. Leaving it nil there rather than wrapping fd.anyResolve
+	// in a closure keeps plan compilation from allocating per field.
+	resolveAny func(ctx context.Context, parent, args any, fc *FieldContext) (any, error)
 }
 
 // compiler holds per-compilation state.
@@ -167,6 +185,7 @@ func compilePlan(s *Schema, e *Executor, doc *ast.QueryDocument, op *ast.Operati
 	if len(c.errs) > 0 {
 		return nil, c.errs
 	}
+	p.shape = buildAuthShape(p.sel)
 	return p, nil
 }
 
@@ -343,6 +362,11 @@ func (c *compiler) buildField(obj *objectType, g *fieldGroup) *planField {
 		alias: g.alias,
 		name:  first.Name,
 		ast:   first,
+		// authIdx defaults to -1 (no site) by construction rather than
+		// solely by shapeBuilder.field visiting it: a future change that
+		// skips buildAuthShape would otherwise leave Go's zero value 0,
+		// which points every unvisited field at site 0 instead of at none.
+		authIdx: -1,
 	}
 	if first.Name == "__typename" {
 		pf.kind = fieldTypename

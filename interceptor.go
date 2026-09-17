@@ -82,6 +82,34 @@ func WithFieldInterceptor(is ...FieldInterceptor) ExecutorOption {
 	return func(e *Executor) { e.fieldInterceptors = append(e.fieldInterceptors, is...) }
 }
 
+// SubscriptionHandler opens a subscription's stream of responses.
+type SubscriptionHandler func(ctx context.Context, oc *OperationContext) (<-chan *Response, error)
+
+// SubscriptionInterceptor wraps the opening of a subscription stream. It is
+// the stream-shaped counterpart of OperationInterceptor, following gRPC's
+// split between UnaryInterceptor and StreamInterceptor.
+//
+// Operation interceptors see each event of a live subscription, which is
+// too late to refuse one: by then the source is open. Refusing a
+// subscription is this interceptor's job.
+type SubscriptionInterceptor interface {
+	InterceptSubscription(ctx context.Context, oc *OperationContext, next SubscriptionHandler) (<-chan *Response, error)
+}
+
+// SubscriptionInterceptorFunc adapts a function to SubscriptionInterceptor.
+type SubscriptionInterceptorFunc func(ctx context.Context, oc *OperationContext, next SubscriptionHandler) (<-chan *Response, error)
+
+// InterceptSubscription implements SubscriptionInterceptor.
+func (f SubscriptionInterceptorFunc) InterceptSubscription(ctx context.Context, oc *OperationContext, next SubscriptionHandler) (<-chan *Response, error) {
+	return f(ctx, oc, next)
+}
+
+// WithSubscriptionInterceptor registers subscription interceptors. The first
+// is the outermost.
+func WithSubscriptionInterceptor(is ...SubscriptionInterceptor) ExecutorOption {
+	return func(e *Executor) { e.subInterceptors = append(e.subInterceptors, is...) }
+}
+
 // ChainRequestInterceptors composes interceptors so that the first is
 // outermost. A nil or empty list is a no-op interceptor.
 func ChainRequestInterceptors(is ...RequestInterceptor) RequestInterceptor {
@@ -171,13 +199,20 @@ func (e *Executor) interceptedExec(pf *planField) fieldExec {
 	}
 	if fd.leaf {
 		writeAny, typ := fd.writeAny, fd.typ
-		return fieldExec{writeLeaf: func(ctx context.Context, w *jsonw.Writer, parent, args any, fc *FieldContext) error {
-			v, err := chain(ctx, parent, args, fc)
-			if err != nil {
-				return err
-			}
-			return writeAny(w, v, typ)
-		}}
+		return fieldExec{
+			writeLeaf: func(ctx context.Context, w *jsonw.Writer, parent, args any, fc *FieldContext) error {
+				v, err := chain(ctx, parent, args, fc)
+				if err != nil {
+					return err
+				}
+				return writeAny(w, v, typ)
+			},
+			// resolveAny is chain itself, not a wrapper around writeLeaf:
+			// Redact needs the resolved value before it is written, and
+			// chain is exactly that half of writeLeaf, already carrying
+			// the same interceptor wrapping.
+			resolveAny: chain,
+		}
 	}
 	return fieldExec{resolve: chain}
 }

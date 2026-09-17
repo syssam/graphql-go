@@ -38,6 +38,17 @@ func DisableIntrospection() SchemaOption {
 	return schemaOptionFunc(func(b *schemaBuilder) { b.introspection = false })
 }
 
+// RequireAuthCoverage fails NewSchema for any field that declares neither an
+// authorization requirement nor @public. It is opt-in because it breaks every
+// schema that has not adopted it.
+//
+// The failure it prevents is not a field someone forgot to guard but a type
+// nobody noticed arriving: a generated aggregate surface keyed by a resource
+// no role grants and no role restricts is unguarded in both directions.
+func RequireAuthCoverage() SchemaOption {
+	return schemaOptionFunc(func(b *schemaBuilder) { b.authCoverage = true })
+}
+
 // Query binds fields of the schema's query root, which is named Query
 // unless the schema declaration says otherwise.
 func Query(fields ...FieldOption) SchemaOption {
@@ -116,6 +127,7 @@ type schemaBuilder struct {
 	abstracts     map[string]*abstractBinding
 	directives    map[string]*directiveBinding
 	introspection bool
+	authCoverage  bool
 	errs          []error
 }
 
@@ -225,6 +237,8 @@ func (b *schemaBuilder) build() *Schema {
 
 	// Phase 6: coverage.
 	b.validateCoverage(s)
+	b.validateAuthDirectives()
+	b.validateAuthCoverage(s)
 
 	if b.ast.Query != nil {
 		s.query = s.objects[b.ast.Query.Name]

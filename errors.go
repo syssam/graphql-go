@@ -30,6 +30,8 @@ const (
 	CodeTooComplex = "COMPLEXITY_LIMIT_EXCEEDED"
 	// CodeMaxDepth is returned when the selection nesting exceeds WithMaxDepth.
 	CodeMaxDepth = "MAX_DEPTH_EXCEEDED"
+	// CodeForbidden is returned when an Authorizer denies a site.
+	CodeForbidden = "FORBIDDEN"
 )
 
 // Location is a line/column position in the request document.
