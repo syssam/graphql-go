@@ -69,6 +69,10 @@ type config struct {
 	writeTimeout time.Duration
 	onConnect    ConnectFunc
 
+	maxAge      time.Duration
+	maxAgeGrace time.Duration
+	maxIdle     time.Duration
+
 	originPatterns     []string
 	insecureSkipOrigin bool
 
@@ -182,6 +186,26 @@ func WithLogger(l *slog.Logger) Option { return func(c *config) { c.logger = l }
 // It has no effect on the plain HTTP handler, which Fiber's own Shutdown
 // already waits for.
 func WithDrain(d *drain.Drain) Option { return func(c *config) { c.drain = d } }
+
+// WithMaxConnectionAge drains a WebSocket connection once it has been open
+// this long, give or take 10% so that connections opened together do not
+// drain together: new operations are refused, subscriptions end without
+// complete, queries and mutations in flight finish, and the connection
+// closes with StatusGoingAway. It lets a load balancer spread long-lived
+// connections again. grace, when positive, bounds how long the drain waits
+// for those operations before closing anyway; zero waits for them. Zero age
+// means no limit, the default. It has no effect on the plain HTTP or SSE
+// handlers.
+func WithMaxConnectionAge(age, grace time.Duration) Option {
+	return func(c *config) { c.maxAge, c.maxAgeGrace = age, grace }
+}
+
+// WithMaxConnectionIdle closes a WebSocket connection with
+// StatusNormalClosure once it has had no operation in flight for this long,
+// counted from the handshake or from the last operation ending.
+// Subscriptions count as in flight; pings do not. Zero means no limit, the
+// default. It has no effect on the plain HTTP or SSE handlers.
+func WithMaxConnectionIdle(d time.Duration) Option { return func(c *config) { c.maxIdle = d } }
 
 // newConfig applies opts over the defaults shared by every constructor here,
 // which are the defaults of gqlhttp, gqlsse and gqlws.

@@ -25,6 +25,7 @@ const Subprotocol = gqlwsproto.Subprotocol
 
 // Close codes defined by the protocol, beyond the RFC 6455 range.
 const (
+	StatusNormalClosure            = gqlwsproto.StatusNormalClosure
 	StatusSubprotocolNotAcceptable = gqlwsproto.StatusSubprotocolNotAcceptable
 	StatusBadRequest               = gqlwsproto.StatusBadRequest
 	StatusUnauthorized             = gqlwsproto.StatusUnauthorized
@@ -193,12 +194,15 @@ func WS(exec *graphql.Executor, opts ...Option) fiber.Handler {
 		// returned and its Ctx has been recycled, so the connection gets a
 		// context of its own rather than anything derived from the request.
 		gqlwsproto.Serve(ctx, sock, gqlwsproto.Config{
-			Exec:         exec,
-			InitTimeout:  cfg.initTimeout,
-			PingInterval: cfg.pingInterval,
-			MaxSubs:      cfg.maxSubs,
-			OnConnect:    cfg.onConnect,
-			Closing:      cfg.drain.Closing(),
+			Exec:                  exec,
+			InitTimeout:           cfg.initTimeout,
+			PingInterval:          cfg.pingInterval,
+			MaxSubs:               cfg.maxSubs,
+			OnConnect:             cfg.onConnect,
+			Closing:               cfg.drain.Closing(),
+			MaxConnectionAge:      cfg.maxAge,
+			MaxConnectionAgeGrace: cfg.maxAgeGrace,
+			MaxConnectionIdle:     cfg.maxIdle,
 			DecorateContext: func(ctx context.Context) context.Context {
 				return context.WithValue(ctx, connKey{}, conn)
 			},

@@ -31,6 +31,10 @@ type Handler struct {
 	accept       websocket.AcceptOptions
 	logger       *slog.Logger
 	drain        *drain.Drain
+
+	maxAge      time.Duration
+	maxAgeGrace time.Duration
+	maxIdle     time.Duration
 }
 
 // Option configures a Handler.
@@ -81,6 +85,24 @@ func WithLogger(l *slog.Logger) Option { return func(h *Handler) { h.logger = l 
 // are refused with 503.
 func WithDrain(d *drain.Drain) Option { return func(h *Handler) { h.drain = d } }
 
+// WithMaxConnectionAge drains a connection once it has been open this long,
+// give or take 10% so that connections opened together do not drain
+// together: new operations are refused, subscriptions end without complete,
+// queries and mutations in flight finish, and the connection closes with
+// StatusGoingAway. It lets a load balancer spread long-lived connections
+// again. grace, when positive, bounds how long the drain waits for those
+// operations before closing anyway; zero waits for them. Zero age means no
+// limit, the default.
+func WithMaxConnectionAge(age, grace time.Duration) Option {
+	return func(h *Handler) { h.maxAge, h.maxAgeGrace = age, grace }
+}
+
+// WithMaxConnectionIdle closes a connection with StatusNormalClosure once it
+// has had no operation in flight for this long, counted from the handshake
+// or from the last operation ending. Subscriptions count as in flight; pings
+// do not. Zero means no limit, the default.
+func WithMaxConnectionIdle(d time.Duration) Option { return func(h *Handler) { h.maxIdle = d } }
+
 // New creates a handler running operations with exec.
 func New(exec *graphql.Executor, opts ...Option) *Handler {
 	h := &Handler{
@@ -129,12 +151,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Accept, so the connection gets a context of its own -- from the drain,
 	// not the request.
 	gqlwsproto.Serve(ctx, coderSocket{ws: ws}, gqlwsproto.Config{
-		Exec:         h.exec,
-		InitTimeout:  h.initTimeout,
-		PingInterval: h.pingInterval,
-		MaxSubs:      h.maxSubs,
-		OnConnect:    h.onConnect,
-		Closing:      h.drain.Closing(),
+		Exec:                  h.exec,
+		InitTimeout:           h.initTimeout,
+		PingInterval:          h.pingInterval,
+		MaxSubs:               h.maxSubs,
+		OnConnect:             h.onConnect,
+		Closing:               h.drain.Closing(),
+		MaxConnectionAge:      h.maxAge,
+		MaxConnectionAgeGrace: h.maxAgeGrace,
+		MaxConnectionIdle:     h.maxIdle,
 		DecorateContext: func(ctx context.Context) context.Context {
 			return withRequest(ctx, r)
 		},
