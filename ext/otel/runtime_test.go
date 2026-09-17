@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
@@ -13,7 +15,7 @@ import (
 	"github.com/syssam/graphql-go/transport/drain"
 )
 
-// collectInts gathers every int64 gauge or sum in this package's scope into
+// collectInts gathers every int64 sum in this package's scope into
 // name -> summed value, so a test reads a metric the way a backend would.
 func collectInts(t *testing.T, reader *sdkmetric.ManualReader) map[string]int64 {
 	t.Helper()
@@ -28,10 +30,6 @@ func collectInts(t *testing.T, reader *sdkmetric.ManualReader) map[string]int64 
 		}
 		for _, m := range sm.Metrics {
 			switch data := m.Data.(type) {
-			case metricdata.Gauge[int64]:
-				for _, dp := range data.DataPoints {
-					out[m.Name] += dp.Value
-				}
 			case metricdata.Sum[int64]:
 				for _, dp := range data.DataPoints {
 					out[m.Name] += dp.Value
@@ -57,10 +55,9 @@ func TestObserveExecutorReportsStats(t *testing.T) {
 
 	got := collectInts(t, reader)
 	want := map[string]int64{
-		"graphqlgo.plan_cache.entries":         1,
+		"graphqlgo.plan_cache.count":           1,
 		"graphqlgo.plan_cache.bytes":           int64(len(`{ me { id } }`)),
-		"graphqlgo.plan_cache.hits":            2,
-		"graphqlgo.plan_cache.misses":          1,
+		"graphqlgo.plan_cache.lookups":         3,
 		"graphqlgo.executor.concurrency.limit": 7,
 	}
 	for name, v := range want {
@@ -72,10 +69,13 @@ func TestObserveExecutorReportsStats(t *testing.T) {
 		t.Errorf("graphqlgo.executor.concurrency.in_use not reported (all: %v)", got)
 	}
 
+	if hits := pointsOf(t, reader, "graphqlgo.plan_cache.lookups"); hits[`graphqlgo.plan_cache.result=hit`] != 2 || hits[`graphqlgo.plan_cache.result=miss`] != 1 {
+		t.Errorf("lookups by result = %v, want hit 2 and miss 1", hits)
+	}
 	if err := reg.Unregister(); err != nil {
 		t.Fatal(err)
 	}
-	if after := collectInts(t, reader); after["graphqlgo.plan_cache.entries"] != 0 {
+	if after := collectInts(t, reader); after["graphqlgo.plan_cache.count"] != 0 {
 		t.Errorf("still reporting after Unregister: %v", after)
 	}
 }
@@ -134,5 +134,69 @@ func TestActiveRequestsTracksInFlight(t *testing.T) {
 	e.Execute(context.Background(), &graphql.Request{Query: `{ nope }`}).Release()
 	if got := collectInts(t, reader)["graphql.server.active_requests"]; got != 0 {
 		t.Fatalf("active_requests = %d with nothing running, want 0", got)
+	}
+}
+
+// pointsOf returns one metric's data points keyed by their encoded attribute
+// set, so a test can tell series apart instead of summing them.
+func pointsOf(t *testing.T, reader *sdkmetric.ManualReader, name string) map[string]int64 {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]int64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name {
+				continue
+			}
+			if data, ok := m.Data.(metricdata.Sum[int64]); ok {
+				for _, dp := range data.DataPoints {
+					out[dp.Attributes.Encoded(attribute.DefaultEncoder())] = dp.Value
+				}
+			}
+		}
+	}
+	return out
+}
+
+// TestObserveTwoExecutorsWithAttributes: two executors on one meter stay
+// separate series when each is observed with its own attributes. Without them
+// the counters would add together and the rest would overwrite each other.
+func TestObserveTwoExecutorsWithAttributes(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	a := graphql.NewExecutor(newSchema(t, make(chan int)), graphql.WithMaxConcurrency(7))
+	b := graphql.NewExecutor(newSchema(t, make(chan int)), graphql.WithMaxConcurrency(5))
+	for name, e := range map[string]*graphql.Executor{"public": a, "admin": b} {
+		if _, err := gqlotel.ObserveExecutor(e, gqlotel.WithMeterProvider(mp),
+			gqlotel.WithAttributes(attribute.String("graphqlgo.executor.name", name))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.Execute(context.Background(), &graphql.Request{Query: `{ me { id } }`}).Release()
+
+	limits := pointsOf(t, reader, "graphqlgo.executor.concurrency.limit")
+	if limits[`graphqlgo.executor.name=public`] != 7 || limits[`graphqlgo.executor.name=admin`] != 5 {
+		t.Fatalf("concurrency limit by executor = %v, want public 7 and admin 5", limits)
+	}
+	counts := pointsOf(t, reader, "graphqlgo.plan_cache.count")
+	if counts[`graphqlgo.executor.name=public`] != 1 || counts[`graphqlgo.executor.name=admin`] != 0 {
+		t.Fatalf("plan cache count by executor = %v, want public 1 and admin 0", counts)
+	}
+}
+
+// TestActiveRequestsReturnsOnCancel: a request whose context is already
+// cancelled still gives its count back.
+func TestActiveRequestsReturnsOnCancel(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	e := graphql.NewExecutor(newSchema(t, make(chan int)), gqlotel.New(gqlotel.WithMeterProvider(mp))...)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	e.Execute(ctx, &graphql.Request{Query: `{ me { id } }`}).Release()
+	if got := collectInts(t, reader)["graphql.server.active_requests"]; got != 0 {
+		t.Fatalf("active_requests = %d after a cancelled request, want 0", got)
 	}
 }

@@ -651,6 +651,17 @@ func (c *planCache) bytes() int64 {
 	return c.used
 }
 
+// occupancy reports the number of cached documents and their query bytes, read
+// together so the two describe the same moment.
+func (c *planCache) occupancy() (int, int64) {
+	if c == nil {
+		return 0, 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lru.Len(), c.used
+}
+
 // len reports the number of cached documents.
 func (c *planCache) len() int {
 	if c == nil {

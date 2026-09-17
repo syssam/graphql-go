@@ -82,3 +82,29 @@ func TestStatsWithoutConcurrency(t *testing.T) {
 		t.Fatalf("stats = %+v with concurrency disabled, want zeroes", got)
 	}
 }
+
+// TestStatsCountsSubscriptionOnce pins the unit for a subscription: one plan
+// lookup when it opens, however many events it delivers, since no event
+// looks a plan up again.
+func TestStatsCountsSubscriptionOnce(t *testing.T) {
+	src, e := newSubExecutor(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	out, err := e.Subscribe(ctx, &Request{Query: `subscription { counter }`})
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	go func() {
+		for i := range 3 {
+			src.counter <- i
+		}
+		close(src.counter)
+	}()
+	for range 3 {
+		nextResponse(t, out).Release()
+	}
+	expectClosed(t, out)
+	if s := e.Stats(); s.PlanCacheMisses != 1 || s.PlanCacheHits != 0 {
+		t.Fatalf("hits = %d, misses = %d for one subscription of three events, want 0 and 1", s.PlanCacheHits, s.PlanCacheMisses)
+	}
+}

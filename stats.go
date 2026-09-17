@@ -9,11 +9,16 @@ type ExecutorStats struct {
 	PlanCacheEntries int
 	PlanCacheBytes   int64
 
-	// PlanCacheHits and PlanCacheMisses count operations that reached a plan:
-	// a hit found its compiled plan cached, a miss compiled one. A request
-	// rejected before planning — by parsing, validation or a limit — is
-	// neither, and so is OperationKind, which transports call before Execute.
-	// They are the same judgement the per-operation CacheHit reports.
+	// PlanCacheHits and PlanCacheMisses count operations that were planned: a
+	// hit found its compiled plan cached, a miss compiled one. A request
+	// rejected by parsing, validation or a depth or complexity limit is
+	// neither, and so is OperationKind, which transports call before Execute;
+	// one refused by the query cost limit has already been planned and counts.
+	// A document with too many conditional variables to cache its plans
+	// (OperationStats.PlanUncacheable) is a miss on every request. A
+	// subscription counts once, when it opens: its events reuse that plan.
+	// Per operation this is the judgement OperationStats.CacheHit reports,
+	// though CacheHit is repeated on every subscription event.
 	PlanCacheHits   int64
 	PlanCacheMisses int64
 
@@ -26,9 +31,10 @@ type ExecutorStats struct {
 
 // Stats reports the executor's current shared state.
 func (e *Executor) Stats() ExecutorStats {
+	entries, bytes := e.cache.occupancy()
 	return ExecutorStats{
-		PlanCacheEntries: e.cache.len(),
-		PlanCacheBytes:   e.cache.bytes(),
+		PlanCacheEntries: entries,
+		PlanCacheBytes:   bytes,
 		PlanCacheHits:    e.planHits.Load(),
 		PlanCacheMisses:  e.planMisses.Load(),
 		ConcurrencyInUse: len(e.sem),

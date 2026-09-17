@@ -61,6 +61,7 @@ type config struct {
 	duration    metric.Float64Histogram
 	errors      metric.Int64Counter
 	active      metric.Int64UpDownCounter
+	attrs       []attribute.KeyValue
 }
 
 // Option configures the instrumentation.
@@ -76,6 +77,15 @@ func WithTracerProvider(tp trace.TracerProvider) Option {
 // otel.GetMeterProvider().
 func WithMeterProvider(mp metric.MeterProvider) Option {
 	return func(c *config) { c.meter = mp.Meter(ScopeName) }
+}
+
+// WithAttributes adds attributes to every observation ObserveExecutor and
+// ObserveDrain make. It is what keeps two executors or drains on one meter
+// apart: their instruments share names, so without distinct attributes the
+// counters add together and the rest report whichever callback ran last.
+// Name each one, say graphqlgo.executor.name. It does not affect New.
+func WithAttributes(attrs ...attribute.KeyValue) Option {
+	return func(c *config) { c.attrs = append(c.attrs, attrs...) }
 }
 
 // WithFieldSpans emits a span per field. It is off by default. It is wired
@@ -107,7 +117,7 @@ func New(opts ...Option) []graphql.ExecutorOption {
 		metric.WithDescription("GraphQL errors returned to clients."))
 	c.active, _ = c.meter.Int64UpDownCounter("graphql.server.active_requests",
 		metric.WithUnit("{request}"),
-		metric.WithDescription("GraphQL requests being served right now."))
+		metric.WithDescription("GraphQL queries and mutations being served right now. Subscriptions are not counted; see graphqlgo.transport.active_connections."))
 
 	out := []graphql.ExecutorOption{
 		graphql.WithRequestInterceptor(graphql.RequestInterceptorFunc(c.interceptRequest)),

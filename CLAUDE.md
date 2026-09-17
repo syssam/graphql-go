@@ -480,13 +480,23 @@ returning a `metric.Registration` to unregister, and `otel.New`'s request interc
 `graphql.server.active_requests`. **Hits and misses are counted after `planFor`, not in
 `document`**: every streaming transport calls `OperationKind` before `Execute`, and counting in
 `document` would count each such request twice (`TestStatsIgnoresRejectedAndKindLookups`); a
-request rejected before planning is neither, matching the per-operation `CacheHit`. The counters
+request rejected by parsing, validation or a depth or complexity limit is neither, one refused by
+the cost limit has been planned and counts, and a subscription is one lookup at `Subscribe` though
+its per-event spans repeat `cache_hit`. The counters
 are two `atomic.Int64`s on `Executor`, not per-request state: interleaved n=12 on
 `BenchmarkFieldPathBare` against `main`, 1.698us vs 1.652us (p=0.311) at 18 allocs/op both —
-single-goroutine, so contention on the shared counter under parallel load was not measured.
-Names follow the repository's split: `graphql.server.*` where the concept is generic,
-`graphqlgo.*` where it is this engine's. No per-operation dimension on the new instruments, to keep
-cardinality bounded.
+and a reviewer's `RunParallel` at `-cpu 20` put the shared counters at 671.2ns vs 688.2ns
+(p=0.102, not significant), allocations equal. Names follow the repository's split:
+`graphql.server.*` where the concept is generic, `graphqlgo.*` where it is this engine's. Usage and
+limits are observable UpDownCounters, not gauges, as the OpenTelemetry runtime and connection-pool
+conventions have them, so backends can add them across instances; hits and misses are one
+`graphqlgo.plan_cache.lookups` counter split by `graphqlgo.plan_cache.result`. **The instruments
+carry no identity of their own**: two executors, or one observed twice, on one meter add their
+counters and overwrite the rest, silently — the first version shipped that until review measured
+it — hence `otel.WithAttributes` and "observe each once per meter" in the godoc. No per-operation
+dimension, to keep cardinality bounded. `graphql.server.active_requests` wraps `reqChain`, which
+only `Execute` runs, so subscriptions never show there; `graphqlgo.transport.active_connections` is
+where they do.
 
 `otel.Batch` / `otel.MappedBatch` wrap a `loader.BatchFunc` so every flush gets a span under
 the request that caused it. They live in `ext/otel` rather than as a loader option so
