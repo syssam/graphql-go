@@ -166,6 +166,10 @@ type conn struct {
 	// MaxConnectionIdle; nil without that limit. Stopped and reset under mu.
 	idle *time.Timer
 
+	// idleDeadline is when the idle timer is next due; set under mu wherever
+	// it is armed, so a callback that fired before a Reset can tell.
+	idleDeadline time.Time
+
 	// streams parents every subscription and is cancelled by the drain;
 	// queries and mutations do not derive from it, so they run to the end.
 	streams     context.Context
@@ -179,16 +183,18 @@ func (c *conn) serve() {
 		return
 	}
 	defer func() {
-		// First, so cancelAll's own cancel does not send 1001 on a
-		// connection that is already ending for some other reason.
 		// Teardown deletes every operation; marking draining first keeps
-		// those deletions from re-arming the idle timer.
+		// those deletions from re-arming the idle timer. No test covers this:
+		// without it the timer can still fire after serve returns, and its
+		// close on a socket already gone costs only a debug log.
 		c.mu.Lock()
 		c.draining = true
 		if c.idle != nil {
 			c.idle.Stop()
 		}
 		c.mu.Unlock()
+		// First, so cancelAll's own cancel does not send 1001 on a
+		// connection that is already ending for some other reason.
 		c.stopOnDone()
 		c.cancelAll()
 		c.wg.Wait()
@@ -261,7 +267,10 @@ func (c *conn) handshake() bool {
 				c.close(StatusGoingAway, "Going away")
 			})
 			if d := c.cfg.MaxConnectionIdle; d > 0 {
+				c.mu.Lock()
+				c.idleDeadline = time.Now().Add(d)
 				c.idle = time.AfterFunc(d, c.closeIfIdle)
+				c.mu.Unlock()
 			}
 			return true
 		case TypePing:
@@ -515,6 +524,7 @@ func (c *conn) forget(id string) {
 // cannot keep an idle connection alive.
 func (c *conn) resetIdleLocked() {
 	if c.idle != nil && len(c.subs) == 0 && !c.draining {
+		c.idleDeadline = time.Now().Add(c.cfg.MaxConnectionIdle)
 		c.idle.Reset(c.cfg.MaxConnectionIdle)
 	}
 }
@@ -522,9 +532,16 @@ func (c *conn) resetIdleLocked() {
 // closeIfIdle runs when the idle period ends. An operation may have started
 // since the timer fired, so it checks again under the lock, and marks the
 // connection draining so a subscribe racing the close is refused.
+//
+// The deadline check covers an operation that started and also ended while
+// this callback waited for the lock: its forget re-armed the timer, so the
+// connection is no longer idle for the full period, and closing here could
+// cut off the query's complete. That interleaving needs the callback parked
+// on mu across a whole operation, which no test drives deterministically;
+// keep it on this reasoning.
 func (c *conn) closeIfIdle() {
 	c.mu.Lock()
-	if len(c.subs) > 0 || c.draining {
+	if len(c.subs) > 0 || c.draining || time.Now().Before(c.idleDeadline) {
 		c.mu.Unlock()
 		return
 	}

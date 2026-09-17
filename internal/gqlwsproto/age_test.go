@@ -49,11 +49,19 @@ const (
 // the client not to resubscribe once it reconnects.
 func TestMaxConnectionAgeDrains(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		_, exec := newDrainExecutor(t)
+		src, exec := newDrainExecutor(t)
 		sock := newFakeSocket()
 		sock.in <- []byte(initMsg)
 		sock.in <- []byte(subscribeSub)
 		done := serveWith(sock, Config{Exec: exec, InitTimeout: time.Minute, MaxSubs: 10, MaxConnectionAge: time.Hour})
+
+		// Without a live subscription the no-complete check below would pass
+		// for a subscription that never opened.
+		src.ticks <- 1
+		synctest.Wait()
+		if !slices.Contains(sock.types(), "next") {
+			t.Fatalf("subscription is not live: %v", sock.types())
+		}
 
 		time.Sleep(53 * time.Minute)
 		synctest.Wait()
@@ -215,6 +223,28 @@ func TestNoLimitsKeepsConnectionOpen(t *testing.T) {
 			t.Fatalf("closed with %d with no limits configured", code)
 		}
 		_ = sock.Close(1000, "test done")
+		<-done
+	})
+}
+
+// TestMaxConnectionIdleIgnoresUnknownComplete: a complete for an id that was
+// never running must not restart the idle period, or a client could hold an
+// idle connection open by sending them.
+func TestMaxConnectionIdleIgnoresUnknownComplete(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		_, exec := newDrainExecutor(t)
+		sock := newFakeSocket()
+		sock.in <- []byte(initMsg)
+		done := serveWith(sock, Config{Exec: exec, InitTimeout: time.Minute, MaxSubs: 10, MaxConnectionIdle: 10 * time.Minute})
+
+		time.Sleep(9 * time.Minute)
+		sock.in <- []byte(`{"id":"zz","type":"complete"}`)
+		synctest.Wait()
+		time.Sleep(2 * time.Minute)
+		synctest.Wait()
+		if code := sock.closeCode(); code != StatusNormalClosure {
+			t.Fatalf("close code = %d, want %d", code, StatusNormalClosure)
+		}
 		<-done
 	})
 }
