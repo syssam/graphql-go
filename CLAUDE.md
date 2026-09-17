@@ -196,9 +196,9 @@ out of the spawn loop stranded every parked `Load` and the request hung until it
 holding concurrency slots shared by every request on the executor
 (`TestLoaderResponseLimitDoesNotStrandWave`, in `loader/` because the root package's tests
 cannot import it). The late tasks fail at their first checkpoint instead. The final size check
-is otherwise exact; the in-flight bound is about one field's output per concurrently written buffer. The errors
-list is not counted by this limit; `WithMaxErrors` bounds it separately. The default was set by measurement: interleaved n=12, `BenchmarkResponseLimitOff`
-against `On` was 15.51µs vs 15.65µs (p=0.347) with 92 allocs/op both, and
+is otherwise exact; the in-flight bound is about one field's output per concurrently written
+buffer. The errors list is not counted by this limit; `WithMaxErrors` bounds it separately.
+The default was set by measurement: interleaved n=12, `BenchmarkResponseLimitOff` against `On` was 15.51µs vs 15.65µs (p=0.347) with 92 allocs/op both, and
 `BenchmarkFieldPathBare` against `main` 1.218µs vs 1.281µs (p=0.219) at 18 allocs/op both,
 measured with no limit before the default changed —
 not distinguishable on this machine, which is a bound on the cost, not a proof it is zero.
@@ -213,7 +213,12 @@ overshoot. The first error past the limit becomes one `ERROR_LIMIT_EXCEEDED` not
 presented, so its code is what `fullLocked` finds it by — `execState` has no room for a flag.
 Engine errors that say why a request stopped (cancellation, timeout, an oversized response) go
 through `addError` and are never dropped. `requestError` cuts parse and validation errors the
-same way. Not bounded: a leaf list's per-element failures are gathered into one `elementErrors`
+same way. **A dropped field error can be the only record of why a request stopped**: a slow
+field often reports a timeout or cancellation through its own error with no later field reaching
+the checkpoint, so `droppedFieldError` calls `recordCancellation` when the dropped error is a
+context error — the first version lost `OPERATION_TIMEOUT` entirely behind a full list
+(`TestMaxErrorsKeepsWhyTheRequestStopped`). Under concurrency a racing field can be presented and
+then dropped at the lock, so a logging presenter may run a few more than n times. Not bounded: a leaf list's per-element failures are gathered into one `elementErrors`
 before `fieldError` sees them, so a million failing scalars still allocate a million
 `indexedError`s first.
 

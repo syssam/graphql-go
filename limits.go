@@ -101,9 +101,11 @@ func WithMaxResponseBytes(n int64) ExecutorOption {
 }
 
 // WithMaxErrors bounds how many errors one response carries. Past n, field
-// errors are dropped before they are presented or given a path, and a single
-// ERROR_LIMIT_EXCEEDED error is appended in their place; the data is
-// unaffected. Errors that explain why a request stopped (cancellation,
+// errors are dropped, and a single ERROR_LIMIT_EXCEEDED error is appended in
+// their place; the data is unaffected. A dropped error is not presented or
+// given a path, except that concurrent fields racing the limit may be
+// presented before they are dropped, so a presenter that logs can run a few
+// more than n times. Errors that explain why a request stopped (cancellation,
 // timeout, an oversized response) are always kept. Request errors from
 // parsing and validation are cut the same way. Which field errors are kept is
 // the order they were recorded in, which for concurrent fields is not

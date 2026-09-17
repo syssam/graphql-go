@@ -6,11 +6,13 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
+	"time"
 )
 
 const errLimitSDL = `
 type Row { bad: String }
-type Query { rows: [Row!]! }
+type Query { rows: [Row!]! wait: Int }
 `
 
 type errLimitRow struct{ n int }
@@ -41,7 +43,15 @@ func newErrLimitExecutor(t *testing.T, rows int, opts ...ExecutorOption) (*errLi
 				return nil, fmt.Errorf("row %d failed", r.n)
 			}),
 		),
-		Query(Field("rows", func(Root) []*errLimitRow { return list })),
+		Query(
+			Field("rows", func(Root) []*errLimitRow { return list }),
+			// wait reports its end only through its own field error, which is
+			// what a full list could drop.
+			Resolve("wait", func(ctx context.Context, _ Root) (*int, error) {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}),
+		),
 	)
 	if err != nil {
 		t.Fatalf("schema: %v", err)
@@ -159,5 +169,49 @@ func TestMaxErrorsDefault(t *testing.T) {
 	_, e := newErrLimitExecutor(t, 1)
 	if e.maxErrors != 1000 {
 		t.Fatalf("default maxErrors = %d, want 1000", e.maxErrors)
+	}
+}
+
+// TestMaxErrorsKeepsWhyTheRequestStopped: a field that ends with its context
+// may be the only thing that reports the timeout or cancellation, and by then
+// field errors can have filled the list. Dropping it must still leave the
+// engine's error saying why the request stopped.
+func TestMaxErrorsKeepsWhyTheRequestStopped(t *testing.T) {
+	cases := []struct {
+		name string
+		opts []ExecutorOption
+		ctx  func() (context.Context, context.CancelFunc)
+		want string
+	}{
+		{
+			name: "operation timeout",
+			opts: []ExecutorOption{WithOperationTimeout(50 * time.Millisecond)},
+			ctx:  func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) },
+			want: CodeOperationTimeout,
+		},
+		{
+			name: "caller deadline",
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), 50*time.Millisecond)
+			},
+			want: CodeRequestCancelled,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				opts := append([]ExecutorOption{WithMaxConcurrency(0), WithMaxErrors(5)}, tc.opts...)
+				_, e := newErrLimitExecutor(t, 50, opts...)
+				ctx, cancel := tc.ctx()
+				defer cancel()
+				resp := e.Execute(ctx, &Request{Query: `{ rows { bad } wait }`})
+				for _, err := range resp.Errors {
+					if err.Extensions["code"] == tc.want {
+						return
+					}
+				}
+				t.Fatalf("errors %s: want %s to survive a full list", errorsJSON(resp.Errors), tc.want)
+			})
+		})
 	}
 }

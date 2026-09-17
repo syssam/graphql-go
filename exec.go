@@ -674,15 +674,20 @@ func (st *execState) addError(ctx context.Context, err error, path Path, pos *as
 // the first.
 func (st *execState) addFieldError(ctx context.Context, err error, path *pathNode, pos *ast.Position) {
 	if st.fieldErrorsFull() {
+		st.droppedFieldError(ctx, err)
 		return
 	}
-	st.appendError(ctx, err, path.materialize(), pos, true)
+	if !st.appendError(ctx, err, path.materialize(), pos, true) {
+		st.droppedFieldError(ctx, err)
+	}
 }
 
-func (st *execState) appendError(ctx context.Context, err error, path Path, pos *ast.Position, limited bool) {
+// appendError reports false when a limited error was dropped because the
+// list filled while it was being presented.
+func (st *execState) appendError(ctx context.Context, err error, path Path, pos *ast.Position, limited bool) bool {
 	presented := st.e.presenter(ctx, err)
 	if presented == nil {
-		return
+		return true
 	}
 	if presented.Path == nil {
 		presented.Path = path
@@ -693,9 +698,26 @@ func (st *execState) appendError(ctx context.Context, err error, path Path, pos 
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if limited && st.fullLocked() {
-		return
+		return false
 	}
 	st.errs = append(st.errs, presented)
+	return true
+}
+
+// droppedFieldError keeps the reason a request stopped when the field error
+// carrying it is dropped. A slow field often reports a timeout or
+// cancellation only through its own error, with no later field reaching the
+// checkpoint that records the engine's, so without this a full list could
+// leave the response saying nothing about why it ended. recordCancellation
+// adds at most one such error however many fields land here.
+func (st *execState) droppedFieldError(ctx context.Context, err error) {
+	ctxErr := ctx.Err()
+	if ctxErr == nil {
+		return
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		st.recordCancellation(ctx, ctxErr)
+	}
 }
 
 // fieldErrorsFull reports whether the field error limit is reached.
@@ -711,7 +733,9 @@ func (st *execState) fieldErrorsFull() bool {
 // fullLocked reports whether the error limit is reached and, the first time
 // it is, appends the notice. The notice needs no field of its own on
 // execState, which has no room: past the limit only engine errors and the
-// notice are ever appended, so a short scan of that tail finds it.
+// notice are ever appended, so a short scan of that tail finds it. A user field
+// error carrying the same code cannot confuse it, since field errors are only
+// ever appended below the limit.
 func (st *execState) fullLocked() bool {
 	limit := st.e.maxErrors
 	if limit <= 0 || len(st.errs) < limit {
@@ -730,6 +754,12 @@ func (st *execState) fullLocked() bool {
 // indices carried by indexedError extend the path; errNonNull becomes the
 // specification's non-null violation message.
 func (st *execState) fieldError(ctx context.Context, err error, path *pathNode, f *planField) {
+	// Checked here as well as in addFieldError so that past the limit not even
+	// the path nodes below are built.
+	if st.fieldErrorsFull() {
+		st.droppedFieldError(ctx, err)
+		return
+	}
 	var soft *elementErrors
 	if errors.As(err, &soft) {
 		for _, ie := range soft.errs {
