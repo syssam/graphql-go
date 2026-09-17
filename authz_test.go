@@ -51,6 +51,24 @@ func TestRequirementScopesAreDeduplicatedAndSorted(t *testing.T) {
 	}
 }
 
+func TestRequirementDescribeKeepsAndWithinAGroup(t *testing.T) {
+	cases := []struct {
+		groups [][]string
+		want   string
+	}{
+		{[][]string{{"a"}}, "a"},
+		{[][]string{{"a", "b"}}, "a and b"},
+		{[][]string{{"a"}, {"b"}}, "a or b"},
+		{[][]string{{"a", "b"}, {"c"}}, "(a and b) or c"},
+		{[][]string{{"a"}, {"b", "c"}}, "a or (b and c)"},
+	}
+	for _, tc := range cases {
+		if got := NewRequirement(tc.groups...).describe(); got != tc.want {
+			t.Errorf("describe(%v) = %q, want %q", tc.groups, got, tc.want)
+		}
+	}
+}
+
 func TestZeroRequirementIsZero(t *testing.T) {
 	if !(Requirement{}).IsZero() {
 		t.Error("the zero Requirement reports IsZero false")
@@ -261,6 +279,53 @@ type Query @requiresScopes(scopes: ["x"]) { a: String! }
 	}
 	if !strings.Contains(err.Error(), "Query") {
 		t.Errorf("error does not name the coordinate Query: %v", err)
+	}
+}
+
+// The shape check must also cover an interface's own @requiresScopes, not
+// only an object's: validateAuthDirectives folds ast.Interface into the same
+// switch case as ast.Object, and removing ast.Interface from that case
+// leaves this accepted while still building a schema (task-2 fix-round-1
+// review, "Important 2").
+func TestNewSchemaRejectsMalformedScopesValueOnInterface(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT | INTERFACE
+interface Pet @requiresScopes(scopes: ["x"]) { name: String! }
+type Dog implements Pet { name: String! }
+type Query { pet: Pet! }
+`
+	_, err := NewSchema(SDL(sdl),
+		Query(Field("pet", func(Root) authzPet { return &authzDog{} })),
+		Interface[authzPet]("Pet"),
+		Object[authzDog]("Dog", Field("name", func(*authzDog) string { return "" })),
+	)
+	if err == nil {
+		t.Fatal("NewSchema accepted a malformed scopes value on an interface type")
+	}
+	if !strings.Contains(err.Error(), "Pet") {
+		t.Errorf("error does not name the coordinate Pet: %v", err)
+	}
+}
+
+// Same as above, for an interface's field-level @requiresScopes rather than
+// its type-level one.
+func TestNewSchemaRejectsMalformedScopesValueOnInterfaceField(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT | INTERFACE
+interface Pet { name: String! @requiresScopes(scopes: ["x"]) }
+type Dog implements Pet { name: String! }
+type Query { pet: Pet! }
+`
+	_, err := NewSchema(SDL(sdl),
+		Query(Field("pet", func(Root) authzPet { return &authzDog{} })),
+		Interface[authzPet]("Pet"),
+		Object[authzDog]("Dog", Field("name", func(*authzDog) string { return "" })),
+	)
+	if err == nil {
+		t.Fatal("NewSchema accepted a malformed scopes value on an interface field")
+	}
+	if !strings.Contains(err.Error(), "Pet.name") {
+		t.Errorf("error does not name the coordinate Pet.name: %v", err)
 	}
 }
 
@@ -1208,48 +1273,30 @@ type Query { secret: String! @requiresScopes(scopes: [["x"]]) }
 // Object-level @requiresScopes builds no enforcement site: requirementOf is
 // only ever read off a field definition in shapeBuilder.field, and neither
 // SiteObject nor an ObjectAuthorizer is constructed anywhere. Until object
-// sites are enforced, coverage must not treat an object-level declaration as
-// having guarded its fields -- doing so is exactly the false coverage this
-// primitive exists to prevent, and it would pass a field authorization never
-// actually checks. Object-level @public is unaffected: it has always meant
-// "every field is exempt", not "every field is guarded", so it still exempts.
-func TestRequireAuthCoverageRejectsObjectLevelRequirement(t *testing.T) {
+// An object-level @requiresScopes is inherited by every field of the object
+// and enforced (resolveAuthRequirements, shapeBuilder.field), so it covers
+// them.
+func TestRequireAuthCoverageAcceptsObjectLevelRequirement(t *testing.T) {
 	const sdl = `
 directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
 directive @public on FIELD_DEFINITION | OBJECT
 type Foo @requiresScopes(scopes: [["x"]]) { secret: String! }
 type Query { foo: Foo! @public }
 `
-	_, err := NewSchema(SDL(sdl),
+	if _, err := NewSchema(SDL(sdl),
 		Query(Field("foo", func(Root) *authzFoo { return &authzFoo{} })),
 		Object[authzFoo]("Foo", Field("secret", func(*authzFoo) string { return "" })),
 		RequireAuthCoverage(),
-	)
-	if err == nil {
-		t.Fatal("NewSchema accepted a field covered only by its object's @requiresScopes, which builds no enforcement site")
-	}
-	if !strings.Contains(err.Error(), "Foo.secret") {
-		t.Errorf("error does not name the undeclared field: %v", err)
-	}
-	if !strings.Contains(err.Error(), "not yet enforced") {
-		t.Errorf("error does not explain the object-level limitation: %v", err)
+	); err != nil {
+		t.Fatalf("NewSchema rejected a field covered by its object's enforced requirement: %v", err)
 	}
 }
 
 type authzFoo struct{}
 
-// A requirement declared only on an interface's own field definition builds
-// no site either (buildAuthShape's shapeBuilder.field reads
-// f.def.def.Directives, the concrete field the plan actually selected, and
-// gqlparser never copies an interface field's directives onto an
-// implementer's own field definition). Coverage must not be satisfiable by a
-// declaration authorization does not enforce, so a concrete type that omits
-// its own declaration must still fail RequireAuthCoverage even though its
-// interface "declares" one. This is committed, not a deleted probe: Spec §7
-// requires a check like this to carry its own breaking test, since a later
-// change that "helpfully" consults interface definitions during coverage
-// would otherwise pass silently.
-func TestRequireAuthCoverageRejectsInterfaceOnlyRequirement(t *testing.T) {
+// A requirement on an interface's field definition is inherited by the
+// implementer's same-named field and enforced, so it covers that field.
+func TestRequireAuthCoverageAcceptsInterfaceFieldRequirement(t *testing.T) {
 	const sdl = `
 directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
 directive @public on FIELD_DEFINITION | OBJECT
@@ -1257,7 +1304,7 @@ interface Pet { name: String! @public secret: String! @requiresScopes(scopes: [[
 type Dog implements Pet { name: String! @public secret: String! }
 type Query { pet: Pet! @public }
 `
-	_, err := NewSchema(SDL(sdl),
+	if _, err := NewSchema(SDL(sdl),
 		Query(Field("pet", func(Root) authzPet { return &authzDog{} })),
 		Interface[authzPet]("Pet"),
 		Object[authzDog]("Dog",
@@ -1265,12 +1312,8 @@ type Query { pet: Pet! @public }
 			Field("secret", func(*authzDog) string { return "" }),
 		),
 		RequireAuthCoverage(),
-	)
-	if err == nil {
-		t.Fatal("NewSchema accepted Dog.secret, guarded only on the interface's own field definition")
-	}
-	if !strings.Contains(err.Error(), "Dog.secret") {
-		t.Errorf("error does not name the undeclared concrete field: %v", err)
+	); err != nil {
+		t.Fatalf("NewSchema rejected Dog.secret, covered by Pet.secret's enforced requirement: %v", err)
 	}
 }
 

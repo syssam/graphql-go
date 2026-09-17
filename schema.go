@@ -114,6 +114,10 @@ type objectType struct {
 	isRoot         bool
 	fields         map[string]*fieldDef
 	hasSchedulable bool
+
+	// requires is the object's effective type-level requirement (its own
+	// AND its interfaces'), which guards __typename on this type.
+	requires Requirement
 }
 
 // schemaBuilder accumulates bindings while options are applied and resolves
@@ -128,6 +132,7 @@ type schemaBuilder struct {
 	directives    map[string]*directiveBinding
 	introspection bool
 	authCoverage  bool
+	authCapped    map[string]bool
 	errs          []error
 }
 
@@ -238,6 +243,7 @@ func (b *schemaBuilder) build() *Schema {
 	// Phase 6: coverage.
 	b.validateCoverage(s)
 	b.validateAuthDirectives()
+	b.resolveAuthRequirements(s)
 	b.validateAuthCoverage(s)
 
 	if b.ast.Query != nil {

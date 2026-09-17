@@ -2,7 +2,7 @@
 
 - **Date:** 2026-09-16
 - **Module:** `github.com/syssam/graphql-go`
-- **Status:** Approved design; not yet implemented
+- **Status:** Plan 1 (P1, P2, P3, P5, P7) implemented and merged (`e57e820`); Plan 2 decomposed in §9, 2a implemented on `feat/authz-inherited-requirements`
 - **Files:** `plan.go`, `exec.go`, `exec_object.go`, `directive.go`, `subscription.go`,
   `schema.go`, `introspection.go`, new `authz.go`, new `ext/authz/`
 
@@ -470,3 +470,143 @@ only the request can tell those apart.
 - Whether `Redact(fn)` should receive the `AuthSite` as well as the value. It
   is free to add later and speculative to add now; deferred until a caller
   needs it.
+
+## 9. Plan 2
+
+Plan 1 shipped the spine. Every item it deferred is an independent subsystem, so
+Plan 2 is split rather than written as one plan, ordered by the consumer's need
+and by how much fail-open each leaves in place.
+
+| Sub-plan | Scope | Why this position |
+|---|---|---|
+| **2a** | Requirement inheritance (object type, implemented interfaces) and `__typename`; Authorizer error hardening | Closes the two paths Plan 1's docs state are *not enforced*. Build time and plan compile only. |
+| **2b** | Argument sites: `SiteFilterArg`, `SiteInputWrite` | The consumer's field control needs both (cases 8, 9). |
+| **2c** | `ObjectAuthorizer`, wave batching, `Drop()` | Instance-level authorization; the largest design. |
+| **2d** | `ext/authz` (`@authenticated`, `@policy`, a batched `Guard`) | An opt-in convenience layer over 2a-2c. |
+| later | Introspection filtering (P6), static grant folding | On demand. The consumer's "guard every path" need is met by 2a's inheritance, not by grants. |
+
+### 9.1 Not planned: observing refused fields
+
+`FieldObserver` (merged independently of this work) documents that a field an
+Authorizer denied, nulled or zeroed is never observed. That stays. The place to
+audit an authorization decision is the Authorizer, which sees every site and
+every outcome it chose; an observer seeing "a field did not run" would add
+nothing a decision log lacks.
+
+### 9.2 2a — inheritance
+
+**A field's effective requirement is computed once, at `NewSchema`**, as the AND
+of: its own `@requiresScopes`; its object type's; each implemented interface
+type's; and the same-named field on each implemented interface. It is stored on
+the field's `fieldDef` and the object's effective type-level requirement on its
+`objectType`. The shape builder and `RequireAuthCoverage` both read those stored
+values, so the requirement authorization enforces and the one coverage accepts
+cannot diverge. Every input is schema-level and immutable after build, so the
+value is the same on every path that reaches the field, which is what keeps a
+memoized, shared `*selectionSet` safe.
+
+AND of two OR-of-AND requirements is their cross product. `NewSchema` fails when
+an effective requirement exceeds 64 groups, so a pathological combination is a
+build error rather than a per-request cost.
+
+**`__typename` is guarded** by its object's effective type-level requirement,
+through a `SiteObject` site. The reason is consistency: "every field of a guarded
+type is authorized" should hold for `__typename` too, rather than leaving one
+field every client selects as the exception. The compiler keys each
+concrete selection set by its `*objectType`, so a `__typename` field is never
+shared across object types and its site is well defined. `Decision.Set` admits
+only `Allow` and `Deny` on a `SiteObject`: `__typename` is `String!`, so `Null`
+would be a silent spec violation, and `Zero`/`Redact` have no field to act on.
+
+**Known limit: field- and instance-level authorization does not hide how many
+objects of a guarded type exist, or that they exist.** A correct denial reveals
+the count itself: `{ list { name } }` answers `[null,null]` with one error per
+element. An object whose selection folds to empty is written without any site
+being consulted: `{ list { ... @include(if: false) { name } } }` answers
+`[{},{}]` with no error and no authorization call. And a union selection that
+names only an unguarded member, `{ mixed { ... on Open { name } } }`, answers
+`[{"name":""},{}]`, revealing that some other member is present. Guarding
+`__typename` does not change any of this and is not meant to. Making count and
+existence confidential needs a decision at the field that returns the guarded
+type, not at its fields, and is deferred to Plan 2c.
+
+**`@requiresScopes` on a location the engine does not enforce is a build error**
+(union, enum, scalar, input object, argument, input field). A silent no-op is
+the failure this whole design exists to remove.
+
+**`RequireAuthCoverage` counts a field as covered when its effective requirement
+is non-zero**, or when the field or its object carries `@public`. `@public` on an
+interface does not exempt implementers: exemption stays explicit per type.
+
+**Authorizer errors that are not `*Error` are not shown to clients.** A policy
+decision point's transport failure ("dial tcp 10.0.3.7:8181: connection
+refused") would otherwise reach the client verbatim, disclosing internal
+addresses and making an outage indistinguishable from a denial. Such an error
+is presented as a generic internal error; the original is logged and kept as
+the presented error's cause. An `*Error` the Authorizer built on purpose passes
+through as before.
+
+**Deviations (what shipped beyond the text above):**
+
+- **Every `@requiresScopes` occurrence on a definition is ANDed**, not just the first
+  match: `repeatable`, or an `extend type`/`extend interface`/`extend schema` re-declaring
+  the directive, adds a second occurrence to the same `Directives` list rather than
+  replacing the first, and gqlparser skips its own non-repeatable check for an extension
+  occurrence even when the directive is not declared repeatable. `requirementOf`
+  (`authz_shape.go`) reads and combines all of them.
+- **The 64-group cap is checked before the product is built, not after**: `andCapped`
+  predicts the resulting group count from the two operands' counts and refuses to call
+  `Requirement.And` when the prediction exceeds `maxRequirementGroups`, because `And`
+  itself allocates the full cross product unconditionally. A post-hoc check would still
+  pay for that allocation — four interfaces of 30 groups multiply to 810,000 — on the way
+  to reporting the error it exists to avoid.
+- **Placement rejection is wider than the list above**: the schema definition itself and a
+  directive definition's own argument are build errors too, alongside the union, enum,
+  enum value, scalar, input object, input field and field-argument placements already
+  named (`validateAuthDirectives`, `authz_shape.go`).
+- **The Authorizer-error wrapper (`authorizerCause`, `exec.go`) deliberately has no
+  `Unwrap`.** It supports `errors.Is` so a custom `ErrorPresenter` can still test the
+  original cause, but a presenter that walks the chain with `errors.As` looking for an
+  `ExtensionsProvider` must not reach the policy backend's own error and merge its
+  extensions — an internal host, a trace ID — into the client-visible response.
+- **The unguarded `__typename` fast path.** `writeFieldValue` (`exec_object.go`) checks
+  `f.kind == fieldTypename && f.authIdx < 0` and returns `obj.name` before touching
+  `execState` at all, because the naive ordering (check `execState` first) cost +6.26%
+  (n=12) on a `__typename`-dense benchmark; reordering narrowed it to +1.35% (p=0.005,
+  n=24, interleaved), which is the residual accepted as the cost of the object-site check
+  existing at all.
+- **Why `__typename` is guarded was corrected after the final review.** An earlier draft
+  of this section justified the object site by saying an unguarded `{ items { __typename } }`
+  counts a guarded type's rows and confirms a given one exists. Probes disproved that as a
+  reason: the count and existence already leak through a correct denial, through an
+  object whose selection folds to empty, and through a union's unguarded member (see the
+  known limit above). The object site stays, for consistency, and hiding count and
+  existence is Plan 2c's, decided at the field that returns the guarded type.
+- **`ScopeAuthorizer` renders a requirement's structure in its denial**: groups joined by
+  "or", scopes within a group by "and", a multi-scope group parenthesized only when there
+  is more than one group. Flattening `Scopes()` with "or" told a client denied an
+  inherited `{dog:read, pet:read}` that either scope would do.
+- **A coordinate whose requirement hit the cap gets no coverage error.** Its stored
+  requirement is zero only because the cap stopped it, so `RequireAuthCoverage` would
+  otherwise add one "declares no authorization" error per field and bury the cap error.
+- **A guarded `Query` type guards introspection.** `__schema` and `__type` are fields of
+  the query root and inherit its requirement, so introspection is denied without the
+  scope. That fails closed and is intended.
+
+### 9.3 2b — argument sites (decided here, planned separately)
+
+The engine cannot know which argument is a filter, nor that a key such as
+`taxNumberContains` names the field `taxNumber` — that is the consumer's naming
+convention. So:
+
+- The declaration is in SDL: `@authorizeInput(kind: FILTER | WRITE)` on an
+  argument definition. Schema-first, visible to `RequireAuthCoverage`, and
+  emitted by a generator rather than hand-written.
+- The engine reports, it does not interpret. At decision time it walks the value
+  actually supplied (variables resolved) and hands the Authorizer the key paths
+  that were present. Mapping a key to a field is the Authorizer's job.
+- Only `Deny` is valid on an argument site, refusing the field before its
+  resolver runs.
+- An absent key is not reported; a key sent as explicit `null` is (§8).
+- An operation whose shape has no argument site walks nothing.
+

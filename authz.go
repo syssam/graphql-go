@@ -64,6 +64,60 @@ func (r Requirement) Scopes() []string {
 	return slices.Compact(out)
 }
 
+// maxRequirementGroups bounds an effective requirement after inheritance.
+// AND-ing OR-of-AND requirements multiplies their group counts, so a field
+// inheriting from an object and several interfaces can grow quickly; past this
+// NewSchema fails, keeping a pathological combination a build error rather
+// than a per-request cost.
+const maxRequirementGroups = 64
+
+// And returns the requirement satisfied only when both r and o are. It is the
+// cross product of their groups, each group sorted and deduplicated. The zero
+// Requirement admits everyone, so it is the identity.
+func (r Requirement) And(o Requirement) Requirement {
+	if r.IsZero() {
+		return o
+	}
+	if o.IsZero() {
+		return r
+	}
+	out := make([][]string, 0, len(r.anyOf)*len(o.anyOf))
+	for _, a := range r.anyOf {
+		for _, b := range o.anyOf {
+			g := make([]string, 0, len(a)+len(b))
+			g = append(g, a...)
+			g = append(g, b...)
+			slices.Sort(g)
+			out = append(out, slices.Compact(g))
+		}
+	}
+	return Requirement{anyOf: out}
+}
+
+func (r Requirement) groupCount() int { return len(r.anyOf) }
+
+// describe renders the requirement for a client-facing denial. It keeps the
+// OR-of-AND structure rather than listing Scopes(), because inheritance
+// usually produces a single AND group and flattening that into "a or b"
+// tells a client either scope would do.
+func (r Requirement) describe() string {
+	var b strings.Builder
+	for i, group := range r.anyOf {
+		if i > 0 {
+			b.WriteString(" or ")
+		}
+		paren := len(r.anyOf) > 1 && len(group) > 1
+		if paren {
+			b.WriteByte('(')
+		}
+		b.WriteString(strings.Join(group, " and "))
+		if paren {
+			b.WriteByte(')')
+		}
+	}
+	return b.String()
+}
+
 // SiteKind says what kind of position needs an authorization decision.
 type SiteKind uint8
 
@@ -222,6 +276,12 @@ func isLeafField(site AuthSite) bool { return site.leaf }
 // surfaces once per request with the coordinate attached rather than as a
 // null-bubbled parent at write time.
 func (o Outcome) validFor(site AuthSite) error {
+	// An object site guards __typename, a String! with no resolver: Null
+	// would write a silent spec-violating null, and Zero and Redact have no
+	// field to act on.
+	if site.Kind == SiteObject && o.act != actionAllow && o.act != actionDeny {
+		return Errorf("authorization: only Allow and Deny are valid for %s, an object site guarding __typename", site.Coord)
+	}
 	switch o.act {
 	case actionNull:
 		// A literal null on a non-null field is not a value the schema
@@ -335,8 +395,7 @@ func ScopeAuthorizer(held func(context.Context) map[string]bool) Authorizer {
 			if site.Requires.Satisfied(have) {
 				continue
 			}
-			scopes := site.Requires.Scopes()
-			if err := d.Set(i, Deny(strings.Join(scopes, " or "), site.Coord)); err != nil {
+			if err := d.Set(i, Deny(site.Requires.describe(), site.Coord)); err != nil {
 				return err
 			}
 		}

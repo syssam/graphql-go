@@ -23,6 +23,13 @@ func (st *execState) enforceAuth(ctx context.Context, w *jsonw.Writer, f *planFi
 		w.Null()
 		return true, true
 	case actionZero:
+		// f.def is nil only for __typename's SiteObject, and validFor already
+		// rejects Zero there (Field == nil) before Decision.Set can store it --
+		// guarded anyway since this dispatches on stored state, not a call this
+		// function controls, and the check costs nothing next to the write below.
+		if f.def == nil {
+			return false, true
+		}
 		writeZero(w, f.def.typ)
 		return true, true
 	}

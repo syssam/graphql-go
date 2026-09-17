@@ -206,7 +206,7 @@ func (e *Executor) Subscribe(ctx context.Context, req *Request) (<-chan *Respons
 		// effect without tearing the stream down.
 		d, err := e.authorize(ctx, p)
 		if err != nil {
-			return nil, e.subscribeError(ctx, toError(err))
+			return nil, e.subscribeError(ctx, authorizerError(ctx, err))
 		}
 		if f.authIdx >= 0 {
 			if o := d.Outcome(int(f.authIdx)); o.act == actionDeny {

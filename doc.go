@@ -69,14 +69,33 @@
 // there would compose cleanly and then never run.
 //
 // RequireAuthCoverage is an opt-in, build-time default deny: NewSchema fails
-// for any bound field that declares neither @requiresScopes nor @public.
-// It is a Go-vs-SDL shape check, not proof that every declared requirement
-// is enforced. SiteKind names four kinds of position -- SiteOutput,
-// SiteObject, SiteFilterArg, SiteInputWrite -- but only SiteOutput, a single
-// field's own definition, is ever built into a Site today; a @requiresScopes
-// on an object type or on an interface field definition creates no Site,
-// authorizes nothing, and does not satisfy coverage for a concrete field
-// that omits its own declaration, even though the schema reads as guarded.
-// Filter-argument and input-write sites are declared for the same reason and
-// are likewise not yet populated.
+// for any bound field that declares neither @requiresScopes nor @public. A
+// field's effective requirement is the AND of its own @requiresScopes, its
+// object type's, and each interface it implements -- both that interface's
+// type-level requirement and its same-named field's. resolveAuthRequirements
+// computes it once, at NewSchema, and stores the result on the field's
+// fieldDef and the object's objectType; the shape builder and
+// RequireAuthCoverage both read those stored values, so what a request
+// enforces and what coverage accepts cannot diverge. __typename is guarded
+// the same way, through a SiteObject built from its object's effective
+// type-level requirement; Decision.Set admits only Allow and Deny there,
+// since __typename is String! and has no value to null, zero or redact. That
+// guard is for consistency, not confidentiality: authorization at the field
+// or instance level does not hide how many objects of a guarded type exist or
+// that they exist, and an object whose selection folds to empty is written
+// without consulting any site.
+// __schema and __type are fields of the query root, so an @requiresScopes on
+// the Query type guards introspection as well; that fails closed on purpose.
+// @requiresScopes anywhere the engine does not enforce it -- a union, enum,
+// enum value, scalar, input object, input field, an argument, the schema
+// definition itself, or a directive definition's own argument -- is a build
+// error, not a silent no-op. RequireAuthCoverage counts a field as covered
+// exactly when its effective requirement is non-zero, or when the field or
+// its own object type carries @public; @public on an interface does not
+// exempt its implementers. SiteFilterArg and SiteInputWrite are declared for
+// the same reason as the rest of SiteKind but are not yet populated. An
+// Authorizer failure that is not a *Error -- typically a policy backend's
+// own transport failure -- is never shown to a client: it is presented as a
+// generic internal error, with the original logged and kept behind an
+// unexported cause for a presenter that wants to test it.
 package graphql

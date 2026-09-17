@@ -79,6 +79,13 @@ type fieldDef struct {
 	// subscribe opens the source event stream; set on subscription root
 	// fields only, by Subscribe and SubscribeArgs.
 	subscribe subscribeFunc
+
+	// requires is the field's effective authorization requirement: its own
+	// @requiresScopes AND its object type's AND every implemented
+	// interface's type-level and same-named field requirement. It is
+	// computed once in NewSchema so plan compile and RequireAuthCoverage
+	// read the same value; the zero value means nothing is required.
+	requires Requirement
 }
 
 // wrap replaces the field's executor with wrapper(previous), switching the

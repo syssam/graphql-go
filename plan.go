@@ -185,7 +185,7 @@ func compilePlan(s *Schema, e *Executor, doc *ast.QueryDocument, op *ast.Operati
 	if len(c.errs) > 0 {
 		return nil, c.errs
 	}
-	p.shape = buildAuthShape(p.sel)
+	p.shape = buildAuthShape(p.root, p.sel)
 	return p, nil
 }
 
