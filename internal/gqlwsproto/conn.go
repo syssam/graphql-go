@@ -21,17 +21,75 @@ func Serve(ctx context.Context, sock Socket, cfg Config) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
+	parent := ctx
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	streams, stopStreams := context.WithCancel(context.Background())
+	defer stopStreams()
 
 	c := &conn{
-		cfg:    cfg,
-		sock:   sock,
-		ctx:    ctx,
-		cancel: cancel,
-		subs:   make(map[string]context.CancelFunc),
+		cfg:         cfg,
+		sock:        sock,
+		ctx:         ctx,
+		cancel:      cancel,
+		subs:        make(map[string]context.CancelFunc),
+		streams:     streams,
+		stopStreams: stopStreams,
 	}
+	served, watched := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(watched)
+		c.watch(parent, served)
+	}()
 	c.serve()
+	close(served)
+	// The watcher may still owe the socket its 1001 close; returning first
+	// would let the driver's own teardown race it.
+	<-watched
+}
+
+// watch ends the connection from outside the read loop, which is the only way
+// to reach a Read that ignores its context. It watches parent rather than the
+// connection's own context, which Serve cancels on its way out: only a cancel
+// from the caller -- a drain giving up -- should close the socket.
+func (c *conn) watch(parent context.Context, served <-chan struct{}) {
+	select {
+	case <-c.cfg.Closing:
+		c.drain(served)
+	case <-parent.Done():
+		c.close(StatusGoingAway, "Going away")
+	case <-served:
+		// A cancelled parent also ends the read loop, so served can win the
+		// race against parent.Done; the socket must still be closed then.
+		if parent.Err() != nil {
+			c.close(StatusGoingAway, "Going away")
+		}
+	}
+}
+
+func closed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
+// drain refuses new operations, ends subscriptions, waits for the rest, and
+// closes. The close is what ends the read loop.
+func (c *conn) drain(served <-chan struct{}) {
+	c.mu.Lock()
+	c.draining = true
+	c.mu.Unlock()
+	c.stopStreams()
+	c.wg.Wait()
+	select {
+	case <-served:
+		return // the connection ended on its own meanwhile
+	default:
+	}
+	c.close(StatusGoingAway, "Going away")
 }
 
 // conn is one WebSocket connection. Operations run on their own goroutines so
@@ -47,6 +105,15 @@ type conn struct {
 
 	mu   sync.Mutex
 	subs map[string]context.CancelFunc
+
+	// draining is set under mu, beside every wg.Add, so an operation either
+	// starts before the drain waits or is refused.
+	draining bool
+
+	// streams parents every subscription and is cancelled by the drain;
+	// queries and mutations do not derive from it, so they run to the end.
+	streams     context.Context
+	stopStreams context.CancelFunc
 
 	wg sync.WaitGroup
 }
@@ -175,6 +242,13 @@ func (c *conn) subscribe(msg InMessage) bool {
 	ctx, cancel := context.WithCancel(c.ctx)
 
 	c.mu.Lock()
+	// The watcher sets draining asynchronously, so a subscribe read just after
+	// Closing closed would otherwise be accepted and then silently cancelled.
+	if c.draining || closed(c.cfg.Closing) {
+		c.mu.Unlock()
+		cancel()
+		return c.writeError(msg.ID, graphql.Errorf("The server is shutting down.")) == nil
+	}
 	if _, exists := c.subs[msg.ID]; exists {
 		c.mu.Unlock()
 		cancel()
@@ -189,9 +263,9 @@ func (c *conn) subscribe(msg InMessage) bool {
 		return c.writeError(msg.ID, graphql.Errorf("This connection allows at most %d operations at a time.", c.cfg.MaxSubs)) == nil
 	}
 	c.subs[msg.ID] = cancel
+	c.wg.Add(1)
 	c.mu.Unlock()
 
-	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
 		defer cancel()
@@ -208,6 +282,11 @@ func (c *conn) run(ctx context.Context, id string, req *graphql.Request) {
 		return
 	}
 
+	// A subscription also ends when the connection drains; a query or
+	// mutation above does not, so a client learns its result.
+	ctx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
+	defer context.AfterFunc(c.streams, cancelStream)()
 	events, err := c.cfg.Exec.Subscribe(ctx, req)
 	if err != nil {
 		var se *graphql.SubscribeError

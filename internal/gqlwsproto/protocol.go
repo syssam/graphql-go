@@ -31,6 +31,9 @@ const (
 
 // Close codes defined by the protocol, beyond the RFC 6455 range.
 const (
+	// StatusGoingAway is RFC 6455's 1001, sent when the server is shutting
+	// down. graphql-ws clients treat it as retryable.
+	StatusGoingAway                = 1001
 	StatusSubprotocolNotAcceptable = 4406
 	StatusBadRequest               = 4400
 	StatusUnauthorized             = 4401
