@@ -476,10 +476,11 @@ func (st *execState) writeListConcurrent(ctx context.Context, w *jsonw.Writer, v
 	defer endWave()
 
 	g := taskGroup{st: st, async: true}
+	// Every element is spawned even after a trip: the wave announced all of
+	// them, and a loader flushes only once every announced task has begun, so
+	// skipping one would strand each Load already parked. A task started after
+	// the trip fails at its first checkpoint.
 	for i, e := range elems {
-		if w.LimitExceeded() {
-			break
-		}
 		g.run(func() {
 			st.waveTaskBegin(ctx)
 			defer st.waveTaskEnd(ctx)

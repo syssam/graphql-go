@@ -176,8 +176,13 @@ nullable or not (`writeField`, `writeList`, and a check after each concurrent gr
 that, a nullable field or element turned the failure into a null and traversal went on, so a
 lazy list of nullable fields was pulled to the end and the root writer reached 229 times the
 limit. A concurrent list still drains its source into a slice before spawning, which predates
-the limit. The final size check is otherwise exact;
-the in-flight bound is about one field's output per concurrently written buffer. The errors
+the limit. **A concurrent list must still spawn every element after a trip**: `pushWave` has
+announced them all and a loader flushes only once every announced task has begun, so breaking
+out of the spawn loop stranded every parked `Load` and the request hung until its deadline,
+holding concurrency slots shared by every request on the executor
+(`TestLoaderResponseLimitDoesNotStrandWave`, in `loader/` because the root package's tests
+cannot import it). The late tasks fail at their first checkpoint instead. The final size check
+is otherwise exact; the in-flight bound is about one field's output per concurrently written buffer. The errors
 list is not counted, so a million failing nullable elements are still a million errors in
 memory. The default was set by measurement: interleaved n=12, `BenchmarkResponseLimitOff`
 against `On` was 15.51µs vs 15.65µs (p=0.347) with 92 allocs/op both, and
