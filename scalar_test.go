@@ -122,11 +122,11 @@ func TestCustomScalar(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := jsonw.New()
-	if err := s.query.fields["price"].writeLeaf(ctxBackground(), w, &Root{}, nil); err != nil || string(w.Bytes()) != `"$5"` {
+	if err := s.query.fields["price"].writeLeaf(ctxBackground(), w, &Root{}, nil, nil); err != nil || string(w.Bytes()) != `"$5"` {
 		t.Fatalf("price: %v %s", err, w.Bytes())
 	}
 	w.Reset()
-	if err := s.query.fields["prices"].writeLeaf(ctxBackground(), w, &Root{}, nil); err != nil || string(w.Bytes()) != `["$1","$2"]` {
+	if err := s.query.fields["prices"].writeLeaf(ctxBackground(), w, &Root{}, nil, nil); err != nil || string(w.Bytes()) != `["$1","$2"]` {
 		t.Fatalf("prices: %v %s", err, w.Bytes())
 	}
 }

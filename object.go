@@ -66,11 +66,11 @@ type fieldDef struct {
 	args        *inputDecoder
 
 	// Leaf fields write their value directly.
-	writeLeaf func(ctx context.Context, w *jsonw.Writer, parent, args any) error
+	writeLeaf func(ctx context.Context, w *jsonw.Writer, parent, args any, fc *FieldContext) error
 	writeAny  func(w *jsonw.Writer, v any, t *ast.Type) error
 
 	// Composite fields return a value the executor traverses.
-	resolve func(ctx context.Context, parent, args any) (any, error)
+	resolve func(ctx context.Context, parent, args any, fc *FieldContext) (any, error)
 	shape   *valueShape
 
 	// anyResolve is the type-erased form used by directives and interceptors.
@@ -89,7 +89,7 @@ func (fd *fieldDef) wrap(wrapper func(FieldFunc) FieldFunc) {
 	fd.wrapped = true
 	if fd.leaf {
 		resolve, writeAny, typ := fd.anyResolve, fd.writeAny, fd.typ
-		fd.writeLeaf = func(ctx context.Context, w *jsonw.Writer, parent, args any) error {
+		fd.writeLeaf = func(ctx context.Context, w *jsonw.Writer, parent, args any, _ *FieldContext) error {
 			v, err := resolve(ctx, parent, args)
 			if err != nil {
 				return err
@@ -98,7 +98,13 @@ func (fd *fieldDef) wrap(wrapper func(FieldFunc) FieldFunc) {
 		}
 		return
 	}
-	fd.resolve = fd.anyResolve
+	// fd.resolve must match fieldExec's shape, but anyResolve is FieldFunc --
+	// the type directives and interceptors share -- so a composite field's
+	// resolve needs this adapter where a leaf's writeLeaf does not.
+	resolve := fd.anyResolve
+	fd.resolve = func(ctx context.Context, parent, args any, _ *FieldContext) (any, error) {
+		return resolve(ctx, parent, args)
+	}
 }
 
 // Object binds the GraphQL object type name to the Go type E. Field
@@ -206,7 +212,7 @@ func newFieldSpec[P, R any](name string, argsType reflect.Type, pure bool, opts 
 			}
 			lw := b.reg.leafWriters[key].(func(*jsonw.Writer, R, *ast.Type) error)
 			typ := def.Type
-			fd.writeLeaf = func(ctx context.Context, w *jsonw.Writer, parent, args any) error {
+			fd.writeLeaf = func(ctx context.Context, w *jsonw.Writer, parent, args any, _ *FieldContext) error {
 				v, err := call(ctx, getParent(parent), args)
 				if err != nil {
 					return err
@@ -221,7 +227,9 @@ func newFieldSpec[P, R any](name string, argsType reflect.Type, pure bool, opts 
 		if err != nil {
 			return fmt.Errorf("field %s: %w", coord, err)
 		}
-		fd.resolve = fd.anyResolve
+		fd.resolve = func(ctx context.Context, parent, args any, _ *FieldContext) (any, error) {
+			return call(ctx, getParent(parent), args)
+		}
 		fd.shape = b.reg.shapeFor(spec.result, def.Type, target)
 		return nil
 	}

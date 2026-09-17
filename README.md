@@ -161,7 +161,8 @@ variables, complexity, depth and cost. `SetExtension` writes response-level
 metadata (tracing ids, rate-limit windows).
 
 Executor options follow the gRPC style: `WithMaxConcurrency`, `WithPlanCache`,
-`WithErrorPresenter`, `WithRecover`, typed interceptors, plus production
+`WithErrorPresenter`, `WithRecover`, typed interceptors, `WithFieldObserver` (watch every
+field, pure ones included, without the type-erased path a field interceptor forces), plus production
 limits `WithMaxComplexity`, `WithMaxDepth` and `WithQueryCost` (Shopify-style
 `first`/`last` multipliers, `Connections` to price a Relay connection by its
 requested page size, and optional `extensions.cost`; `Actual` adds

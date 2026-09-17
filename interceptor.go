@@ -29,8 +29,12 @@ type OperationInterceptor interface {
 }
 
 // FieldInterceptor wraps every field executor in the plan. It routes field
-// results through any, so enable it only when field-level observation is
-// worth the cost.
+// results through any, so use it only to change or replace a result; to watch
+// fields without doing that, use WithFieldObserver, which keeps them typed.
+//
+// Read the field from the fc parameter. The FieldContext is attached to the
+// context only for Resolve and ResolveArgs fields, so inside a pure field
+// FieldFrom, PathFrom and SelectionFrom find nothing.
 type FieldInterceptor interface {
 	InterceptField(ctx context.Context, fc *FieldContext, next FieldHandler) (any, error)
 }
@@ -73,7 +77,7 @@ func WithOperationInterceptor(is ...OperationInterceptor) ExecutorOption {
 
 // WithFieldInterceptor registers field interceptors. The first is the
 // outermost. Field interceptors force every field through the type-erased
-// path; register them only when observation is worth that cost.
+// path; to observe fields without that cost, use WithFieldObserver.
 func WithFieldInterceptor(is ...FieldInterceptor) ExecutorOption {
 	return func(e *Executor) { e.fieldInterceptors = append(e.fieldInterceptors, is...) }
 }
@@ -157,10 +161,7 @@ func (e *Executor) buildChains() {
 func (e *Executor) interceptedExec(pf *planField) fieldExec {
 	fd := pf.def
 	inner := fd.anyResolve
-	chain := func(ctx context.Context, parent, args any) (any, error) {
-		// The executor attaches a FieldContext to every field when field
-		// interceptors are registered; see execState.fieldContext.
-		fc := FieldFrom(ctx)
+	chain := func(ctx context.Context, parent, args any, fc *FieldContext) (any, error) {
 		handler := FieldHandler(func(ctx context.Context) (any, error) { return inner(ctx, parent, args) })
 		for i := len(e.fieldInterceptors) - 1; i >= 0; i-- {
 			next, fi := handler, e.fieldInterceptors[i]
@@ -170,8 +171,8 @@ func (e *Executor) interceptedExec(pf *planField) fieldExec {
 	}
 	if fd.leaf {
 		writeAny, typ := fd.writeAny, fd.typ
-		return fieldExec{writeLeaf: func(ctx context.Context, w *jsonw.Writer, parent, args any) error {
-			v, err := chain(ctx, parent, args)
+		return fieldExec{writeLeaf: func(ctx context.Context, w *jsonw.Writer, parent, args any, fc *FieldContext) error {
+			v, err := chain(ctx, parent, args, fc)
 			if err != nil {
 				return err
 			}

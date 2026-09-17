@@ -28,11 +28,11 @@ func TestEnumRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := jsonw.New()
-	if err := s.query.fields["r"].writeLeaf(ctxBackground(), w, &Root{}, nil); err != nil || string(w.Bytes()) != `"USER"` {
+	if err := s.query.fields["r"].writeLeaf(ctxBackground(), w, &Root{}, nil, nil); err != nil || string(w.Bytes()) != `"USER"` {
 		t.Fatalf("r: %v %s", err, w.Bytes())
 	}
 	w.Reset()
-	if err := s.query.fields["rs"].writeLeaf(ctxBackground(), w, &Root{}, nil); err != nil || string(w.Bytes()) != `["ADMIN",null]` {
+	if err := s.query.fields["rs"].writeLeaf(ctxBackground(), w, &Root{}, nil, nil); err != nil || string(w.Bytes()) != `["ADMIN",null]` {
 		t.Fatalf("rs: %v %s", err, w.Bytes())
 	}
 
@@ -57,7 +57,7 @@ func TestEnumUnknownGoValueOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := jsonw.New()
-	if err := s.query.fields["r"].writeLeaf(ctxBackground(), w, &Root{}, nil); err == nil {
+	if err := s.query.fields["r"].writeLeaf(ctxBackground(), w, &Root{}, nil, nil); err == nil {
 		t.Fatal("unmapped Go value must fail on output")
 	}
 }

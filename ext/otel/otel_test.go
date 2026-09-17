@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -19,7 +20,7 @@ import (
 )
 
 const sdl = `
-type User { id: ID! name: String! boom: String! }
+type User { id: ID! name: String! boom: String! kaboom: String! }
 type Query { me: User! }
 type Subscription { ticks: Int! }
 `
@@ -44,12 +45,31 @@ func newHarness(t *testing.T, opts ...gqlotel.Option) *harness {
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 
 	ticks := make(chan int)
+	s := newSchema(t, ticks)
+
+	opts = append([]gqlotel.Option{
+		gqlotel.WithTracerProvider(tp),
+		gqlotel.WithMeterProvider(mp),
+	}, opts...)
+	return &harness{
+		spans:   sr,
+		metrics: reader,
+		exec:    graphql.NewExecutor(s, gqlotel.New(opts...)...),
+		ticks:   ticks,
+	}
+}
+
+func newSchema(t *testing.T, ticks chan int) *graphql.Schema {
+	t.Helper()
 	s, err := graphql.NewSchema(graphql.SDL(sdl),
 		graphql.Object[user]("User",
 			graphql.Field("id", func(u *user) string { return u.ID }),
 			graphql.Field("name", func(u *user) string { return u.Name }),
 			graphql.Resolve("boom", func(context.Context, *user) (string, error) {
 				return "", errors.New("boom")
+			}),
+			graphql.Resolve("kaboom", func(context.Context, *user) (string, error) {
+				panic("kaboom")
 			}),
 		),
 		graphql.Query(
@@ -64,17 +84,7 @@ func newHarness(t *testing.T, opts ...gqlotel.Option) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	opts = append([]gqlotel.Option{
-		gqlotel.WithTracerProvider(tp),
-		gqlotel.WithMeterProvider(mp),
-	}, opts...)
-	return &harness{
-		spans:   sr,
-		metrics: reader,
-		exec:    graphql.NewExecutor(s, gqlotel.New(opts...)...),
-		ticks:   ticks,
-	}
+	return s
 }
 
 func (h *harness) run(t *testing.T, query, opName string) *graphql.Response {
@@ -222,6 +232,68 @@ func TestFieldSpansAreOptional(t *testing.T) {
 	}
 }
 
+// TestFieldSpansEndUnderTwoProviders registers ext/otel twice on one
+// executor. Each configuration's EndField has to be handed the context its own
+// BeginField returned; given the innermost one instead, the outer
+// configuration ends the inner span and leaves every span of its own open.
+func TestFieldSpansEndUnderTwoProviders(t *testing.T) {
+	var recorders []*tracetest.SpanRecorder
+	var opts []graphql.ExecutorOption
+	for range 2 {
+		sr := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+		recorders = append(recorders, sr)
+		opts = append(opts, gqlotel.New(gqlotel.WithTracerProvider(tp), gqlotel.WithFieldSpans(true))...)
+	}
+	e := graphql.NewExecutor(newSchema(t, make(chan int)), opts...)
+	resp := e.Execute(context.Background(), &graphql.Request{Query: `{ me { id name } }`})
+	t.Cleanup(resp.Release)
+
+	for i, sr := range recorders {
+		started, ended := fieldSpanNames(sr.Started()), fieldSpanNames(sr.Ended())
+		if len(started) != 3 {
+			t.Errorf("provider %d started field spans %v, want Query.me, User.id and User.name", i+1, started)
+		}
+		if strings.Join(started, ",") != strings.Join(ended, ",") {
+			t.Errorf("provider %d started field spans %v but ended %v", i+1, started, ended)
+		}
+	}
+}
+
+func fieldSpanNames[S interface{ Name() string }](spans []S) []string {
+	var names []string
+	for _, s := range spans {
+		switch s.Name() {
+		case "Query.me", "User.id", "User.name":
+			names = append(names, s.Name())
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
+// TestFieldSpansRecordAPanicAsAnError pins the property this task exists for:
+// that field spans are wired through the observer, not a field interceptor.
+// The interceptor's own defer runs during the panic's unwind, before recovery
+// converts it to an error, so its span always ended clean even for a field
+// that crashed. The observer's EndField is deliberately called after recovery
+// has set err, so it sees what the interceptor could not.
+func TestFieldSpansRecordAPanicAsAnError(t *testing.T) {
+	h := newHarness(t, gqlotel.WithFieldSpans(true))
+	resp := h.run(t, `{ me { kaboom } }`, "")
+	if len(resp.Errors) != 1 {
+		t.Fatalf("wanted one error, got %d", len(resp.Errors))
+	}
+
+	field := named(t, h.spans.Ended(), "User.kaboom")
+	if field.Status().Code != codes.Error {
+		t.Fatalf("status = %v, want error", field.Status())
+	}
+	if len(field.Events()) == 0 {
+		t.Fatal("the panic should be recorded on the field span")
+	}
+}
+
 func TestDocumentIsNotRecordedByDefault(t *testing.T) {
 	const query = `{ me { id } }`
 
@@ -342,6 +414,9 @@ func TestNoProviderIsSafe(t *testing.T) {
 			graphql.Field("name", func(u *user) string { return u.Name }),
 			graphql.Resolve("boom", func(context.Context, *user) (string, error) {
 				return "", errors.New("boom")
+			}),
+			graphql.Resolve("kaboom", func(context.Context, *user) (string, error) {
+				panic("kaboom")
 			}),
 		),
 		graphql.Query(graphql.Resolve("me", func(context.Context, graphql.Root) (*user, error) {

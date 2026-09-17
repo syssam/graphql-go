@@ -100,19 +100,59 @@ func (st *execState) writeFieldValue(ctx context.Context, w *jsonw.Writer, obj *
 	return st.writeValue(ctx, w, v, fd.typ, fd.shape, f, &pathNode{parent: path, key: f.alias})
 }
 
-// fieldContext attaches a FieldContext for resolver fields and, when field
-// interceptors observe every field, for pure fields as well.
-func (st *execState) fieldContext(ctx context.Context, f *planField, parent, args any, path *pathNode) context.Context {
+// fieldContext builds the FieldContext for a field and attaches it to the
+// context only where something could read it back: a resolver may call
+// FieldFrom or PathFrom, a pure accessor takes no context at all. An
+// interceptor receives it as an argument either way.
+func (st *execState) fieldContext(ctx context.Context, f *planField, parent, args any, path *pathNode) (context.Context, *FieldContext) {
 	fd := f.def
 	if fd.pure && len(st.e.fieldInterceptors) == 0 {
-		return ctx
+		return ctx, nil
 	}
-	return withField(ctx, &FieldContext{Field: fd.def, Object: fd.object.def, Args: args, Parent: parent, field: f, path: &pathNode{parent: path, key: f.alias}})
+	fc := &FieldContext{Field: fd.def, Object: fd.object.def, Args: args, Parent: parent, field: f, pathParent: path, alias: f.alias}
+	if fd.pure {
+		return ctx, fc
+	}
+	return withField(ctx, fc), fc
 }
+
+// fieldInfo builds a FieldInfo from the plan, allocating nothing: everything
+// it reads already lives on f.def.
+func (st *execState) fieldInfo(f *planField, path *pathNode) FieldInfo {
+	fd := f.def
+	return FieldInfo{Object: fd.object.name, Field: fd.name, Alias: f.alias, pathParent: path}
+}
+
+// observerContexts is how many observers' contexts a field keeps on the stack
+// before it needs a heap slice. Each observer's EndField must get back the
+// context its own BeginField returned, not the innermost one, so every one is
+// kept; registering more observers than this is unusual enough that the
+// allocation is acceptable.
+const observerContexts = 4
 
 // callLeaf invokes a leaf executor with panic protection and a FieldContext.
 func (st *execState) callLeaf(ctx context.Context, w *jsonw.Writer, f *planField, parent, args any, path *pathNode) (err error) {
-	ctx = st.fieldContext(ctx, f, parent, args, path)
+	ctx, fc := st.fieldContext(ctx, f, parent, args, path)
+	// The observer's deferred EndField must be registered before the recovery
+	// defer below, so it runs after recovery has converted a panic into err --
+	// otherwise EndField would see a nil error for a field that panicked.
+	if obs := st.e.fieldObservers; len(obs) > 0 {
+		fi := st.fieldInfo(f, path)
+		var inline [observerContexts]context.Context
+		begun := inline[:0]
+		if len(obs) > len(inline) {
+			begun = make([]context.Context, 0, len(obs))
+		}
+		for _, o := range obs {
+			ctx = o.BeginField(ctx, fi)
+			begun = append(begun, ctx)
+		}
+		defer func() {
+			for i := len(obs) - 1; i >= 0; i-- {
+				obs[i].EndField(begun[i], fi, err)
+			}
+		}()
+	}
 	if st.e.recover {
 		defer func() {
 			if r := recover(); r != nil {
@@ -120,12 +160,29 @@ func (st *execState) callLeaf(ctx context.Context, w *jsonw.Writer, f *planField
 			}
 		}()
 	}
-	return f.exec.writeLeaf(ctx, w, parent, args)
+	return f.exec.writeLeaf(ctx, w, parent, args, fc)
 }
 
 // callResolve invokes a composite executor with the same protections.
 func (st *execState) callResolve(ctx context.Context, f *planField, parent, args any, path *pathNode) (v any, err error) {
-	ctx = st.fieldContext(ctx, f, parent, args, path)
+	ctx, fc := st.fieldContext(ctx, f, parent, args, path)
+	if obs := st.e.fieldObservers; len(obs) > 0 {
+		fi := st.fieldInfo(f, path)
+		var inline [observerContexts]context.Context
+		begun := inline[:0]
+		if len(obs) > len(inline) {
+			begun = make([]context.Context, 0, len(obs))
+		}
+		for _, o := range obs {
+			ctx = o.BeginField(ctx, fi)
+			begun = append(begun, ctx)
+		}
+		defer func() {
+			for i := len(obs) - 1; i >= 0; i-- {
+				obs[i].EndField(begun[i], fi, err)
+			}
+		}()
+	}
 	if st.e.recover {
 		defer func() {
 			if r := recover(); r != nil {
@@ -133,7 +190,7 @@ func (st *execState) callResolve(ctx context.Context, f *planField, parent, args
 			}
 		}()
 	}
-	return f.exec.resolve(ctx, parent, args)
+	return f.exec.resolve(ctx, parent, args, fc)
 }
 
 // writeValue writes a composite result: null handling, lists, abstract type

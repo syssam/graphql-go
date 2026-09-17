@@ -145,20 +145,26 @@ func (oc *OperationContext) SetExtension(key string, value any) {
 }
 
 // FieldContext describes the field a resolver is executing. It is attached
-// to the context passed to Resolve and ResolveArgs functions.
+// to the context passed to Resolve and ResolveArgs functions only: a Field or
+// FieldArgs accessor takes no context, so nothing is attached for one, and a
+// FieldInterceptor must use the FieldContext it is handed as a parameter
+// rather than FieldFrom.
 type FieldContext struct {
 	Field  *ast.FieldDefinition
 	Object *ast.Definition
 	Args   any
 	Parent any
 
-	field *planField
-	path  *pathNode
+	field      *planField
+	pathParent *pathNode
+	alias      string
 }
 
-// Path returns the response path of the field.
+// Path returns the response path of the field. The node is built here rather
+// than when the FieldContext is, because most fields are never asked for it.
 func (fc *FieldContext) Path() Path {
-	return fc.path.materialize()
+	n := pathNode{parent: fc.pathParent, key: fc.alias}
+	return n.materialize()
 }
 
 // Selection returns the sub-selection requested beneath the field.
