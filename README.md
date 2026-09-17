@@ -167,7 +167,9 @@ Executor options follow the gRPC style: `WithMaxConcurrency`, `WithPlanCache`,
 field, pure ones included, without the type-erased path a field interceptor forces), plus production
 limits `WithMaxResponseBytes` (null data and one `RESPONSE_TOO_LARGE` error once a
 response's data passes the limit, 64 MiB by default; execution stops early rather than
-writing the rest), `WithMaxComplexity`, `WithMaxDepth` and `WithQueryCost` (Shopify-style
+writing the rest), `WithOperationTimeout` (a deadline per query, mutation or subscription
+event, reported as `OPERATION_TIMEOUT` rather than the caller's `REQUEST_CANCELLED`; off
+by default), `WithMaxComplexity`, `WithMaxDepth` and `WithQueryCost` (Shopify-style
 `first`/`last` multipliers, `Connections` to price a Relay connection by its
 requested page size, and optional `extensions.cost`; `Actual` adds
 `actualQueryCost`, summed from the fields really resolved rather than from

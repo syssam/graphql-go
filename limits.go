@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"encoding/json"
+	"time"
 )
 
 // QueryCost is a Shopify / GitHub-style cost model computed from the
@@ -97,6 +98,23 @@ func WithMaxDepth(n int) ExecutorOption {
 // is 64 MiB, which measured no cost distinguishable from no limit.
 func WithMaxResponseBytes(n int64) ExecutorOption {
 	return func(e *Executor) { e.maxResponseBytes = n }
+}
+
+// WithOperationTimeout bounds how long one operation may run: a query or
+// mutation from the moment Execute is called, parsing and every interceptor
+// included, or one subscription event, never a stream as a whole. At the
+// deadline the operation's context is done, so fields not yet started are
+// skipped and resolvers that honour their context return; the response keeps
+// the data already written, with OPERATION_TIMEOUT errors where work was cut.
+//
+// It does not force a response out on time. The executor waits for every
+// resolver it started, so one that ignores its context still holds the
+// response until it returns. A deadline the caller set on the context is
+// reported as REQUEST_CANCELLED, not as this timeout. Zero, the default,
+// means no timeout: the right bound depends on the workload, and a wrong
+// default would cut short legitimate slow operations.
+func WithOperationTimeout(d time.Duration) ExecutorOption {
+	return func(e *Executor) { e.operationTimeout = d }
 }
 
 // WithQueryCost enables Shopify-style query cost. When c.Max > 0,

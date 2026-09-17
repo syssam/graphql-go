@@ -192,6 +192,22 @@ not distinguishable on this machine, which is a bound on the cost, not a proof i
 The benchmark is one request writing 393 bytes, so neither larger responses nor contention on the
 shared counter from a wide concurrent list were measured.
 
+**`WithOperationTimeout` is off by default and bounds work, not latency.** It derives a
+`context.WithTimeoutCause` in `Execute` (so parsing and every interceptor are inside it) and
+per event in `pump` (never around a whole stream). The cause is compared by identity
+(`Executor.timedOut`), which is how `OPERATION_TIMEOUT` is told apart from a deadline the
+caller set, which stays `REQUEST_CANCELLED` — the grpc split between `DEADLINE_EXCEEDED` and
+`CANCELLED`. Both the `writeFieldValue` checkpoint and `fieldError` translate it: a resolver
+that honours its context returns the bare `context.DeadlineExceeded`, so without the
+`fieldError` half a single slow field would never report a timeout at all. It cannot force a
+response out on time, because `taskGroup` waits for every resolver it started; a resolver that
+ignores its context still holds the response. Data already written is kept, as with
+cancellation. Set, it costs one timer context per request: interleaved n=12 on
+`BenchmarkFieldPathBare`'s query, 1.425µs vs 1.881µs (+32%, p=0.000), 18 vs 22 allocs/op,
+993 vs 1266 B/op — about half a microsecond a request, large only against a query that small.
+Unset it is one nil compare in `Execute`. Its tests run in `testing/synctest`, so every
+deadline is exact and instant.
+
 **The pure/resolver split is the core scheduling contract.** `Field`/`FieldArgs` are pure
 data access and always run inline with no goroutine and no context allocation: the
 `FieldContext` is attached to the context only for resolver fields, and a field interceptor
@@ -504,7 +520,7 @@ from it, because the timings it first recorded were single samples and have been
 Status: phases 1-4 complete and merged to `main` — engine, both codegen binding modes,
 subscriptions, five transports, DataLoader, APQ, limits with actual cost accounting,
 OpenTelemetry with field observation, bounded plan expansion, a plan cache bounded by
-query text and a response size limit, the authorization spine (`Authorizer`, `AuthShape`, `RequireAuthCoverage`,
+query text, a response size limit and an operation timeout, the authorization spine (`Authorizer`, `AuthShape`, `RequireAuthCoverage`,
 `SubscriptionInterceptor`), and the `lint/` analyzer; plus `relay/`, `fed/`, `ext/throttle`,
 `ext/trusted` and DataLoader tracing. Not built: `ext/authz` (the Apollo directive vocabulary
 and a batched `Guard`) and APQ over WebSocket, which belongs in the

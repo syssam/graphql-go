@@ -540,6 +540,10 @@ func (st *execState) waveTaskEnd(ctx context.Context) {
 // recordCancellation adds a single error describing why execution stopped.
 func (st *execState) recordCancellation(ctx context.Context, err error) {
 	if st.cancelled.CompareAndSwap(false, true) {
+		if st.e.timedOut(ctx) {
+			st.addError(ctx, Errorf("%v", st.e.timeoutCause).WithCode(CodeOperationTimeout), nil, nil)
+			return
+		}
 		st.addError(ctx, Errorf("%v", err).WithCode(CodeRequestCancelled), nil, nil)
 	}
 }

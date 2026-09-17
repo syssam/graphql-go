@@ -245,7 +245,16 @@ func (e *Executor) pump(ctx context.Context, base *OperationContext, f *planFiel
 		// subscription, no wave coordinator to batch into, and extensions
 		// written where no response ever reads them.
 		oc := e.eventContext(base, f, event)
-		resp := e.opChain(withOperation(ctx, oc), oc)
+		// The timeout bounds each event, never the stream: a stream is
+		// expected to outlive any per-operation deadline.
+		evCtx, cancel := ctx, context.CancelFunc(nil)
+		if e.timeoutCause != nil {
+			evCtx, cancel = context.WithTimeoutCause(ctx, e.operationTimeout, e.timeoutCause)
+		}
+		resp := e.opChain(withOperation(evCtx, oc), oc)
+		if cancel != nil {
+			cancel()
+		}
 		select {
 		case out <- resp:
 		case <-ctx.Done():
