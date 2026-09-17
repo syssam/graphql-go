@@ -74,6 +74,9 @@ func (st *execState) writeFieldValue(ctx context.Context, w *jsonw.Writer, obj *
 	if f.costWeight != 0 {
 		st.actualCost.Add(int32(f.costWeight))
 	}
+	if w.OverLimit() {
+		return false
+	}
 	if err := ctx.Err(); err != nil {
 		st.recordCancellation(ctx, err)
 		return false
@@ -409,6 +412,7 @@ func (st *execState) writeFieldsConcurrent(ctx context.Context, w *jsonw.Writer,
 			st.waveTaskBegin(ctx)
 			defer st.waveTaskEnd(ctx)
 			sub := jsonw.Get()
+			sub.ShareLimit(w)
 			ok := st.writeFieldValue(ctx, sub, obj, f, parent, path)
 			results[i] = taskResult{buf: sub, ok: ok}
 		})
@@ -468,6 +472,7 @@ func (st *execState) writeListConcurrent(ctx context.Context, w *jsonw.Writer, v
 			st.waveTaskBegin(ctx)
 			defer st.waveTaskEnd(ctx)
 			sub := jsonw.Get()
+			sub.ShareLimit(w)
 			okElem := st.writeValue(ctx, sub, e, t.Elem, shape.elem, f, &pathNode{parent: path, index: i, isIndex: true})
 			results[i] = taskResult{buf: sub, ok: okElem}
 		})

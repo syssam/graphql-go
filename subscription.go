@@ -315,12 +315,10 @@ func (e *Executor) runSubscriptionEvent(ctx context.Context, oc *OperationContex
 	}
 	sel := &selectionSet{fields: []*planField{&f}}
 
-	w := jsonw.Get()
+	w := e.newResponseWriter()
 	st := &execState{e: e, vars: oc.Variables, decision: decision}
-	if !st.writeObject(ctx, w, oc.plan.root, sel, &Root{}, nil, true) {
-		w.Reset()
-		w.Null()
-	}
+	ok := st.writeObject(ctx, w, oc.plan.root, sel, &Root{}, nil, true)
+	st.finishData(ctx, w, ok)
 	st.reportActualCost(e, oc)
 	return e.finishResponse(oc, w, st)
 }

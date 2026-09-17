@@ -32,6 +32,9 @@ const (
 	CodeMaxDepth = "MAX_DEPTH_EXCEEDED"
 	// CodeForbidden is returned when an Authorizer denies a site.
 	CodeForbidden = "FORBIDDEN"
+	// CodeResponseTooLarge is returned when a response's data exceeds
+	// WithMaxResponseBytes.
+	CodeResponseTooLarge = "RESPONSE_TOO_LARGE"
 )
 
 // Location is a line/column position in the request document.

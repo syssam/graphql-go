@@ -43,10 +43,11 @@ type Executor struct {
 	reqChain          RequestHandler
 	opChain           OperationHandler
 
-	maxComplexity int
-	maxDepth      int
-	cost          *QueryCost
-	authorizer    Authorizer
+	maxComplexity    int
+	maxDepth         int
+	maxResponseBytes int64
+	cost             *QueryCost
+	authorizer       Authorizer
 }
 
 // ExecutorOption configures an Executor.
@@ -351,15 +352,39 @@ func (e *Executor) runOperation(ctx context.Context, oc *OperationContext) *Resp
 	if oc.event != nil {
 		return e.runSubscriptionEvent(ctx, oc, decision)
 	}
-	w := jsonw.Get()
+	w := e.newResponseWriter()
 	st := &execState{e: e, vars: oc.Variables, decision: decision}
 	ok := st.writeObject(ctx, w, p.root, p.sel, &Root{}, nil, p.op.Operation == ast.Mutation)
+	st.finishData(ctx, w, ok)
+	st.reportActualCost(e, oc)
+	return e.finishResponse(oc, w, st)
+}
+
+// newResponseWriter returns the root writer for one response, carrying the
+// executor's size limit when one is set.
+func (e *Executor) newResponseWriter() *jsonw.Writer {
+	w := jsonw.Get()
+	if e.maxResponseBytes > 0 {
+		w.Limit(e.maxResponseBytes)
+	}
+	return w
+}
+
+// finishData settles the root writer once every task has finished. The size
+// check reads the budget before any Reset, which clears it. Over the limit,
+// the field errors are dropped along with the data they point into.
+func (st *execState) finishData(ctx context.Context, w *jsonw.Writer, ok bool) {
+	if limit := st.e.maxResponseBytes; limit > 0 && (w.LimitExceeded() || int64(w.Len()) > limit) {
+		w.Reset()
+		w.Null()
+		st.errs = nil
+		st.addError(ctx, Errorf("response exceeds the maximum size of %d bytes", limit).WithCode(CodeResponseTooLarge), nil, nil)
+		return
+	}
 	if !ok {
 		w.Reset()
 		w.Null()
 	}
-	st.reportActualCost(e, oc)
-	return e.finishResponse(oc, w, st)
 }
 
 // reportActualCost publishes what execution measured. A rejected or
