@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -13,7 +14,7 @@ import (
 
 const timeoutSDL = `
 type Tick { wait: Int }
-type Query { wait: Int  after: String }
+type Query { wait: Int  after: String  waitWrapped: Int  waitCause: Int }
 type Subscription { tick: Tick! }
 `
 
@@ -42,6 +43,17 @@ func newTimeoutExecutor(t *testing.T, opts ...ExecutorOption) (*timeoutFixture, 
 		),
 		Query(
 			Resolve("wait", func(ctx context.Context, _ Root) (*int, error) { return waitForDeadline(ctx) }),
+			// waitWrapped is a driver-style error: its own message and
+			// extensions, wrapping the context error.
+			Resolve("waitWrapped", func(ctx context.Context, _ Root) (*int, error) {
+				<-ctx.Done()
+				return nil, &Error{Message: "db: " + ctx.Err().Error(), Err: ctx.Err(), Extensions: map[string]any{"db": "primary"}}
+			}),
+			// waitCause reports why its context ended the Go 1.21 way.
+			Resolve("waitCause", func(ctx context.Context, _ Root) (*int, error) {
+				<-ctx.Done()
+				return nil, context.Cause(ctx)
+			}),
 			Field("after", func(Root) *string {
 				f.afters.Add(1)
 				s := "after"
@@ -180,6 +192,67 @@ func TestOperationTimeoutPerSubscriptionEvent(t *testing.T) {
 		close(f.ticks)
 		if _, ok := <-out; ok {
 			t.Fatal("stream did not close after its source did")
+		}
+	})
+}
+
+// TestOperationTimeoutKeepsResolverError pins that translating a timeout
+// loses nothing the resolver said: a presenter can still find the context
+// error in the chain, and the resolver's own extensions survive beside the code.
+func TestOperationTimeoutKeepsResolverError(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var sawDeadline atomic.Bool
+		presenter := func(ctx context.Context, err error) *Error {
+			if errors.Is(err, context.DeadlineExceeded) {
+				sawDeadline.Store(true)
+			}
+			return DefaultErrorPresenter(ctx, err)
+		}
+		_, e := newTimeoutExecutor(t, WithErrorPresenter(presenter), WithOperationTimeout(50*time.Millisecond))
+		resp := run(t, e, `{ waitWrapped }`, "")
+		if len(resp.Errors) != 1 {
+			t.Fatalf("want one error, got %s", errorsJSON(resp.Errors))
+		}
+		ext := resp.Errors[0].Extensions
+		if ext["code"] != CodeOperationTimeout || ext["db"] != "primary" {
+			t.Fatalf("extensions = %v, want code %s and the resolver's db", ext, CodeOperationTimeout)
+		}
+		if !sawDeadline.Load() {
+			t.Fatal("the presenter could not find context.DeadlineExceeded in the translated error's chain")
+		}
+	})
+}
+
+// TestOperationTimeoutReturnedCause covers a resolver returning
+// context.Cause(ctx), which is the executor's own cause value rather than
+// context.DeadlineExceeded.
+func TestOperationTimeoutReturnedCause(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		_, e := newTimeoutExecutor(t, WithOperationTimeout(50*time.Millisecond))
+		resp := run(t, e, `{ waitCause }`, "")
+		if codes := errorCodes(resp.Errors); len(codes) != 1 || codes[0] != CodeOperationTimeout {
+			t.Fatalf("codes = %v, want one %s", codes, CodeOperationTimeout)
+		}
+	})
+}
+
+// TestOperationTimeoutCoversInterceptors pins where the deadline starts: at
+// Execute, outside every request interceptor. Started any later, an
+// interceptor doing I/O would be unbounded and this one would never return.
+func TestOperationTimeoutCoversInterceptors(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		blocking := RequestInterceptorFunc(func(ctx context.Context, req *Request, next RequestHandler) *Response {
+			<-ctx.Done()
+			return next(ctx, req)
+		})
+		_, e := newTimeoutExecutor(t, WithRequestInterceptor(blocking), WithOperationTimeout(50*time.Millisecond))
+		start := time.Now()
+		resp := run(t, e, `{ after }`, "")
+		if elapsed := time.Since(start); elapsed != 50*time.Millisecond {
+			t.Fatalf("returned after %v, want the 50ms timeout", elapsed)
+		}
+		if codes := errorCodes(resp.Errors); len(codes) != 1 || codes[0] != CodeOperationTimeout {
+			t.Fatalf("codes = %v, want one %s", codes, CodeOperationTimeout)
 		}
 	})
 }

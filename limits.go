@@ -102,15 +102,23 @@ func WithMaxResponseBytes(n int64) ExecutorOption {
 
 // WithOperationTimeout bounds how long one operation may run: a query or
 // mutation from the moment Execute is called, parsing and every interceptor
-// included, or one subscription event, never a stream as a whole. At the
-// deadline the operation's context is done, so fields not yet started are
-// skipped and resolvers that honour their context return; the response keeps
-// the data already written, with OPERATION_TIMEOUT errors where work was cut.
+// included, or one subscription event, never a stream as a whole. Opening a
+// subscription is not bounded either — its interceptors, authorization and
+// source opener share the context the stream lives on, which a deadline
+// would end. Each entry of an HTTP batch is its own operation, so a batch of
+// n may take n times the timeout.
 //
-// It does not force a response out on time. The executor waits for every
-// resolver it started, so one that ignores its context still holds the
-// response until it returns. A deadline the caller set on the context is
-// reported as REQUEST_CANCELLED, not as this timeout. Zero, the default,
+// At the deadline the operation's context is done, so fields not yet started
+// are skipped and resolvers that honour their context return; the response
+// keeps the data already written, with OPERATION_TIMEOUT errors where work was
+// cut. A resolver's own error is kept in that error's chain, with its
+// extensions. It does not force a response out on time: the executor waits
+// for every resolver it started, so one that ignores its context still holds
+// the response until it returns.
+//
+// Only this executor's own deadline is OPERATION_TIMEOUT. When a deadline the
+// caller set ends execution, the executor reports REQUEST_CANCELLED, and a
+// resolver's error for it is passed through unchanged. Zero, the default,
 // means no timeout: the right bound depends on the workload, and a wrong
 // default would cut short legitimate slow operations.
 func WithOperationTimeout(d time.Duration) ExecutorOption {

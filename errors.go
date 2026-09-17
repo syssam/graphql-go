@@ -36,8 +36,8 @@ const (
 	// WithMaxResponseBytes.
 	CodeResponseTooLarge = "RESPONSE_TOO_LARGE"
 	// CodeOperationTimeout is returned for work cut short by
-	// WithOperationTimeout. A deadline the caller set on the context is
-	// CodeRequestCancelled instead.
+	// WithOperationTimeout. When a deadline the caller set ends execution,
+	// the executor reports CodeRequestCancelled instead.
 	CodeOperationTimeout = "OPERATION_TIMEOUT"
 )
 

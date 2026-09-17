@@ -182,6 +182,24 @@ func (t *timeoutError) Error() string {
 	return fmt.Sprintf("operation exceeded its timeout of %v", t.d)
 }
 
+// Is makes the cause match context.DeadlineExceeded, as ctx.Err() does, so a
+// resolver returning context.Cause(ctx) is recognised as timed out too.
+func (t *timeoutError) Is(target error) bool { return target == context.DeadlineExceeded }
+
+// timeoutFieldError reports err as the operation timeout without losing what
+// the resolver said: err stays in the chain for a presenter, and an *Error's
+// extensions are kept beside the code.
+func (e *Executor) timeoutFieldError(err error) *Error {
+	out := &Error{Message: e.timeoutCause.Error(), Err: err}
+	var inner *Error
+	if errors.As(err, &inner) {
+		for k, v := range inner.Extensions {
+			out = out.WithExtension(k, v)
+		}
+	}
+	return out.WithCode(CodeOperationTimeout)
+}
+
 // timedOut reports whether ctx ended because of this executor's timeout
 // rather than anything the caller did.
 func (e *Executor) timedOut(ctx context.Context) bool {
@@ -557,7 +575,7 @@ func (st *execState) fieldError(ctx context.Context, err error, path *pathNode, 
 	// which would reach the client as "context deadline exceeded" with no
 	// code; say what actually happened.
 	if errors.Is(err, context.DeadlineExceeded) && st.e.timedOut(ctx) {
-		err = Errorf("%v", st.e.timeoutCause).WithCode(CodeOperationTimeout)
+		err = st.e.timeoutFieldError(err)
 	}
 	if errors.Is(err, errNonNull) {
 		coord := "field"

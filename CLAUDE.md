@@ -196,10 +196,18 @@ shared counter from a wide concurrent list were measured.
 `context.WithTimeoutCause` in `Execute` (so parsing and every interceptor are inside it) and
 per event in `pump` (never around a whole stream). The cause is compared by identity
 (`Executor.timedOut`), which is how `OPERATION_TIMEOUT` is told apart from a deadline the
-caller set, which stays `REQUEST_CANCELLED` — the grpc split between `DEADLINE_EXCEEDED` and
-`CANCELLED`. Both the `writeFieldValue` checkpoint and `fieldError` translate it: a resolver
-that honours its context returns the bare `context.DeadlineExceeded`, so without the
-`fieldError` half a single slow field would never report a timeout at all. It cannot force a
+caller set, whose executor error stays `REQUEST_CANCELLED` (a resolver's own error for a
+caller deadline is passed through untouched): the split is by who owns the deadline. Both the
+`writeFieldValue` checkpoint and `fieldError` translate it: a resolver that honours its context
+returns the bare `context.DeadlineExceeded` (or `context.Cause(ctx)`, which `timeoutError.Is`
+matches to it), so without the `fieldError` half a single slow field would never report a
+timeout at all. **The translation wraps, it does not replace**: the resolver's error stays in
+`Err` and an `*Error`'s extensions are copied beside the code, because the first version built a
+fresh error and a presenter could no longer find the deadline or the driver's message. Opening a
+subscription is deliberately unbounded — interceptors, the Authorizer and the source opener share
+the context the stream lives on — and an HTTP batch of n runs n operations in sequence.
+`TestOperationTimeoutCoversInterceptors` is the only test that notices the deadline being started
+inside `execute` instead of `Execute`. It cannot force a
 response out on time, because `taskGroup` waits for every resolver it started; a resolver that
 ignores its context still holds the response. Data already written is kept, as with
 cancellation. Set, it costs one timer context per request: interleaved n=12 on
