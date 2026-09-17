@@ -14,6 +14,23 @@ func TestStructSizes(t *testing.T) {
 	t.Logf("execState        = %d bytes", unsafe.Sizeof(execState{}))
 	t.Logf("OperationContext = %d bytes", unsafe.Sizeof(OperationContext{}))
 	t.Logf("planField        = %d bytes", unsafe.Sizeof(planField{}))
+
+	// Unlike the two logged above, this one is asserted: runSubscriptionEvent
+	// copies a planField by value once per event (`f := *src`), and a slice
+	// field here (argSites was briefly []int32) pushed the struct from 176 to
+	// 200 bytes -- a whole extra size class paid on every event. argSites is
+	// a count for exactly this reason; see the field's own comment.
+	if got := unsafe.Sizeof(planField{}); got != 176 {
+		t.Errorf("planField = %d bytes, want 176 (argSites must stay a count, not a slice)", got)
+	}
+
+	// Every authorized request allocates a Decision. Holding the argument
+	// input table inline ([][]InputKey) took it from 32 to 56 bytes, the
+	// 64-byte size class: +32 B/op on BenchmarkExecuteWithAuthorizer for a
+	// plan with no argument site at all. The table sits behind src instead.
+	if got := unsafe.Sizeof(Decision{}); got != 32 {
+		t.Errorf("Decision = %d bytes, want 32 (argument input must stay behind a pointer)", got)
+	}
 }
 
 func BenchmarkExecuteNoAuthorizer(b *testing.B) {

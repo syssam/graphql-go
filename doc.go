@@ -35,17 +35,22 @@
 // what a principal may do with it, and how that decision is enforced. A
 // schema author marks a field with @requiresScopes(scopes: [[String!]!]!),
 // an OR of ANDs read into a Requirement; NewSchema rejects a malformed
-// scopes value. At plan compile, buildAuthShape walks the plan once and
-// records every such field as a Site in an AuthShape, cached with the plan
+// scopes value. @requiresScopes and @authorizeInput only describe positions
+// in the schema; nothing is enforced against them unless an Authorizer is
+// configured with WithAuthorizer. At plan compile, buildAuthShape walks the
+// plan once and records every such field, and every field that selects an
+// @authorizeInput argument, as a Site in an AuthShape, cached with the plan
 // itself -- the shape does not depend on who is asking, so the plan cache is
-// not multiplied by policy, and a field that declares nothing carries
-// authIdx -1 and costs one integer compare on the request path. An
-// Authorizer turns a shape into a Decision once per query or mutation -- and,
-// for a subscription, once when the stream opens plus once more per event.
-// At open, exactly two things refuse the subscription before its source is
-// opened: an Authorize error, or a Deny recorded for the subscription root
-// field; any other outcome on the root, and every outcome below it, is left
-// to the per-event pass. That pass gates each event's Response, so a scope
+// not multiplied by policy, and a field that declares nothing and selects no
+// @authorizeInput argument carries authIdx -1 and costs one integer compare
+// on the request path. An Authorizer turns a shape into a Decision once per
+// query or mutation -- and, for a subscription, once when the stream opens
+// plus once more per event.
+// At open, exactly three things refuse the subscription before its source is
+// opened: an Authorize error, a Deny recorded for the subscription root
+// field, or a Deny recorded for one of that field's argument sites; any
+// other outcome on the root, and every outcome below it, is left to the
+// per-event pass. That pass gates each event's Response, so a scope
 // revoked mid-stream takes effect on the next event without tearing the
 // subscription down; a refused event is an error response, not a closed
 // stream.
@@ -92,9 +97,23 @@
 // error, not a silent no-op. RequireAuthCoverage counts a field as covered
 // exactly when its effective requirement is non-zero, or when the field or
 // its own object type carries @public; @public on an interface does not
-// exempt its implementers. SiteFilterArg and SiteInputWrite are declared for
-// the same reason as the rest of SiteKind but are not yet populated. An
-// Authorizer failure that is not a *Error -- typically a policy backend's
+// exempt its implementers. An argument marked @authorizeInput(kind: FILTER |
+// WRITE) gets a SiteFilterArg or SiteInputWrite site on every field that
+// selects it, whether or not the client supplied a value for it.
+// Decision.Input reports what the client actually supplied there:
+// input-object key paths, enum values and explicit nulls, but never a scalar
+// value, since a policy decides on schema identifiers and scalars are user
+// data; a default an operation variable itself carries counts, because the
+// operation's author chose it, while a default the SDL supplies for the
+// argument or an input field does not, because the client never chose it.
+// Only Allow and Deny apply to an argument site; Deny refuses the field
+// before its resolver runs, whatever outcome is recorded for the field's own
+// output site. ScopeAuthorizer leaves every argument site at Allow, since its
+// Requirement is zero and mapping a key or enum value to the field it
+// restricts is the consumer's naming convention rather than the engine's;
+// RequireAuthCoverage does not require an argument to declare
+// @authorizeInput, for the same reason.
+// An Authorizer failure that is not a *Error -- typically a policy backend's
 // own transport failure -- is never shown to a client: it is presented as a
 // generic internal error, with the original logged and kept behind an
 // unexported cause for a presenter that wants to test it.

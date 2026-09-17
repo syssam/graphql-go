@@ -552,6 +552,14 @@ produce engine values directly.
 `planKey` is unaffected and the plan cache is not multiplied by policy. A field that
 declares `@requiresScopes` gets `planField.authIdx >= 0` at construction; every other field
 gets `-1`, so the ordinary request path pays one integer compare and no allocation.
+Argument sites declared with `@authorizeInput` route through that same compare: a field
+with at least one gets a zero-requirement output site, when it declares no requirement of its
+own, so `authIdx >= 0` still routes it, and a field with none pays nothing. The per-site input walk (`Decision.Input`) reads the
+operation's AST plus its variables, never `ArgumentMap`, because `ArgumentMap` fills in SDL
+defaults the client did not choose. **A subscription's source is opened with arguments
+decoded again from `oc.Variables`**, the map the Authorizer walked, not the ones decoded
+before the interceptor chain: `Variables` is writable, and an interceptor rewriting it
+showed the policy one input while the source opened with another.
 `execState` (64 bytes) and `OperationContext` (160 bytes) held those sizes through this
 branch (`TestStructSizes`, `authz_bench_test.go`) — re-measure both, interleaved, before
 adding a field to either; see the `execState`/`OperationContext` entry above for why a
@@ -645,7 +653,7 @@ Status: phases 1-4 complete and merged to `main` — engine, both codegen bindin
 subscriptions, five transports, DataLoader, APQ, limits with actual cost accounting,
 OpenTelemetry with field observation, bounded plan expansion, a plan cache bounded by
 query text, a response size limit, an operation timeout, a shutdown drain and connection age and idle limits for WebSocket and SSE, runtime metrics (`Executor.Stats`, `otel.ObserveExecutor`, `otel.ObserveDrain`), the authorization spine (`Authorizer`, `AuthShape`, `RequireAuthCoverage`,
-`SubscriptionInterceptor`), and the `lint/` analyzer; plus `relay/`, `fed/`, `ext/throttle`,
+`SubscriptionInterceptor`) with `@authorizeInput` argument sites, and the `lint/` analyzer; plus `relay/`, `fed/`, `ext/throttle`,
 `ext/trusted` and DataLoader tracing. Not built: `ext/authz` (the Apollo directive vocabulary
 and a batched `Guard`) and APQ over WebSocket, which belongs in the
 `graphql-transport-ws` state machine. `@defer`/`@stream` is not merely unbuilt — the prelude's

@@ -91,10 +91,19 @@ type planField struct {
 	costWeight int
 
 	// authIdx indexes this field's site in the plan's AuthShape, or -1 when
-	// the field declares no requirement. An integer compare on a field
-	// already in cache is what keeps authorization free for fields that
-	// declare nothing.
+	// the field declares no requirement and has no argument site. An integer
+	// compare on a field already in cache is what keeps authorization free
+	// for fields that declare nothing.
 	authIdx int32
+
+	// argSites counts this field's argument sites. They are stored
+	// contiguously in the plan's AuthShape immediately after the field's own
+	// output site -- shape.sites[authIdx+1 : authIdx+1+int(argSites)] -- so
+	// this can stay a count instead of a slice: runSubscriptionEvent copies
+	// a planField by value (`f := *src`) once per event, and a slice header
+	// here pushed the struct from 176 to 200 bytes, into the next size
+	// class, paid on every event.
+	argSites int32
 }
 
 // fieldExec holds the executor functions used for a field within one plan.

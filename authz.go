@@ -122,16 +122,21 @@ func (r Requirement) describe() string {
 type SiteKind uint8
 
 const (
-	// SiteOutput is a selected output field.
+	// SiteOutput is a selected output field. A SiteOutput site can carry a
+	// zero Requires: buildAuthShape adds one for a field that has argument
+	// sites but no requirement of its own, purely to route the field through
+	// enforceAuth, so an Authorizer iterating output sites will see it.
 	SiteOutput SiteKind = iota
 	// SiteObject is a whole object type, checked once per instance rather
 	// than once per field of it.
 	SiteObject
-	// SiteFilterArg is a coordinate named in a where, orderBy or groupBy
-	// argument. A restricted field must not be filterable either, or its
-	// value leaks by bisection without ever being selected.
+	// SiteFilterArg is an argument marked @authorizeInput(kind: FILTER) on
+	// an object field. A restricted field must not be filterable either, or
+	// its value leaks by bisection without ever being selected. Only Allow
+	// and Deny are valid outcomes for it.
 	SiteFilterArg
-	// SiteInputWrite is a coordinate written by a mutation input.
+	// SiteInputWrite is an argument marked @authorizeInput(kind: WRITE) on
+	// an object field. Only Allow and Deny are valid outcomes for it.
 	SiteInputWrite
 )
 
@@ -144,6 +149,11 @@ type AuthSite struct {
 	Requires Requirement
 	Grants   []string
 
+	// Arg names the argument for SiteFilterArg and SiteInputWrite sites. For
+	// those kinds, Coord is Type.field(arg:) and Decision.Input reports what
+	// the client supplied there.
+	Arg string
+
 	// leaf records whether Field is a scalar or enum, precomputed at shape
 	// build from fieldDef.leaf (object.go). AuthSite carries only the AST,
 	// and a field's own ast.FieldDefinition cannot answer this on its own:
@@ -151,6 +161,12 @@ type AuthSite struct {
 	// object type's without walking the schema's type registry, which is
 	// exactly what fieldDef.leaf already did once, at schema build.
 	leaf bool
+
+	// argType and argValue are the argument's declared type and the value the
+	// operation supplied (nil when it supplied none), read at decision time
+	// against the request's variables.
+	argType  *ast.Type
+	argValue *ast.Value
 }
 
 // AuthShape is what an operation touches, independent of who is asking. It
@@ -159,6 +175,15 @@ type AuthSite struct {
 type AuthShape struct {
 	sites  []AuthSite
 	scopes []string
+
+	// hasArgSites gates the per-request input walk, so a plan without
+	// argument sites pays nothing for it.
+	hasArgSites bool
+
+	// src is the input-free decisionSource every Decision over this shape
+	// shares when there is no input to carry, so newDecision allocates no
+	// source of its own.
+	src decisionSource
 }
 
 // Sites returns the positions needing a decision, indexed by site index.
@@ -198,7 +223,8 @@ func (s *AuthShape) Scopes() []string {
 }
 
 // IsEmpty reports whether the operation touches nothing that declares a
-// requirement. An Authorizer is not consulted for such an operation.
+// requirement and selects no field with an @authorizeInput argument. An
+// Authorizer is not consulted for such an operation.
 func (s *AuthShape) IsEmpty() bool { return s == nil || len(s.sites) == 0 }
 
 type action uint8
@@ -282,6 +308,11 @@ func (o Outcome) validFor(site AuthSite) error {
 	if site.Kind == SiteObject && o.act != actionAllow && o.act != actionDeny {
 		return Errorf("authorization: only Allow and Deny are valid for %s, an object site guarding __typename", site.Coord)
 	}
+	// An argument site decides whether the field may run with the input it
+	// was given; there is no value of its own to null, zero or redact.
+	if (site.Kind == SiteFilterArg || site.Kind == SiteInputWrite) && o.act != actionAllow && o.act != actionDeny {
+		return Errorf("authorization: only Allow and Deny are valid for %s, an argument site", site.Coord)
+	}
 	switch o.act {
 	case actionNull:
 		// A literal null on a non-null field is not a value the schema
@@ -324,8 +355,9 @@ func (o Outcome) validFor(site AuthSite) error {
 // Authorizer turns an operation's shape into a decision for one principal.
 // It runs once per query or mutation, before any field resolves, and is not
 // called at all when the operation touches nothing that declares a
-// requirement. A subscription calls it once when the stream opens and again
-// for every event, so a scope revoked mid-stream applies to the next event.
+// requirement and selects no field with an @authorizeInput argument. A
+// subscription calls it once when the stream opens and again for every
+// event, so a scope revoked mid-stream applies to the next event.
 //
 // A returned error rejects the whole operation, or for a subscription the
 // opening of the stream or the one event being evaluated. The interface deliberately
@@ -352,12 +384,35 @@ func WithAuthorizer(a Authorizer) ExecutorOption {
 // Authorizer rather than returned by it so the framework owns the allocation
 // and sizes it from the shape. The zero value of every entry allows.
 type Decision struct {
-	shape    *AuthShape
+	src      *decisionSource
 	outcomes []Outcome
 }
 
+// decisionSource is what a Decision reads besides its own outcomes. It sits
+// behind a pointer rather than inline so Decision stays in the 32-byte size
+// class: every authorized request allocates one, and a plan with no argument
+// site shares the source cached on its AuthShape instead of paying for an
+// input table it never fills.
+type decisionSource struct {
+	shape *AuthShape
+
+	// inputs holds, per site, what the client supplied for an argument site.
+	// Nil when the plan has no argument sites.
+	inputs [][]InputKey
+}
+
+// Input returns what the client supplied for an argument site: key paths,
+// enum values and explicit nulls, never scalar values. It is empty for any
+// other site and for an argument the client did not supply.
+func (d *Decision) Input(site int) []InputKey {
+	if d == nil || d.src == nil || site < 0 || site >= len(d.src.inputs) {
+		return nil
+	}
+	return d.src.inputs[site]
+}
+
 func newDecision(shape *AuthShape) *Decision {
-	return &Decision{shape: shape, outcomes: make([]Outcome, len(shape.sites))}
+	return &Decision{src: &shape.src, outcomes: make([]Outcome, len(shape.sites))}
 }
 
 // Set records the outcome for one site. It reports an error for an outcome
@@ -367,7 +422,7 @@ func (d *Decision) Set(site int, o Outcome) error {
 	if d == nil || site < 0 || site >= len(d.outcomes) {
 		return Errorf("authorization: site %d is out of range", site)
 	}
-	if err := o.validFor(d.shape.sites[site]); err != nil {
+	if err := o.validFor(d.src.shape.sites[site]); err != nil {
 		return err
 	}
 	d.outcomes[site] = o

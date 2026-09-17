@@ -191,21 +191,24 @@ func (e *Executor) Subscribe(ctx context.Context, req *Request) (<-chan *Respons
 		args = v
 	}
 
-	// Arguments are decoded above rather than inside the handler so an
+	// Arguments are decoded above rather than only inside the handler so an
 	// interceptor refusing the subscription sees the same operation context a
-	// successful one would.
+	// successful one would. The handler decodes again from oc.Variables; see
+	// there.
 	open := SubscriptionHandler(func(ctx context.Context, oc *OperationContext) (<-chan *Response, error) {
 		// Gates opening the source itself, so an unauthorized client never
-		// runs its side effects or learns what it reports. Two things refuse
-		// here: an Authorize error, and a Deny recorded for the subscription
-		// root field. The default policy denies by recording rather than by
-		// erroring, so checking the error alone would let it open the source.
-		// Null, Zero and Redact on the root still open: they shape what an
-		// event says, not whether the client may subscribe. Fields below the
-		// root are left to the per-event re-authorization in runOperation,
-		// which re-evaluates on every event so a mid-stream revocation takes
-		// effect without tearing the stream down.
-		d, err := e.authorize(ctx, p)
+		// runs its side effects or learns what it reports. Three things refuse
+		// here: an Authorize error, a Deny recorded for the subscription root
+		// field, and a Deny recorded for any of its argument sites -- a
+		// filter the client may not use must not open a stream filtered by
+		// it. The default policy denies by recording rather than by erroring,
+		// so checking the error alone would let it open the source. Null,
+		// Zero and Redact on the root still open: they shape what an event
+		// says, not whether the client may subscribe. Fields below the root
+		// are left to the per-event re-authorization in runOperation, which
+		// re-evaluates on every event so a mid-stream revocation takes effect
+		// without tearing the stream down.
+		d, err := e.authorize(ctx, p, oc.Variables)
 		if err != nil {
 			return nil, e.subscribeError(ctx, authorizerError(ctx, err))
 		}
@@ -213,6 +216,25 @@ func (e *Executor) Subscribe(ctx context.Context, req *Request) (<-chan *Respons
 			if o := d.Outcome(int(f.authIdx)); o.act == actionDeny {
 				return nil, e.subscribeError(ctx, o.denial().WithPath(Path{{Key: f.alias}}))
 			}
+			for i := f.authIdx + 1; i <= f.authIdx+f.argSites; i++ {
+				if o := d.Outcome(int(i)); o.act == actionDeny {
+					return nil, e.subscribeError(ctx, o.denial().WithPath(Path{{Key: f.alias}}))
+				}
+			}
+		}
+		// The Authorizer above read oc.Variables, which an interceptor may have
+		// replaced, so the source must be opened with arguments decoded from
+		// that same map: args from the early decode would let an interceptor
+		// show the policy one input and hand the source another. The early
+		// decode stays as validation so a bad argument is refused before any
+		// interceptor runs.
+		args := args
+		if f.dynamicArgs {
+			v, derr := f.def.args.decode(fieldArguments(f.ast, oc.Variables))
+			if derr != nil {
+				return nil, e.subscribeError(ctx, Errorf("Invalid argument for field %s: %v", coordinate(p.root.name, f.def.name), derr).WithCode(CodeBadUserInput))
+			}
+			args = v
 		}
 		stream, serr := f.def.subscribe(ctx, args)
 		if serr != nil {

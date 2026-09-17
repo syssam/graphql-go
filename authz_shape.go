@@ -14,6 +14,10 @@ import (
 // wrong for another's.
 const authDirective = "requiresScopes"
 
+// inputDirective marks an argument whose supplied keys and enum values an
+// Authorizer is shown before the field runs.
+const inputDirective = "authorizeInput"
+
 // buildAuthShape walks a compiled selection and records every position that
 // declares a requirement, effective (own AND inherited) requirements
 // included. It runs once per plan, so the walk is O(plan size) and never
@@ -25,14 +29,17 @@ func buildAuthShape(root *objectType, sel *selectionSet) *AuthShape {
 		return nil
 	}
 	slices.Sort(b.scopes)
-	return &AuthShape{sites: b.sites, scopes: slices.Compact(b.scopes)}
+	s := &AuthShape{sites: b.sites, scopes: slices.Compact(b.scopes), hasArgSites: b.hasArgSites}
+	s.src.shape = s
+	return s
 }
 
 type shapeBuilder struct {
-	sites      []AuthSite
-	scopes     []string
-	seen       map[*selectionSet]bool
-	objectSite map[*objectType]int32
+	sites       []AuthSite
+	scopes      []string
+	seen        map[*selectionSet]bool
+	objectSite  map[*objectType]int32
+	hasArgSites bool
 }
 
 // walk visits a selection set whose parent is obj (concrete) or abs (abstract).
@@ -77,6 +84,7 @@ func (b *shapeBuilder) walk(obj *objectType, abs *abstractType, sel *selectionSe
 
 func (b *shapeBuilder) field(obj *objectType, f *planField) {
 	f.authIdx = -1
+	f.argSites = 0
 	switch {
 	case f.kind == fieldTypename:
 		if obj != nil && !obj.requires.IsZero() {
@@ -94,6 +102,58 @@ func (b *shapeBuilder) field(obj *objectType, f *planField) {
 		})
 		b.scopes = append(b.scopes, f.def.requires.Scopes()...)
 	}
+
+	if f.def != nil {
+		args := f.def.def.Arguments
+		nArgSites := 0
+		for _, ad := range args {
+			if ad.Directives.ForName(inputDirective) != nil {
+				nArgSites++
+			}
+		}
+		// A field with argument sites must reach enforceAuth through the one
+		// compare every field already pays; a zero requirement allows. This
+		// must run before the argument loop below, which relies on the
+		// output site (own or synthesized here) being the last thing
+		// appended so the argument sites that follow stay contiguous with
+		// it -- see the contiguity invariant on planField.argSites.
+		if nArgSites > 0 && f.authIdx < 0 {
+			f.authIdx = int32(len(b.sites))
+			b.sites = append(b.sites, AuthSite{
+				Coord:  coordinate(f.def.object.name, f.name),
+				Field:  f.def.def,
+				Object: f.def.object.def,
+				Kind:   SiteOutput,
+				leaf:   f.def.leaf,
+			})
+		}
+		for _, ad := range args {
+			d := ad.Directives.ForName(inputDirective)
+			if d == nil {
+				continue
+			}
+			kind := SiteFilterArg
+			if k := d.Arguments.ForName("kind"); k != nil && k.Value != nil && k.Value.Raw == "WRITE" {
+				kind = SiteInputWrite
+			}
+			var supplied *ast.Value
+			if a := f.ast.Arguments.ForName(ad.Name); a != nil {
+				supplied = a.Value
+			}
+			b.sites = append(b.sites, AuthSite{
+				Coord:    argCoordinate(coordinate(f.def.object.name, f.name), ad.Name),
+				Field:    f.def.def,
+				Object:   f.def.object.def,
+				Kind:     kind,
+				Arg:      ad.Name,
+				argType:  ad.Type,
+				argValue: supplied,
+			})
+			f.argSites++
+			b.hasArgSites = true
+		}
+	}
+
 	b.walk(f.target, f.abstract, f.sub)
 }
 
@@ -224,6 +284,86 @@ func (b *schemaBuilder) validateAuthDirectives() {
 			b.rejectUnenforced(name, "a union", def.Directives)
 		case ast.Scalar:
 			b.rejectUnenforced(name, "a scalar", def.Directives)
+		}
+	}
+}
+
+// validateInputDirectives accepts @authorizeInput only on an argument of an
+// object type's field whose named type is an input object or an enum: those
+// are the only values with keys or enum identifiers to report. Anywhere else
+// it would read as guarded while reporting nothing -- an interface field's
+// argument is not enforced because the plan reads the concrete field's own
+// definition, and a directive definition's argument is never executed.
+func (b *schemaBuilder) validateInputDirectives() {
+	reject := func(coord, what string, ds ast.DirectiveList) {
+		if ds.ForName(inputDirective) != nil {
+			b.errorf("%s: @%s is valid only on an object field's argument of input object or enum type, not on %s", coord, inputDirective, what)
+		}
+	}
+	reject("schema", "the schema definition", b.ast.SchemaDirectives)
+	for dname, ddef := range b.ast.Directives {
+		for _, a := range ddef.Arguments {
+			reject(argCoordinate("@"+dname, a.Name), "a directive argument", a.Directives)
+		}
+	}
+	for name, def := range b.ast.Types {
+		if def.BuiltIn {
+			continue
+		}
+		reject(name, "a type", def.Directives)
+		for _, f := range def.Fields {
+			coord := coordinate(name, f.Name)
+			switch def.Kind {
+			case ast.Object:
+				reject(coord, "a field", f.Directives)
+				for _, a := range f.Arguments {
+					occ := a.Directives.ForNames(inputDirective)
+					if len(occ) == 0 {
+						continue
+					}
+					argCoord := argCoordinate(coord, a.Name)
+					if len(occ) > 1 {
+						// shapeBuilder.field reads only ds.ForName's first
+						// occurrence (authz_shape.go), so a directive
+						// declared repeatable would let a second
+						// occurrence silently pick the argument's kind
+						// instead of being reported.
+						b.errorf("%s: @%s must not occur more than once on one argument", argCoord, inputDirective)
+						continue
+					}
+					named := b.ast.Types[a.Type.Name()]
+					if named == nil || (named.Kind != ast.InputObject && named.Kind != ast.Enum) {
+						b.errorf("%s: @%s is valid only on an argument of input object or enum type, not %s", argCoord, inputDirective, a.Type.String())
+						continue
+					}
+					b.checkInputDirectiveKind(argCoord, a.Directives)
+				}
+			case ast.Interface:
+				reject(coord, "an interface field", f.Directives)
+				for _, a := range f.Arguments {
+					reject(argCoordinate(coord, a.Name), "an interface field's argument; declare it on the implementing object's field", a.Directives)
+				}
+			default:
+				reject(coord, "an input field", f.Directives)
+			}
+		}
+		for _, v := range def.EnumValues {
+			reject(coordinate(name, v.Name), "an enum value", v.Directives)
+		}
+	}
+}
+
+// checkInputDirectiveKind exists because gqlparser never type-checks a
+// directive argument's literal against its declared type, the same gap
+// checkRequiresScopes closes for scopes. Plan compile reads kind by its raw
+// name, so an unknown name or a string literal would otherwise build and
+// silently classify a write site as a filter.
+func (b *schemaBuilder) checkInputDirectiveKind(coord string, ds ast.DirectiveList) {
+	for _, d := range ds.ForNames(inputDirective) {
+		v := d.Arguments.ForName("kind")
+		if v == nil || v.Value == nil || v.Value.Kind != ast.EnumValue ||
+			(v.Value.Raw != "FILTER" && v.Value.Raw != "WRITE") {
+			b.errorf("%s: @%s kind must be FILTER or WRITE", coord, inputDirective)
 		}
 	}
 }
