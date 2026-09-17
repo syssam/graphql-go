@@ -610,3 +610,69 @@ convention. So:
 - An absent key is not reported; a key sent as explicit `null` is (§8).
 - An operation whose shape has no argument site walks nothing.
 
+### 9.4 2b — argument sites: decisions made before planning
+
+Checked against the consumer before planning, and one §9.3 statement was
+wrong: reporting only key paths does not cover ordering. A relay connection's
+`orderBy` is `{field: CustomerOrderField!, direction}` — the restricted
+column is named by an **enum value**, not a key, so `orderBy: {field:
+TAX_NUMBER}` sorts by a hidden column and leaks it by bisection while every
+key sent is innocuous. The consumer's own `field_control.go` walks keys for
+`where`, `groupBy` and `having`, and enum values for `orderBy`.
+
+**D1 — Declaration.** `directive @authorizeInput(kind: AuthorizeInputKind!)
+on ARGUMENT_DEFINITION` with `enum AuthorizeInputKind { FILTER WRITE }`,
+declared by the schema author like `@requiresScopes`. `NewSchema` fails when
+the directive sits on an argument whose named type is not an input object or
+an enum (lists of either allowed): there is nothing else to report.
+
+**D2 — Sites.** For every selected field whose definition carries the
+directive on an argument, plan compile adds one site per such argument:
+`SiteFilterArg` or `SiteInputWrite`, `Coord` `Type.field(arg:)`, a zero
+`Requires`, and the argument's name. The site exists whether or not the client
+supplied the argument, so an Authorizer sees an empty input rather than a
+missing site.
+
+**D3 — What is reported.** Before `Authorize`, the engine walks each argument
+site's **supplied** value — the operation's AST plus its variables, typed
+against the schema — and exposes `Decision.Input(site) []InputKey`, where
+`InputKey{Path []string; Enum string; Null bool}`:
+- `Path` is the input-object keys from the argument down, list indices omitted.
+- `Enum` is set when the value at that path is an enum literal: this is the
+  correction above.
+- `Null` is set when the value there is an explicit null; absent keys produce
+  no entry.
+- Scalar values (strings, numbers) are never reported: they are user data, and
+  the policy decision needs only schema identifiers.
+- Entries are deduplicated.
+- Supplied means sent by the client. A default on an operation variable counts,
+  because the operation author wrote it. A default on the argument or an input
+  field in SDL does not, because the client did not choose it. This is why the
+  walk reads the AST rather than `ArgumentMap`, which fills SDL defaults in.
+
+**D4 — Outcomes.** Only `Allow` and `Deny` are valid on an argument site. `Deny`
+refuses the field before its resolver runs, with the error at the field's path,
+bubbling like any field error.
+
+**D5 — Routing without touching the ordinary path.** A field with at least one
+argument site is always given an output site (with a zero `Requires` if it
+declares none), so the single existing `authIdx >= 0` compare routes it into
+`enforceAuth`. There the output outcome is applied as before, and then the
+field's argument sites — held on `planField.argSites`, per plan — are checked
+for a Deny. A field with no argument site pays nothing new.
+
+**D6 — Subscriptions.** The open handler refuses the subscription when any
+argument site on the root field is denied, as it already does for a Deny on the
+root's output site.
+
+**D7 — Cost.** The input walk runs only when the plan's shape has an argument
+site. It is O(size of the supplied arguments), which coercion already paid.
+
+**D8 — Default policy.** `ScopeAuthorizer` leaves argument sites at `Allow`:
+their requirement is zero, and mapping keys or enum values to guarded fields is
+the consumer's naming convention, not the engine's.
+
+**D9 — Coverage.** `RequireAuthCoverage` does not require arguments to be
+declared. The engine cannot tell which arguments are filters, and requiring a
+declaration on every input-object argument would reject every schema.
+
