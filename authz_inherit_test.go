@@ -781,3 +781,43 @@ type Query @requiresScopes(scopes: [["root:read"]]) { ok: String! }
 		t.Errorf("data = %s, want %s", got, want)
 	}
 }
+
+// Exemption stays explicit per type: an interface's @public must not quietly
+// exempt every implementer.
+func TestRequireAuthCoverageInterfacePublicDoesNotExempt(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT | INTERFACE
+directive @public on FIELD_DEFINITION | OBJECT | INTERFACE
+interface Pet @public { name: String! }
+type Dog implements Pet { name: String! }
+type Query { pet: Pet! @public }
+`
+	_, err := NewSchema(SDL(sdl),
+		Query(Field("pet", func(Root) authzPet { return &authzDog{} })),
+		Interface[authzPet]("Pet"),
+		Object[authzDog]("Dog", Field("name", func(*authzDog) string { return "" })),
+		RequireAuthCoverage(),
+	)
+	if err == nil || !strings.Contains(err.Error(), "Dog.name") {
+		t.Fatalf("interface @public exempted Dog.name; err = %v", err)
+	}
+}
+
+// The requirement coverage accepts must be the one authorization enforces.
+func TestRequireAuthCoverageAcceptsInterfaceTypeRequirement(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT | INTERFACE
+directive @public on FIELD_DEFINITION | OBJECT
+interface Pet @requiresScopes(scopes: [["x"]]) { name: String! }
+type Dog implements Pet { name: String! }
+type Query { pet: Pet! @public }
+`
+	if _, err := NewSchema(SDL(sdl),
+		Query(Field("pet", func(Root) authzPet { return &authzDog{} })),
+		Interface[authzPet]("Pet"),
+		Object[authzDog]("Dog", Field("name", func(*authzDog) string { return "" })),
+		RequireAuthCoverage(),
+	); err != nil {
+		t.Fatalf("NewSchema rejected a field covered by its interface's type-level requirement: %v", err)
+	}
+}
