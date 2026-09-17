@@ -510,12 +510,25 @@ an effective requirement exceeds 64 groups, so a pathological combination is a
 build error rather than a per-request cost.
 
 **`__typename` is guarded** by its object's effective type-level requirement,
-through a `SiteObject` site. Otherwise `{ items { __typename } }` counts the rows
-of a guarded type and confirms that a given one exists. The compiler keys each
+through a `SiteObject` site. The reason is consistency: "every field of a guarded
+type is authorized" should hold for `__typename` too, rather than leaving one
+field every client selects as the exception. The compiler keys each
 concrete selection set by its `*objectType`, so a `__typename` field is never
 shared across object types and its site is well defined. `Decision.Set` admits
 only `Allow` and `Deny` on a `SiteObject`: `__typename` is `String!`, so `Null`
 would be a silent spec violation, and `Zero`/`Redact` have no field to act on.
+
+**Known limit: field- and instance-level authorization does not hide how many
+objects of a guarded type exist, or that they exist.** A correct denial reveals
+the count itself: `{ list { name } }` answers `[null,null]` with one error per
+element. An object whose selection folds to empty is written without any site
+being consulted: `{ list { ... @include(if: false) { name } } }` answers
+`[{},{}]` with no error and no authorization call. And a union selection that
+names only an unguarded member, `{ mixed { ... on Open { name } } }`, answers
+`[{"name":""},{}]`, revealing that some other member is present. Guarding
+`__typename` does not change any of this and is not meant to. Making count and
+existence confidential needs a decision at the field that returns the guarded
+type, not at its fields, and is deferred to Plan 2c.
 
 **`@requiresScopes` on a location the engine does not enforce is a build error**
 (union, enum, scalar, input object, argument, input field). A silent no-op is
@@ -562,6 +575,23 @@ through as before.
   (n=12) on a `__typename`-dense benchmark; reordering narrowed it to +1.35% (p=0.005,
   n=24, interleaved), which is the residual accepted as the cost of the object-site check
   existing at all.
+- **Why `__typename` is guarded was corrected after the final review.** An earlier draft
+  of this section justified the object site by saying an unguarded `{ items { __typename } }`
+  counts a guarded type's rows and confirms a given one exists. Probes disproved that as a
+  reason: the count and existence already leak through a correct denial, through an
+  object whose selection folds to empty, and through a union's unguarded member (see the
+  known limit above). The object site stays, for consistency, and hiding count and
+  existence is Plan 2c's, decided at the field that returns the guarded type.
+- **`ScopeAuthorizer` renders a requirement's structure in its denial**: groups joined by
+  "or", scopes within a group by "and", a multi-scope group parenthesized only when there
+  is more than one group. Flattening `Scopes()` with "or" told a client denied an
+  inherited `{dog:read, pet:read}` that either scope would do.
+- **A coordinate whose requirement hit the cap gets no coverage error.** Its stored
+  requirement is zero only because the cap stopped it, so `RequireAuthCoverage` would
+  otherwise add one "declares no authorization" error per field and bury the cap error.
+- **A guarded `Query` type guards introspection.** `__schema` and `__type` are fields of
+  the query root and inherit its requirement, so introspection is denied without the
+  scope. That fails closed and is intended.
 
 ### 9.3 2b — argument sites (decided here, planned separately)
 

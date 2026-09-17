@@ -79,7 +79,11 @@
 // enforces and what coverage accepts cannot diverge. __typename is guarded
 // the same way, through a SiteObject built from its object's effective
 // type-level requirement; Decision.Set admits only Allow and Deny there,
-// since __typename is String! and has no value to null, zero or redact.
+// since __typename is String! and has no value to null, zero or redact. That
+// guard is for consistency, not confidentiality: authorization at the field
+// or instance level does not hide how many objects of a guarded type exist or
+// that they exist, and an object whose selection folds to empty is written
+// without consulting any site.
 // __schema and __type are fields of the query root, so an @requiresScopes on
 // the Query type guards introspection as well; that fails closed on purpose.
 // @requiresScopes anywhere the engine does not enforce it -- a union, enum,

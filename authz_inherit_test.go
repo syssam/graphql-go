@@ -656,8 +656,10 @@ func TestInheritedRequirementDeniesField(t *testing.T) {
 	}
 }
 
-// Apollo clients add __typename to every selection. Unguarded, it counts the
-// rows of a guarded type and confirms a given one exists. An Authorize
+// Apollo clients add __typename to every selection, so leaving it unguarded
+// would make it the one field of a guarded type that is never authorized.
+// Guarding it does not hide how many rows exist; see the known limit in the
+// authorization spec, §9.2. An Authorize
 // request error would also leave data null with a non-empty Errors slice, so
 // this pins the specific code and path a denied object site must produce --
 // not just that something went wrong.
