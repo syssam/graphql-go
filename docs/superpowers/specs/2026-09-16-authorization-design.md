@@ -2,7 +2,7 @@
 
 - **Date:** 2026-09-16
 - **Module:** `github.com/syssam/graphql-go`
-- **Status:** Plan 1 (P1, P2, P3, P5, P7) implemented and merged (`e57e820`); Plan 2 decomposed in §9, 2a implemented on `feat/authz-inherited-requirements`
+- **Status:** Plan 1 (P1, P2, P3, P5, P7) implemented and merged (`e57e820`); Plan 2 decomposed in §9, 2a implemented on `feat/authz-inherited-requirements`, 2b implemented on `feat/authz-argument-sites` (see the Deviations note at the end of §9.4)
 - **Files:** `plan.go`, `exec.go`, `exec_object.go`, `directive.go`, `subscription.go`,
   `schema.go`, `introspection.go`, new `authz.go`, new `ext/authz/`
 
@@ -657,9 +657,12 @@ bubbling like any field error.
 **D5 — Routing without touching the ordinary path.** A field with at least one
 argument site is always given an output site (with a zero `Requires` if it
 declares none), so the single existing `authIdx >= 0` compare routes it into
-`enforceAuth`. There the output outcome is applied as before, and then the
-field's argument sites — held on `planField.argSites`, per plan — are checked
-for a Deny. A field with no argument site pays nothing new.
+`enforceAuth`. There the field's argument sites — held on `planField.argSites`,
+per plan — are checked first for a Deny, and only then is the output outcome
+applied as before. A field with no argument site pays nothing new.
+(Corrected from an earlier draft of this paragraph, which had the order
+backwards; see item 6 of the Deviations note below for why that order
+matters.)
 
 **D6 — Subscriptions.** The open handler refuses the subscription when any
 argument site on the root field is denied, as it already does for a Deny on the
@@ -675,4 +678,80 @@ the consumer's naming convention, not the engine's.
 **D9 — Coverage.** `RequireAuthCoverage` does not require arguments to be
 declared. The engine cannot tell which arguments are filters, and requiring a
 declaration on every input-object argument would reject every schema.
+
+### Deviations — what shipped on `feat/authz-argument-sites`
+
+Implementation is complete and this section's decisions hold, with the
+refinements and extensions below, found while building and benchmarking
+against the code, not while planning.
+
+1. **D3's `Enum` field, refined.** The walk reports `Enum` only when the
+   schema type at that position is actually an `enum` in the SDL. A custom
+   scalar accepts a bare identifier too — `SECRET` parses to the same AST
+   `EnumValue` node whether its declared type is `enum Classification` or
+   `scalar Classification` — so a bare identifier at a custom-scalar position
+   is reported as a key only, `Enum` empty, never a fabricated enum value. An
+   enum string arriving through a variable is reported only when it names a
+   value the enum actually declares; one a value coercion would reject is not
+   reported as if the client meaningfully chose it.
+2. A literal object key whose *value* is a variable holding an object or a
+   list is reported as a key, exactly as a literal object or list value at
+   that key already was — the composite check looks at the variable's runtime
+   value as well as the literal's AST kind, not the AST kind alone.
+3. A null list element is not itself a reported position. Null means the
+   position the list lives under is null, not that the list's contents are,
+   so `{and: [null]}` reports `and` with `Null` false; the list element
+   contributes nothing on its own. Keys read off a variable's map are reported
+   in sorted order, so the result does not depend on Go's randomized map
+   iteration.
+4. Beyond D1: `NewSchema` also rejects an `@authorizeInput(kind: ...)` whose
+   `kind` is not the bare enum literal `FILTER` or `WRITE`. gqlparser never
+   type-checks a directive argument's literal against its declared type — the
+   same gap `checkRequiresScopes` closes for `@requiresScopes`'s `scopes`
+   argument — so an unrecognized name or a string literal in the `kind`
+   position would otherwise build cleanly and plan compile would silently
+   read it as `FILTER`.
+5. Layout, not decided by D2/D5: `planField.argSites` is an `int32` count, not
+   a slice — a field's argument sites are contiguous right after its own
+   output site (`shape.sites[authIdx+1 : authIdx+1+int(argSites)]`) — because
+   `runSubscriptionEvent` copies a `planField` by value once per event, and a
+   slice header there pushed the struct from 176 to 200 bytes, into the next
+   size class, paid on every event. `Decision`'s per-request input table sits
+   behind a pointer (`src *decisionSource`); a shape with no argument sites
+   shares one `decisionSource` cached on the `AuthShape` itself, so `Decision`
+   stays 32 bytes and a request against a plan with no argument sites
+   allocates no input table.
+6. **D5's check order was backwards; corrected in place above.** The
+   paragraph as first written applied the output outcome and only then
+   checked argument sites. What ships checks argument sites first: an output
+   `Null`, `Zero` or `Redact` must never be able to mask a denied argument,
+   and `Redact` in particular must never run its resolver against input the
+   policy refused.
+7. Not decided by D3/D6: when a subscription's stream opens, the source is
+   opened with its arguments decoded again from `oc.Variables` — the same map
+   the Authorizer walked at open time — rather than reusing the early decode
+   kept for interceptor visibility. Without this, an `OperationInterceptor`
+   that rewrites `Variables` before the source opens could show the policy
+   one input and hand the source another; the early decode is kept only as
+   up-front validation, so a malformed argument is still refused before any
+   interceptor runs. Documented limitation: an `OperationInterceptor` that
+   rewrites `Variables` on a single subscription *event* changes what that
+   event's root argument sites are evaluated against, while the long-lived
+   source stays bound to the arguments decoded when the stream opened.
+   Accepted because interceptors are trusted server code, not the client.
+8. Not anticipated by §9.3 or §9.4: gqlparser v2.5.37's
+   `OverlappingFieldsCanBeMerged` compares two arguments' values only by
+   `Kind` and `Raw`, and `Raw` is empty for both object and list literals. So
+   `{ a: customers(where:{x}) a: customers(where:{y}) }` validates as one
+   merged field, and the plan keeps only the first AST node's argument — the
+   second literal is discarded by the validator before this feature ever sees
+   the document. This is not an authorization bypass: `buildField` gives the
+   merged `planField` a single `ast` (the first node), so the resolver and the
+   Authorizer read the same argument value; there is no path by which they
+   diverge.
+9. Performance: interleaved n=12 against the pre-feature base, no significant
+   change. `TypenameHeavy` 15.59µs vs 15.61µs (p=0.810); `Users` 1.840µs vs
+   1.836µs (p=0.977); `ConcurrentList` 127.3µs vs 128.7µs (p=0.291); allocations
+   equal in every sample (54/18/529). Struct sizes held: `execState` 64 bytes,
+   `OperationContext` 160, `planField` 176.
 

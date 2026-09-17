@@ -92,9 +92,23 @@
 // error, not a silent no-op. RequireAuthCoverage counts a field as covered
 // exactly when its effective requirement is non-zero, or when the field or
 // its own object type carries @public; @public on an interface does not
-// exempt its implementers. SiteFilterArg and SiteInputWrite are declared for
-// the same reason as the rest of SiteKind but are not yet populated. An
-// Authorizer failure that is not a *Error -- typically a policy backend's
+// exempt its implementers. An argument marked @authorizeInput(kind: FILTER |
+// WRITE) gets a SiteFilterArg or SiteInputWrite site on every field that
+// selects it, whether or not the client supplied a value for it.
+// Decision.Input reports what the client actually supplied there:
+// input-object key paths, enum values and explicit nulls, but never a scalar
+// value, since a policy decides on schema identifiers and scalars are user
+// data; a default an operation variable itself carries counts, because the
+// operation's author chose it, while a default the SDL supplies for the
+// argument or an input field does not, because the client never chose it.
+// Only Allow and Deny apply to an argument site; Deny refuses the field
+// before its resolver runs, whatever outcome is recorded for the field's own
+// output site. ScopeAuthorizer leaves every argument site at Allow, since its
+// Requirement is zero and mapping a key or enum value to the field it
+// restricts is the consumer's naming convention rather than the engine's;
+// RequireAuthCoverage does not require an argument to declare
+// @authorizeInput, for the same reason.
+// An Authorizer failure that is not a *Error -- typically a policy backend's
 // own transport failure -- is never shown to a client: it is presented as a
 // generic internal error, with the original logged and kept behind an
 // unexported cause for a presenter that wants to test it.
