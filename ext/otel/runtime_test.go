@@ -185,10 +185,36 @@ func TestObserveTwoExecutorsWithAttributes(t *testing.T) {
 	if counts[`graphqlgo.executor.name=public`] != 1 || counts[`graphqlgo.executor.name=admin`] != 0 {
 		t.Fatalf("plan cache count by executor = %v, want public 1 and admin 0", counts)
 	}
+	// The lookups counter is where one executor's traffic would be added to
+	// another's, so its series must carry the executor attribute too.
+	lookups := pointsOf(t, reader, "graphqlgo.plan_cache.lookups")
+	if got := lookups[`graphqlgo.executor.name=public,graphqlgo.plan_cache.result=miss`]; got != 1 {
+		t.Fatalf("public misses = %d, want 1 (all: %v)", got, lookups)
+	}
+	if _, ok := lookups[`graphqlgo.executor.name=admin,graphqlgo.plan_cache.result=miss`]; !ok {
+		t.Fatalf("admin has no miss series of its own (all: %v)", lookups)
+	}
+}
+
+func TestObserveDrainCarriesAttributes(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	d := drain.New()
+	if _, err := gqlotel.ObserveDrain(d, gqlotel.WithMeterProvider(mp),
+		gqlotel.WithAttributes(attribute.String("graphqlgo.transport.name", "ws"))); err != nil {
+		t.Fatal(err)
+	}
+	_, leave, _ := d.Enter(context.Background())
+	defer leave()
+	got := pointsOf(t, reader, "graphqlgo.transport.active_connections")
+	if got[`graphqlgo.transport.name=ws`] != 1 {
+		t.Fatalf("active_connections by attributes = %v, want ws 1", got)
+	}
 }
 
 // TestActiveRequestsReturnsOnCancel: a request whose context is already
-// cancelled still gives its count back.
+// cancelled still gives its count back. A regression guard, not proof of
+// WithoutCancel: the SDK does not read the context's error today.
 func TestActiveRequestsReturnsOnCancel(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
@@ -196,7 +222,12 @@ func TestActiveRequestsReturnsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	e.Execute(ctx, &graphql.Request{Query: `{ me { id } }`}).Release()
-	if got := collectInts(t, reader)["graphql.server.active_requests"]; got != 0 {
-		t.Fatalf("active_requests = %d after a cancelled request, want 0", got)
+	points := pointsOf(t, reader, "graphql.server.active_requests")
+	v, ok := points[""]
+	if !ok {
+		t.Fatalf("no active_requests series after a request (all: %v); the count was never recorded", points)
+	}
+	if v != 0 {
+		t.Fatalf("active_requests = %d after a cancelled request, want 0", v)
 	}
 }

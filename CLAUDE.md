@@ -491,9 +491,9 @@ and a reviewer's `RunParallel` at `-cpu 20` put the shared counters at 671.2ns v
 limits are observable UpDownCounters, not gauges, as the OpenTelemetry runtime and connection-pool
 conventions have them, so backends can add them across instances; hits and misses are one
 `graphqlgo.plan_cache.lookups` counter split by `graphqlgo.plan_cache.result`. **The instruments
-carry no identity of their own**: two executors, or one observed twice, on one meter add their
-counters and overwrite the rest, silently — the first version shipped that until review measured
-it — hence `otel.WithAttributes` and "observe each once per meter" in the godoc. No per-operation
+carry no identity of their own**: two executors on one meter add every value into one series,
+and one executor observed twice doubles every value, silently — review measured the first
+version's gauges overwriting each other instead — hence `otel.WithAttributes` and "observe each once per meter" in the godoc. No per-operation
 dimension, to keep cardinality bounded. `graphql.server.active_requests` wraps `reqChain`, which
 only `Execute` runs, so subscriptions never show there; `graphqlgo.transport.active_connections` is
 where they do.

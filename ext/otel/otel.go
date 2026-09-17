@@ -81,8 +81,9 @@ func WithMeterProvider(mp metric.MeterProvider) Option {
 
 // WithAttributes adds attributes to every observation ObserveExecutor and
 // ObserveDrain make. It is what keeps two executors or drains on one meter
-// apart: their instruments share names, so without distinct attributes the
-// counters add together and the rest report whichever callback ran last.
+// apart: their instruments share names, so without distinct attributes all
+// their values add into one series, and observing one executor twice doubles
+// every value.
 // Name each one, say graphqlgo.executor.name. It does not affect New.
 func WithAttributes(attrs ...attribute.KeyValue) Option {
 	return func(c *config) { c.attrs = append(c.attrs, attrs...) }
