@@ -175,8 +175,7 @@ func TestRequiresScopesOnAnUnenforcedLocationFailsBuild(t *testing.T) {
 		{"scalar", `scalar MisplacedScalar @requiresScopes(scopes: [["x"]])`, "MisplacedScalar"},
 		{"input object", `input MisplacedInputObject @requiresScopes(scopes: [["x"]]) { a: String }`, "MisplacedInputObject"},
 		{"input field", `input MisplacedInputField { a: String @requiresScopes(scopes: [["x"]]) }`, "MisplacedInputField.a"},
-		{"argument", `type MisplacedArgOwner { f(a: String @requiresScopes(scopes: [["x"]])): String }`, "MisplacedArgOwner.f(a:)"},
-	}
+		{"argument", `type MisplacedArgOwner { f(a: String @requiresScopes(scopes: [["x"]])): String }`, "MisplacedArgOwner.f(a:)"},	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			sdl := `
@@ -918,6 +917,54 @@ type Query @requiresScopes(scopes: [["root:read"]]) { ok: String! }
 	}
 	if got, want := string(resp.Data), `{"__typename":"Query"}`; got != want {
 		t.Errorf("data = %s, want %s", got, want)
+	}
+}
+
+// __schema and __type are fields of the query root, so a guarded Query type
+// guards introspection too. That fails closed, which is intended: this pins
+// it so a change exempting introspection is a visible decision.
+func TestGuardedQueryTypeGuardsIntrospection(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+type Query @requiresScopes(scopes: [["root:read"]]) { ok: String! }
+`
+	exec := func(t testing.TB, held ...string) *Executor {
+		t.Helper()
+		s, err := NewSchema(SDL(sdl), Query(Field("ok", func(Root) string { return "fine" })))
+		if err != nil {
+			t.Fatalf("NewSchema: %v", err)
+		}
+		have := map[string]bool{}
+		for _, h := range held {
+			have[h] = true
+		}
+		return NewExecutor(s, WithAuthorizer(ScopeAuthorizer(
+			func(context.Context) map[string]bool { return have })))
+	}
+	for _, query := range []string{
+		`{ __schema { queryType { name } } }`,
+		`{ __type(name: "Query") { name } }`,
+	} {
+		t.Run(query, func(t *testing.T) {
+			resp := run(t, exec(t), query, "")
+			if len(resp.Errors) == 0 {
+				t.Fatalf("introspection allowed without root:read; data = %s", resp.Data)
+			}
+			if got := resp.Errors[0].Extensions["code"]; got != CodeForbidden {
+				t.Errorf("code = %v, want %v", got, CodeForbidden)
+			}
+			if strings.Contains(string(resp.Data), `"Query"`) {
+				t.Errorf("denied introspection still returned schema data: %s", resp.Data)
+			}
+
+			resp = run(t, exec(t, "root:read"), query, "")
+			if len(resp.Errors) > 0 {
+				t.Fatalf("root:read held but introspection denied: %s", errorsJSON(resp.Errors))
+			}
+			if !strings.Contains(string(resp.Data), `"Query"`) {
+				t.Errorf("data = %s, want the Query type's name", resp.Data)
+			}
+		})
 	}
 }
 

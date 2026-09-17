@@ -80,6 +80,8 @@
 // the same way, through a SiteObject built from its object's effective
 // type-level requirement; Decision.Set admits only Allow and Deny there,
 // since __typename is String! and has no value to null, zero or redact.
+// __schema and __type are fields of the query root, so an @requiresScopes on
+// the Query type guards introspection as well; that fails closed on purpose.
 // @requiresScopes anywhere the engine does not enforce it -- a union, enum,
 // enum value, scalar, input object, input field, an argument, the schema
 // definition itself, or a directive definition's own argument -- is a build
