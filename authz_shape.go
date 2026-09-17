@@ -267,7 +267,9 @@ func (b *schemaBuilder) validateInputDirectives() {
 					named := b.ast.Types[a.Type.Name()]
 					if named == nil || (named.Kind != ast.InputObject && named.Kind != ast.Enum) {
 						b.errorf("%s: @%s is valid only on an argument of input object or enum type, not %s", argCoordinate(coord, a.Name), inputDirective, a.Type.String())
+						continue
 					}
+					b.checkInputDirectiveKind(argCoordinate(coord, a.Name), a.Directives)
 				}
 			case ast.Interface:
 				reject(coord, "an interface field", f.Directives)
@@ -280,6 +282,24 @@ func (b *schemaBuilder) validateInputDirectives() {
 		}
 		for _, v := range def.EnumValues {
 			reject(coordinate(name, v.Name), "an enum value", v.Directives)
+		}
+	}
+}
+
+// checkInputDirectiveKind rejects an @authorizeInput occurrence whose kind
+// argument is not a bare FILTER or WRITE enum literal. gqlparser checks the
+// directive's name, location and argument presence but never type-checks a
+// directive argument's literal against its declared type (mirroring why
+// checkRequiresScopes exists for @requiresScopes's "scopes"): an unknown enum
+// name, a string literal, a variable or a missing value all build cleanly
+// otherwise, and Task 3 reads kind as Value.Raw == "WRITE" literally, so a
+// typo would silently misclassify a write site as FILTER.
+func (b *schemaBuilder) checkInputDirectiveKind(coord string, ds ast.DirectiveList) {
+	for _, d := range ds.ForNames(inputDirective) {
+		v := d.Arguments.ForName("kind")
+		if v == nil || v.Value == nil || v.Value.Kind != ast.EnumValue ||
+			(v.Value.Raw != "FILTER" && v.Value.Raw != "WRITE") {
+			b.errorf("%s: @%s kind must be FILTER or WRITE", coord, inputDirective)
 		}
 	}
 }

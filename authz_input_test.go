@@ -260,6 +260,12 @@ func TestAuthorizeInputPlacementAtBuild(t *testing.T) {
 		{"on a field", `type Query { c: String @authorizeInput(kind: FILTER) }`, "Query.c"},
 		{"on an input field", `input Bad { a: Where @authorizeInput(kind: FILTER) } type Query { c(b: Bad): String }`, "Bad.a"},
 		{"on an interface field argument", `interface Node { c(where: Where @authorizeInput(kind: FILTER)): String } type Query { c: String }`, "Node.c(where:)"},
+		// Fix round 1, R6: gqlparser does not type-check a directive argument's
+		// literal against its declared enum type, so these build cleanly
+		// without this check even though Task 3 reads Raw == "WRITE" literally.
+		{"kind an unknown enum name", `type Query { c(where: Where @authorizeInput(kind: BOGUS)): String }`, "Query.c(where:)"},
+		{"kind a string literal", `type Query { c(where: Where @authorizeInput(kind: "FILTER")): String }`, "Query.c(where:)"},
+		{"kind WRITE is valid", `type Query { c(where: Where @authorizeInput(kind: WRITE)): String }`, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
