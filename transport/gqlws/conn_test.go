@@ -13,6 +13,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/syssam/graphql-go"
+	"github.com/syssam/graphql-go/transport/drain"
 	"github.com/syssam/graphql-go/transport/gqlws"
 )
 
@@ -599,5 +600,144 @@ func TestEventContextIsPerEventOverTheWire(t *testing.T) {
 	}
 	if got := c.recv(); got.Type != "complete" {
 		t.Fatalf("frame = %+v, want complete", got)
+	}
+}
+
+// TestDrainClosesWithGoingAway proves WithDrain reaches the connection: a
+// live subscription is cancelled and the socket closes 1001, and Shutdown
+// itself returns promptly rather than waiting out its whole deadline.
+func TestDrainClosesWithGoingAway(t *testing.T) {
+	src, e := newTestExecutor(t)
+	d := drain.New()
+	c := dial(t, e, gqlws.WithDrain(d))
+	c.init("")
+
+	c.subscribe("1", `subscription { messages { id } }`)
+	src.messages <- &message{ID: "1"}
+	if got := c.recv(); got.Type != "next" {
+		t.Fatalf("frame = %+v", got)
+	}
+
+	type result struct {
+		err error
+		dur time.Duration
+	}
+	done := make(chan result, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		start := time.Now()
+		err := d.Shutdown(ctx)
+		done <- result{err, time.Since(start)}
+	}()
+
+	if code := c.recvErr(); code != websocket.StatusGoingAway {
+		t.Fatalf("close code = %d, want %d", code, websocket.StatusGoingAway)
+	}
+
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("Shutdown returned %v", r.err)
+		}
+		if r.dur > 2*time.Second {
+			t.Fatalf("Shutdown took %v, want under 2s", r.dur)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Shutdown did not return")
+	}
+}
+
+// TestDrainWaitsForConnectionThenGivesUp proves the connection is registered
+// with the drain and runs under the context the drain cancels. A query that
+// ignores Closing keeps the connection's drain waiting, so Shutdown returns
+// DeadlineExceeded only if it was waiting for this connection, and the client
+// gets 1001 only if giving up reaches the protocol. Closing alone produces
+// neither.
+//
+// The 1001 is the part coder/websocket makes easy to lose: it closes the
+// connection with no frame as soon as a read's context is cancelled, so a
+// protocol reading under the context the drain cancels ends the connection
+// before its own close frame is written.
+func TestDrainWaitsForConnectionThenGivesUp(t *testing.T) {
+	started := make(chan struct{}, 1)
+	s, err := graphql.NewSchema(graphql.SDL(`type Query { block: String! }`),
+		graphql.Query(graphql.Resolve("block", func(ctx context.Context, _ graphql.Root) (string, error) {
+			started <- struct{}{}
+			<-ctx.Done()
+			return "", ctx.Err()
+		})),
+	)
+	if err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	d := drain.New()
+	c := dial(t, graphql.NewExecutor(s), gqlws.WithDrain(d))
+	c.init("")
+
+	c.subscribe("1", `{ block }`)
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the query never started")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if err := d.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown = %v, want DeadlineExceeded", err)
+	}
+
+	if code := c.recvErr(); code != gqlws.StatusGoingAway {
+		t.Fatalf("close code = %d after Shutdown gave up, want %d", code, gqlws.StatusGoingAway)
+	}
+}
+
+// TestDrainRefusesNewConnections proves the ServeHTTP entry point itself
+// refuses the upgrade once draining has begun, rather than only tearing down
+// connections already open.
+func TestDrainRefusesNewConnections(t *testing.T) {
+	_, e := newTestExecutor(t)
+	d := drain.New()
+	srv := httptest.NewServer(gqlws.New(e, gqlws.WithDrain(d)))
+	defer srv.Close()
+
+	if err := d.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, resp, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"),
+		&websocket.DialOptions{Subprotocols: []string{gqlws.Subprotocol}})
+	if err == nil {
+		t.Fatal("dial succeeded while the drain was shutting down")
+	}
+	if resp == nil {
+		t.Fatal("no response returned for the refused upgrade")
+	}
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+}
+
+// TestCancelledConnectContextCloses: the context OnConnect returns can end on
+// its own, as an expiring token would. The connection must close 1001 then,
+// so the client reconnects and re-authenticates, rather than stay open with
+// nothing served on it.
+func TestCancelledConnectContextCloses(t *testing.T) {
+	_, e := newTestExecutor(t)
+	session, expire := context.WithCancel(context.Background())
+	defer expire()
+	c := dial(t, e, gqlws.WithOnConnect(func(ctx context.Context, _ []byte) (context.Context, error) {
+		ctx, cancel := context.WithCancel(ctx)
+		context.AfterFunc(session, cancel)
+		return ctx, nil
+	}))
+	c.init("")
+
+	expire()
+	if code := c.recvErr(); code != gqlws.StatusGoingAway {
+		t.Fatalf("close code = %d after the connection context ended, want %d", code, gqlws.StatusGoingAway)
 	}
 }

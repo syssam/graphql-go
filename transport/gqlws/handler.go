@@ -10,6 +10,7 @@ import (
 
 	"github.com/syssam/graphql-go"
 	"github.com/syssam/graphql-go/internal/gqlwsproto"
+	"github.com/syssam/graphql-go/transport/drain"
 )
 
 // ConnectFunc authenticates a connection from its connection_init payload.
@@ -29,6 +30,7 @@ type Handler struct {
 	onConnect    ConnectFunc
 	accept       websocket.AcceptOptions
 	logger       *slog.Logger
+	drain        *drain.Drain
 }
 
 // Option configures a Handler.
@@ -73,6 +75,12 @@ func WithInsecureSkipOriginCheck() Option {
 // slog.Default.
 func WithLogger(l *slog.Logger) Option { return func(h *Handler) { h.logger = l } }
 
+// WithDrain registers every connection with d, so d.Shutdown winds them down:
+// subscriptions end, queries and mutations in flight finish, and the
+// connection closes with StatusGoingAway. Once d is draining, new connections
+// are refused with 503.
+func WithDrain(d *drain.Drain) Option { return func(h *Handler) { h.drain = d } }
+
 // New creates a handler running operations with exec.
 func New(exec *graphql.Executor, opts ...Option) *Handler {
 	h := &Handler{
@@ -94,6 +102,13 @@ func New(exec *graphql.Executor, opts ...Option) *Handler {
 
 // ServeHTTP upgrades the request and serves the connection.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	ctx, leave, ok := h.drain.Enter(context.Background())
+	if !ok {
+		http.Error(w, "The server is shutting down.", http.StatusServiceUnavailable)
+		return
+	}
+	defer leave()
+
 	opts := h.accept
 	ws, err := websocket.Accept(w, r, &opts)
 	if err != nil {
@@ -111,13 +126,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// The connection outlives the HTTP request once the handshake is done, and
 	// coder/websocket documents the request context as unsafe to use past
-	// Accept, so the connection gets a context of its own.
-	gqlwsproto.Serve(context.Background(), coderSocket{ws: ws}, gqlwsproto.Config{
+	// Accept, so the connection gets a context of its own -- from the drain,
+	// not the request.
+	gqlwsproto.Serve(ctx, coderSocket{ws: ws}, gqlwsproto.Config{
 		Exec:         h.exec,
 		InitTimeout:  h.initTimeout,
 		PingInterval: h.pingInterval,
 		MaxSubs:      h.maxSubs,
 		OnConnect:    h.onConnect,
+		Closing:      h.drain.Closing(),
 		DecorateContext: func(ctx context.Context) context.Context {
 			return withRequest(ctx, r)
 		},

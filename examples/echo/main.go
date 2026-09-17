@@ -25,7 +25,10 @@ import (
 
 	"github.com/syssam/graphql-go"
 	"github.com/syssam/graphql-go/examples/blog"
+	"github.com/syssam/graphql-go/transport/drain"
 	"github.com/syssam/graphql-go/transport/gqlecho"
+	"github.com/syssam/graphql-go/transport/gqlsse"
+	"github.com/syssam/graphql-go/transport/gqlws"
 )
 
 // timeout is used both for ReadHeaderTimeout (Slowloris mitigation) and for
@@ -64,13 +67,16 @@ func run() error {
 	// transport/equivalence_test.go's "Echo is registered the same way,
 	// through e.Any, for the same reason".
 	e.Any("/graphql", gqlecho.New(exec))
-	e.Any("/graphql/stream", gqlecho.SSE(exec))
+	// gqlecho.SSE and WS take gqlsse and gqlws options, so the drain is wired
+	// the same way as on net/http.
+	d := drain.New()
+	e.Any("/graphql/stream", gqlecho.SSE(exec, gqlsse.WithDrain(d)))
 	// WS refuses a cross-origin upgrade unless the handler is configured
 	// with origin patterns; a request with no Origin header (curl,
 	// websocat, same-origin pages) is always accepted. gqlws.New's default
 	// is left as-is here rather than loosened with
 	// WithInsecureSkipOriginCheck, matching the Fiber example.
-	e.Any("/graphql/ws", gqlecho.WS(exec))
+	e.Any("/graphql/ws", gqlecho.WS(exec, gqlws.WithDrain(d)))
 
 	// e.Start(*addr) is Echo's own quickstart method, but its doc comment
 	// says it is "created for use in examples/demos and is deliberately
@@ -83,6 +89,19 @@ func run() error {
 	// example here needs with two struct fields.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// StartConfig begins its graceful shutdown when ctx ends; the drain starts
+	// at the same moment, because that shutdown waits for SSE streams only the
+	// drain can end.
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		<-ctx.Done()
+		drainCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		if err := d.Shutdown(drainCtx); err != nil {
+			slog.Error("drain", "error", err)
+		}
+	}()
 
 	sc := echo.StartConfig{
 		Address: *addr,
@@ -101,7 +120,15 @@ func run() error {
 
 	slog.Info("serving GraphQL", "addr", *addr,
 		"http", "/graphql", "sse", "/graphql/stream", "ws", "/graphql/ws")
-	if err := sc.Start(ctx, e); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	err = sc.Start(ctx, e)
+	// Start waits for its own graceful shutdown but not for the drain, which
+	// may still be closing WebSockets; returning would exit the process under
+	// them. Only a signal starts the drain, so a server that failed to start
+	// returns at once.
+	if ctx.Err() != nil {
+		<-drained
+	}
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil

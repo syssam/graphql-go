@@ -18,10 +18,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/syssam/graphql-go"
+	"github.com/syssam/graphql-go/transport/drain"
 	"github.com/syssam/graphql-go/transport/gqlhttp"
 	"github.com/syssam/graphql-go/transport/gqlsse"
 )
@@ -47,7 +49,10 @@ func run() error {
 	exec := graphql.NewExecutor(s)
 	mux := http.NewServeMux()
 	mux.Handle("/graphql", gqlhttp.New(exec))
-	mux.Handle("/graphql/stream", gqlsse.New(exec))
+	// The drain ends open subscription streams on shutdown; without it the
+	// server's own Shutdown waits out its whole timeout for each one.
+	d := drain.New()
+	mux.Handle("/graphql/stream", gqlsse.New(exec, gqlsse.WithDrain(d)))
 
 	srv := &http.Server{
 		Addr:              *addr,
@@ -57,18 +62,35 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		// srv.Shutdown waits for every open SSE stream, and a stream only ends
+		// once the drain ends it, so the two run together rather than one
+		// after the other.
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			if err := d.Shutdown(shutdownCtx); err != nil {
+				slog.Error("drain", "error", err)
+			}
+		})
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			slog.Error("shutdown", "error", err)
 		}
+		wg.Wait()
 	}()
 
 	slog.Info("serving GraphQL", "addr", *addr, "http", "/graphql", "sse", "/graphql/stream")
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		// Failed to start, so no shutdown began and there is nothing to wait
+		// for.
 		return err
 	}
+	// ListenAndServe returns as soon as Shutdown begins, not when it ends;
+	// returning here would exit the process with streams still draining.
+	<-done
 	return nil
 }

@@ -48,6 +48,11 @@ type Config struct {
 	MaxSubs      int
 	OnConnect    ConnectFunc
 
+	// Closing, when closed, drains the connection: subscriptions end without
+	// complete, queries and mutations in flight finish, new operations are
+	// refused, and the connection then closes with StatusGoingAway. Optional.
+	Closing <-chan struct{}
+
 	// DecorateContext adds driver-specific values to the context a
 	// ConnectFunc receives. gqlws uses it to carry the upgrade request,
 	// which is where cookie auth arrives; a fasthttp driver carries its own

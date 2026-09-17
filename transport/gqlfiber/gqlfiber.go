@@ -39,6 +39,7 @@ import (
 	"github.com/syssam/graphql-go/ext/apq"
 	"github.com/syssam/graphql-go/internal/gqlwsproto"
 	"github.com/syssam/graphql-go/internal/httpreq"
+	"github.com/syssam/graphql-go/transport/drain"
 )
 
 // DefaultCSRFHeaders are the headers whose presence marks a request as one
@@ -72,6 +73,7 @@ type config struct {
 	insecureSkipOrigin bool
 
 	logger *slog.Logger
+	drain  *drain.Drain
 }
 
 // Option configures a constructor in this package.
@@ -174,6 +176,12 @@ func WithOnConnect(fn ConnectFunc) Option { return func(c *config) { c.onConnect
 // WithLogger sets the logger for transport-level failures such as write
 // errors. The default is slog.Default.
 func WithLogger(l *slog.Logger) Option { return func(c *config) { c.logger = l } }
+
+// WithDrain registers WebSocket connections and SSE subscription streams with
+// d, so d.Shutdown winds them down as gqlws.WithDrain and gqlsse.WithDrain do.
+// It has no effect on the plain HTTP handler, which Fiber's own Shutdown
+// already waits for.
+func WithDrain(d *drain.Drain) Option { return func(c *config) { c.drain = d } }
 
 // newConfig applies opts over the defaults shared by every constructor here,
 // which are the defaults of gqlhttp, gqlsse and gqlws.

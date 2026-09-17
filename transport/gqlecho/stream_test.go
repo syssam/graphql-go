@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,7 +15,9 @@ import (
 	"github.com/labstack/echo/v5"
 
 	"github.com/syssam/graphql-go"
+	"github.com/syssam/graphql-go/transport/drain"
 	"github.com/syssam/graphql-go/transport/gqlecho"
+	"github.com/syssam/graphql-go/transport/gqlsse"
 	"github.com/syssam/graphql-go/transport/gqlws"
 )
 
@@ -158,6 +161,75 @@ func TestSSEStreamsSubscriptionEventsIncrementally(t *testing.T) {
 	close(ch)
 }
 
+// TestSSEDrainEndsStreamWithoutComplete proves gqlecho.SSE inherits
+// gqlsse.WithDrain: a live subscription's stream ends once the drain shuts
+// down, with no complete event, so the client reconnects rather than
+// treating the subscription as finished for good.
+func TestSSEDrainEndsStreamWithoutComplete(t *testing.T) {
+	ch, exec := newSubscriptionExecutor(t)
+	d := drain.New()
+	e := echo.New()
+	e.POST("/graphql", gqlecho.SSE(exec, gqlsse.WithDrain(d)))
+
+	srv := httptest.NewServer(e)
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/graphql",
+		strings.NewReader(`{"query":"subscription { ticks }"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+
+	select {
+	case ch <- "one":
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out publishing the event")
+	}
+
+	firstRead := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 512)
+		_, err := resp.Body.Read(buf)
+		firstRead <- err
+	}()
+	select {
+	case err := <-firstRead:
+		if err != nil {
+			t.Fatalf("reading the first event: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out reading the first event")
+	}
+
+	go func() { _ = d.Shutdown(context.Background()) }()
+
+	body := make(chan []byte, 1)
+	go func() {
+		b, _ := io.ReadAll(resp.Body)
+		body <- b
+	}()
+
+	select {
+	case b := <-body:
+		if strings.Contains(string(b), "event: complete") {
+			t.Fatalf("stream carried a complete event: %s", b)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out reading the stream to EOF")
+	}
+}
+
 // frame is one graphql-transport-ws protocol message.
 type frame struct {
 	ID      string          `json:"id,omitempty"`
@@ -199,5 +271,78 @@ func TestWSHandshake(t *testing.T) {
 	}
 	if f.Type != "connection_ack" {
 		t.Fatalf("frame = %+v, want connection_ack", f)
+	}
+}
+
+// TestWSDrainClosesWithGoingAway proves gqlecho.WS inherits gqlws.WithDrain
+// through its delegation to gqlws.Handler.ServeHTTP: a live subscription is
+// cancelled and the socket closes 1001 once the drain shuts down.
+func TestWSDrainClosesWithGoingAway(t *testing.T) {
+	ch, exec := newSubscriptionExecutor(t)
+	d := drain.New()
+	e := echo.New()
+	e.GET("/graphql", gqlecho.WS(exec, gqlws.WithDrain(d)))
+
+	srv := httptest.NewServer(e)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/graphql",
+		&websocket.DialOptions{Subprotocols: []string{gqlws.Subprotocol}})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer ws.CloseNow()
+
+	b, err := json.Marshal(frame{Type: "connection_init"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Write(ctx, websocket.MessageText, b); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, data, err := ws.Read(ctx); err != nil {
+		t.Fatalf("read: %v", err)
+	} else {
+		var f frame
+		if err := json.Unmarshal(data, &f); err != nil {
+			t.Fatalf("decode %s: %v", data, err)
+		}
+		if f.Type != "connection_ack" {
+			t.Fatalf("frame = %+v, want connection_ack", f)
+		}
+	}
+
+	sb, err := json.Marshal(frame{ID: "1", Type: "subscribe", Payload: json.RawMessage(`{"query":"subscription { ticks }"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Write(ctx, websocket.MessageText, sb); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	select {
+	case ch <- "one":
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out publishing the event")
+	}
+	if _, data, err := ws.Read(ctx); err != nil {
+		t.Fatalf("read: %v", err)
+	} else {
+		var f frame
+		if err := json.Unmarshal(data, &f); err != nil {
+			t.Fatalf("decode %s: %v", data, err)
+		}
+		if f.Type != "next" {
+			t.Fatalf("frame = %+v, want next", f)
+		}
+	}
+
+	go func() { _ = d.Shutdown(context.Background()) }()
+
+	_, _, err = ws.Read(ctx)
+	if code := websocket.CloseStatus(err); code != websocket.StatusGoingAway {
+		t.Fatalf("close status = %d, want %d", code, websocket.StatusGoingAway)
 	}
 }

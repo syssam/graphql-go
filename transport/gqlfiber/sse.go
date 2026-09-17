@@ -161,10 +161,17 @@ func (h *sseHandler) single(c fiber.Ctx, req *graphql.Request) error {
 
 // subscribe streams one next event per source event.
 func (h *sseHandler) subscribe(c fiber.Ctx, req *graphql.Request) error {
-	ctx, cancel := requestContext(c)
+	reqCtx, cancel := requestContext(c)
+	ctx, leave, ok := h.drain.Enter(reqCtx)
+	if !ok {
+		cancel()
+		h.writeError(c, http.StatusServiceUnavailable, "The server is shutting down.")
+		return nil
+	}
 
 	events, err := h.exec.Subscribe(ctx, req)
 	if err != nil {
+		leave()
 		cancel()
 		var se *graphql.SubscribeError
 		if errors.As(err, &se) {
@@ -208,6 +215,9 @@ func (h *sseHandler) subscribe(c fiber.Ctx, req *graphql.Request) error {
 			for resp := range events {
 				resp.Release()
 			}
+			// Last, so a drain waits for this stream's cleanup and not only
+			// for its writes.
+			leave()
 		}()
 		defer func() {
 			// fasthttp runs this closure on a bare goroutine of its own with
@@ -262,6 +272,9 @@ func (h *sseHandler) stream(ctx context.Context, w *bufio.Writer, events <-chan 
 			if !h.flush(w) {
 				return
 			}
+		case <-h.drain.Closing():
+			// No complete event, as in gqlsse: the client should reconnect.
+			return
 		case <-ctx.Done():
 			return
 		}

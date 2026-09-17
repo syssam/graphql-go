@@ -32,6 +32,7 @@ const (
 	StatusInitTimeout              = gqlwsproto.StatusInitTimeout
 	StatusSubscriberExists         = gqlwsproto.StatusSubscriberExists
 	StatusTooManyInitRequests      = gqlwsproto.StatusTooManyInitRequests
+	StatusGoingAway                = gqlwsproto.StatusGoingAway
 )
 
 type connKey struct{}
@@ -172,6 +173,16 @@ func WS(exec *graphql.Executor, opts ...Option) fiber.Handler {
 		// this is the last word on the descriptor.
 		defer func() { _ = conn.Close() }()
 
+		// Checked again here because the check below the upgrade can race a
+		// drain that starts in between; the socket is open by now, so the
+		// refusal is a close rather than a status.
+		ctx, leave, ok := cfg.drain.Enter(context.Background())
+		if !ok {
+			_ = sock.Close(StatusGoingAway, "Going away")
+			return
+		}
+		defer leave()
+
 		if conn.Subprotocol() != Subprotocol {
 			_ = sock.Close(StatusSubprotocolNotAcceptable, "Subprotocol not acceptable")
 			return
@@ -181,12 +192,13 @@ func WS(exec *graphql.Executor, opts ...Option) fiber.Handler {
 		// The connection is hijacked: this runs after the Fiber handler has
 		// returned and its Ctx has been recycled, so the connection gets a
 		// context of its own rather than anything derived from the request.
-		gqlwsproto.Serve(context.Background(), sock, gqlwsproto.Config{
+		gqlwsproto.Serve(ctx, sock, gqlwsproto.Config{
 			Exec:         exec,
 			InitTimeout:  cfg.initTimeout,
 			PingInterval: cfg.pingInterval,
 			MaxSubs:      cfg.maxSubs,
 			OnConnect:    cfg.onConnect,
+			Closing:      cfg.drain.Closing(),
 			DecorateContext: func(ctx context.Context) context.Context {
 				return context.WithValue(ctx, connKey{}, conn)
 			},
@@ -209,6 +221,14 @@ func WS(exec *graphql.Executor, opts ...Option) fiber.Handler {
 		}
 		if !originAllowed(c, cfg) {
 			return fiber.NewError(fiber.StatusForbidden, "Origin not authorized")
+		}
+		// After the origin check on purpose, so a cross-origin request gets
+		// 403 even while draining. gqlws checks the drain before Accept
+		// instead; both refuse without opening a socket.
+		select {
+		case <-cfg.drain.Closing():
+			return fiber.NewError(fiber.StatusServiceUnavailable, "The server is shutting down.")
+		default:
 		}
 		return upgrade(c)
 	}
