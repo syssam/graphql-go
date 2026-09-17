@@ -349,6 +349,12 @@ func (c *conn) subscribe(msg InMessage) bool {
 		return c.writeError(msg.ID, graphql.Errorf("This connection allows at most %d operations at a time.", c.cfg.MaxSubs)) == nil
 	}
 	c.subs[msg.ID] = cancel
+	// Redundant with closeIfIdle's own re-check under mu, on purpose: Stop is
+	// too late for a timer that fired while this subscribe waited for the
+	// lock, and the re-check is what catches that. Either alone keeps a busy
+	// connection open, so breaking just one leaves every test green (only
+	// breaking both fails TestMaxConnectionIdleWaitsForOperations); a green
+	// suite is not evidence that either is dead.
 	if c.idle != nil && len(c.subs) == 1 {
 		c.idle.Stop()
 	}
