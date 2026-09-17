@@ -62,6 +62,12 @@ func (st *execState) writeField(ctx context.Context, w *jsonw.Writer, obj *objec
 // the error and returns false without cleaning up partial output; callers
 // rewind.
 func (st *execState) writeFieldValue(ctx context.Context, w *jsonw.Writer, obj *objectType, f *planField, parent any, path *pathNode) bool {
+	// An unguarded __typename reads only the planField it is already on, so it
+	// pays no load from execState on the path every Apollo client exercises.
+	if f.kind == fieldTypename && f.authIdx < 0 {
+		w.String(obj.name)
+		return true
+	}
 	// -1 on a field that declares nothing, so the ordinary path pays one
 	// compare on a struct already in cache.
 	if st.decision != nil && f.authIdx >= 0 {
