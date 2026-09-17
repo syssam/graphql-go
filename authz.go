@@ -254,6 +254,12 @@ func isLeafField(site AuthSite) bool { return site.leaf }
 // surfaces once per request with the coordinate attached rather than as a
 // null-bubbled parent at write time.
 func (o Outcome) validFor(site AuthSite) error {
+	// An object site guards __typename, a String! with no resolver: Null
+	// would write a silent spec-violating null, and Zero and Redact have no
+	// field to act on.
+	if site.Kind == SiteObject && o.act != actionAllow && o.act != actionDeny {
+		return Errorf("authorization: only Allow and Deny are valid for %s, an object site guarding __typename", site.Coord)
+	}
 	switch o.act {
 	case actionNull:
 		// A literal null on a non-null field is not a value the schema

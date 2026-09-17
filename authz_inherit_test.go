@@ -1,6 +1,7 @@
 package graphql
 
 import (
+	"context"
 	"slices"
 	"strconv"
 	"strings"
@@ -471,5 +472,108 @@ type Query { big: Big! }
 	}
 	if n := strings.Count(err.Error(), "@requiresScopes"); n != 1 {
 		t.Errorf("got %d cap-related errors, want exactly 1: %v", n, err)
+	}
+}
+
+func inheritExec(t testing.TB, held ...string) *Executor {
+	t.Helper()
+	have := map[string]bool{}
+	for _, h := range held {
+		have[h] = true
+	}
+	return NewExecutor(inheritSchema(t), WithAuthorizer(ScopeAuthorizer(
+		func(context.Context) map[string]bool { return have })))
+}
+
+func TestInheritedRequirementDeniesField(t *testing.T) {
+	cases := []struct {
+		name  string
+		held  []string
+		query string
+		deny  bool
+	}{
+		{"object-level denies a field that declares nothing", []string{"pet:read"}, `{ pet { name } }`, true},
+		{"interface type-level denies", []string{"dog:read"}, `{ pet { name } }`, true},
+		{"interface field-level denies the implementer's field", []string{"dog:read", "pet:read"}, `{ pet { secret } }`, true},
+		{"same, selected through an inline fragment", []string{"dog:read", "pet:read"}, `{ pet { ... on Dog { secret } } }`, true},
+		{"everything held allows", []string{"dog:read", "pet:read", "pet:secret"}, `{ pet { name secret } }`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := run(t, inheritExec(t, tc.held...), tc.query, "")
+			if !tc.deny {
+				if len(resp.Errors) > 0 {
+					t.Fatalf("unexpected errors: %s", errorsJSON(resp.Errors))
+				}
+				return
+			}
+			if len(resp.Errors) == 0 {
+				t.Fatalf("not denied; data = %s", resp.Data)
+			}
+			if got := resp.Errors[0].Extensions["code"]; got != CodeForbidden {
+				t.Errorf("code = %v, want %v", got, CodeForbidden)
+			}
+		})
+	}
+}
+
+// Apollo clients add __typename to every selection. Unguarded, it counts the
+// rows of a guarded type and confirms a given one exists.
+func TestTypenameIsGuardedByTheObjectRequirement(t *testing.T) {
+	resp := run(t, inheritExec(t), `{ pet { __typename } }`, "")
+	if len(resp.Errors) == 0 {
+		t.Fatalf("__typename of a guarded type was not denied; data = %s", resp.Data)
+	}
+	if string(resp.Data) != "null" && resp.Data != nil {
+		t.Errorf("__typename is String!, so its denial must bubble; data = %s", resp.Data)
+	}
+
+	resp = run(t, inheritExec(t, "dog:read", "pet:read"), `{ pet { __typename } }`, "")
+	if len(resp.Errors) > 0 {
+		t.Fatalf("held scopes still denied __typename: %s", errorsJSON(resp.Errors))
+	}
+	if got, want := string(resp.Data), `{"pet":{"__typename":"Dog"}}`; got != want {
+		t.Errorf("data = %s, want %s", got, want)
+	}
+}
+
+func TestTypenameOfAnUnguardedTypeHasNoSite(t *testing.T) {
+	e := NewExecutor(shapeSchema(t))
+	p, _, perrs := planForTest(t, e, `{ me { __typename id } }`)
+	if perrs != nil {
+		t.Fatalf("plan: %v", perrs)
+	}
+	for _, s := range p.shape.Sites() {
+		if s.Kind == SiteObject {
+			t.Errorf("unguarded type User produced an object site %q", s.Coord)
+		}
+	}
+}
+
+func TestObjectSiteAdmitsOnlyAllowAndDeny(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		o    Outcome
+	}{
+		{"Null", Null()},
+		{"Zero", Zero()},
+		{"Redact", Redact(func(v any) any { return v })},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var setErr error
+			e := NewExecutor(inheritSchema(t), WithAuthorizer(AuthorizerFunc(
+				func(ctx context.Context, shape *AuthShape, d *Decision) error {
+					for i, s := range shape.Sites() {
+						if s.Kind == SiteObject {
+							setErr = d.Set(i, tc.o)
+						}
+					}
+					return nil
+				})))
+			run(t, e, `{ pet { __typename } }`, "")
+			if setErr == nil {
+				t.Errorf("Decision.Set accepted %s on an object site", tc.name)
+			}
+		})
 	}
 }

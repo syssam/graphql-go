@@ -15,11 +15,12 @@ import (
 const authDirective = "requiresScopes"
 
 // buildAuthShape walks a compiled selection and records every position that
-// declares a requirement. It runs once per plan, so the walk is O(plan size)
-// and never repeated per request.
-func buildAuthShape(sel *selectionSet) *AuthShape {
+// declares a requirement, effective (own AND inherited) requirements
+// included. It runs once per plan, so the walk is O(plan size) and never
+// repeated per request.
+func buildAuthShape(root *objectType, sel *selectionSet) *AuthShape {
 	b := &shapeBuilder{}
-	b.walk(sel)
+	b.walk(root, nil, sel)
 	if len(b.sites) == 0 {
 		return nil
 	}
@@ -28,12 +29,17 @@ func buildAuthShape(sel *selectionSet) *AuthShape {
 }
 
 type shapeBuilder struct {
-	sites  []AuthSite
-	scopes []string
-	seen   map[*selectionSet]bool
+	sites      []AuthSite
+	scopes     []string
+	seen       map[*selectionSet]bool
+	objectSite map[*objectType]int32
 }
 
-func (b *shapeBuilder) walk(sel *selectionSet) {
+// walk visits a selection set whose parent is obj (concrete) or abs (abstract).
+// compileSelection keys its memo by that parent, so a set -- and any
+// __typename inside it -- belongs to exactly one parent even when several
+// fields reach it, which is what makes an object site well defined.
+func (b *shapeBuilder) walk(obj *objectType, abs *abstractType, sel *selectionSet) {
 	if sel == nil {
 		return
 	}
@@ -53,34 +59,62 @@ func (b *shapeBuilder) walk(sel *selectionSet) {
 	b.seen[sel] = true
 
 	for _, f := range sel.fields {
-		b.field(f)
+		b.field(obj, f)
 	}
-	for _, concrete := range sel.byType {
-		b.walk(concrete)
+	if abs != nil && len(sel.byType) > 0 {
+		names := make([]string, 0, len(sel.byType))
+		for name := range sel.byType {
+			names = append(names, name)
+		}
+		// Sorted so a document's site indices do not depend on map order.
+		slices.Sort(names)
+		for _, name := range names {
+			b.walk(abs.possible[name], nil, sel.byType[name])
+		}
 	}
 }
 
-func (b *shapeBuilder) field(f *planField) {
+func (b *shapeBuilder) field(obj *objectType, f *planField) {
 	f.authIdx = -1
-	if f.def != nil && f.def.def != nil {
-		// capped is ignored here, not unchecked: resolveAuthRequirements reads
-		// this exact ast.FieldDefinition.Directives at NewSchema and already
-		// fails the build for any combination requirementOf would report as
-		// capped, so a schema that ever reaches plan compile cannot have one.
-		if req, ok, _ := requirementOf(f.def.def.Directives); ok {
-			f.authIdx = int32(len(b.sites))
-			b.sites = append(b.sites, AuthSite{
-				Coord:    coordinate(f.def.object.name, f.name),
-				Field:    f.def.def,
-				Object:   f.def.object.def,
-				Kind:     SiteOutput,
-				Requires: req,
-				leaf:     f.def.leaf,
-			})
-			b.scopes = append(b.scopes, req.Scopes()...)
+	switch {
+	case f.kind == fieldTypename:
+		if obj != nil && !obj.requires.IsZero() {
+			f.authIdx = b.objectSiteFor(obj)
 		}
+	case f.def != nil && !f.def.requires.IsZero():
+		f.authIdx = int32(len(b.sites))
+		b.sites = append(b.sites, AuthSite{
+			Coord:    coordinate(f.def.object.name, f.name),
+			Field:    f.def.def,
+			Object:   f.def.object.def,
+			Kind:     SiteOutput,
+			Requires: f.def.requires,
+			leaf:     f.def.leaf,
+		})
+		b.scopes = append(b.scopes, f.def.requires.Scopes()...)
 	}
-	b.walk(f.sub)
+	b.walk(f.target, f.abstract, f.sub)
+}
+
+// objectSiteFor returns the one SiteObject site for obj in this plan, so every
+// __typename on a type shares a decision.
+func (b *shapeBuilder) objectSiteFor(obj *objectType) int32 {
+	if i, ok := b.objectSite[obj]; ok {
+		return i
+	}
+	if b.objectSite == nil {
+		b.objectSite = make(map[*objectType]int32)
+	}
+	i := int32(len(b.sites))
+	b.sites = append(b.sites, AuthSite{
+		Coord:    obj.name,
+		Object:   obj.def,
+		Kind:     SiteObject,
+		Requires: obj.requires,
+	})
+	b.scopes = append(b.scopes, obj.requires.Scopes()...)
+	b.objectSite[obj] = i
+	return i
 }
 
 // requirementOf reads every @requiresScopes occurrence off a definition and

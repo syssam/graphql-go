@@ -49,7 +49,7 @@ func (st *execState) writeField(ctx context.Context, w *jsonw.Writer, obj *objec
 	// Past the response limit a null is no cheaper to keep than the field was:
 	// the response is discarded, and nulling here would let every enclosing
 	// list carry on to its next element.
-	if f.def != nil && f.def.typ.NonNull || w.LimitExceeded() {
+	if f.kind == fieldTypename || (f.def != nil && f.def.typ.NonNull) || w.LimitExceeded() {
 		return false
 	}
 	w.Rewind(fm)
@@ -62,16 +62,16 @@ func (st *execState) writeField(ctx context.Context, w *jsonw.Writer, obj *objec
 // the error and returns false without cleaning up partial output; callers
 // rewind.
 func (st *execState) writeFieldValue(ctx context.Context, w *jsonw.Writer, obj *objectType, f *planField, parent any, path *pathNode) bool {
-	if f.kind == fieldTypename {
-		w.String(obj.name)
-		return true
-	}
 	// -1 on a field that declares nothing, so the ordinary path pays one
 	// compare on a struct already in cache.
 	if st.decision != nil && f.authIdx >= 0 {
 		if done, ok := st.enforceAuth(ctx, w, f, path); done {
 			return ok
 		}
+	}
+	if f.kind == fieldTypename {
+		w.String(obj.name)
+		return true
 	}
 	if w.OverLimit() {
 		return false
