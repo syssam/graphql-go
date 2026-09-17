@@ -94,7 +94,13 @@ must exist before fields reference them, inputs before args are composed. Go-vs-
 mismatches are reported here as joined errors, never at request time.
 
 **Plan compile (`plan.go`).** A document is parsed and validated once and
-cached in an LRU (`docEntry`); each `(operation, @skip/@include variant)` compiles to an
+cached in an LRU (`docEntry`), bounded by entry count and by query text
+(`WithPlanCacheBytes`, 16 MiB by default). The byte budget matters more than it looks: a
+parsed and validated document retained roughly 26 times its query text, measured linear from
+64 KiB to 1 MiB on an alias-heavy query (other shapes will differ), so without it 1024 distinct
+valid 1 MiB queries of that shape would hold tens of gigabytes. The
+document is cached before the depth and complexity guard runs, so that guard does not bound
+this. Each `(operation, @skip/@include variant)` compiles to an
 immutable `plan` with fragments flattened, directives constant-folded per variant (up to
 `maxCondVars` boolean variables), arguments pre-decoded and response keys pre-serialized.
 `selectionSet` carries `byType` for abstract parents plus the scheduling counts the
