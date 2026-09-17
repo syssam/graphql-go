@@ -551,6 +551,11 @@ func (c *conn) watch(parent context.Context, served <-chan struct{}) {
 	case <-parent.Done():
 		c.close(StatusGoingAway, "Going away")
 	case <-served:
+		// A cancelled parent also ends the read loop, so served can win the
+		// race against parent.Done; the socket must still be closed then.
+		if parent.Err() != nil {
+			c.close(StatusGoingAway, "Going away")
+		}
 	}
 }
 
