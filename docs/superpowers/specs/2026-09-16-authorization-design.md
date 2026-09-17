@@ -2,7 +2,7 @@
 
 - **Date:** 2026-09-16
 - **Module:** `github.com/syssam/graphql-go`
-- **Status:** Approved design; not yet implemented
+- **Status:** Plan 1 (P1, P2, P3, P5, P7) implemented and merged (`e57e820`); Plan 2 decomposed in §9, 2a in progress
 - **Files:** `plan.go`, `exec.go`, `exec_object.go`, `directive.go`, `subscription.go`,
   `schema.go`, `introspection.go`, new `authz.go`, new `ext/authz/`
 
@@ -470,3 +470,83 @@ only the request can tell those apart.
 - Whether `Redact(fn)` should receive the `AuthSite` as well as the value. It
   is free to add later and speculative to add now; deferred until a caller
   needs it.
+
+## 9. Plan 2
+
+Plan 1 shipped the spine. Every item it deferred is an independent subsystem, so
+Plan 2 is split rather than written as one plan, ordered by the consumer's need
+and by how much fail-open each leaves in place.
+
+| Sub-plan | Scope | Why this position |
+|---|---|---|
+| **2a** | Requirement inheritance (object type, implemented interfaces) and `__typename`; Authorizer error hardening | Closes the two paths Plan 1's docs state are *not enforced*. Build time and plan compile only. |
+| **2b** | Argument sites: `SiteFilterArg`, `SiteInputWrite` | The consumer's field control needs both (cases 8, 9). |
+| **2c** | `ObjectAuthorizer`, wave batching, `Drop()` | Instance-level authorization; the largest design. |
+| **2d** | `ext/authz` (`@authenticated`, `@policy`, a batched `Guard`) | An opt-in convenience layer over 2a-2c. |
+| later | Introspection filtering (P6), static grant folding | On demand. The consumer's "guard every path" need is met by 2a's inheritance, not by grants. |
+
+### 9.1 Not planned: observing refused fields
+
+`FieldObserver` (merged independently of this work) documents that a field an
+Authorizer denied, nulled or zeroed is never observed. That stays. The place to
+audit an authorization decision is the Authorizer, which sees every site and
+every outcome it chose; an observer seeing "a field did not run" would add
+nothing a decision log lacks.
+
+### 9.2 2a — inheritance
+
+**A field's effective requirement is computed once, at `NewSchema`**, as the AND
+of: its own `@requiresScopes`; its object type's; each implemented interface
+type's; and the same-named field on each implemented interface. It is stored on
+the field's `fieldDef` and the object's effective type-level requirement on its
+`objectType`. The shape builder and `RequireAuthCoverage` both read those stored
+values, so the requirement authorization enforces and the one coverage accepts
+cannot diverge. Every input is schema-level and immutable after build, so the
+value is the same on every path that reaches the field, which is what keeps a
+memoized, shared `*selectionSet` safe.
+
+AND of two OR-of-AND requirements is their cross product. `NewSchema` fails when
+an effective requirement exceeds 64 groups, so a pathological combination is a
+build error rather than a per-request cost.
+
+**`__typename` is guarded** by its object's effective type-level requirement,
+through a `SiteObject` site. Otherwise `{ items { __typename } }` counts the rows
+of a guarded type and confirms that a given one exists. The compiler keys each
+concrete selection set by its `*objectType`, so a `__typename` field is never
+shared across object types and its site is well defined. `Decision.Set` admits
+only `Allow` and `Deny` on a `SiteObject`: `__typename` is `String!`, so `Null`
+would be a silent spec violation, and `Zero`/`Redact` have no field to act on.
+
+**`@requiresScopes` on a location the engine does not enforce is a build error**
+(union, enum, scalar, input object, argument, input field). A silent no-op is
+the failure this whole design exists to remove.
+
+**`RequireAuthCoverage` counts a field as covered when its effective requirement
+is non-zero**, or when the field or its object carries `@public`. `@public` on an
+interface does not exempt implementers: exemption stays explicit per type.
+
+**Authorizer errors that are not `*Error` are not shown to clients.** A policy
+decision point's transport failure ("dial tcp 10.0.3.7:8181: connection
+refused") would otherwise reach the client verbatim, disclosing internal
+addresses and making an outage indistinguishable from a denial. Such an error
+is presented as a generic internal error; the original is logged and kept as
+the presented error's cause. An `*Error` the Authorizer built on purpose passes
+through as before.
+
+### 9.3 2b — argument sites (decided here, planned separately)
+
+The engine cannot know which argument is a filter, nor that a key such as
+`taxNumberContains` names the field `taxNumber` — that is the consumer's naming
+convention. So:
+
+- The declaration is in SDL: `@authorizeInput(kind: FILTER | WRITE)` on an
+  argument definition. Schema-first, visible to `RequireAuthCoverage`, and
+  emitted by a generator rather than hand-written.
+- The engine reports, it does not interpret. At decision time it walks the value
+  actually supplied (variables resolved) and hands the Authorizer the key paths
+  that were present. Mapping a key to a field is the Authorizer's job.
+- Only `Deny` is valid on an argument site, refusing the field before its
+  resolver runs.
+- An absent key is not reported; a key sent as explicit `null` is (§8).
+- An operation whose shape has no argument site walks nothing.
+
