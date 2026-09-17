@@ -22,6 +22,7 @@ package drain
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 )
 
 // Drain tracks the long-lived connections of one server. A nil *Drain is
@@ -31,6 +32,7 @@ type Drain struct {
 	draining bool
 	closing  chan struct{}
 	wg       sync.WaitGroup
+	active   atomic.Int64
 
 	// force is cancelled when Shutdown gives up, and every entered context
 	// follows it.
@@ -61,6 +63,7 @@ func (d *Drain) Enter(parent context.Context) (ctx context.Context, leave func()
 		return parent, func() {}, false
 	}
 	d.wg.Add(1)
+	d.active.Add(1)
 	d.mu.Unlock()
 
 	ctx, cancel := context.WithCancel(parent)
@@ -70,6 +73,7 @@ func (d *Drain) Enter(parent context.Context) (ctx context.Context, leave func()
 		once.Do(func() {
 			stop()
 			cancel()
+			d.active.Add(-1)
 			d.wg.Done()
 		})
 	}, true
@@ -115,4 +119,14 @@ func (d *Drain) Shutdown(ctx context.Context) error {
 		d.giveUp()
 		return ctx.Err()
 	}
+}
+
+// Active reports how many connections have entered and not yet left: the
+// long-lived WebSocket connections and SSE subscription streams open now on
+// every handler sharing this Drain. It is zero for a nil Drain.
+func (d *Drain) Active() int {
+	if d == nil {
+		return 0
+	}
+	return int(d.active.Load())
 }

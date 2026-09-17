@@ -471,6 +471,23 @@ panicking field's span now gets error status
 — the interceptor's plain `defer span.End()` ran during the panic's unwind, before recovery
 converted it, so a crashed field used to produce a span that looked clean.
 
+**Runtime metrics follow the OpenTelemetry runtime instrumentation, not grpc's channelz**: no
+introspection endpoint, just asynchronous instruments read on collection. `Executor.Stats()` is the
+engine's snapshot (plan cache entries, bytes, hits, misses; concurrency slots in use and limit) and
+`drain.Drain.Active()` the transport's (long-lived connections on handlers with `WithDrain`);
+`otel.ObserveExecutor` and `otel.ObserveDrain` register them after the executor or drain exists,
+returning a `metric.Registration` to unregister, and `otel.New`'s request interceptor adds
+`graphql.server.active_requests`. **Hits and misses are counted after `planFor`, not in
+`document`**: every streaming transport calls `OperationKind` before `Execute`, and counting in
+`document` would count each such request twice (`TestStatsIgnoresRejectedAndKindLookups`); a
+request rejected before planning is neither, matching the per-operation `CacheHit`. The counters
+are two `atomic.Int64`s on `Executor`, not per-request state: interleaved n=12 on
+`BenchmarkFieldPathBare` against `main`, 1.698us vs 1.652us (p=0.311) at 18 allocs/op both —
+single-goroutine, so contention on the shared counter under parallel load was not measured.
+Names follow the repository's split: `graphql.server.*` where the concept is generic,
+`graphqlgo.*` where it is this engine's. No per-operation dimension on the new instruments, to keep
+cardinality bounded.
+
 `otel.Batch` / `otel.MappedBatch` wrap a `loader.BatchFunc` so every flush gets a span under
 the request that caused it. They live in `ext/otel` rather than as a loader option so
 `loader/` keeps depending on nothing but the engine and the standard library.
@@ -617,7 +634,7 @@ from it, because the timings it first recorded were single samples and have been
 Status: phases 1-4 complete and merged to `main` — engine, both codegen binding modes,
 subscriptions, five transports, DataLoader, APQ, limits with actual cost accounting,
 OpenTelemetry with field observation, bounded plan expansion, a plan cache bounded by
-query text, a response size limit, an operation timeout, a shutdown drain and connection age and idle limits for WebSocket and SSE, the authorization spine (`Authorizer`, `AuthShape`, `RequireAuthCoverage`,
+query text, a response size limit, an operation timeout, a shutdown drain and connection age and idle limits for WebSocket and SSE, runtime metrics (`Executor.Stats`, `otel.ObserveExecutor`, `otel.ObserveDrain`), the authorization spine (`Authorizer`, `AuthShape`, `RequireAuthCoverage`,
 `SubscriptionInterceptor`), and the `lint/` analyzer; plus `relay/`, `fed/`, `ext/throttle`,
 `ext/trusted` and DataLoader tracing. Not built: `ext/authz` (the Apollo directive vocabulary
 and a batched `Guard`) and APQ over WebSocket, which belongs in the

@@ -52,6 +52,11 @@ type Executor struct {
 	maxDepth         int
 	maxResponseBytes int64
 	maxErrors        int
+
+	// planHits and planMisses count operations served from, or compiled
+	// into, the plan cache. They live on the Executor, not per request.
+	planHits         atomic.Int64
+	planMisses       atomic.Int64
 	operationTimeout time.Duration
 	// timeoutCause is the context cause of this executor's own deadline, nil
 	// without one. Compared by identity, it tells the timeout apart from a
@@ -383,6 +388,7 @@ func (e *Executor) execute(ctx context.Context, req *Request) *Response {
 	if perrs != nil {
 		return e.requestError(ctx, perrs...)
 	}
+	e.countPlan(cacheHit)
 
 	oc := &OperationContext{
 		Operation:     op,

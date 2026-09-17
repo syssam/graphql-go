@@ -60,6 +60,7 @@ type config struct {
 	recordQuery bool
 	duration    metric.Float64Histogram
 	errors      metric.Int64Counter
+	active      metric.Int64UpDownCounter
 }
 
 // Option configures the instrumentation.
@@ -95,16 +96,7 @@ func WithDocument(enabled bool) Option {
 
 // New returns the executor options that install the instrumentation.
 func New(opts ...Option) []graphql.ExecutorOption {
-	c := &config{}
-	for _, o := range opts {
-		o(c)
-	}
-	if c.tracer == nil {
-		c.tracer = otel.GetTracerProvider().Tracer(ScopeName)
-	}
-	if c.meter == nil {
-		c.meter = otel.GetMeterProvider().Meter(ScopeName)
-	}
+	c := newConfig(opts)
 	// Instrument creation fails only on a bad name, which is a constant here;
 	// a nil instrument is simply not recorded, so a failure degrades to traces
 	// only rather than taking the server down.
@@ -113,6 +105,9 @@ func New(opts ...Option) []graphql.ExecutorOption {
 		metric.WithDescription("Duration of a GraphQL operation."))
 	c.errors, _ = c.meter.Int64Counter("graphql.server.errors",
 		metric.WithDescription("GraphQL errors returned to clients."))
+	c.active, _ = c.meter.Int64UpDownCounter("graphql.server.active_requests",
+		metric.WithUnit("{request}"),
+		metric.WithDescription("GraphQL requests being served right now."))
 
 	out := []graphql.ExecutorOption{
 		graphql.WithRequestInterceptor(graphql.RequestInterceptorFunc(c.interceptRequest)),
@@ -124,8 +119,30 @@ func New(opts ...Option) []graphql.ExecutorOption {
 	return out
 }
 
+// newConfig applies opts and fills in the global providers for anything unset.
+func newConfig(opts []Option) *config {
+	c := &config{}
+	for _, o := range opts {
+		o(c)
+	}
+	if c.tracer == nil {
+		c.tracer = otel.GetTracerProvider().Tracer(ScopeName)
+	}
+	if c.meter == nil {
+		c.meter = otel.GetMeterProvider().Meter(ScopeName)
+	}
+	return c
+}
+
 // interceptRequest opens the span that covers everything, including parsing.
 func (c *config) interceptRequest(ctx context.Context, req *graphql.Request, next graphql.RequestHandler) *graphql.Response {
+	// Counted around the whole chain, parsing included, as HTTP's
+	// active_requests counts around the whole handler. A nil instrument
+	// (creation failed) is skipped rather than recorded.
+	if c.active != nil {
+		c.active.Add(ctx, 1)
+		defer c.active.Add(context.WithoutCancel(ctx), -1)
+	}
 	ctx, span := c.tracer.Start(ctx, "graphql.request", trace.WithSpanKind(trace.SpanKindServer))
 	defer span.End()
 
