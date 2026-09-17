@@ -190,9 +190,10 @@ func (e *Executor) Subscribe(ctx context.Context, req *Request) (<-chan *Respons
 		args = v
 	}
 
-	// Arguments are decoded above rather than inside the handler so an
+	// Arguments are decoded above rather than only inside the handler so an
 	// interceptor refusing the subscription sees the same operation context a
-	// successful one would.
+	// successful one would. The handler decodes again from oc.Variables; see
+	// there.
 	open := SubscriptionHandler(func(ctx context.Context, oc *OperationContext) (<-chan *Response, error) {
 		// Gates opening the source itself, so an unauthorized client never
 		// runs its side effects or learns what it reports. Three things refuse
@@ -219,6 +220,20 @@ func (e *Executor) Subscribe(ctx context.Context, req *Request) (<-chan *Respons
 					return nil, e.subscribeError(ctx, o.denial().WithPath(Path{{Key: f.alias}}))
 				}
 			}
+		}
+		// The Authorizer above read oc.Variables, which an interceptor may have
+		// replaced, so the source must be opened with arguments decoded from
+		// that same map: args from the early decode would let an interceptor
+		// show the policy one input and hand the source another. The early
+		// decode stays as validation so a bad argument is refused before any
+		// interceptor runs.
+		args := args
+		if f.dynamicArgs {
+			v, derr := f.def.args.decode(fieldArguments(f.ast, oc.Variables))
+			if derr != nil {
+				return nil, e.subscribeError(ctx, Errorf("Invalid argument for field %s: %v", coordinate(p.root.name, f.def.name), derr).WithCode(CodeBadUserInput))
+			}
+			args = v
 		}
 		stream, serr := f.def.subscribe(ctx, args)
 		if serr != nil {

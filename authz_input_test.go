@@ -693,8 +693,12 @@ type argSubArgs struct {
 	Where *argWhereIn
 }
 
-func newArgSubExecutor(t *testing.T, a Authorizer) (*authSubSource, *Executor) {
+// argSubOpenedWith records the where argument the last opened source received.
+var argSubOpenedWith atomic.Pointer[argWhereIn]
+
+func newArgSubExecutor(t *testing.T, a Authorizer, opts ...ExecutorOption) (*authSubSource, *Executor) {
 	t.Helper()
+	argSubOpenedWith.Store(nil)
 	src := &authSubSource{ch: make(chan *authSubMessage)}
 	s, err := NewSchema(SDL(argSubSDL),
 		Query(Field("ping", func(Root) string { return "pong" })),
@@ -708,8 +712,13 @@ func newArgSubExecutor(t *testing.T, a Authorizer) (*authSubSource, *Executor) {
 			Field("secret", func(m *authSubMessage) string { return m.Secret }),
 		),
 		Subscription(
-			SubscribeArgs("messages", func(context.Context, argSubArgs) (<-chan *authSubMessage, error) {
+			SubscribeArgs("messages", func(_ context.Context, args argSubArgs) (<-chan *authSubMessage, error) {
 				src.opens.Add(1)
+				where := args.Where
+				if where == nil {
+					where = &argWhereIn{}
+				}
+				argSubOpenedWith.Store(where)
 				return src.ch, nil
 			}),
 		),
@@ -717,7 +726,131 @@ func newArgSubExecutor(t *testing.T, a Authorizer) (*authSubSource, *Executor) {
 	if err != nil {
 		t.Fatalf("NewSchema: %v", err)
 	}
-	return src, NewExecutor(s, WithAuthorizer(a))
+	return src, NewExecutor(s, append([]ExecutorOption{WithAuthorizer(a)}, opts...)...)
+}
+
+// An interceptor may replace OperationContext.Variables before the handler
+// runs. The Authorizer reads the replaced map, so the source must be opened
+// with arguments decoded from that same map: otherwise an interceptor shows
+// the policy an allowed filter and opens the stream with a denied one.
+func TestSubscribeOpensWithTheInputTheAuthorizerSaw(t *testing.T) {
+	cases := []struct {
+		name      string
+		sent      string
+		rewritten map[string]any
+		wantOpen  bool
+	}{
+		{"denied input rewritten to allowed", `{"w":{"taxNumber":"1"}}`,
+			map[string]any{"w": map[string]any{"nameContains": "a"}}, true},
+		{"allowed input rewritten to denied", `{"w":{"nameContains":"a"}}`,
+			map[string]any{"w": map[string]any{"taxNumber": "1"}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var seen []InputKey
+			rewrite := SubscriptionInterceptorFunc(func(ctx context.Context, oc *OperationContext, next SubscriptionHandler) (<-chan *Response, error) {
+				oc.Variables = tc.rewritten
+				return next(ctx, oc)
+			})
+			src, e := newArgSubExecutor(t, taxPolicy(&seen), WithSubscriptionInterceptor(rewrite))
+			_, err := e.Subscribe(t.Context(), &Request{
+				Query:     `subscription($w: Where) { messages(where: $w) { id } }`,
+				Variables: []byte(tc.sent),
+			})
+			if !tc.wantOpen {
+				if err == nil || src.opens.Load() != 0 {
+					t.Fatalf("rewritten denied input opened the source: err=%v opens=%d", err, src.opens.Load())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Subscribe: %v", err)
+			}
+			where := argSubOpenedWith.Load()
+			if where == nil {
+				t.Fatal("source was not opened")
+			}
+			var opened []string
+			if where.NameContains != nil {
+				opened = append(opened, "nameContains")
+			}
+			if where.TaxNumber != nil {
+				opened = append(opened, "taxNumber")
+			}
+			if saw := render(seen); !slices.Equal(opened, saw) {
+				t.Errorf("source opened with %v, Authorizer saw %v", opened, saw)
+			}
+		})
+	}
+}
+
+const argOutputSDL = `
+directive @authorizeInput(kind: AuthorizeInputKind!) on ARGUMENT_DEFINITION
+enum AuthorizeInputKind { FILTER WRITE }
+input Where { nameContains: String taxNumber: String }
+type Query { search(where: Where @authorizeInput(kind: FILTER)): String }
+`
+
+type argSearchArgs struct {
+	Where *argWhereIn
+}
+
+// An argument Deny must win over whatever the field's own output site says.
+// Null and Zero never run the resolver, so an order that applied them first
+// would answer with a quiet null or "" and no error, hiding that the input
+// was refused; Redact would run the resolver with the refused input.
+func TestArgumentDenyWinsOverOutputOutcome(t *testing.T) {
+	var calls atomic.Int64
+	s, err := NewSchema(SDL(argOutputSDL),
+		Input[argWhereIn]("Where",
+			InputField("nameContains", func(w *argWhereIn, v *string) { w.NameContains = v }),
+			InputField("taxNumber", func(w *argWhereIn, v *string) { w.TaxNumber = v }),
+		),
+		Args[argSearchArgs](InputField("where", func(a *argSearchArgs, v *argWhereIn) { a.Where = v })),
+		Query(ResolveArgs("search", func(context.Context, Root, argSearchArgs) (*string, error) {
+			calls.Add(1)
+			v := "secret"
+			return &v, nil
+		})),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		out  Outcome
+	}{
+		{"Null", Null()},
+		{"Zero", Zero()},
+		{"Redact", Redact(func(any) any { return "redacted" })},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls.Store(0)
+			e := NewExecutor(s, WithAuthorizer(AuthorizerFunc(
+				func(ctx context.Context, shape *AuthShape, d *Decision) error {
+					for i, site := range shape.Sites() {
+						o := tc.out
+						if site.Kind == SiteFilterArg {
+							o = Deny("customer:taxNumber", site.Coord)
+						}
+						if err := d.Set(i, o); err != nil {
+							return err
+						}
+					}
+					return nil
+				})))
+			resp := run(t, e, `{ search(where: {taxNumber: "1"}) }`, "")
+			if len(resp.Errors) != 1 {
+				t.Fatalf("errors = %s, data = %s; want exactly one denial", errorsJSON(resp.Errors), resp.Data)
+			}
+			if got := resp.Errors[0].Extensions["code"]; got != CodeForbidden {
+				t.Errorf("code = %v, want %v", got, CodeForbidden)
+			}
+			if n := calls.Load(); n != 0 {
+				t.Errorf("resolver ran %d times; a denied argument must refuse before it runs", n)
+			}
+		})
+	}
 }
 
 // The argument arrives through a variable, so this also proves the open
