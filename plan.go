@@ -95,6 +95,9 @@ type planField struct {
 	// already in cache is what keeps authorization free for fields that
 	// declare nothing.
 	authIdx int32
+
+	// argSites indexes this field's argument sites in the plan's AuthShape.
+	argSites []int32
 }
 
 // fieldExec holds the executor functions used for a field within one plan.

@@ -1,8 +1,10 @@
 package graphql
 
 import (
+	"context"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/vektah/gqlparser/v2"
@@ -280,5 +282,160 @@ func TestAuthorizeInputPlacementAtBuild(t *testing.T) {
 				t.Fatalf("want an @authorizeInput error naming %q, got %v", tc.wantErr, err)
 			}
 		})
+	}
+}
+
+const argSiteSDL = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT | INTERFACE
+directive @authorizeInput(kind: AuthorizeInputKind!) on ARGUMENT_DEFINITION
+enum AuthorizeInputKind { FILTER WRITE }
+enum OrderField { NAME TAX_NUMBER }
+input Order { field: OrderField! }
+input Where { nameContains: String taxNumber: String }
+input Patch { name: String taxNumber: String }
+type Customer { name: String! }
+type Query {
+  customers(where: Where @authorizeInput(kind: FILTER), orderBy: [Order!] @authorizeInput(kind: FILTER)): [Customer!]!
+  guarded(where: Where @authorizeInput(kind: FILTER)): [Customer!]! @requiresScopes(scopes: [["c:read"]])
+  plain: String
+}
+type Mutation { update(patch: Patch! @authorizeInput(kind: WRITE)): String }
+`
+
+type argCustomer struct{ Name string }
+
+// argWhereIn, argOrderIn and argPatchIn bind Where, Order and Patch. The
+// brief's fixture used map[string]any fields directly, but NewSchema decodes
+// an input object argument through a registered Input[T] struct binding, not
+// a bare map -- there is no decoder keyed by map[string]any. These structs
+// exist only so the schema builds; the tests below never inspect their
+// fields.
+type argWhereIn struct {
+	NameContains *string
+	TaxNumber    *string
+}
+type argOrderIn struct {
+	Field string
+}
+type argPatchIn struct {
+	Name      *string
+	TaxNumber *string
+}
+
+// argCustomersArgs covers Query.customers; argGuardedArgs covers
+// Query.guarded, which takes only where; argUpdateArgs covers
+// Mutation.update. inputBinding.build requires every field an Args[...]
+// registration declares to exist on the site it is used for, so one struct
+// cannot span customers (where, orderBy), guarded (where only) and update
+// (patch) the way the brief's single argArgs sketched -- guarded has no
+// orderBy argument and update has no where or orderBy.
+type argCustomersArgs struct {
+	Where   *argWhereIn
+	OrderBy []argOrderIn
+}
+type argGuardedArgs struct {
+	Where *argWhereIn
+}
+type argUpdateArgs struct {
+	Patch argPatchIn
+}
+
+var argResolverCalls atomic.Int64
+
+func argSiteSchema(t testing.TB) *Schema {
+	t.Helper()
+	customers := func(context.Context, Root, argCustomersArgs) ([]*argCustomer, error) {
+		argResolverCalls.Add(1)
+		return []*argCustomer{{Name: "ada"}}, nil
+	}
+	guarded := func(context.Context, Root, argGuardedArgs) ([]*argCustomer, error) {
+		argResolverCalls.Add(1)
+		return []*argCustomer{{Name: "ada"}}, nil
+	}
+	s, err := NewSchema(SDL(argSiteSDL),
+		Enum[string]("OrderField", map[string]string{"NAME": "NAME", "TAX_NUMBER": "TAX_NUMBER"}),
+		Input[argWhereIn]("Where",
+			InputField("nameContains", func(w *argWhereIn, v *string) { w.NameContains = v }),
+			InputField("taxNumber", func(w *argWhereIn, v *string) { w.TaxNumber = v }),
+		),
+		Input[argOrderIn]("Order",
+			InputField("field", func(o *argOrderIn, v string) { o.Field = v }),
+		),
+		Input[argPatchIn]("Patch",
+			InputField("name", func(p *argPatchIn, v *string) { p.Name = v }),
+			InputField("taxNumber", func(p *argPatchIn, v *string) { p.TaxNumber = v }),
+		),
+		Args[argCustomersArgs](
+			InputField("where", func(a *argCustomersArgs, v *argWhereIn) { a.Where = v }),
+			InputField("orderBy", func(a *argCustomersArgs, v []argOrderIn) { a.OrderBy = v }),
+		),
+		Args[argGuardedArgs](InputField("where", func(a *argGuardedArgs, v *argWhereIn) { a.Where = v })),
+		Args[argUpdateArgs](InputField("patch", func(a *argUpdateArgs, v argPatchIn) { a.Patch = v })),
+		Query(
+			ResolveArgs("customers", customers),
+			ResolveArgs("guarded", guarded),
+			Field("plain", func(Root) *string { return nil }),
+		),
+		Mutation(ResolveArgs("update", func(context.Context, Root, argUpdateArgs) (*string, error) {
+			argResolverCalls.Add(1)
+			return nil, nil
+		})),
+		Object[argCustomer]("Customer", Field("name", func(c *argCustomer) string { return c.Name })),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	return s
+}
+
+func TestArgumentSitesAtPlanCompile(t *testing.T) {
+	e := NewExecutor(argSiteSchema(t))
+	p, _, perrs := planForTest(t, e, `{ customers { name } plain }`)
+	if perrs != nil {
+		t.Fatalf("plan: %v", perrs)
+	}
+	if !p.shape.hasArgSites {
+		t.Fatal("shape does not record argument sites")
+	}
+	var coords []string
+	for _, s := range p.shape.Sites() {
+		if s.Kind == SiteFilterArg {
+			coords = append(coords, s.Coord)
+			if s.Arg == "" {
+				t.Errorf("site %s has no Arg", s.Coord)
+			}
+		}
+	}
+	slices.Sort(coords)
+	if want := []string{"Query.customers(orderBy:)", "Query.customers(where:)"}; !slices.Equal(coords, want) {
+		t.Errorf("argument sites = %v, want %v (a site exists even when the argument is not supplied)", coords, want)
+	}
+
+	sel := p.sel.forType(p.root)
+	for _, f := range sel.fields {
+		switch f.name {
+		case "customers":
+			if f.authIdx < 0 {
+				t.Error("a field with argument sites must carry an output site to route into enforceAuth")
+			}
+			if len(f.argSites) != 2 {
+				t.Errorf("customers argSites = %v, want 2", f.argSites)
+			}
+		case "plain":
+			if f.authIdx != -1 || len(f.argSites) != 0 {
+				t.Errorf("plain field gained authorization state: authIdx=%d argSites=%v", f.authIdx, f.argSites)
+			}
+		}
+	}
+}
+
+func TestPlanWithoutArgumentSitesIsUnchanged(t *testing.T) {
+	e := NewExecutor(argSiteSchema(t))
+	p, _, perrs := planForTest(t, e, `{ plain }`)
+	if perrs != nil {
+		t.Fatalf("plan: %v", perrs)
+	}
+	if !p.shape.IsEmpty() {
+		t.Errorf("a plan touching no guarded field or argument built sites: %v", p.shape.Sites())
 	}
 }

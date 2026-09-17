@@ -144,6 +144,9 @@ type AuthSite struct {
 	Requires Requirement
 	Grants   []string
 
+	// Arg names the argument for SiteFilterArg and SiteInputWrite sites.
+	Arg string
+
 	// leaf records whether Field is a scalar or enum, precomputed at shape
 	// build from fieldDef.leaf (object.go). AuthSite carries only the AST,
 	// and a field's own ast.FieldDefinition cannot answer this on its own:
@@ -151,6 +154,12 @@ type AuthSite struct {
 	// object type's without walking the schema's type registry, which is
 	// exactly what fieldDef.leaf already did once, at schema build.
 	leaf bool
+
+	// argType and argValue are the argument's declared type and the value the
+	// operation supplied (nil when it supplied none), read at decision time
+	// against the request's variables.
+	argType  *ast.Type
+	argValue *ast.Value
 }
 
 // AuthShape is what an operation touches, independent of who is asking. It
@@ -159,6 +168,10 @@ type AuthSite struct {
 type AuthShape struct {
 	sites  []AuthSite
 	scopes []string
+
+	// hasArgSites gates the per-request input walk, so a plan without
+	// argument sites pays nothing for it.
+	hasArgSites bool
 }
 
 // Sites returns the positions needing a decision, indexed by site index.

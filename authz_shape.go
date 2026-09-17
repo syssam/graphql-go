@@ -29,14 +29,15 @@ func buildAuthShape(root *objectType, sel *selectionSet) *AuthShape {
 		return nil
 	}
 	slices.Sort(b.scopes)
-	return &AuthShape{sites: b.sites, scopes: slices.Compact(b.scopes)}
+	return &AuthShape{sites: b.sites, scopes: slices.Compact(b.scopes), hasArgSites: b.hasArgSites}
 }
 
 type shapeBuilder struct {
-	sites      []AuthSite
-	scopes     []string
-	seen       map[*selectionSet]bool
-	objectSite map[*objectType]int32
+	sites       []AuthSite
+	scopes      []string
+	seen        map[*selectionSet]bool
+	objectSite  map[*objectType]int32
+	hasArgSites bool
 }
 
 // walk visits a selection set whose parent is obj (concrete) or abs (abstract).
@@ -81,6 +82,7 @@ func (b *shapeBuilder) walk(obj *objectType, abs *abstractType, sel *selectionSe
 
 func (b *shapeBuilder) field(obj *objectType, f *planField) {
 	f.authIdx = -1
+	f.argSites = nil
 	switch {
 	case f.kind == fieldTypename:
 		if obj != nil && !obj.requires.IsZero() {
@@ -98,6 +100,47 @@ func (b *shapeBuilder) field(obj *objectType, f *planField) {
 		})
 		b.scopes = append(b.scopes, f.def.requires.Scopes()...)
 	}
+
+	if f.def != nil {
+		for _, ad := range f.def.def.Arguments {
+			d := ad.Directives.ForName(inputDirective)
+			if d == nil {
+				continue
+			}
+			kind := SiteFilterArg
+			if k := d.Arguments.ForName("kind"); k != nil && k.Value != nil && k.Value.Raw == "WRITE" {
+				kind = SiteInputWrite
+			}
+			var supplied *ast.Value
+			if a := f.ast.Arguments.ForName(ad.Name); a != nil {
+				supplied = a.Value
+			}
+			f.argSites = append(f.argSites, int32(len(b.sites)))
+			b.sites = append(b.sites, AuthSite{
+				Coord:    argCoordinate(coordinate(f.def.object.name, f.name), ad.Name),
+				Field:    f.def.def,
+				Object:   f.def.object.def,
+				Kind:     kind,
+				Arg:      ad.Name,
+				argType:  ad.Type,
+				argValue: supplied,
+			})
+			b.hasArgSites = true
+		}
+		// A field with argument sites must reach enforceAuth through the one
+		// compare every field already pays; a zero requirement allows.
+		if len(f.argSites) > 0 && f.authIdx < 0 {
+			f.authIdx = int32(len(b.sites))
+			b.sites = append(b.sites, AuthSite{
+				Coord:  coordinate(f.def.object.name, f.name),
+				Field:  f.def.def,
+				Object: f.def.object.def,
+				Kind:   SiteOutput,
+				leaf:   f.def.leaf,
+			})
+		}
+	}
+
 	b.walk(f.target, f.abstract, f.sub)
 }
 
