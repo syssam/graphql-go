@@ -730,7 +730,7 @@ against the code, not while planning.
 7. Not decided by D3/D6: when a subscription's stream opens, the source is
    opened with its arguments decoded again from `oc.Variables` — the same map
    the Authorizer walked at open time — rather than reusing the early decode
-   kept for interceptor visibility. Without this, an `OperationInterceptor`
+   kept for interceptor visibility. Without this, a `SubscriptionInterceptor`
    that rewrites `Variables` before the source opens could show the policy
    one input and hand the source another; the early decode is kept only as
    up-front validation, so a malformed argument is still refused before any

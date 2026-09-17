@@ -475,8 +475,8 @@ produce engine values directly.
 declares `@requiresScopes` gets `planField.authIdx >= 0` at construction; every other field
 gets `-1`, so the ordinary request path pays one integer compare and no allocation.
 Argument sites declared with `@authorizeInput` route through that same compare: a field
-with at least one gets a zero-requirement output site so `authIdx >= 0` still routes it, and
-a field with none pays nothing. The per-site input walk (`Decision.Input`) reads the
+with at least one gets a zero-requirement output site, when it declares no requirement of its
+own, so `authIdx >= 0` still routes it, and a field with none pays nothing. The per-site input walk (`Decision.Input`) reads the
 operation's AST plus its variables, never `ArgumentMap`, because `ArgumentMap` fills in SDL
 defaults the client did not choose. **A subscription's source is opened with arguments
 decoded again from `oc.Variables`**, the map the Authorizer walked, not the ones decoded
@@ -575,7 +575,7 @@ Status: phases 1-4 complete and merged to `main` — engine, both codegen bindin
 subscriptions, five transports, DataLoader, APQ, limits with actual cost accounting,
 OpenTelemetry with field observation, bounded plan expansion, a plan cache bounded by
 query text, a response size limit, an operation timeout and a shutdown drain for WebSocket and SSE, the authorization spine (`Authorizer`, `AuthShape`, `RequireAuthCoverage`,
-`SubscriptionInterceptor`), and the `lint/` analyzer; plus `relay/`, `fed/`, `ext/throttle`,
+`SubscriptionInterceptor`) with `@authorizeInput` argument sites, and the `lint/` analyzer; plus `relay/`, `fed/`, `ext/throttle`,
 `ext/trusted` and DataLoader tracing. Not built: `ext/authz` (the Apollo directive vocabulary
 and a batched `Guard`) and APQ over WebSocket, which belongs in the
 `graphql-transport-ws` state machine. `@defer`/`@stream` is not merely unbuilt — the prelude's

@@ -35,17 +35,22 @@
 // what a principal may do with it, and how that decision is enforced. A
 // schema author marks a field with @requiresScopes(scopes: [[String!]!]!),
 // an OR of ANDs read into a Requirement; NewSchema rejects a malformed
-// scopes value. At plan compile, buildAuthShape walks the plan once and
-// records every such field as a Site in an AuthShape, cached with the plan
+// scopes value. @requiresScopes and @authorizeInput only describe positions
+// in the schema; nothing is enforced against them unless an Authorizer is
+// configured with WithAuthorizer. At plan compile, buildAuthShape walks the
+// plan once and records every such field, and every field that selects an
+// @authorizeInput argument, as a Site in an AuthShape, cached with the plan
 // itself -- the shape does not depend on who is asking, so the plan cache is
-// not multiplied by policy, and a field that declares nothing carries
-// authIdx -1 and costs one integer compare on the request path. An
-// Authorizer turns a shape into a Decision once per query or mutation -- and,
-// for a subscription, once when the stream opens plus once more per event.
-// At open, exactly two things refuse the subscription before its source is
-// opened: an Authorize error, or a Deny recorded for the subscription root
-// field; any other outcome on the root, and every outcome below it, is left
-// to the per-event pass. That pass gates each event's Response, so a scope
+// not multiplied by policy, and a field that declares nothing and selects no
+// @authorizeInput argument carries authIdx -1 and costs one integer compare
+// on the request path. An Authorizer turns a shape into a Decision once per
+// query or mutation -- and, for a subscription, once when the stream opens
+// plus once more per event.
+// At open, exactly three things refuse the subscription before its source is
+// opened: an Authorize error, a Deny recorded for the subscription root
+// field, or a Deny recorded for one of that field's argument sites; any
+// other outcome on the root, and every outcome below it, is left to the
+// per-event pass. That pass gates each event's Response, so a scope
 // revoked mid-stream takes effect on the next event without tearing the
 // subscription down; a refused event is an error response, not a closed
 // stream.

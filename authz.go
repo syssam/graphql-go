@@ -122,16 +122,21 @@ func (r Requirement) describe() string {
 type SiteKind uint8
 
 const (
-	// SiteOutput is a selected output field.
+	// SiteOutput is a selected output field. A SiteOutput site can carry a
+	// zero Requires: buildAuthShape adds one for a field that has argument
+	// sites but no requirement of its own, purely to route the field through
+	// enforceAuth, so an Authorizer iterating output sites will see it.
 	SiteOutput SiteKind = iota
 	// SiteObject is a whole object type, checked once per instance rather
 	// than once per field of it.
 	SiteObject
-	// SiteFilterArg is a coordinate named in a where, orderBy or groupBy
-	// argument. A restricted field must not be filterable either, or its
-	// value leaks by bisection without ever being selected.
+	// SiteFilterArg is an argument marked @authorizeInput(kind: FILTER) on
+	// an object field. A restricted field must not be filterable either, or
+	// its value leaks by bisection without ever being selected. Only Allow
+	// and Deny are valid outcomes for it.
 	SiteFilterArg
-	// SiteInputWrite is a coordinate written by a mutation input.
+	// SiteInputWrite is an argument marked @authorizeInput(kind: WRITE) on
+	// an object field. Only Allow and Deny are valid outcomes for it.
 	SiteInputWrite
 )
 
@@ -144,7 +149,9 @@ type AuthSite struct {
 	Requires Requirement
 	Grants   []string
 
-	// Arg names the argument for SiteFilterArg and SiteInputWrite sites.
+	// Arg names the argument for SiteFilterArg and SiteInputWrite sites. For
+	// those kinds, Coord is Type.field(arg:) and Decision.Input reports what
+	// the client supplied there.
 	Arg string
 
 	// leaf records whether Field is a scalar or enum, precomputed at shape
@@ -216,7 +223,8 @@ func (s *AuthShape) Scopes() []string {
 }
 
 // IsEmpty reports whether the operation touches nothing that declares a
-// requirement. An Authorizer is not consulted for such an operation.
+// requirement and selects no field with an @authorizeInput argument. An
+// Authorizer is not consulted for such an operation.
 func (s *AuthShape) IsEmpty() bool { return s == nil || len(s.sites) == 0 }
 
 type action uint8
