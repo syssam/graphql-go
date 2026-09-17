@@ -138,7 +138,7 @@ func TestPlanSchedulability(t *testing.T) {
 func astSource(q string) *ast.Source { return &ast.Source{Input: q} }
 
 func TestPlanCacheHitAndEviction(t *testing.T) {
-	c := newPlanCache(2)
+	c := newPlanCache(2, 0)
 	a, b, d := &docEntry{query: "a"}, &docEntry{query: "b"}, &docEntry{query: "d"}
 	c.put(a)
 	c.put(b)
@@ -156,7 +156,7 @@ func TestPlanCacheHitAndEviction(t *testing.T) {
 }
 
 func TestPlanCacheCollision(t *testing.T) {
-	c := newPlanCache(4)
+	c := newPlanCache(4, 0)
 	c.hash = func(string) uint64 { return 42 }
 	a := &docEntry{query: "a"}
 	c.put(a)
@@ -174,7 +174,7 @@ func TestPlanCacheCollision(t *testing.T) {
 }
 
 func TestPlanCacheDisabled(t *testing.T) {
-	c := newPlanCache(0)
+	c := newPlanCache(0, 0)
 	c.put(&docEntry{query: "a"})
 	if c.get("a") != nil || c.len() != 0 {
 		t.Fatal("zero-size cache must not store")

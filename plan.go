@@ -530,11 +530,13 @@ func (d *docEntry) compile(s *Schema, e *Executor, op *ast.OperationDefinition, 
 // text. Because two queries may hash alike, a hit is confirmed by comparing
 // the stored query string, so a collision degrades to a miss.
 type planCache struct {
-	mu    sync.Mutex
-	size  int
-	items map[uint64]*list.Element
-	lru   *list.List
-	hash  func(string) uint64
+	mu       sync.Mutex
+	size     int
+	maxBytes int64
+	used     int64
+	items    map[uint64]*list.Element
+	lru      *list.List
+	hash     func(string) uint64
 }
 
 type cacheItem struct {
@@ -542,13 +544,14 @@ type cacheItem struct {
 	entry *docEntry
 }
 
-func newPlanCache(size int) *planCache {
+func newPlanCache(size int, maxBytes int64) *planCache {
 	seed := maphash.MakeSeed()
 	return &planCache{
-		size:  size,
-		items: make(map[uint64]*list.Element, size),
-		lru:   list.New(),
-		hash:  func(s string) uint64 { return maphash.String(seed, s) },
+		size:     size,
+		maxBytes: maxBytes,
+		items:    make(map[uint64]*list.Element, size),
+		lru:      list.New(),
+		hash:     func(s string) uint64 { return maphash.String(seed, s) },
 	}
 }
 
@@ -572,25 +575,56 @@ func (c *planCache) get(query string) *docEntry {
 	return item.entry
 }
 
-// put stores entry, evicting the least recently used document when full.
+// put stores entry, evicting least recently used documents until both the
+// entry count and the byte budget hold.
 func (c *planCache) put(entry *docEntry) {
 	if c == nil || c.size <= 0 {
+		return
+	}
+	n := int64(len(entry.query))
+	// A query larger than the whole budget can never fit, and evicting to make
+	// room for it would only discard documents that do.
+	if c.maxBytes > 0 && n > c.maxBytes {
 		return
 	}
 	h := c.hash(entry.query)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if el, ok := c.items[h]; ok {
-		el.Value.(*cacheItem).entry = entry
+		item := el.Value.(*cacheItem)
+		c.used += n - int64(len(item.entry.query))
+		item.entry = entry
 		c.lru.MoveToFront(el)
+		// A replacement can grow its slot past the budget. The replaced entry is
+		// now at the front and fits on its own, so this stops before reaching it.
+		for c.maxBytes > 0 && c.used > c.maxBytes && c.lru.Len() > 1 {
+			c.removeOldest()
+		}
 		return
 	}
-	for c.lru.Len() >= c.size {
-		oldest := c.lru.Back()
-		c.lru.Remove(oldest)
-		delete(c.items, oldest.Value.(*cacheItem).hash)
+	for c.lru.Len() > 0 && (c.lru.Len() >= c.size || (c.maxBytes > 0 && c.used+n > c.maxBytes)) {
+		c.removeOldest()
 	}
 	c.items[h] = c.lru.PushFront(&cacheItem{hash: h, entry: entry})
+	c.used += n
+}
+
+func (c *planCache) removeOldest() {
+	oldest := c.lru.Back()
+	item := oldest.Value.(*cacheItem)
+	c.lru.Remove(oldest)
+	delete(c.items, item.hash)
+	c.used -= int64(len(item.entry.query))
+}
+
+// bytes reports the query text the cache currently holds.
+func (c *planCache) bytes() int64 {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.used
 }
 
 // len reports the number of cached documents.
