@@ -29,7 +29,7 @@ func WithMaxResponseBytes(n int64) ExecutorOption
 A new error code `CodeResponseTooLarge = "RESPONSE_TOO_LARGE"`.
 
 Zero means unlimited, matching `WithMaxDepth`. The default is decided by measurement in the
-plan's first task: if an enabled budget costs nothing distinguishable from disabled in
+plan's last task: if an enabled budget costs nothing distinguishable from disabled in
 interleaved `benchstat` runs, the default is 64 MiB; otherwise the default is unlimited and
 the option is opt-in. Either way the decision and its numbers are recorded in `CLAUDE.md`.
 
@@ -44,14 +44,15 @@ When a response exceeds the limit:
 - `errors` is exactly one error: message `response exceeds the maximum size of N bytes`,
   `extensions.code` `RESPONSE_TOO_LARGE`, no path, no locations. Other field errors are
   discarded — they carry paths into data that no longer exists, and there may be many of
-  them.
-- Execution stops early: every field checkpoint after the budget trips fails without
-  resolving, the same way a cancelled context does. Resolvers already running finish.
+  them. The error still passes through the `ErrorPresenter`.
+- Execution stops early: every field checkpoint after the budget is exceeded fails without
+  resolving, the way a cancelled context does. Resolvers already running finish.
 - A subscription stream continues; only that event's response is replaced.
 
 The final decision is exact: after the root `writeObject` returns, the root writer's length
-is compared with the limit, so a response of `N` bytes succeeds and `N+1` fails. What is
-approximate is the in-flight bound — how much memory execution holds before it notices.
+is compared with the limit, so data of `N` bytes succeeds with limit `N` and fails with
+`N-1`. What is approximate is the in-flight bound — how much memory execution holds before
+it notices.
 
 ## Design
 
@@ -62,10 +63,9 @@ embeds the budget; sub-writers point at their root's.
 
 ```go
 type budget struct {
-	used    atomic.Int64 // bytes reported by every writer sharing this budget
-	limit   int64
-	chunk   int
-	tripped atomic.Bool
+	used     atomic.Int64 // bytes reported by every writer sharing this budget
+	limit    int64
+	exceeded atomic.Bool
 }
 
 type Writer struct {
@@ -81,44 +81,49 @@ type Writer struct {
 `jsonw` stays free of engine types; the budget is an unexported detail behind four methods:
 
 ```go
-func (w *Writer) Limit(n int64)          // root: bound this writer and every writer sharing it
+func (w *Writer) Limit(n int64)           // root: bound this writer and every writer sharing it
 func (w *Writer) ShareLimit(from *Writer) // sub-writer: share from's budget
-func (w *Writer) OverLimit() bool         // checkpoint: report growth in chunks, compare
-func (w *Writer) TripLimit() bool         // true exactly once per budget
+func (w *Writer) OverLimit() bool         // checkpoint: report growth, compare, latch exceeded
+func (w *Writer) LimitExceeded() bool     // whether any checkpoint on this budget went over
 ```
+
+`OverLimit` is written so the unlimited case inlines to one nil compare; the rest lives in a
+separate function.
 
 `Reset` (and so `Put`) subtracts `reported` from a shared budget and clears `budget`,
 `reported` and `own`. A sub-writer returned to the pool therefore gives back what it
 reported, so after execution `used` equals what the root writer reported — a writer that
-forgot to give back would show as drift in a test, not as a silently wrong limit.
+forgot to give back shows as drift in a test, not as a silently wrong limit.
 
-### Reporting in chunks
+### Reporting on every checkpoint
 
-`OverLimit` does not touch the atomic on every call. It computes `len(buf) - reported`
-locally and only when that delta is at least `chunk` in either direction (a rewind shrinks
-the buffer) does it `Add` it and update `reported`. It then `Load`s `used` and compares.
-`chunk` is `min(4096, max(1, limit/16))`, so a small limit in a test is not hidden behind a
-4 KiB reporting granularity.
+`OverLimit` adds `len(buf) - reported` to `used` whenever it is non-zero (negative after a
+rewind), updates `reported`, and compares `used` with the limit. It does not batch.
+Batching into fixed-size blocks was considered and rejected: a writer would only report
+after growing a whole block, and a concurrent list element's buffer is typically a few
+hundred bytes, so ten thousand small elements would never report at all — the exact case
+this exists for. The cost is one `atomic.Add` and one `Load` per field when a limit is set,
+which the default decision measures.
 
-The in-flight overshoot is bounded by `chunk` per live writer, plus one field's own output,
-since a checkpoint runs before a field and not inside a leaf writer. A leaf value is already
-in memory in the resolver's result before it is written, so that overshoot is proportional
-to data the process already held. This is documented on the option, not hidden.
+The in-flight overshoot is bounded by one field's output per live writer: a checkpoint runs
+before a field, not inside a leaf writer, and a writer's last field is only seen once its
+buffer is spliced into its parent and the parent reaches its next checkpoint. A leaf value is
+already in memory in the resolver's result before it is written, so that overshoot is
+proportional to data the process already held. This is documented on the option.
 
 ### Checkpoints in the executor
 
-- `writeFieldValue`, beside the existing `ctx.Err()` check:
-  `if w.OverLimit() { st.responseTooLarge(ctx, w); return false }`. With no limit this is
-  one nil compare on a writer already in cache.
+- `writeFieldValue`, beside the existing `ctx.Err()` check: `if w.OverLimit() { return false }`.
+  With no limit this is one nil compare on a writer already in cache.
 - `writeFieldsConcurrent` and `writeListConcurrent` call `sub.ShareLimit(w)` after `jsonw.Get`.
 - `runOperation` and `runSubscriptionEvent` call `w.Limit(e.maxResponseBytes)` when it is
-  non-zero, and after the root `writeObject` compare `w.Len()` with the limit exactly. Over,
-  or tripped during execution: rewrite `data` as `null` and replace `st.errs` with the single
-  error.
+  non-zero. After the root `writeObject` returns — every task has finished by then — they
+  compute `exceeded := w.LimitExceeded() || int64(w.Len()) > limit` *before* any `Reset`
+  (which clears the budget). When it holds they rewrite `data` as `null`, set `st.errs` to
+  nil and add the single error through `addError`.
 
-`responseTooLarge` records nothing itself beyond calling `TripLimit`; the one error is
-produced at the end, so a trip racing a cancellation cannot produce two top-level errors or
-none.
+The checkpoint records no error itself; the one error is produced at the end, so a trip
+racing a cancellation cannot produce two size errors or none.
 
 `execState` and `OperationContext` do not change size. `TestStructSizes` logs both and the
 branch re-measures them.
@@ -127,22 +132,20 @@ branch re-measures them.
 
 Each test below is broken on purpose once, and must fail when it is.
 
-1. `jsonw`: `OverLimit` reports in chunks and trips; `ShareLimit` accumulates across writers;
-   `Reset`/`Put` gives back exactly what was reported (`used` returns to the root's share);
-   a rewind reports a negative delta; `TripLimit` is true once; no budget means `OverLimit`
-   is false and costs no atomic.
-2. Exact boundary: a query whose data is exactly `N` bytes succeeds with limit `N` and fails
-   with `N-1`.
+1. `jsonw`: `OverLimit` reports and latches `LimitExceeded`; `ShareLimit` accumulates across
+   writers; `Reset` gives back exactly what was reported; a rewind reports a negative delta;
+   no budget means `OverLimit` is false.
+2. Exact boundary: data of exactly `N` bytes succeeds with limit `N` and fails with `N-1`.
 3. Shape of the failure: `data` null, one error, code `RESPONSE_TOO_LARGE`, no path, and
    another field error from the same query is not present.
-4. Early stop, sequential: a list of 1,000 objects whose child resolver counts its calls
-   stops well short of 1,000 under a small limit.
-5. Early stop, concurrent: the same with sibling concurrency, proving sub-writers share the
-   budget — with `ShareLimit` removed it resolves every element.
+4. Early stop, sequential: a list of 1,000 objects whose field counts its calls stops well
+   short of 1,000 under a small limit.
+5. Early stop in sub-writers: two concurrent sibling root fields, each writing such a list
+   into its own sub-writer, stop well short of 2,000 calls — with `ShareLimit` removed the
+   sub-writers have no budget and every element is written.
 6. Subscription: one oversized event fails alone; the next event succeeds.
-7. No limit: behaviour and allocation counts unchanged (`BenchmarkFieldPathBare` 18 allocs).
-8. Benchmarks for the default decision, interleaved: disabled vs. enabled at 64 MiB on the
-   existing root-package benchmarks.
+7. No limit: allocation counts unchanged (`BenchmarkFieldPathBare` 18 allocs/op).
+8. Benchmarks for the default decision, interleaved: disabled vs. enabled at 64 MiB.
 
 ## Out of scope
 
