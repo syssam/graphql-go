@@ -43,7 +43,7 @@ func newDrainExecutor(t *testing.T) (*drainSource, *graphql.Executor) {
 
 // serveDraining starts Serve with a Closing channel and returns it with a
 // channel closed when Serve returns.
-func serveDraining(t *testing.T, ctx context.Context, sock *fakeSocket, exec *graphql.Executor) (closing chan struct{}, done chan struct{}) {
+func serveDraining(t *testing.T, ctx context.Context, sock Socket, exec *graphql.Executor) (closing chan struct{}, done chan struct{}) {
 	t.Helper()
 	closing, done = make(chan struct{}), make(chan struct{})
 	go func() {
@@ -157,9 +157,10 @@ func TestDrainClosesHandshakingConnection(t *testing.T) {
 	}
 }
 
-// TestCancelledContextClosesSocket: when the drain gives up it cancels the
-// connection context. A driver whose Read ignores its context (gqlfiber) can
-// only be unblocked by closing the socket, so Serve must do that.
+// TestCancelledContextClosesSocket: a cancel from outside, with no drain in
+// progress, ends the connection. A driver whose Read ignores its context
+// (gqlfiber) can only be unblocked by closing the socket, so Serve must do
+// that.
 func TestCancelledContextClosesSocket(t *testing.T) {
 	_, exec := newDrainExecutor(t)
 	fake := newFakeSocket()
@@ -205,5 +206,41 @@ func TestCancelledContextClosesSocketWhenReadEnds(t *testing.T) {
 	waitDone(t, done)
 	if got := sock.closeCode(); got != StatusGoingAway {
 		t.Fatalf("close code = %d, want %d", got, StatusGoingAway)
+	}
+}
+
+// TestDrainGivingUpClosesSocket: a drain waiting on an operation that ignores
+// cancellation gives up by cancelling the connection context. The watcher is
+// by then parked in the drain rather than watching the context, and must still
+// close the socket: with a deaf Read nothing else ends the read loop, and with
+// an attentive one Serve's own wait blocks on the same operation.
+func TestDrainGivingUpClosesSocket(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		deaf bool
+	}{{"deaf read", true}, {"attentive read", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			src, exec := newDrainExecutor(t)
+			fake := newFakeSocket()
+			var sock Socket = fake
+			if tc.deaf {
+				sock = deafSocket{fake}
+			}
+			fake.in <- []byte(`{"type":"connection_init"}`)
+			fake.in <- []byte(`{"id":"q","type":"subscribe","payload":{"query":"{ block }"}}`)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			closing, done := serveDraining(t, ctx, sock, exec)
+			defer func() {
+				close(src.release)
+				waitDone(t, done)
+			}()
+
+			<-src.entered
+			close(closing)
+			time.Sleep(20 * time.Millisecond) // let the watcher settle into the drain
+			cancel()
+			waitFor(t, "the close after the drain gave up", func() bool { return fake.closeCode() == StatusGoingAway })
+		})
 	}
 }

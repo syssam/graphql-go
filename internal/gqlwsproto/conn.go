@@ -44,7 +44,9 @@ func Serve(ctx context.Context, sock Socket, cfg Config) {
 	c.serve()
 	close(served)
 	// The watcher may still owe the socket its 1001 close; returning first
-	// would let the driver's own teardown race it.
+	// would let the driver's own teardown race it. No test catches this
+	// deterministically (removing the wait failed 3 of 50 runs), so keep it
+	// on this reasoning rather than on a green suite.
 	<-watched
 }
 
@@ -55,7 +57,7 @@ func Serve(ctx context.Context, sock Socket, cfg Config) {
 func (c *conn) watch(parent context.Context, served <-chan struct{}) {
 	select {
 	case <-c.cfg.Closing:
-		c.drain(served)
+		c.drain(parent, served)
 	case <-parent.Done():
 		c.close(StatusGoingAway, "Going away")
 	case <-served:
@@ -78,12 +80,27 @@ func closed(ch <-chan struct{}) bool {
 
 // drain refuses new operations, ends subscriptions, waits for the rest, and
 // closes. The close is what ends the read loop.
-func (c *conn) drain(served <-chan struct{}) {
+//
+// A drain that gives up cancels parent, and by then this goroutine is parked
+// here rather than in watch's select, so the wait must watch parent too: an
+// operation that ignores cancellation would otherwise hold the socket open
+// for as long as it runs.
+func (c *conn) drain(parent context.Context, served <-chan struct{}) {
 	c.mu.Lock()
 	c.draining = true
 	c.mu.Unlock()
 	c.stopStreams()
-	c.wg.Wait()
+	waited := make(chan struct{})
+	go func() {
+		c.wg.Wait()
+		close(waited)
+	}()
+	select {
+	case <-waited:
+	case <-parent.Done():
+		c.close(StatusGoingAway, "Going away")
+		return
+	}
 	select {
 	case <-served:
 		return // the connection ended on its own meanwhile
@@ -244,6 +261,8 @@ func (c *conn) subscribe(msg InMessage) bool {
 	c.mu.Lock()
 	// The watcher sets draining asynchronously, so a subscribe read just after
 	// Closing closed would otherwise be accepted and then silently cancelled.
+	// That window is too narrow to test deterministically (removing the
+	// channel check failed 0 of 50 runs); keep it on this reasoning.
 	if c.draining || closed(c.cfg.Closing) {
 		c.mu.Unlock()
 		cancel()
@@ -289,6 +308,11 @@ func (c *conn) run(ctx context.Context, id string, req *graphql.Request) {
 	defer context.AfterFunc(c.streams, cancelStream)()
 	events, err := c.cfg.Exec.Subscribe(ctx, req)
 	if err != nil {
+		if ctx.Err() != nil {
+			// Accepted just before a drain and cancelled by it: a terminal
+			// error here would tell the client not to resubscribe.
+			return
+		}
 		var se *graphql.SubscribeError
 		if errors.As(err, &se) {
 			c.finishWithErrors(id, se.Response.Errors)
