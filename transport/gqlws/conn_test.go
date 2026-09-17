@@ -720,3 +720,24 @@ func TestDrainRefusesNewConnections(t *testing.T) {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
 	}
 }
+
+// TestCancelledConnectContextCloses: the context OnConnect returns can end on
+// its own, as an expiring token would. The connection must close 1001 then,
+// so the client reconnects and re-authenticates, rather than stay open with
+// nothing served on it.
+func TestCancelledConnectContextCloses(t *testing.T) {
+	_, e := newTestExecutor(t)
+	session, expire := context.WithCancel(context.Background())
+	defer expire()
+	c := dial(t, e, gqlws.WithOnConnect(func(ctx context.Context, _ []byte) (context.Context, error) {
+		ctx, cancel := context.WithCancel(ctx)
+		context.AfterFunc(session, cancel)
+		return ctx, nil
+	}))
+	c.init("")
+
+	expire()
+	if code := c.recvErr(); code != gqlws.StatusGoingAway {
+		t.Fatalf("close code = %d after the connection context ended, want %d", code, gqlws.StatusGoingAway)
+	}
+}

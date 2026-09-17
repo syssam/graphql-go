@@ -328,8 +328,8 @@ On `Closing`, a WebSocket (`internal/gqlwsproto`, both drivers) refuses new oper
 `error`, cancels subscriptions without `complete`, lets queries and mutations finish so their
 clients learn the result, and closes 1001; an SSE subscription stream returns without a
 `complete` event. Omitting `complete` is the point — it would tell graphql-ws and graphql-sse
-clients the subscription ended for good instead of reconnecting. New connections get 503. Past
-its deadline `Shutdown` cancels every entered context and returns without waiting; the wait
+clients the subscription ended for good instead of reconnecting. New WebSocket connections and
+new SSE subscriptions get 503. Past its deadline `Shutdown` cancels every entered context and returns without waiting; the wait
 goroutine outlives that return until handlers call `leave`. **`gqlwsproto.watch` closes the
 socket itself** when its parent context is cancelled, including mid-drain while an operation
 ignores cancellation: `gqlfiber`'s `Read` ignores its context, so closing the socket is the only
@@ -338,10 +338,16 @@ watching the parent and never closed at all. **`gqlwsproto` reads under
 `context.WithoutCancel`**: coder/websocket closes a connection with no frame the moment a read's
 context is cancelled, so on `gqlws` a drain giving up produced EOF instead of 1001 — caught only by
 a transport-level test, since the protocol's fake socket cannot close anything. A read now ends
-only when the socket closes, which every path that ends a connection already does. One
-consequence: a cancelled `OnConnect` context no longer drops a `gqlws` connection by itself (its
-operations are still cancelled), which is what `gqlfiber`, whose `Read` always ignored its
-context, already did. Two guards in `gqlwsproto` have no deterministic
+only when the socket closes, so every path that ends a connection must close it. **A cancelled
+connection context — the one `OnConnect` returned, say on token expiry — closes the socket with
+1001 through a `context.AfterFunc`** registered after the ack and unregistered first in `serve`'s
+defer (so Serve's own cancel on a normal exit sends nothing); both drivers need it now that
+neither read is cancellable, and `gqlfiber` never had it. `Serve` releases `watch` from a defer,
+so a panicking `OnConnect` does not leave it parked. Three drain divergences are deliberate and
+known: `gqlws` checks the drain before anything else, so a non-upgrade GET while draining gets
+503 where `gqlfiber` answers 426, then 403 (origin), then 503; drain refusals are not in
+`transport/equivalence_test.go`; and `gqlecho.serve` does not map a drain 503 to an
+`*echo.HTTPError`. Two guards in `gqlwsproto` have no deterministic
 test and say so beside them (`closed(cfg.Closing)` in `subscribe`, and `Serve` waiting for
 `watch`); a reviewer's 50-run break of each failed 0 and 3 times. `gqlhttp` needs nothing.
 

@@ -65,7 +65,9 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -86,8 +88,13 @@ func run() error {
 
 	slog.Info("serving GraphQL", "addr", *addr,
 		"http", "/graphql", "sse", "/graphql/stream", "ws", "/graphql/ws")
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		// Failed to start, so no shutdown began and there is nothing to wait
+		// for.
 		return err
 	}
+	// ListenAndServe returns as soon as Shutdown begins, not when it ends;
+	// returning here would exit the process with streams still draining.
+	<-done
 	return nil
 }

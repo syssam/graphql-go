@@ -2,6 +2,7 @@ package gqlwsproto
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sync"
 	"testing"
@@ -192,23 +193,6 @@ func (d deafSocket) Read(context.Context) ([]byte, error) {
 	return b, nil
 }
 
-// TestCancelledContextClosesSocketWhenReadEnds: with a Read that honours its
-// context, the read loop can end before the watcher selects the cancel, and
-// the socket must still be closed.
-func TestCancelledContextClosesSocketWhenReadEnds(t *testing.T) {
-	_, exec := newDrainExecutor(t)
-	sock := newFakeSocket()
-	sock.in <- []byte(`{"type":"connection_init"}`)
-	ctx, cancel := context.WithCancel(context.Background())
-	_, done := serveDraining(t, ctx, sock, exec)
-	waitFor(t, "the ack", func() bool { return slices.Contains(sock.types(), "connection_ack") })
-	cancel()
-	waitDone(t, done)
-	if got := sock.closeCode(); got != StatusGoingAway {
-		t.Fatalf("close code = %d, want %d", got, StatusGoingAway)
-	}
-}
-
 // TestDrainGivingUpClosesSocket: a drain waiting on an operation that ignores
 // cancellation gives up by cancelling the connection context. The watcher is
 // by then parked in the drain rather than watching the context, and must still
@@ -242,5 +226,108 @@ func TestDrainGivingUpClosesSocket(t *testing.T) {
 			cancel()
 			waitFor(t, "the close after the drain gave up", func() bool { return fake.closeCode() == StatusGoingAway })
 		})
+	}
+}
+
+// TestCancelledConnectContextClosesSocket: a context OnConnect returned can
+// end on its own, as a token expiring would. No read is cancellable any more,
+// so without something watching that context the client would be left on an
+// open socket that neither pings nor serves operations.
+func TestCancelledConnectContextClosesSocket(t *testing.T) {
+	_, exec := newDrainExecutor(t)
+	fake := newFakeSocket()
+	sock := deafSocket{fake}
+	fake.in <- []byte(`{"type":"connection_init"}`)
+	session, expire := context.WithCancel(context.Background())
+	defer expire()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		Serve(context.Background(), sock, Config{
+			Exec: exec, InitTimeout: 5 * time.Second, MaxSubs: 10,
+			OnConnect: func(context.Context, []byte) (context.Context, error) {
+				return session, nil
+			},
+		})
+	}()
+	waitFor(t, "the ack", func() bool { return slices.Contains(fake.types(), "connection_ack") })
+	expire()
+	waitDone(t, done)
+	if got := fake.closeCode(); got != StatusGoingAway {
+		t.Fatalf("close code = %d, want %d", got, StatusGoingAway)
+	}
+}
+
+// TestServePanicReleasesWatch: net/http recovers a panicking handler, so a
+// panic out of Serve (here from OnConnect) must not leave watch parked for the
+// life of the process. Counting goroutines would be fragile; a watch still
+// running is observable instead, because it closes the socket with 1001 when
+// the caller's context is later cancelled, and one that exited cannot.
+func TestServePanicReleasesWatch(t *testing.T) {
+	_, exec := newDrainExecutor(t)
+	sock := newFakeSocket()
+	sock.in <- []byte(`{"type":"connection_init"}`)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	recovered := make(chan any, 1)
+	go func() {
+		defer func() { recovered <- recover() }()
+		Serve(ctx, sock, Config{
+			Exec: exec, InitTimeout: 5 * time.Second, MaxSubs: 10,
+			OnConnect: func(context.Context, []byte) (context.Context, error) {
+				panic("hook exploded")
+			},
+		})
+	}()
+	select {
+	case r := <-recovered:
+		if r == nil {
+			t.Fatal("Serve returned without the hook's panic")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve neither returned nor panicked")
+	}
+
+	cancel()
+	time.Sleep(100 * time.Millisecond) // a watch that survived the panic closes the socket in this window
+	if got := sock.closeCode(); got != 0 {
+		t.Fatalf("socket closed with %d after the panic: watch was still running", got)
+	}
+}
+
+// brokenPongSocket fails every write after the first (the ack), without
+// closing anything, as a peer that stopped reading would.
+type brokenPongSocket struct {
+	*fakeSocket
+	writes int
+}
+
+func (b *brokenPongSocket) Write(ctx context.Context, data []byte) error {
+	b.writes++ // serialized by the protocol's write lock
+	if b.writes > 1 {
+		return errors.New("peer stopped reading")
+	}
+	return b.fakeSocket.Write(ctx, data)
+}
+
+// TestServeExitDoesNotCloseGoingAway: Serve cancels the connection context on
+// its way out, which is the same context the close-on-cancel watches. That
+// close must be unregistered first, or every connection ending for its own
+// reason would be sent a 1001 it did not earn.
+func TestServeExitDoesNotCloseGoingAway(t *testing.T) {
+	_, exec := newDrainExecutor(t)
+	fake := newFakeSocket()
+	sock := &brokenPongSocket{fakeSocket: fake}
+	fake.in <- []byte(`{"type":"connection_init"}`)
+	fake.in <- []byte(`{"type":"ping"}`)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		Serve(context.Background(), sock, Config{Exec: exec, InitTimeout: 5 * time.Second, MaxSubs: 10})
+	}()
+	waitDone(t, done)
+	time.Sleep(20 * time.Millisecond) // context.AfterFunc runs on its own goroutine
+	if got := fake.closeCode(); got != 0 {
+		t.Fatalf("close code = %d after Serve ended on a failed write, want no close", got)
 	}
 }

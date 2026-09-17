@@ -135,7 +135,8 @@ it neither closes nor waits for WebSockets, and an SSE stream never ends by
 itself, so `Shutdown` waits out its whole timeout. A `drain.Drain` handed to both
 streaming handlers winds them down — subscriptions end (WebSocket close 1001, or
 the SSE response ends without `complete`, so clients reconnect), queries and
-mutations already running over a WebSocket finish, and new connections get 503:
+mutations already running over a WebSocket finish, and new WebSocket connections
+and new SSE subscriptions get 503:
 
 ```go
 d := drain.New()

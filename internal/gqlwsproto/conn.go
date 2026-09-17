@@ -41,13 +41,18 @@ func Serve(ctx context.Context, sock Socket, cfg Config) {
 		defer close(watched)
 		c.watch(parent, served)
 	}()
+	// Deferred so that a panic out of serve -- a panicking OnConnect, which
+	// net/http recovers -- still releases the watcher instead of leaving it
+	// parked until the caller's context ends.
+	defer func() {
+		close(served)
+		// The watcher may still owe the socket its 1001 close; returning first
+		// would let the driver's own teardown race it. No test catches this
+		// deterministically (removing the wait failed 3 of 50 runs), so keep it
+		// on this reasoning rather than on a green suite.
+		<-watched
+	}()
 	c.serve()
-	close(served)
-	// The watcher may still owe the socket its 1001 close; returning first
-	// would let the driver's own teardown race it. No test catches this
-	// deterministically (removing the wait failed 3 of 50 runs), so keep it
-	// on this reasoning rather than on a green suite.
-	<-watched
 }
 
 // watch ends the connection from outside the read loop, which is the only way
@@ -61,8 +66,12 @@ func (c *conn) watch(parent context.Context, served <-chan struct{}) {
 	case <-parent.Done():
 		c.close(StatusGoingAway, "Going away")
 	case <-served:
-		// A cancelled parent also ends the read loop, so served can win the
-		// race against parent.Done; the socket must still be closed then.
+		// No read is cancellable, so a cancel never ends the read loop by
+		// itself. But the loop can end for its own reason -- the client
+		// leaving, a pong that failed to write -- as the caller cancels, and
+		// select picks between ready cases at random. The re-check keeps the
+		// outcome off that draw: a caller's cancel always attempts 1001, which
+		// on a socket already gone costs only a debug log.
 		if parent.Err() != nil {
 			c.close(StatusGoingAway, "Going away")
 		}
@@ -118,6 +127,10 @@ type conn struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
+	// stopOnDone unregisters the close that fires when the connection context
+	// ends; nil until the handshake succeeds.
+	stopOnDone func() bool
+
 	writeMu sync.Mutex
 
 	mu   sync.Mutex
@@ -140,6 +153,9 @@ func (c *conn) serve() {
 		return
 	}
 	defer func() {
+		// First, so cancelAll's own cancel does not send 1001 on a
+		// connection that is already ending for some other reason.
+		c.stopOnDone()
 		c.cancelAll()
 		c.wg.Wait()
 	}()
@@ -198,8 +214,18 @@ func (c *conn) handshake() bool {
 			// there reaches every resolver on this connection.
 			c.ctx, c.cancel = context.WithCancel(opCtx)
 			if err := c.write(c.ctx, OutMessage{Type: TypeConnectionAck}); err != nil {
+				c.cancel()
 				return false
 			}
+			// A hook's context can end on its own, as an expiring token would.
+			// No read is cancellable, so without this the client would sit on
+			// an open socket that neither pings nor serves operations. 1001
+			// makes graphql-ws clients retry, and so re-authenticate.
+			// Registered only after the ack, so no handshake failure leaves it
+			// behind for serve's defer to miss.
+			c.stopOnDone = context.AfterFunc(c.ctx, func() {
+				c.close(StatusGoingAway, "Going away")
+			})
 			return true
 		case TypePing:
 			if err := c.write(ctx, OutMessage{Type: TypePong, Payload: msg.Payload}); err != nil {
@@ -484,7 +510,8 @@ func (c *conn) startPings() func() {
 // a malformed message against an operation.
 func (c *conn) read(ctx context.Context) (InMessage, error) {
 	// The read never ends by cancellation, only by the socket closing, which
-	// every path that ends a connection already does. coder/websocket closes
+	// every path that ends a connection does -- a cancelled connection context
+	// included, through the close handshake registers on it. coder/websocket closes
 	// the connection without a frame when a read's context is cancelled, so
 	// reading under a cancellable context let a drain that gave up drop the
 	// connection before watch could send 1001. The values are kept.

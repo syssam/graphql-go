@@ -77,7 +77,9 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		<-ctx.Done()
 		// The drain ends open SSE streams and WebSockets so Fiber's shutdown
 		// can finish early instead of waiting out its timeout; both run
@@ -101,7 +103,12 @@ func run() error {
 	slog.Info("serving GraphQL", "addr", *addr,
 		"http", "/graphql", "sse", "/graphql/stream", "ws", "/graphql/ws")
 	if err := app.Listen(*addr, fiber.ListenConfig{DisableStartupMessage: true}); err != nil {
+		// Failed to start, so no shutdown began and there is nothing to wait
+		// for.
 		return err
 	}
+	// Listen returns as soon as ShutdownWithContext begins, not when it ends;
+	// returning here would exit the process with connections still draining.
+	<-done
 	return nil
 }

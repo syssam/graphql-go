@@ -92,7 +92,9 @@ func run() error {
 	// StartConfig begins its graceful shutdown when ctx ends; the drain starts
 	// at the same moment, because that shutdown waits for SSE streams only the
 	// drain can end.
+	drained := make(chan struct{})
 	go func() {
+		defer close(drained)
 		<-ctx.Done()
 		drainCtx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
@@ -118,7 +120,15 @@ func run() error {
 
 	slog.Info("serving GraphQL", "addr", *addr,
 		"http", "/graphql", "sse", "/graphql/stream", "ws", "/graphql/ws")
-	if err := sc.Start(ctx, e); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	err = sc.Start(ctx, e)
+	// Start waits for its own graceful shutdown but not for the drain, which
+	// may still be closing WebSockets; returning would exit the process under
+	// them. Only a signal starts the drain, so a server that failed to start
+	// returns at once.
+	if ctx.Err() != nil {
+		<-drained
+	}
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil

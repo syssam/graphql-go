@@ -303,3 +303,69 @@ type Subscription { ticks: Int! }
 		t.Fatalf("Shutdown took %v, want under 1s", dur)
 	}
 }
+
+// The context OnConnect returns can end on its own, as an expiring token
+// would. fasthttp's Read ignores its context, so only a close reaches the
+// parked read; without one the client keeps an open, silent socket.
+func TestWSCancelledConnectContextCloses(t *testing.T) {
+	session, expire := context.WithCancel(context.Background())
+	defer expire()
+	c := dialWS(t, newTestExecutor(t), WithOnConnect(func(ctx context.Context, _ []byte) (context.Context, error) {
+		ctx, cancel := context.WithCancel(ctx)
+		context.AfterFunc(session, cancel)
+		return ctx, nil
+	}))
+	c.init()
+
+	expire()
+	if got := c.recvClose(); got != coderws.StatusGoingAway {
+		t.Fatalf("close code = %d after the connection context ended, want %d", got, coderws.StatusGoingAway)
+	}
+}
+
+// Fiber's own shutdown waits for open requests, and an SSE subscription is one
+// that only the drain ends, so the two must be run together and both finish
+// promptly. The app's real listener is used so ShutdownWithContext is the one
+// a deployment calls.
+func TestSSEFiberShutdownFinishesWithDrain(t *testing.T) {
+	src := newIdleSource()
+	d := drain.New()
+	app := fiber.New()
+	app.Post("/graphql", SSE(idleSSEExecutor(t, src), WithKeepAlive(time.Hour), WithDrain(d)))
+	base := startFiber(t, app)
+
+	reqCtx, cancelReq := context.WithCancel(context.Background())
+	defer cancelReq()
+	resp, err := streamClient(t).Do(sseSubscribeRequest(t, reqCtx, base))
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	go func() { _, _ = io.Copy(io.Discard, resp.Body) }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	drained, stopped := make(chan error, 1), make(chan error, 1)
+	go func() { drained <- d.Shutdown(ctx) }()
+	go func() { stopped <- app.ShutdownWithContext(ctx) }()
+	for _, r := range []struct {
+		name string
+		ch   <-chan error
+	}{{"drain.Shutdown", drained}, {"app.ShutdownWithContext", stopped}} {
+		select {
+		case err := <-r.ch:
+			if err != nil {
+				t.Fatalf("%s = %v, want nil", r.name, err)
+			}
+		case <-time.After(6 * time.Second):
+			t.Fatalf("%s did not return", r.name)
+		}
+	}
+	if dur := time.Since(start); dur > 2*time.Second {
+		t.Fatalf("shutdown took %v, want under 2s", dur)
+	}
+}
