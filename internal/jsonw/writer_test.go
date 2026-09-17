@@ -307,3 +307,43 @@ func TestLimitResetGivesBack(t *testing.T) {
 		t.Fatal("a reset writer is over a limit it no longer has")
 	}
 }
+
+// TestSpliceCountsOnce pins that bytes a sub-writer already reported move to
+// the parent when spliced, instead of being counted by both.
+func TestSpliceCountsOnce(t *testing.T) {
+	root := New()
+	root.Limit(60)
+	sub := New()
+	sub.ShareLimit(root)
+	sub.String(strings.Repeat("x", 50)) // 52 bytes
+	if sub.OverLimit() {
+		t.Fatal("52 bytes against a limit of 60 is not over")
+	}
+	root.BeginArray()
+	root.Splice(sub)
+	if root.OverLimit() {
+		t.Fatalf("spliced bytes counted twice: used = %d for %d bytes held", root.budget.used.Load(), root.Len())
+	}
+	if got, want := root.budget.used.Load(), int64(root.Len()); got != want {
+		t.Fatalf("used = %d, want %d", got, want)
+	}
+	Put(sub)
+	if got, want := root.budget.used.Load(), int64(root.Len()); got != want {
+		t.Fatalf("after the sub-writer went back to the pool, used = %d, want %d", got, want)
+	}
+}
+
+// TestPutReleasesOversizedBuffer covers the buffer Put declines to pool: it
+// must still give its bytes back, or the count never comes down.
+func TestPutReleasesOversizedBuffer(t *testing.T) {
+	root := New()
+	root.Limit(1 << 40)
+	sub := New()
+	sub.ShareLimit(root)
+	sub.String(strings.Repeat("x", maxPooledCap+1))
+	sub.OverLimit()
+	Put(sub)
+	if got := root.budget.used.Load(); got != 0 {
+		t.Fatalf("used = %d after an oversized sub-writer was put, want 0", got)
+	}
+}

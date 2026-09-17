@@ -68,12 +68,16 @@ func Get() *Writer {
 	return pool.Get().(*Writer)
 }
 
-// Put resets w and returns it to the pool.
+// Put resets w and returns it to the pool. A buffer too large to pool is still
+// reset, so a writer sharing a limit gives its bytes back either way.
 func Put(w *Writer) {
-	if w == nil || cap(w.buf) > maxPooledCap {
+	if w == nil {
 		return
 	}
 	w.Reset()
+	if cap(w.buf) > maxPooledCap {
+		return
+	}
 	pool.Put(w)
 }
 
@@ -284,6 +288,16 @@ func (w *Writer) String(s string) {
 func (w *Writer) Raw(b []byte) {
 	w.sep()
 	w.buf = append(w.buf, b...)
+}
+
+// Splice writes sub's bytes as the next value. The bytes sub already reported
+// against a shared limit become w's, so they are counted once: sub is
+// typically put back only after every sibling is spliced, and a checkpoint on
+// w before then would otherwise count them a second time.
+func (w *Writer) Splice(sub *Writer) {
+	w.Raw(sub.buf)
+	w.reported += sub.reported
+	sub.reported = 0
 }
 
 // EncodeKey returns `"name":` with name escaped, suitable for Key.

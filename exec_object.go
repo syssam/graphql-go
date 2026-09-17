@@ -430,7 +430,7 @@ func (st *execState) writeFieldsConcurrent(ctx context.Context, w *jsonw.Writer,
 		switch {
 		case r.ok:
 			w.Key(f.key)
-			w.Raw(r.buf.Bytes())
+			w.Splice(r.buf)
 		case f.def.typ.NonNull:
 			return false
 		default:
@@ -484,7 +484,7 @@ func (st *execState) writeListConcurrent(ctx context.Context, w *jsonw.Writer, v
 	for _, r := range results {
 		switch {
 		case r.ok:
-			w.Raw(r.buf.Bytes())
+			w.Splice(r.buf)
 		case t.Elem.NonNull:
 			w.Rewind(mark)
 			return false, true, nil

@@ -49,10 +49,13 @@ When a response exceeds the limit:
   resolving, the way a cancelled context does. Resolvers already running finish.
 - A subscription stream continues; only that event's response is replaced.
 
-The final decision is exact: after the root `writeObject` returns, the root writer's length
-is compared with the limit, so data of `N` bytes succeeds with limit `N` and fails with
-`N-1`. What is approximate is the in-flight bound — how much memory execution holds before
-it notices.
+The final decision is exact for an execution that never passed the limit: after the root
+`writeObject` returns, the root writer's length is compared with the limit, so data of `N`
+bytes succeeds with limit `N` and fails with `N-1`. Once a checkpoint has seen the limit
+passed the response is rejected regardless, even if null bubbling later rewound those bytes
+away, because every field after that point was cut short and the data is no longer the
+query's answer. What is approximate is the in-flight bound — how much memory execution
+holds before it notices.
 
 ## Design
 
@@ -78,13 +81,14 @@ type Writer struct {
 }
 ```
 
-`jsonw` stays free of engine types; the budget is an unexported detail behind four methods:
+`jsonw` stays free of engine types; the budget is an unexported detail behind five methods:
 
 ```go
 func (w *Writer) Limit(n int64)           // root: bound this writer and every writer sharing it
 func (w *Writer) ShareLimit(from *Writer) // sub-writer: share from's budget
 func (w *Writer) OverLimit() bool         // checkpoint: report growth, compare, latch exceeded
 func (w *Writer) LimitExceeded() bool     // whether any checkpoint on this budget went over
+func (w *Writer) Splice(sub *Writer)      // write sub's bytes and take over what sub reported
 ```
 
 `OverLimit` is written so the unlimited case inlines to one nil compare; the rest lives in a
@@ -93,7 +97,17 @@ separate function.
 `Reset` (and so `Put`) subtracts `reported` from a shared budget and clears `budget`,
 `reported` and `own`. A sub-writer returned to the pool therefore gives back what it
 reported, so after execution `used` equals what the root writer reported — a writer that
-forgot to give back shows as drift in a test, not as a silently wrong limit.
+forgot to give back shows as drift in a test, not as a silently wrong limit. `Put` resets
+even a buffer it declines to pool (over `maxPooledCap`), or a large sub-writer would never
+give back.
+
+**Splicing moves the count, it does not copy it.** The executor puts sub-writers back only
+after every sibling is spliced, so a parent checkpoint between the splice and that `Put` — a
+pure field after two concurrent ones — would count the same bytes a second time and latch
+`exceeded` on a response that fits. `Splice` writes the sub-writer's bytes and adds its
+`reported` to the parent's, zeroing the sub-writer's, so `used` is unchanged and each byte is
+counted by exactly one writer. The first version of this design used `Raw` there; review
+reproduced a response rejected at about half its real size, depending only on field order.
 
 ### Reporting on every checkpoint
 
@@ -115,7 +129,8 @@ proportional to data the process already held. This is documented on the option.
 
 - `writeFieldValue`, beside the existing `ctx.Err()` check: `if w.OverLimit() { return false }`.
   With no limit this is one nil compare on a writer already in cache.
-- `writeFieldsConcurrent` and `writeListConcurrent` call `sub.ShareLimit(w)` after `jsonw.Get`.
+- `writeFieldsConcurrent` and `writeListConcurrent` call `sub.ShareLimit(w)` after `jsonw.Get`,
+  and splice results with `w.Splice(sub)` rather than `w.Raw(sub.Bytes())`.
 - `runOperation` and `runSubscriptionEvent` call `w.Limit(e.maxResponseBytes)` when it is
   non-zero. After the root `writeObject` returns — every task has finished by then — they
   compute `exceeded := w.LimitExceeded() || int64(w.Len()) > limit` *before* any `Reset`
@@ -142,7 +157,11 @@ Each test below is broken on purpose once, and must fail when it is.
    short of 1,000 under a small limit.
 5. Early stop in sub-writers: two concurrent sibling root fields, each writing such a list
    into its own sub-writer, stop well short of 2,000 calls — with `ShareLimit` removed the
-   sub-writers have no budget and every element is written.
+   sub-writers have no budget and every element is written. The same for a list whose
+   elements are written one goroutine each, and for one subscription event.
+5a. Splice counts once: a pure field after two concurrent fields, with the limit set to the
+   exact data size, succeeds; with `Raw` in place of `Splice` it is rejected. A sub-writer
+   over `maxPooledCap` gives its bytes back when put.
 6. Subscription: one oversized event fails alone; the next event succeeds.
 7. No limit: allocation counts unchanged (`BenchmarkFieldPathBare` 18 allocs/op).
 8. Benchmarks for the default decision, interleaved: disabled vs. enabled at 64 MiB.

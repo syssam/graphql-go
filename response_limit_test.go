@@ -11,28 +11,40 @@ import (
 const limitSDL = `
 type Item { body: String! }
 type Section { items: [Item!]! }
+type Row { text: String! next: String! }
 type Query {
   short: String!
   failNullable: String
   a: Section!
   b: Section!
+  rows: [Row!]!
 }
+type Subscription { section: Section! }
 `
 
 type limitItem struct{ n int }
 type limitSection struct{ n int }
+type limitRow struct{ n int }
 
 // limitFixture counts how many item bodies were written, which is how a test
 // tells an execution that stopped early from one that wrote everything and was
 // only rejected at the end.
-type limitFixture struct{ bodies atomic.Int64 }
+type limitFixture struct {
+	bodies   atomic.Int64
+	nexts    atomic.Int64
+	sections chan *limitSection
+}
 
 func newLimitExecutor(t *testing.T, opts ...ExecutorOption) (*limitFixture, *Executor) {
 	t.Helper()
-	f := &limitFixture{}
+	f := &limitFixture{sections: make(chan *limitSection)}
 	items := make([]*limitItem, 1000)
 	for i := range items {
 		items[i] = &limitItem{n: i}
+	}
+	rows := make([]*limitRow, 1000)
+	for i := range rows {
+		rows[i] = &limitRow{n: i}
 	}
 	body := strings.Repeat("x", 100)
 	s, err := NewSchema(SDL(limitSDL),
@@ -45,11 +57,25 @@ func newLimitExecutor(t *testing.T, opts ...ExecutorOption) (*limitFixture, *Exe
 		Object[limitSection]("Section",
 			Field("items", func(*limitSection) []*limitItem { return items }),
 		),
+		Object[limitRow]("Row",
+			Field("text", func(*limitRow) string { return body }),
+			// next is a resolver, so a list of rows is written one goroutine per
+			// element, and text before it gives each element a checkpoint that
+			// reports its bytes before next resolves.
+			Resolve("next", func(context.Context, *limitRow) (string, error) {
+				f.nexts.Add(1)
+				return "n", nil
+			}),
+		),
 		Query(
 			Field("short", func(Root) string { return "abc" }),
 			Resolve("failNullable", func(context.Context, Root) (*string, error) { return nil, errors.New("boom") }),
 			Resolve("a", func(context.Context, Root) (*limitSection, error) { return &limitSection{}, nil }),
 			Resolve("b", func(context.Context, Root) (*limitSection, error) { return &limitSection{}, nil }),
+			Field("rows", func(Root) []*limitRow { return rows }),
+		),
+		Subscription(
+			Subscribe("section", func(context.Context) (<-chan *limitSection, error) { return f.sections, nil }),
 		),
 	)
 	if err != nil {
@@ -117,6 +143,21 @@ func TestResponseLimitStopsSubWriters(t *testing.T) {
 	}
 }
 
+// TestResponseLimitSplicedBytesCountOnce is the exact boundary on the
+// concurrent path: short follows two concurrent fields, so its checkpoint runs
+// after both sub-writers are spliced in. Counting them at the splice as well as
+// in the sub-writers rejected this response at half its size.
+func TestResponseLimitSplicedBytesCountOnce(t *testing.T) {
+	const q = `{ a { items { body } } b { items { body } } short }`
+	_, unlimited := newLimitExecutor(t, WithMaxConcurrency(4))
+	want := run(t, unlimited, q, "")
+	if len(want.Errors) != 0 {
+		t.Fatalf("unexpected errors: %s", errorsJSON(want.Errors))
+	}
+	_, e := newLimitExecutor(t, WithMaxConcurrency(4), WithMaxResponseBytes(int64(len(want.Data))))
+	expectData(t, run(t, e, q, ""), string(want.Data))
+}
+
 // TestResponseLimitUnsetWritesEverything guards the test above against passing
 // for the wrong reason: with no limit the same query really writes every body.
 func TestResponseLimitUnsetWritesEverything(t *testing.T) {
@@ -128,6 +169,50 @@ func TestResponseLimitUnsetWritesEverything(t *testing.T) {
 	if n := f.bodies.Load(); n != 2000 {
 		t.Fatalf("wrote %d bodies with no limit, want 2000", n)
 	}
+
+	resp2 := run(t, e, `{ rows { text next } }`, "")
+	if len(resp2.Errors) != 0 {
+		t.Fatalf("unexpected errors: %s", errorsJSON(resp2.Errors))
+	}
+	if n := f.nexts.Load(); n != 1000 {
+		t.Fatalf("resolved %d rows with no limit, want 1000", n)
+	}
+}
+
+// TestResponseLimitStopsConcurrentList covers list elements written one
+// goroutine each, the case the limit exists for. Without the shared budget
+// every element resolves next.
+func TestResponseLimitStopsConcurrentList(t *testing.T) {
+	f, e := newLimitExecutor(t, WithMaxConcurrency(4), WithMaxResponseBytes(8<<10))
+	expectTooLarge(t, run(t, e, `{ rows { text next } }`, ""), 8<<10)
+	if n := f.nexts.Load(); n >= 500 {
+		t.Fatalf("resolved %d of 1000 rows under an 8 KiB limit; list elements did not share the budget", n)
+	}
+}
+
+// TestResponseLimitStopsSubscriptionEvent pins that an event's writer carries
+// the limit while it executes, not only when its finished size is checked.
+func TestResponseLimitStopsSubscriptionEvent(t *testing.T) {
+	f, e := newLimitExecutor(t, WithMaxResponseBytes(8<<10))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	out, err := e.Subscribe(ctx, &Request{Query: `subscription { section { items { body } } }`})
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	go func() {
+		f.sections <- &limitSection{}
+		close(f.sections)
+	}()
+
+	resp := nextResponse(t, out)
+	expectTooLarge(t, resp, 8<<10)
+	resp.Release()
+	if n := f.bodies.Load(); n >= 500 {
+		t.Fatalf("wrote %d of 1000 bodies in one event under an 8 KiB limit; the event did not stop early", n)
+	}
+	expectClosed(t, out)
 }
 
 // TestResponseLimitPerSubscriptionEvent pins that the limit is per event: one

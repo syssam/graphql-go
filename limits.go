@@ -87,11 +87,13 @@ func WithMaxDepth(n int) ExecutorOption {
 // data and a single RESPONSE_TOO_LARGE error in place of any other errors,
 // and execution stops resolving fields once it sees the limit passed.
 //
-// The decision on the finished response is exact. The bound while executing
-// is not: a field is checked before it is written, so each buffer being
-// written concurrently can pass the limit by about one field's output before
-// execution notices. The errors list is not counted. Zero means unlimited,
-// the default.
+// A response is rejected when its finished data is over the limit, or when
+// the limit was passed at any point while executing: execution was cut short
+// from then on, so the result is rejected even if null bubbling later
+// discarded the bytes that passed it. While executing, a field is checked
+// before it is written, so each buffer being written concurrently can pass
+// the limit by about one field's output before execution notices. The errors
+// list is not counted. Zero means unlimited, the default.
 func WithMaxResponseBytes(n int64) ExecutorOption {
 	return func(e *Executor) { e.maxResponseBytes = n }
 }
