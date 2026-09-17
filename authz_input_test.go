@@ -240,3 +240,39 @@ func TestInputKeysNeverCarryScalarValues(t *testing.T) {
 		}
 	}
 }
+
+const inputDirectiveSDL = `
+directive @authorizeInput(kind: AuthorizeInputKind!) on ARGUMENT_DEFINITION | FIELD_DEFINITION | INPUT_FIELD_DEFINITION
+enum AuthorizeInputKind { FILTER WRITE }
+enum OrderField { NAME TAX_NUMBER }
+input Where { nameContains: String }
+`
+
+func TestAuthorizeInputPlacementAtBuild(t *testing.T) {
+	cases := []struct {
+		name    string
+		extra   string
+		wantErr string // empty means the schema must build
+	}{
+		{"input object argument", `type Query { c(where: Where @authorizeInput(kind: FILTER)): String }`, ""},
+		{"enum list argument", `type Query { c(groupBy: [OrderField!] @authorizeInput(kind: FILTER)): String }`, ""},
+		{"scalar argument", `type Query { c(q: String @authorizeInput(kind: FILTER)): String }`, "Query.c(q:)"},
+		{"on a field", `type Query { c: String @authorizeInput(kind: FILTER) }`, "Query.c"},
+		{"on an input field", `input Bad { a: Where @authorizeInput(kind: FILTER) } type Query { c(b: Bad): String }`, "Bad.a"},
+		{"on an interface field argument", `interface Node { c(where: Where @authorizeInput(kind: FILTER)): String } type Query { c: String }`, "Node.c(where:)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewSchema(SDL(inputDirectiveSDL+tc.extra), Query(Field("c", func(Root) *string { return nil })))
+			if tc.wantErr == "" {
+				if err != nil && strings.Contains(err.Error(), "authorizeInput") {
+					t.Fatalf("valid placement rejected: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) || !strings.Contains(err.Error(), "authorizeInput") {
+				t.Fatalf("want an @authorizeInput error naming %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}

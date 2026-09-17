@@ -14,6 +14,10 @@ import (
 // wrong for another's.
 const authDirective = "requiresScopes"
 
+// inputDirective marks an argument whose supplied keys and enum values an
+// Authorizer is shown before the field runs.
+const inputDirective = "authorizeInput"
+
 // buildAuthShape walks a compiled selection and records every position that
 // declares a requirement, effective (own AND inherited) requirements
 // included. It runs once per plan, so the walk is O(plan size) and never
@@ -224,6 +228,58 @@ func (b *schemaBuilder) validateAuthDirectives() {
 			b.rejectUnenforced(name, "a union", def.Directives)
 		case ast.Scalar:
 			b.rejectUnenforced(name, "a scalar", def.Directives)
+		}
+	}
+}
+
+// validateInputDirectives accepts @authorizeInput only on an argument of an
+// object type's field whose named type is an input object or an enum: those
+// are the only values with keys or enum identifiers to report. Anywhere else
+// it would read as guarded while reporting nothing -- an interface field's
+// argument is not enforced because the plan reads the concrete field's own
+// definition, and a directive definition's argument is never executed.
+func (b *schemaBuilder) validateInputDirectives() {
+	reject := func(coord, what string, ds ast.DirectiveList) {
+		if ds.ForName(inputDirective) != nil {
+			b.errorf("%s: @%s is valid only on an object field's argument of input object or enum type, not on %s", coord, inputDirective, what)
+		}
+	}
+	reject("schema", "the schema definition", b.ast.SchemaDirectives)
+	for dname, ddef := range b.ast.Directives {
+		for _, a := range ddef.Arguments {
+			reject(argCoordinate("@"+dname, a.Name), "a directive argument", a.Directives)
+		}
+	}
+	for name, def := range b.ast.Types {
+		if def.BuiltIn {
+			continue
+		}
+		reject(name, "a type", def.Directives)
+		for _, f := range def.Fields {
+			coord := coordinate(name, f.Name)
+			switch def.Kind {
+			case ast.Object:
+				reject(coord, "a field", f.Directives)
+				for _, a := range f.Arguments {
+					if a.Directives.ForName(inputDirective) == nil {
+						continue
+					}
+					named := b.ast.Types[a.Type.Name()]
+					if named == nil || (named.Kind != ast.InputObject && named.Kind != ast.Enum) {
+						b.errorf("%s: @%s is valid only on an argument of input object or enum type, not %s", argCoordinate(coord, a.Name), inputDirective, a.Type.String())
+					}
+				}
+			case ast.Interface:
+				reject(coord, "an interface field", f.Directives)
+				for _, a := range f.Arguments {
+					reject(argCoordinate(coord, a.Name), "an interface field's argument; declare it on the implementing object's field", a.Directives)
+				}
+			default:
+				reject(coord, "an input field", f.Directives)
+			}
+		}
+		for _, v := range def.EnumValues {
+			reject(coordinate(name, v.Name), "an enum value", v.Directives)
 		}
 	}
 }

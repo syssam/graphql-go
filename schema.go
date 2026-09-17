@@ -243,6 +243,7 @@ func (b *schemaBuilder) build() *Schema {
 	// Phase 6: coverage.
 	b.validateCoverage(s)
 	b.validateAuthDirectives()
+	b.validateInputDirectives()
 	b.resolveAuthRequirements(s)
 	b.validateAuthCoverage(s)
 
