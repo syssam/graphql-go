@@ -958,3 +958,17 @@ func TestAuthorizerWrappedCauseStillMatchesErrorsIs(t *testing.T) {
 		t.Errorf("errors.Is could not find the cause through the wrapper; got %v", presented)
 	}
 }
+
+// Inheritance usually yields one AND group such as {dog:read, pet:read}. A
+// denial that flattened it into "dog:read or pet:read" would tell a client
+// that holding either scope is enough, sending them after the wrong grant.
+func TestScopeAuthorizerDenialStatesAnInheritedAndAsAnd(t *testing.T) {
+	resp := run(t, inheritExec(t), `{ pet { name } }`, "")
+	if len(resp.Errors) != 1 {
+		t.Fatalf("want 1 error, got %d: %s", len(resp.Errors), errorsJSON(resp.Errors))
+	}
+	msg := resp.Errors[0].Message
+	if want := `Permission "dog:read and pet:read" denied`; !strings.Contains(msg, want) {
+		t.Errorf("message = %q, want it to contain %q", msg, want)
+	}
+}

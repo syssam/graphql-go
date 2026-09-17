@@ -51,6 +51,24 @@ func TestRequirementScopesAreDeduplicatedAndSorted(t *testing.T) {
 	}
 }
 
+func TestRequirementDescribeKeepsAndWithinAGroup(t *testing.T) {
+	cases := []struct {
+		groups [][]string
+		want   string
+	}{
+		{[][]string{{"a"}}, "a"},
+		{[][]string{{"a", "b"}}, "a and b"},
+		{[][]string{{"a"}, {"b"}}, "a or b"},
+		{[][]string{{"a", "b"}, {"c"}}, "(a and b) or c"},
+		{[][]string{{"a"}, {"b", "c"}}, "a or (b and c)"},
+	}
+	for _, tc := range cases {
+		if got := NewRequirement(tc.groups...).describe(); got != tc.want {
+			t.Errorf("describe(%v) = %q, want %q", tc.groups, got, tc.want)
+		}
+	}
+}
+
 func TestZeroRequirementIsZero(t *testing.T) {
 	if !(Requirement{}).IsZero() {
 		t.Error("the zero Requirement reports IsZero false")

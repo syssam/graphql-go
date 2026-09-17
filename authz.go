@@ -96,6 +96,28 @@ func (r Requirement) And(o Requirement) Requirement {
 
 func (r Requirement) groupCount() int { return len(r.anyOf) }
 
+// describe renders the requirement for a client-facing denial. It keeps the
+// OR-of-AND structure rather than listing Scopes(), because inheritance
+// usually produces a single AND group and flattening that into "a or b"
+// tells a client either scope would do.
+func (r Requirement) describe() string {
+	var b strings.Builder
+	for i, group := range r.anyOf {
+		if i > 0 {
+			b.WriteString(" or ")
+		}
+		paren := len(r.anyOf) > 1 && len(group) > 1
+		if paren {
+			b.WriteByte('(')
+		}
+		b.WriteString(strings.Join(group, " and "))
+		if paren {
+			b.WriteByte(')')
+		}
+	}
+	return b.String()
+}
+
 // SiteKind says what kind of position needs an authorization decision.
 type SiteKind uint8
 
@@ -373,8 +395,7 @@ func ScopeAuthorizer(held func(context.Context) map[string]bool) Authorizer {
 			if site.Requires.Satisfied(have) {
 				continue
 			}
-			scopes := site.Requires.Scopes()
-			if err := d.Set(i, Deny(strings.Join(scopes, " or "), site.Coord)); err != nil {
+			if err := d.Set(i, Deny(site.Requires.describe(), site.Coord)); err != nil {
 				return err
 			}
 		}
