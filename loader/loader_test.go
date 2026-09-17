@@ -506,3 +506,56 @@ func TestLoaderWithoutCacheReloadsTheSameKey(t *testing.T) {
 		t.Fatalf("without a cache the batch ran %d times, want 2", n)
 	}
 }
+
+type limitRow struct{ id graphql.ID }
+
+// TestLoaderResponseLimitDoesNotStrandWave pins that a response limit tripping
+// mid-list never leaves a wave waiting for tasks that will not start. A loader
+// flushes only when every task the wave announced has begun, so an element the
+// executor skips after announcing it strands every Load already parked, and the
+// request hangs until its deadline while holding concurrency slots shared by
+// every other request.
+func TestLoaderResponseLimitDoesNotStrandWave(t *testing.T) {
+	ld := loader.New(func(_ context.Context, keys []graphql.ID) (map[graphql.ID]string, error) {
+		out := make(map[graphql.ID]string, len(keys))
+		for _, k := range keys {
+			out[k] = "n"
+		}
+		return out, nil
+	})
+	rows := make([]*limitRow, 2000)
+	for i := range rows {
+		rows[i] = &limitRow{id: graphql.ID(strconv.Itoa(i))}
+	}
+	text := strings.Repeat("x", 100)
+	s, err := graphql.NewSchema(graphql.SDL(`
+		type Row { text: String! next: String! }
+		type Query { rows: [Row!]! }
+	`),
+		graphql.Object[limitRow]("Row",
+			graphql.Field("text", func(*limitRow) string { return text }),
+			graphql.Resolve("next", func(ctx context.Context, r *limitRow) (string, error) {
+				return ld.Load(ctx, r.id)
+			}),
+		),
+		graphql.Query(graphql.Field("rows", func(graphql.Root) []*limitRow { return rows })),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := graphql.NewExecutor(s, graphql.WithMaxConcurrency(4), graphql.WithMaxResponseBytes(8<<10))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	resp := e.Execute(ctx, &graphql.Request{Query: `{ rows { text next } }`})
+	elapsed := time.Since(start)
+	defer resp.Release()
+
+	if elapsed > 2*time.Second {
+		t.Fatalf("request took %v under a 5s deadline; the wave was stranded", elapsed)
+	}
+	if len(resp.Errors) != 1 || resp.Errors[0].Extensions["code"] != graphql.CodeResponseTooLarge {
+		t.Fatalf("want one %s error, got %v", graphql.CodeResponseTooLarge, resp.Errors)
+	}
+}

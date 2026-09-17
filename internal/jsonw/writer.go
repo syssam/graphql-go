@@ -9,6 +9,7 @@ import (
 	"math"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"unicode/utf8"
 )
 
@@ -30,6 +31,21 @@ type Writer struct {
 	buf        []byte
 	stack      []bool // per open container: whether a value has been written
 	pendingKey bool
+
+	// budget is nil when unlimited, &own on a root writer, and the root's on a
+	// sub-writer, so concurrently written buffers count against one limit. It
+	// lives here rather than on the executor's per-request state because the
+	// writer is pooled: growing it costs no allocation per request.
+	budget   *budget
+	reported int // bytes of buf already added to budget.used
+	own      budget
+}
+
+// budget is a byte limit shared by a root writer and its sub-writers.
+type budget struct {
+	used     atomic.Int64
+	limit    int64
+	exceeded atomic.Bool
 }
 
 // Mark captures writer state so that Rewind can restore it.
@@ -52,17 +68,33 @@ func Get() *Writer {
 	return pool.Get().(*Writer)
 }
 
-// Put resets w and returns it to the pool.
+// Put resets w and returns it to the pool. A buffer too large to pool is still
+// reset, so a writer sharing a limit gives its bytes back either way.
 func Put(w *Writer) {
-	if w == nil || cap(w.buf) > maxPooledCap {
+	if w == nil {
 		return
 	}
 	w.Reset()
+	if cap(w.buf) > maxPooledCap {
+		return
+	}
 	pool.Put(w)
 }
 
-// Reset clears the buffer and all container state.
+// Reset clears the buffer and all container state. A writer sharing another's
+// limit gives back the bytes it reported, so a buffer returned to the pool
+// stops counting against the response it was part of.
 func (w *Writer) Reset() {
+	if w.budget != nil {
+		if w.budget != &w.own {
+			w.budget.used.Add(-int64(w.reported))
+		}
+		w.budget = nil
+		w.reported = 0
+		w.own.used.Store(0)
+		w.own.limit = 0
+		w.own.exceeded.Store(false)
+	}
 	w.buf = w.buf[:0]
 	w.stack = w.stack[:0]
 	w.pendingKey = false
@@ -74,6 +106,62 @@ func (w *Writer) Bytes() []byte { return w.buf }
 
 // Len returns the number of bytes written so far.
 func (w *Writer) Len() int { return len(w.buf) }
+
+// Limit bounds the bytes held by w and every writer sharing its limit. It is
+// called on a reset writer before anything is written.
+func (w *Writer) Limit(n int64) {
+	w.own.limit = n
+	w.budget = &w.own
+}
+
+// ShareLimit makes w count against from's limit, if from has one. A sharing
+// writer must be Reset before the root is, so the bytes it gives back leave
+// the count they were added to.
+func (w *Writer) ShareLimit(from *Writer) {
+	w.budget = from.budget
+}
+
+// OverLimit reports this writer's growth since its last call and whether the
+// shared limit has been passed. Once passed it stays passed, even if rewinds
+// later shrink the count, so execution keeps stopping. With no limit it is a
+// nil compare, kept small enough to inline.
+func (w *Writer) OverLimit() bool {
+	if w.budget == nil {
+		return false
+	}
+	return w.overLimit()
+}
+
+// overLimit reports on every call rather than in fixed-size blocks: a block
+// would only be reported once a writer grew a whole one, and a concurrent list
+// element's buffer is usually far smaller, so thousands of them would never
+// report at all.
+//
+// It is kept out of line because inlining it into OverLimit pushes OverLimit
+// past the inliner's budget, and the unlimited path would then cost a call.
+//
+//go:noinline
+func (w *Writer) overLimit() bool {
+	b := w.budget
+	if d := len(w.buf) - w.reported; d != 0 {
+		b.used.Add(int64(d))
+		w.reported = len(w.buf)
+	}
+	if b.exceeded.Load() {
+		return true
+	}
+	if b.used.Load() > b.limit {
+		b.exceeded.Store(true)
+		return true
+	}
+	return false
+}
+
+// LimitExceeded reports whether any OverLimit call on this writer's limit
+// found it passed.
+func (w *Writer) LimitExceeded() bool {
+	return w.budget != nil && w.budget.exceeded.Load()
+}
 
 // Mark records the current position and separator state.
 func (w *Writer) Mark() Mark {
@@ -200,6 +288,16 @@ func (w *Writer) String(s string) {
 func (w *Writer) Raw(b []byte) {
 	w.sep()
 	w.buf = append(w.buf, b...)
+}
+
+// Splice writes sub's bytes as the next value. The bytes sub already reported
+// against a shared limit become w's, so they are counted once: sub is
+// typically put back only after every sibling is spliced, and a checkpoint on
+// w before then would otherwise count them a second time.
+func (w *Writer) Splice(sub *Writer) {
+	w.Raw(sub.buf)
+	w.reported += sub.reported
+	sub.reported = 0
 }
 
 // EncodeKey returns `"name":` with name escaped, suitable for Key.

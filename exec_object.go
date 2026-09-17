@@ -37,15 +37,19 @@ func (st *execState) writeObject(ctx context.Context, w *jsonw.Writer, obj *obje
 	return true
 }
 
-// writeField writes one response key. It returns false only when the field
-// is non-null and failed, which the caller must propagate.
+// writeField writes one response key. It returns false when the field is
+// non-null and failed, or when the response limit has been passed; the caller
+// must propagate either.
 func (st *execState) writeField(ctx context.Context, w *jsonw.Writer, obj *objectType, f *planField, parent any, path *pathNode) bool {
 	fm := w.Mark()
 	w.Key(f.key)
 	if st.writeFieldValue(ctx, w, obj, f, parent, path) {
 		return true
 	}
-	if f.def != nil && f.def.typ.NonNull {
+	// Past the response limit a null is no cheaper to keep than the field was:
+	// the response is discarded, and nulling here would let every enclosing
+	// list carry on to its next element.
+	if f.def != nil && f.def.typ.NonNull || w.LimitExceeded() {
 		return false
 	}
 	w.Rewind(fm)
@@ -69,14 +73,18 @@ func (st *execState) writeFieldValue(ctx context.Context, w *jsonw.Writer, obj *
 			return ok
 		}
 	}
-	// Zero unless actual cost is enabled, so this is one compare and no
-	// atomic on the ordinary path.
-	if f.costWeight != 0 {
-		st.actualCost.Add(int32(f.costWeight))
+	if w.OverLimit() {
+		return false
 	}
 	if err := ctx.Err(); err != nil {
 		st.recordCancellation(ctx, err)
 		return false
+	}
+	// Zero unless actual cost is enabled, so this is one compare and no
+	// atomic on the ordinary path. Placed after the limit and cancellation
+	// checks so a field that never resolves is never counted.
+	if f.costWeight != 0 {
+		st.actualCost.Add(int32(f.costWeight))
 	}
 	fd := f.def
 	args := f.args
@@ -287,7 +295,7 @@ func (st *execState) writeList(ctx context.Context, w *jsonw.Writer, v any, t *a
 	writeElem := func(i int, e any) bool {
 		em := w.Mark()
 		if !st.writeValue(ctx, w, e, t.Elem, shape.elem, f, &pathNode{parent: path, index: i, isIndex: true}) {
-			if t.Elem.NonNull {
+			if t.Elem.NonNull || w.LimitExceeded() {
 				failed = true
 				return false
 			}
@@ -409,11 +417,16 @@ func (st *execState) writeFieldsConcurrent(ctx context.Context, w *jsonw.Writer,
 			st.waveTaskBegin(ctx)
 			defer st.waveTaskEnd(ctx)
 			sub := jsonw.Get()
+			sub.ShareLimit(w)
 			ok := st.writeFieldValue(ctx, sub, obj, f, parent, path)
 			results[i] = taskResult{buf: sub, ok: ok}
 		})
 	}
 	g.wait()
+
+	if w.LimitExceeded() {
+		return false
+	}
 
 	for i, f := range fields {
 		if !f.schedulable {
@@ -426,7 +439,7 @@ func (st *execState) writeFieldsConcurrent(ctx context.Context, w *jsonw.Writer,
 		switch {
 		case r.ok:
 			w.Key(f.key)
-			w.Raw(r.buf.Bytes())
+			w.Splice(r.buf)
 		case f.def.typ.NonNull:
 			return false
 		default:
@@ -463,23 +476,32 @@ func (st *execState) writeListConcurrent(ctx context.Context, w *jsonw.Writer, v
 	defer endWave()
 
 	g := taskGroup{st: st, async: true}
+	// Every element is spawned even after a trip: the wave announced all of
+	// them, and a loader flushes only once every announced task has begun, so
+	// skipping one would strand each Load already parked. A task started after
+	// the trip fails at its first checkpoint.
 	for i, e := range elems {
 		g.run(func() {
 			st.waveTaskBegin(ctx)
 			defer st.waveTaskEnd(ctx)
 			sub := jsonw.Get()
+			sub.ShareLimit(w)
 			okElem := st.writeValue(ctx, sub, e, t.Elem, shape.elem, f, &pathNode{parent: path, index: i, isIndex: true})
 			results[i] = taskResult{buf: sub, ok: okElem}
 		})
 	}
 	g.wait()
 
+	if w.LimitExceeded() {
+		return false, true, nil
+	}
+
 	mark := w.Mark()
 	w.BeginArray()
 	for _, r := range results {
 		switch {
 		case r.ok:
-			w.Raw(r.buf.Bytes())
+			w.Splice(r.buf)
 		case t.Elem.NonNull:
 			w.Rewind(mark)
 			return false, true, nil

@@ -82,6 +82,23 @@ func WithMaxDepth(n int) ExecutorOption {
 	return func(e *Executor) { e.maxDepth = n }
 }
 
+// WithMaxResponseBytes bounds the size of each response's data: one query or
+// mutation, or one subscription event. A response over the limit has null
+// data and a single RESPONSE_TOO_LARGE error in place of any other errors,
+// and execution stops resolving fields once it sees the limit passed.
+//
+// A response is rejected when its finished data is over the limit, or when
+// the limit was passed at any point while executing: execution was cut short
+// from then on, so the result is rejected even if null bubbling later
+// discarded the bytes that passed it. While executing, a field other than
+// __typename is checked before it is written, so each buffer being written
+// concurrently can pass the limit by about one field's output before execution
+// notices. The errors list is not counted. Zero means unlimited. The default
+// is 64 MiB, which measured no cost distinguishable from no limit.
+func WithMaxResponseBytes(n int64) ExecutorOption {
+	return func(e *Executor) { e.maxResponseBytes = n }
+}
+
 // WithQueryCost enables Shopify-style query cost. When c.Max > 0,
 // operations above the cap are rejected before execution.
 func WithQueryCost(c QueryCost) ExecutorOption {
