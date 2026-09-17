@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -212,5 +213,97 @@ func BenchmarkWriteObject(b *testing.B) {
 	for b.Loop() {
 		w.Reset()
 		writeObject(w, keys)
+	}
+}
+
+func TestLimitUnset(t *testing.T) {
+	w := New()
+	w.String(strings.Repeat("x", 100))
+	if w.OverLimit() || w.LimitExceeded() {
+		t.Fatal("a writer with no limit must never be over it")
+	}
+}
+
+// TestLimitReportsAndLatches pins that the budget tracks the buffer exactly,
+// including shrinking after a rewind, and that once exceeded it stays exceeded:
+// execution must keep stopping even after null bubbling rewinds the bytes away.
+func TestLimitReportsAndLatches(t *testing.T) {
+	w := New()
+	w.Limit(10)
+	w.BeginArray()
+	w.String("ab")
+	if w.OverLimit() {
+		t.Fatalf("over at %d bytes against a limit of 10", w.Len())
+	}
+	if got := w.budget.used.Load(); got != int64(w.Len()) {
+		t.Fatalf("used = %d, want %d", got, w.Len())
+	}
+	m := w.Mark()
+	w.String("abcdefgh")
+	if !w.OverLimit() {
+		t.Fatalf("not over at %d bytes against a limit of 10", w.Len())
+	}
+	w.Rewind(m)
+	if !w.OverLimit() {
+		t.Fatal("exceeded must latch after a rewind")
+	}
+	if got := w.budget.used.Load(); got != int64(w.Len()) {
+		t.Fatalf("after rewind used = %d, want %d", got, w.Len())
+	}
+	if !w.LimitExceeded() {
+		t.Fatal("LimitExceeded is false after OverLimit returned true")
+	}
+}
+
+// TestLimitSharedAcrossWriters is why the budget is a pointer: neither writer
+// alone passes the limit, together they do.
+func TestLimitSharedAcrossWriters(t *testing.T) {
+	root := New()
+	root.Limit(20)
+	a, b := New(), New()
+	a.ShareLimit(root)
+	b.ShareLimit(root)
+	a.String("123456789") // 11 bytes
+	if a.OverLimit() {
+		t.Fatal("11 bytes against a limit of 20 is not over")
+	}
+	b.String("123456789")
+	if !b.OverLimit() {
+		t.Fatal("two writers sharing a limit of 20 hold 22 bytes and b was not over")
+	}
+	if !root.LimitExceeded() {
+		t.Fatal("the root does not see its sub-writers' excess")
+	}
+}
+
+// TestLimitResetGivesBack pins that a sub-writer returned to the pool takes its
+// bytes out of the shared count, and that a reset writer carries no budget into
+// the next request that gets it from the pool.
+func TestLimitResetGivesBack(t *testing.T) {
+	root := New()
+	root.Limit(1000)
+	sub := New()
+	sub.ShareLimit(root)
+	sub.String("123456789")
+	sub.OverLimit()
+	root.BeginArray()
+	root.OverLimit()
+
+	sub.Reset()
+	if got, want := root.budget.used.Load(), int64(root.Len()); got != want {
+		t.Fatalf("after the sub-writer reset, used = %d, want the root's own %d", got, want)
+	}
+	if sub.budget != nil || sub.reported != 0 {
+		t.Fatal("a reset sub-writer still carries budget state")
+	}
+
+	root.String(strings.Repeat("x", 2000))
+	root.OverLimit()
+	root.Reset()
+	if root.budget != nil || root.reported != 0 || root.own.used.Load() != 0 || root.own.limit != 0 || root.own.exceeded.Load() {
+		t.Fatal("a reset root writer still carries budget state")
+	}
+	if root.OverLimit() {
+		t.Fatal("a reset writer is over a limit it no longer has")
 	}
 }
