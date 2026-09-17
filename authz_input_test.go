@@ -284,6 +284,25 @@ func TestAuthorizeInputPlacementAtBuild(t *testing.T) {
 			}
 		})
 	}
+
+	// A repeatable declaration lets gqlparser accept a second occurrence on
+	// the same argument; shapeBuilder.field then reads only ds.ForName's
+	// first match (authz_shape.go), so without this rejection the second
+	// occurrence would silently be dropped rather than reported and the
+	// argument would build as whichever kind happened to come first.
+	t.Run("repeated on one argument even when declared repeatable", func(t *testing.T) {
+		const repeatableInputDirectiveSDL = `
+directive @authorizeInput(kind: AuthorizeInputKind!) repeatable on ARGUMENT_DEFINITION | FIELD_DEFINITION | INPUT_FIELD_DEFINITION
+enum AuthorizeInputKind { FILTER WRITE }
+input Where { nameContains: String }
+type Query { c(where: Where @authorizeInput(kind: FILTER) @authorizeInput(kind: WRITE)): String }
+`
+		_, err := NewSchema(SDL(repeatableInputDirectiveSDL), Query(Field("c", func(Root) *string { return nil })))
+		want := "Query.c(where:)"
+		if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "authorizeInput") {
+			t.Fatalf("want an @authorizeInput error naming %q for a repeated occurrence, got %v", want, err)
+		}
+	})
 }
 
 const argSiteSDL = `
@@ -294,11 +313,17 @@ enum OrderField { NAME TAX_NUMBER }
 input Order { field: OrderField! }
 input Where { nameContains: String taxNumber: String }
 input Patch { name: String taxNumber: String }
-type Customer { name: String! }
+interface Entity { name: String! }
+type Customer implements Entity {
+  name: String!
+  related(where: Where @authorizeInput(kind: FILTER)): [Customer!]!
+}
 type Query {
   customers(where: Where @authorizeInput(kind: FILTER), orderBy: [Order!] @authorizeInput(kind: FILTER)): [Customer!]!
   guarded(where: Where @authorizeInput(kind: FILTER)): [Customer!]! @requiresScopes(scopes: [["c:read"]])
   plain: String
+  entity: Entity
+  pureFiltered(where: Where @authorizeInput(kind: FILTER)): String
 }
 type Mutation { update(patch: Patch! @authorizeInput(kind: WRITE)): String }
 `
@@ -341,6 +366,18 @@ type argUpdateArgs struct {
 	Patch argPatchIn
 }
 
+// argRelatedArgs covers Customer.related, an argument site reached only
+// through an interface parent (Query.entity: Entity, resolved dynamically to
+// Customer) rather than directly off a root field. argPureArgs covers
+// Query.pureFiltered, bound with FieldArgs rather than ResolveArgs so an
+// argument site on a pure field is exercised too.
+type argRelatedArgs struct {
+	Where *argWhereIn
+}
+type argPureArgs struct {
+	Where *argWhereIn
+}
+
 var argResolverCalls atomic.Int64
 
 func argSiteSchema(t testing.TB) *Schema {
@@ -372,16 +409,32 @@ func argSiteSchema(t testing.TB) *Schema {
 		),
 		Args[argGuardedArgs](InputField("where", func(a *argGuardedArgs, v *argWhereIn) { a.Where = v })),
 		Args[argUpdateArgs](InputField("patch", func(a *argUpdateArgs, v argPatchIn) { a.Patch = v })),
+		Args[argRelatedArgs](InputField("where", func(a *argRelatedArgs, v *argWhereIn) { a.Where = v })),
+		Args[argPureArgs](InputField("where", func(a *argPureArgs, v *argWhereIn) { a.Where = v })),
+		// Entity is left unbound: like fixtureSDL's Node, a single implementing
+		// type resolves from the dynamic Go type alone (objectForGoType).
 		Query(
 			ResolveArgs("customers", customers),
 			ResolveArgs("guarded", guarded),
 			Field("plain", func(Root) *string { return nil }),
+			Field("entity", func(Root) *argCustomer { return &argCustomer{Name: "ada"} }),
+			FieldArgs("pureFiltered", func(Root, argPureArgs) *string {
+				argResolverCalls.Add(1)
+				s := "ok"
+				return &s
+			}),
 		),
 		Mutation(ResolveArgs("update", func(context.Context, Root, argUpdateArgs) (*string, error) {
 			argResolverCalls.Add(1)
 			return nil, nil
 		})),
-		Object[argCustomer]("Customer", Field("name", func(c *argCustomer) string { return c.Name })),
+		Object[argCustomer]("Customer",
+			Field("name", func(c *argCustomer) string { return c.Name }),
+			ResolveArgs("related", func(_ context.Context, _ *argCustomer, _ argRelatedArgs) ([]*argCustomer, error) {
+				argResolverCalls.Add(1)
+				return []*argCustomer{{Name: "related"}}, nil
+			}),
+		),
 	)
 	if err != nil {
 		t.Fatalf("NewSchema: %v", err)
@@ -583,6 +636,26 @@ func TestArgumentSiteDenyRefusesTheField(t *testing.T) {
 		{"writing a restricted field to null", `mutation { update(patch: {taxNumber: null}) }`, "", true},
 		{"an unrestricted filter runs", `{ customers(where: {nameContains: "a"}) { name } }`, "", false},
 		{"an unrestricted write runs", `mutation { update(patch: {name: "a"}) }`, "", false},
+
+		// An argument site reached only through an interface parent: Query.entity
+		// is typed Entity, and the site lives on the concrete Customer.related
+		// field selected under an inline fragment.
+		{"through an interface parent, restricted", `{ entity { ... on Customer { related(where: {taxNumber: "1"}) { name } } } }`, "", true},
+		{"through an interface parent, unrestricted", `{ entity { ... on Customer { related(where: {nameContains: "a"}) { name } } } }`, "", false},
+
+		// A named fragment selected under @include with an alias on the field
+		// carrying the argument site.
+		{"through a named fragment, alias and @include, restricted",
+			`query($i: Boolean!) { picked: customers(where: {taxNumber: "1"}) @include(if: $i) { ...CustomerFields } } fragment CustomerFields on Customer { name }`,
+			`{"i":true}`, true},
+		{"through a named fragment, alias and @include, unrestricted",
+			`query($i: Boolean!) { picked: customers(where: {nameContains: "a"}) @include(if: $i) { ...CustomerFields } } fragment CustomerFields on Customer { name }`,
+			`{"i":true}`, false},
+
+		// A pure FieldArgs field (no context, no error) still routes through
+		// enforceAuth before it runs.
+		{"through a pure FieldArgs field, restricted", `{ pureFiltered(where: {taxNumber: "1"}) }`, "", true},
+		{"through a pure FieldArgs field, unrestricted", `{ pureFiltered(where: {nameContains: "a"}) }`, "", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

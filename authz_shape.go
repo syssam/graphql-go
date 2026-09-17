@@ -317,15 +317,26 @@ func (b *schemaBuilder) validateInputDirectives() {
 			case ast.Object:
 				reject(coord, "a field", f.Directives)
 				for _, a := range f.Arguments {
-					if a.Directives.ForName(inputDirective) == nil {
+					occ := a.Directives.ForNames(inputDirective)
+					if len(occ) == 0 {
+						continue
+					}
+					argCoord := argCoordinate(coord, a.Name)
+					if len(occ) > 1 {
+						// shapeBuilder.field reads only ds.ForName's first
+						// occurrence (authz_shape.go), so a directive
+						// declared repeatable would let a second
+						// occurrence silently pick the argument's kind
+						// instead of being reported.
+						b.errorf("%s: @%s must not occur more than once on one argument", argCoord, inputDirective)
 						continue
 					}
 					named := b.ast.Types[a.Type.Name()]
 					if named == nil || (named.Kind != ast.InputObject && named.Kind != ast.Enum) {
-						b.errorf("%s: @%s is valid only on an argument of input object or enum type, not %s", argCoordinate(coord, a.Name), inputDirective, a.Type.String())
+						b.errorf("%s: @%s is valid only on an argument of input object or enum type, not %s", argCoord, inputDirective, a.Type.String())
 						continue
 					}
-					b.checkInputDirectiveKind(argCoordinate(coord, a.Name), a.Directives)
+					b.checkInputDirectiveKind(argCoord, a.Directives)
 				}
 			case ast.Interface:
 				reject(coord, "an interface field", f.Directives)
