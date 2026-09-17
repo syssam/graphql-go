@@ -87,8 +87,11 @@ func (d *Drain) Closing() <-chan struct{} {
 // Shutdown stops admitting connections, signals Closing, and waits for every
 // entered connection to leave. If ctx ends first it cancels every entered
 // context and returns ctx.Err() at once rather than waiting further: a wait
-// that outlives its deadline is the failure this exists to prevent. It may be
-// called more than once and concurrently.
+// that outlives its deadline is the failure this exists to prevent. The wait
+// for connections that have not yet left carries on in the background after
+// that return, so a handler must turn a cancelled context into a prompt leave;
+// one that never does keeps that wait alive. Shutdown may be called more than
+// once and concurrently.
 func (d *Drain) Shutdown(ctx context.Context) error {
 	if d == nil {
 		return nil
