@@ -100,6 +100,23 @@ func WithMaxResponseBytes(n int64) ExecutorOption {
 	return func(e *Executor) { e.maxResponseBytes = n }
 }
 
+// WithMaxErrors bounds how many errors one response carries. Past n, field
+// errors are dropped, and a single ERROR_LIMIT_EXCEEDED error is appended in
+// their place; the data is unaffected. A dropped error is not presented or
+// given a path, except that concurrent fields racing the limit may be
+// presented before they are dropped, so a presenter that logs can run a few
+// more than n times. Errors that explain why a request stopped (cancellation,
+// timeout, an oversized response) are always kept. Request errors from
+// parsing and validation are cut the same way. Which field errors are kept is
+// the order they were recorded in, which for concurrent fields is not
+// deterministic. Zero means unlimited. The default is 1000: generous enough
+// that a list with a failed field on each of hundreds of rows keeps every
+// error, bounded enough that a million failing elements do not become a
+// million errors in memory.
+func WithMaxErrors(n int) ExecutorOption {
+	return func(e *Executor) { e.maxErrors = n }
+}
+
 // WithOperationTimeout bounds how long one operation may run: a query or
 // mutation from the moment Execute is called, parsing and every interceptor
 // included, or one subscription event, never a stream as a whole. Opening a

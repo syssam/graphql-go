@@ -51,6 +51,7 @@ type Executor struct {
 	maxComplexity    int
 	maxDepth         int
 	maxResponseBytes int64
+	maxErrors        int
 	operationTimeout time.Duration
 	// timeoutCause is the context cause of this executor's own deadline, nil
 	// without one. Compared by identity, it tells the timeout apart from a
@@ -139,6 +140,7 @@ func NewExecutor(s *Schema, opts ...ExecutorOption) *Executor {
 		cacheBytes:     16 << 20,
 
 		maxResponseBytes: 64 << 20,
+		maxErrors:        1000,
 	}
 	for _, o := range opts {
 		o(e)
@@ -409,11 +411,25 @@ func (e *Executor) execute(ctx context.Context, req *Request) *Response {
 // error), never the output of e.presenter itself, or a custom ErrorPresenter
 // that logs or attaches an incident ID would run twice per rejection.
 func (e *Executor) requestError(ctx context.Context, errs ...*Error) *Response {
-	resp := &Response{Errors: make([]*Error, 0, len(errs))}
+	omitted := e.maxErrors > 0 && len(errs) > e.maxErrors
+	if omitted {
+		errs = errs[:e.maxErrors]
+	}
+	resp := &Response{Errors: make([]*Error, 0, len(errs)+1)}
 	for _, err := range errs {
 		resp.Errors = append(resp.Errors, e.presenter(ctx, err))
 	}
+	if omitted {
+		resp.Errors = append(resp.Errors, errorLimitNotice())
+	}
 	return resp
+}
+
+// errorLimitNotice stands in for the errors dropped past WithMaxErrors. It is
+// not presented: it carries nothing a presenter could need to mask, and an
+// unpresented code is what lets the executor find it again.
+func errorLimitNotice() *Error {
+	return Errorf("Too many errors: further errors were omitted.").WithCode(CodeErrorLimitExceeded)
 }
 
 // authorizerCause holds a non-*Error Authorize failure behind Error's Err
@@ -645,11 +661,33 @@ func (e *elementErrors) add(i int, err error) *elementErrors {
 	return e
 }
 
-// addError presents err and appends it with the given path and location.
+// addError presents err and appends it with the given path and location. It
+// is for errors that explain why a request stopped, which WithMaxErrors never
+// drops; field errors go through addFieldError.
 func (st *execState) addError(ctx context.Context, err error, path Path, pos *ast.Position) {
+	st.appendError(ctx, err, path, pos, false)
+}
+
+// addFieldError records a field error unless the error limit is full. The
+// check before presenting is what saves the work; the one under the lock in
+// appendError is what makes the limit exact when concurrent fields race past
+// the first.
+func (st *execState) addFieldError(ctx context.Context, err error, path *pathNode, pos *ast.Position) {
+	if st.fieldErrorsFull() {
+		st.droppedFieldError(ctx, err)
+		return
+	}
+	if !st.appendError(ctx, err, path.materialize(), pos, true) {
+		st.droppedFieldError(ctx, err)
+	}
+}
+
+// appendError reports false when a limited error was dropped because the
+// list filled while it was being presented.
+func (st *execState) appendError(ctx context.Context, err error, path Path, pos *ast.Position, limited bool) bool {
 	presented := st.e.presenter(ctx, err)
 	if presented == nil {
-		return
+		return true
 	}
 	if presented.Path == nil {
 		presented.Path = path
@@ -658,14 +696,70 @@ func (st *execState) addError(ctx context.Context, err error, path Path, pos *as
 		presented.Locations = []Location{{Line: pos.Line, Column: pos.Column}}
 	}
 	st.mu.Lock()
+	defer st.mu.Unlock()
+	if limited && st.fullLocked() {
+		return false
+	}
 	st.errs = append(st.errs, presented)
-	st.mu.Unlock()
+	return true
+}
+
+// droppedFieldError keeps the reason a request stopped when the field error
+// carrying it is dropped. A slow field often reports a timeout or
+// cancellation only through its own error, with no later field reaching the
+// checkpoint that records the engine's, so without this a full list could
+// leave the response saying nothing about why it ended. recordCancellation
+// adds at most one such error however many fields land here.
+func (st *execState) droppedFieldError(ctx context.Context, err error) {
+	ctxErr := ctx.Err()
+	if ctxErr == nil {
+		return
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		st.recordCancellation(ctx, ctxErr)
+	}
+}
+
+// fieldErrorsFull reports whether the field error limit is reached.
+func (st *execState) fieldErrorsFull() bool {
+	if st.e.maxErrors <= 0 {
+		return false
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.fullLocked()
+}
+
+// fullLocked reports whether the error limit is reached and, the first time
+// it is, appends the notice. The notice needs no field of its own on
+// execState, which has no room: past the limit only engine errors and the
+// notice are ever appended, so a short scan of that tail finds it. A user field
+// error carrying the same code cannot confuse it, since field errors are only
+// ever appended below the limit.
+func (st *execState) fullLocked() bool {
+	limit := st.e.maxErrors
+	if limit <= 0 || len(st.errs) < limit {
+		return false
+	}
+	for _, e := range st.errs[limit:] {
+		if e.Extensions["code"] == CodeErrorLimitExceeded {
+			return true
+		}
+	}
+	st.errs = append(st.errs, errorLimitNotice())
+	return true
 }
 
 // fieldError records an error raised while producing the value of f. List
 // indices carried by indexedError extend the path; errNonNull becomes the
 // specification's non-null violation message.
 func (st *execState) fieldError(ctx context.Context, err error, path *pathNode, f *planField) {
+	// Checked here as well as in addFieldError so that past the limit not even
+	// the path nodes below are built.
+	if st.fieldErrorsFull() {
+		st.droppedFieldError(ctx, err)
+		return
+	}
 	var soft *elementErrors
 	if errors.As(err, &soft) {
 		for _, ie := range soft.errs {
@@ -702,7 +796,7 @@ func (st *execState) fieldError(ctx context.Context, err error, path *pathNode, 
 	if f != nil && f.ast != nil {
 		pos = f.ast.Position
 	}
-	st.addError(ctx, err, full.materialize(), pos)
+	st.addFieldError(ctx, err, full, pos)
 }
 
 // recovered converts a panic into a field error and logs the stack.
