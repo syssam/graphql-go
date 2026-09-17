@@ -478,10 +478,10 @@ Argument sites declared with `@authorizeInput` route through that same compare: 
 with at least one gets a zero-requirement output site so `authIdx >= 0` still routes it, and
 a field with none pays nothing. The per-site input walk (`Decision.Input`) reads the
 operation's AST plus its variables, never `ArgumentMap`, because `ArgumentMap` fills in SDL
-defaults the client did not choose — and for that reason a subscription's source is opened
-by decoding its arguments again from `oc.Variables` after the Authorizer runs, so an
-interceptor that rewrites `Variables` cannot show the policy one input and the source
-another.
+defaults the client did not choose. **A subscription's source is opened with arguments
+decoded again from `oc.Variables`**, the map the Authorizer walked, not the ones decoded
+before the interceptor chain: `Variables` is writable, and an interceptor rewriting it
+showed the policy one input while the source opened with another.
 `execState` (64 bytes) and `OperationContext` (160 bytes) held those sizes through this
 branch (`TestStructSizes`, `authz_bench_test.go`) — re-measure both, interleaved, before
 adding a field to either; see the `execState`/`OperationContext` entry above for why a
