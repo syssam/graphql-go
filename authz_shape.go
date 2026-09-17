@@ -82,7 +82,7 @@ func (b *shapeBuilder) walk(obj *objectType, abs *abstractType, sel *selectionSe
 
 func (b *shapeBuilder) field(obj *objectType, f *planField) {
 	f.authIdx = -1
-	f.argSites = nil
+	f.argSites = 0
 	switch {
 	case f.kind == fieldTypename:
 		if obj != nil && !obj.requires.IsZero() {
@@ -102,7 +102,30 @@ func (b *shapeBuilder) field(obj *objectType, f *planField) {
 	}
 
 	if f.def != nil {
-		for _, ad := range f.def.def.Arguments {
+		args := f.def.def.Arguments
+		nArgSites := 0
+		for _, ad := range args {
+			if ad.Directives.ForName(inputDirective) != nil {
+				nArgSites++
+			}
+		}
+		// A field with argument sites must reach enforceAuth through the one
+		// compare every field already pays; a zero requirement allows. This
+		// must run before the argument loop below, which relies on the
+		// output site (own or synthesized here) being the last thing
+		// appended so the argument sites that follow stay contiguous with
+		// it -- see the contiguity invariant on planField.argSites.
+		if nArgSites > 0 && f.authIdx < 0 {
+			f.authIdx = int32(len(b.sites))
+			b.sites = append(b.sites, AuthSite{
+				Coord:  coordinate(f.def.object.name, f.name),
+				Field:  f.def.def,
+				Object: f.def.object.def,
+				Kind:   SiteOutput,
+				leaf:   f.def.leaf,
+			})
+		}
+		for _, ad := range args {
 			d := ad.Directives.ForName(inputDirective)
 			if d == nil {
 				continue
@@ -115,7 +138,6 @@ func (b *shapeBuilder) field(obj *objectType, f *planField) {
 			if a := f.ast.Arguments.ForName(ad.Name); a != nil {
 				supplied = a.Value
 			}
-			f.argSites = append(f.argSites, int32(len(b.sites)))
 			b.sites = append(b.sites, AuthSite{
 				Coord:    argCoordinate(coordinate(f.def.object.name, f.name), ad.Name),
 				Field:    f.def.def,
@@ -125,19 +147,8 @@ func (b *shapeBuilder) field(obj *objectType, f *planField) {
 				argType:  ad.Type,
 				argValue: supplied,
 			})
+			f.argSites++
 			b.hasArgSites = true
-		}
-		// A field with argument sites must reach enforceAuth through the one
-		// compare every field already pays; a zero requirement allows.
-		if len(f.argSites) > 0 && f.authIdx < 0 {
-			f.authIdx = int32(len(b.sites))
-			b.sites = append(b.sites, AuthSite{
-				Coord:  coordinate(f.def.object.name, f.name),
-				Field:  f.def.def,
-				Object: f.def.object.def,
-				Kind:   SiteOutput,
-				leaf:   f.def.leaf,
-			})
 		}
 	}
 

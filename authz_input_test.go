@@ -390,25 +390,54 @@ func argSiteSchema(t testing.TB) *Schema {
 
 func TestArgumentSitesAtPlanCompile(t *testing.T) {
 	e := NewExecutor(argSiteSchema(t))
-	p, _, perrs := planForTest(t, e, `{ customers { name } plain }`)
+	// where is supplied through a variable and orderBy is left absent, so the
+	// two argument sites exercise both halves of D3's "supplied means sent by
+	// the client": one site's argValue must come back nil, the other must
+	// carry the variable reference itself, not a resolved value.
+	p, _, perrs := planForTest(t, e, `query($w: Where) { customers(where: $w) { name } plain }`)
 	if perrs != nil {
 		t.Fatalf("plan: %v", perrs)
 	}
 	if !p.shape.hasArgSites {
 		t.Fatal("shape does not record argument sites")
 	}
+	sites := p.shape.Sites()
 	var coords []string
-	for _, s := range p.shape.Sites() {
+	byArg := map[string]AuthSite{}
+	for _, s := range sites {
 		if s.Kind == SiteFilterArg {
 			coords = append(coords, s.Coord)
 			if s.Arg == "" {
 				t.Errorf("site %s has no Arg", s.Coord)
 			}
+			byArg[s.Arg] = s
 		}
 	}
 	slices.Sort(coords)
 	if want := []string{"Query.customers(orderBy:)", "Query.customers(where:)"}; !slices.Equal(coords, want) {
 		t.Errorf("argument sites = %v, want %v (a site exists even when the argument is not supplied)", coords, want)
+	}
+
+	where, ok := byArg["where"]
+	if !ok {
+		t.Fatal("no argument site for where")
+	}
+	if where.Arg != "where" {
+		t.Errorf("where site Arg = %q, want %q exactly", where.Arg, "where")
+	}
+	if where.argValue == nil || where.argValue.Kind != ast.Variable {
+		t.Errorf("where argValue = %+v, want the $w variable reference", where.argValue)
+	}
+
+	orderBy, ok := byArg["orderBy"]
+	if !ok {
+		t.Fatal("no argument site for orderBy")
+	}
+	if orderBy.argValue != nil {
+		t.Errorf("orderBy argValue = %+v, want nil: the client did not supply it", orderBy.argValue)
+	}
+	if got := orderBy.argType.String(); got != "[Order!]" {
+		t.Errorf("orderBy argType = %q, want [Order!]", got)
 	}
 
 	sel := p.sel.forType(p.root)
@@ -418,14 +447,91 @@ func TestArgumentSitesAtPlanCompile(t *testing.T) {
 			if f.authIdx < 0 {
 				t.Error("a field with argument sites must carry an output site to route into enforceAuth")
 			}
-			if len(f.argSites) != 2 {
-				t.Errorf("customers argSites = %v, want 2", f.argSites)
+			if f.argSites != 2 {
+				t.Errorf("customers argSites = %d, want 2", f.argSites)
 			}
 		case "plain":
-			if f.authIdx != -1 || len(f.argSites) != 0 {
-				t.Errorf("plain field gained authorization state: authIdx=%d argSites=%v", f.authIdx, f.argSites)
+			if f.authIdx != -1 || f.argSites != 0 {
+				t.Errorf("plain field gained authorization state: authIdx=%d argSites=%d", f.authIdx, f.argSites)
 			}
 		}
+	}
+}
+
+// TestArgumentSiteWriteKind proves the WRITE half of the kind switch: without
+// it every @authorizeInput site would classify as SiteFilterArg regardless of
+// its declared kind.
+func TestArgumentSiteWriteKind(t *testing.T) {
+	e := NewExecutor(argSiteSchema(t))
+	p, _, perrs := planForTest(t, e, `mutation { update(patch: {name: "a"}) }`)
+	if perrs != nil {
+		t.Fatalf("plan: %v", perrs)
+	}
+	var found *AuthSite
+	for _, s := range p.shape.Sites() {
+		if s.Arg == "patch" {
+			s := s
+			found = &s
+		}
+	}
+	if found == nil {
+		t.Fatal("no argument site for patch")
+	}
+	if found.Kind != SiteInputWrite {
+		t.Errorf("patch site kind = %v, want SiteInputWrite", found.Kind)
+	}
+	if want := "Mutation.update(patch:)"; found.Coord != want {
+		t.Errorf("patch site coord = %q, want %q", found.Coord, want)
+	}
+}
+
+// TestArgumentSiteRoutingPreservesFieldRequirement guards the exact bug a
+// naive `len(argSites) > 0` routing condition reintroduces: guarded already
+// carries its own @requiresScopes, and the synthetic zero-Requires output
+// site built for a field with no requirement of its own must never replace
+// it.
+func TestArgumentSiteRoutingPreservesFieldRequirement(t *testing.T) {
+	s := argSiteSchema(t)
+	e := NewExecutor(s)
+	p, _, perrs := planForTest(t, e, `{ guarded { name } }`)
+	if perrs != nil {
+		t.Fatalf("plan: %v", perrs)
+	}
+	sel := p.sel.forType(p.root)
+	var f *planField
+	for _, ff := range sel.fields {
+		if ff.name == "guarded" {
+			f = ff
+		}
+	}
+	if f == nil {
+		t.Fatal("guarded not selected")
+	}
+	if f.authIdx < 0 {
+		t.Fatal("guarded has no output site")
+	}
+	out := p.shape.sites[f.authIdx]
+	if out.Kind != SiteOutput {
+		t.Errorf("guarded's own site kind = %v, want SiteOutput", out.Kind)
+	}
+	if got := out.Requires.Scopes(); !slices.Equal(got, []string{"c:read"}) {
+		t.Errorf("guarded's own requirement = %v, want [c:read]: routing overwrote it with a zero-Requires site", got)
+	}
+	if f.argSites != 1 {
+		t.Fatalf("guarded argSites = %d, want 1", f.argSites)
+	}
+	arg := p.shape.sites[f.authIdx+1]
+	if arg.Kind != SiteFilterArg || arg.Arg != "where" {
+		t.Errorf("guarded argument site = %+v, want a SiteFilterArg for where", arg)
+	}
+
+	authz := NewExecutor(s, WithAuthorizer(ScopeAuthorizer(func(context.Context) map[string]bool { return nil })))
+	resp := run(t, authz, `{ guarded { name } }`, "")
+	if len(resp.Errors) == 0 {
+		t.Fatal("guarded was not rejected for a caller holding no scopes: its requirement was lost")
+	}
+	if got, want := resp.Errors[0].Extensions["code"], CodeForbidden; got != want {
+		t.Errorf("code = %v, want %v", got, want)
 	}
 }
 
