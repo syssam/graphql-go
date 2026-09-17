@@ -110,7 +110,9 @@ func (w *Writer) Limit(n int64) {
 	w.budget = &w.own
 }
 
-// ShareLimit makes w count against from's limit, if from has one.
+// ShareLimit makes w count against from's limit, if from has one. A sharing
+// writer must be Reset before the root is, so the bytes it gives back leave
+// the count they were added to.
 func (w *Writer) ShareLimit(from *Writer) {
 	w.budget = from.budget
 }
@@ -130,6 +132,9 @@ func (w *Writer) OverLimit() bool {
 // would only be reported once a writer grew a whole one, and a concurrent list
 // element's buffer is usually far smaller, so thousands of them would never
 // report at all.
+//
+// It is kept out of line because inlining it into OverLimit pushes OverLimit
+// past the inliner's budget, and the unlimited path would then cost a call.
 //
 //go:noinline
 func (w *Writer) overLimit() bool {
