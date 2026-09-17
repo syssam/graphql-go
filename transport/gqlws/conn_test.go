@@ -648,6 +648,58 @@ func TestDrainClosesWithGoingAway(t *testing.T) {
 	}
 }
 
+// TestDrainWaitsForConnectionThenGivesUp proves the connection is registered
+// with the drain and runs under the context the drain cancels. A query that
+// ignores Closing keeps the connection's drain waiting, so Shutdown returns
+// DeadlineExceeded only if it was waiting for this connection, and the socket
+// ends promptly only if giving up reaches the protocol. Closing alone produces
+// neither.
+//
+// Unlike gqlfiber's counterpart this does not require 1001: the protocol reads
+// under the context the drain cancels, and coder/websocket closes the
+// underlying connection as soon as a read context is cancelled, so the
+// client sees EOF before the watcher's close frame can be written.
+func TestDrainWaitsForConnectionThenGivesUp(t *testing.T) {
+	started := make(chan struct{}, 1)
+	s, err := graphql.NewSchema(graphql.SDL(`type Query { block: String! }`),
+		graphql.Query(graphql.Resolve("block", func(ctx context.Context, _ graphql.Root) (string, error) {
+			started <- struct{}{}
+			<-ctx.Done()
+			return "", ctx.Err()
+		})),
+	)
+	if err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	d := drain.New()
+	c := dial(t, graphql.NewExecutor(s), gqlws.WithDrain(d))
+	c.init("")
+
+	c.subscribe("1", `{ block }`)
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the query never started")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if err := d.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown = %v, want DeadlineExceeded", err)
+	}
+
+	readCtx, readCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer readCancel()
+	for {
+		if _, _, err := c.ws.Read(readCtx); err != nil {
+			if readCtx.Err() != nil {
+				t.Fatalf("connection still open 2s after Shutdown gave up: %v", err)
+			}
+			break
+		}
+	}
+}
+
 // TestDrainRefusesNewConnections proves the ServeHTTP entry point itself
 // refuses the upgrade once draining has begun, rather than only tearing down
 // connections already open.

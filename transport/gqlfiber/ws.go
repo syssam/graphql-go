@@ -222,6 +222,9 @@ func WS(exec *graphql.Executor, opts ...Option) fiber.Handler {
 		if !originAllowed(c, cfg) {
 			return fiber.NewError(fiber.StatusForbidden, "Origin not authorized")
 		}
+		// After the origin check on purpose, so a cross-origin request gets
+		// 403 even while draining. gqlws checks the drain before Accept
+		// instead; both refuse without opening a socket.
 		select {
 		case <-cfg.drain.Closing():
 			return fiber.NewError(fiber.StatusServiceUnavailable, "The server is shutting down.")

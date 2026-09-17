@@ -2,6 +2,7 @@ package gqlfiber
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -74,6 +75,52 @@ func TestWSDrainClosesWithGoingAway(t *testing.T) {
 	case <-src.released:
 	case <-time.After(5 * time.Second):
 		t.Fatalf("%d subscription(s) still registered after the drain", src.live.Load())
+	}
+}
+
+// blockingExecutor serves a query that reports when it starts and then
+// returns only once its context is cancelled.
+func blockingExecutor(t *testing.T) (<-chan struct{}, *graphql.Executor) {
+	t.Helper()
+	started := make(chan struct{}, 1)
+	s, err := graphql.NewSchema(graphql.SDL(`type Query { block: String! }`),
+		graphql.Query(graphql.Resolve("block", func(ctx context.Context, _ graphql.Root) (string, error) {
+			started <- struct{}{}
+			<-ctx.Done()
+			return "", ctx.Err()
+		})),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	return started, graphql.NewExecutor(s)
+}
+
+// A query that ignores Closing keeps the connection's drain waiting, so
+// Shutdown can only return DeadlineExceeded if the connection was registered,
+// and the 1001 can only arrive if giving up reaches the context the protocol
+// runs under. Closing alone produces neither.
+func TestWSDrainWaitsForConnectionThenGivesUp(t *testing.T) {
+	started, exec := blockingExecutor(t)
+	d := drain.New()
+	c := dialWS(t, exec, WithDrain(d))
+	c.init()
+
+	c.subscribe("1", `{ block }`)
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the query never started")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if err := d.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown = %v, want DeadlineExceeded", err)
+	}
+
+	if got := c.recvClose(); got != coderws.StatusGoingAway {
+		t.Fatalf("close code = %d, want %d", got, coderws.StatusGoingAway)
 	}
 }
 
@@ -158,14 +205,22 @@ func TestSSEDrainEndsStreamWithoutComplete(t *testing.T) {
 
 	done := shutdownAsync(d)
 
-	rest := make(chan []byte, 1)
+	type readResult struct {
+		b   []byte
+		err error
+	}
+	rest := make(chan readResult, 1)
 	go func() {
-		b, _ := io.ReadAll(resp.Body)
-		rest <- b
+		b, err := io.ReadAll(resp.Body)
+		rest <- readResult{b, err}
 	}()
 	var read []byte
 	select {
-	case read = <-rest:
+	case r := <-rest:
+		if r.err != nil {
+			t.Fatalf("reading the stream to its end: %v (read %q)", r.err, r.b)
+		}
+		read = r.b
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out reading the stream to its end")
 	}
@@ -203,5 +258,48 @@ func TestSSEDrainRefusesNewSubscription(t *testing.T) {
 	}
 	if got := src.live.Load(); got != 0 {
 		t.Fatalf("live subscriptions = %d, want 0: the refused request still subscribed", got)
+	}
+}
+
+// A subscription whose opener fails is refused before any stream begins, and
+// that path must leave the drain too, or Shutdown waits out its deadline for a
+// request that already ended.
+func TestSSESubscribeErrorLeavesDrain(t *testing.T) {
+	const sdl = `
+type Query { hello: String! }
+type Subscription { ticks: Int! }
+`
+	s, err := graphql.NewSchema(graphql.SDL(sdl),
+		graphql.Query(graphql.Field("hello", func(graphql.Root) string { return "world" })),
+		graphql.Subscription(graphql.Subscribe("ticks", func(context.Context) (<-chan int, error) {
+			return nil, errors.New("no ticks today")
+		})),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	d := drain.New()
+	app := fiber.New()
+	app.Post("/graphql", SSE(graphql.NewExecutor(s), WithKeepAlive(time.Hour), WithDrain(d)))
+	base := startFiber(t, app)
+
+	resp, err := streamClient(t).Do(sseSubscribeRequest(t, context.Background(), base))
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	if err := d.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown = %v, want nil", err)
+	}
+	if dur := time.Since(start); dur > time.Second {
+		t.Fatalf("Shutdown took %v, want under 1s", dur)
 	}
 }

@@ -118,9 +118,19 @@ func TestDrainLetsServerShutdownReturn(t *testing.T) {
 	}
 
 	src.messages <- &message{ID: "1"}
-	buf := make([]byte, 512)
-	if _, err := resp.Body.Read(buf); err != nil {
-		t.Fatalf("reading the first event: %v", err)
+	firstRead := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 512)
+		_, err := resp.Body.Read(buf)
+		firstRead <- err
+	}()
+	select {
+	case err := <-firstRead:
+		if err != nil {
+			t.Fatalf("reading the first event: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out reading the first event")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -190,5 +200,51 @@ func TestDrainLeavesSingleResultAlone(t *testing.T) {
 	}
 	if got[1].name != "complete" {
 		t.Fatalf("second event = %+v", got[1])
+	}
+}
+
+// TestDrainDoesNotReachHandlerWithoutOption proves a handler built without
+// WithDrain is untouched by an unrelated drain shutting down: its stream keeps
+// delivering events afterwards.
+func TestDrainDoesNotReachHandlerWithoutOption(t *testing.T) {
+	src, e := newTestExecutor(t)
+	srv, client := newServer(t, e, gqlsse.WithCSRFPrevention(false))
+
+	resp := post(t, client, srv.URL, `{"query":"subscription { messages { id } }"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+
+	if err := drain.New().Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	select {
+	case src.messages <- &message{ID: "after"}:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out publishing after the unrelated Shutdown")
+	}
+
+	next := make(chan string, 1)
+	go func() {
+		sc := bufio.NewScanner(resp.Body)
+		var ev string
+		for sc.Scan() {
+			line := sc.Text()
+			ev += line + "\n"
+			if line == "" {
+				break
+			}
+		}
+		next <- ev
+	}()
+	select {
+	case ev := <-next:
+		if !strings.Contains(ev, "event: next") || !strings.Contains(ev, `"messages":{"id":"after"}`) {
+			t.Fatalf("event after the unrelated Shutdown = %q, want a next carrying it", ev)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out reading the event published after the unrelated Shutdown")
 	}
 }

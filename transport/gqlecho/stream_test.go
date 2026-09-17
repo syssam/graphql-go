@@ -197,9 +197,19 @@ func TestSSEDrainEndsStreamWithoutComplete(t *testing.T) {
 		t.Fatal("timed out publishing the event")
 	}
 
-	buf := make([]byte, 512)
-	if _, err := resp.Body.Read(buf); err != nil {
-		t.Fatalf("reading the first event: %v", err)
+	firstRead := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 512)
+		_, err := resp.Body.Read(buf)
+		firstRead <- err
+	}()
+	select {
+	case err := <-firstRead:
+		if err != nil {
+			t.Fatalf("reading the first event: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out reading the first event")
 	}
 
 	go func() { _ = d.Shutdown(context.Background()) }()
