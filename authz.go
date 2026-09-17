@@ -64,6 +64,38 @@ func (r Requirement) Scopes() []string {
 	return slices.Compact(out)
 }
 
+// maxRequirementGroups bounds an effective requirement after inheritance.
+// AND-ing OR-of-AND requirements multiplies their group counts, so a field
+// inheriting from an object and several interfaces can grow quickly; past this
+// NewSchema fails, keeping a pathological combination a build error rather
+// than a per-request cost.
+const maxRequirementGroups = 64
+
+// And returns the requirement satisfied only when both r and o are. It is the
+// cross product of their groups, each group sorted and deduplicated. The zero
+// Requirement admits everyone, so it is the identity.
+func (r Requirement) And(o Requirement) Requirement {
+	if r.IsZero() {
+		return o
+	}
+	if o.IsZero() {
+		return r
+	}
+	out := make([][]string, 0, len(r.anyOf)*len(o.anyOf))
+	for _, a := range r.anyOf {
+		for _, b := range o.anyOf {
+			g := make([]string, 0, len(a)+len(b))
+			g = append(g, a...)
+			g = append(g, b...)
+			slices.Sort(g)
+			out = append(out, slices.Compact(g))
+		}
+	}
+	return Requirement{anyOf: out}
+}
+
+func (r Requirement) groupCount() int { return len(r.anyOf) }
+
 // SiteKind says what kind of position needs an authorization decision.
 type SiteKind uint8
 
