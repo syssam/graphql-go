@@ -286,14 +286,11 @@ func (b *schemaBuilder) validateInputDirectives() {
 	}
 }
 
-// checkInputDirectiveKind rejects an @authorizeInput occurrence whose kind
-// argument is not a bare FILTER or WRITE enum literal. gqlparser checks the
-// directive's name, location and argument presence but never type-checks a
-// directive argument's literal against its declared type (mirroring why
-// checkRequiresScopes exists for @requiresScopes's "scopes"): an unknown enum
-// name, a string literal, a variable or a missing value all build cleanly
-// otherwise, and Task 3 reads kind as Value.Raw == "WRITE" literally, so a
-// typo would silently misclassify a write site as FILTER.
+// checkInputDirectiveKind exists because gqlparser never type-checks a
+// directive argument's literal against its declared type, the same gap
+// checkRequiresScopes closes for scopes. Plan compile reads kind by its raw
+// name, so an unknown name or a string literal would otherwise build and
+// silently classify a write site as a filter.
 func (b *schemaBuilder) checkInputDirectiveKind(coord string, ds ast.DirectiveList) {
 	for _, d := range ds.ForNames(inputDirective) {
 		v := d.Arguments.ForName("kind")
