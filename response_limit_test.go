@@ -3,6 +3,7 @@ package graphql
 import (
 	"context"
 	"errors"
+	"iter"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -12,12 +13,14 @@ const limitSDL = `
 type Item { body: String! }
 type Section { items: [Item!]! }
 type Row { text: String! next: String! }
+type Note { title: String }
 type Query {
   short: String!
   failNullable: String
   a: Section!
   b: Section!
   rows: [Row!]!
+  feed: [Note]
 }
 type Subscription { section: Section! }
 `
@@ -25,6 +28,7 @@ type Subscription { section: Section! }
 type limitItem struct{ n int }
 type limitSection struct{ n int }
 type limitRow struct{ n int }
+type limitNote struct{ n int }
 
 // limitFixture counts how many item bodies were written, which is how a test
 // tells an execution that stopped early from one that wrote everything and was
@@ -32,6 +36,7 @@ type limitRow struct{ n int }
 type limitFixture struct {
 	bodies   atomic.Int64
 	nexts    atomic.Int64
+	pulls    atomic.Int64
 	sections chan *limitSection
 }
 
@@ -67,12 +72,28 @@ func newLimitExecutor(t *testing.T, opts ...ExecutorOption) (*limitFixture, *Exe
 				return "n", nil
 			}),
 		),
+		Object[limitNote]("Note",
+			Field("title", func(*limitNote) *string { return &body }),
+		),
 		Query(
 			Field("short", func(Root) string { return "abc" }),
 			Resolve("failNullable", func(context.Context, Root) (*string, error) { return nil, errors.New("boom") }),
 			Resolve("a", func(context.Context, Root) (*limitSection, error) { return &limitSection{}, nil }),
 			Resolve("b", func(context.Context, Root) (*limitSection, error) { return &limitSection{}, nil }),
 			Field("rows", func(Root) []*limitRow { return rows }),
+			// feed is lazy and every field under it nullable, which is the shape
+			// where a trip used to leave traversal running: each failure became a
+			// null and the next element was pulled.
+			Field("feed", func(Root) iter.Seq[*limitNote] {
+				return func(yield func(*limitNote) bool) {
+					for i := range 200_000 {
+						f.pulls.Add(1)
+						if !yield(&limitNote{n: i}) {
+							return
+						}
+					}
+				}
+			}),
 		),
 		Subscription(
 			Subscribe("section", func(context.Context) (<-chan *limitSection, error) { return f.sections, nil }),
@@ -176,6 +197,27 @@ func TestResponseLimitUnsetWritesEverything(t *testing.T) {
 	}
 	if n := f.nexts.Load(); n != 1000 {
 		t.Fatalf("resolved %d rows with no limit, want 1000", n)
+	}
+
+	f2, e2 := newLimitExecutor(t, WithMaxConcurrency(0), WithMaxResponseBytes(0))
+	resp3 := run(t, e2, `{ feed { title } }`, "")
+	if len(resp3.Errors) != 0 {
+		t.Fatalf("unexpected errors: %s", errorsJSON(resp3.Errors))
+	}
+	if n := f2.pulls.Load(); n != 200_000 {
+		t.Fatalf("pulled %d of 200000 notes with no limit, want 200000", n)
+	}
+}
+
+// TestResponseLimitStopsNullableTraversal pins that a trip ends traversal even
+// where every failure could be nulled: without that, each remaining element is
+// pulled from the iterator and written as a skeleton of nulls, and the response
+// grows with the list rather than stopping near the limit.
+func TestResponseLimitStopsNullableTraversal(t *testing.T) {
+	f, e := newLimitExecutor(t, WithMaxConcurrency(0), WithMaxResponseBytes(64<<10))
+	expectTooLarge(t, run(t, e, `{ feed { title } }`, ""), 64<<10)
+	if n := f.pulls.Load(); n >= 20_000 {
+		t.Fatalf("pulled %d of 200000 notes under a 64 KiB limit; traversal did not stop", n)
 	}
 }
 

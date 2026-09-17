@@ -8,7 +8,7 @@ import "testing"
 const responseLimitBenchQuery = `{ users { id name tags friends { id name tags friends { id name } } } }`
 
 func BenchmarkResponseLimitOff(b *testing.B) {
-	_, e := newFixtureExecutor(b)
+	_, e := newFixtureExecutor(b, WithMaxResponseBytes(0))
 	benchRun(b, e, responseLimitBenchQuery)
 }
 
@@ -21,10 +21,13 @@ func BenchmarkResponseLimitOn(b *testing.B) {
 // query that failed would time the error path and report both sides equal.
 func TestResponseLimitBenchQueryWritesData(t *testing.T) {
 	for name, opts := range map[string][]ExecutorOption{
-		"off": nil,
+		"off": {WithMaxResponseBytes(0)},
 		"on":  {WithMaxResponseBytes(64 << 20)},
 	} {
 		_, e := newFixtureExecutor(t, opts...)
+		if want := map[string]int64{"off": 0, "on": 64 << 20}[name]; e.maxResponseBytes != want {
+			t.Fatalf("%s: maxResponseBytes = %d, want %d", name, e.maxResponseBytes, want)
+		}
 		resp := run(t, e, responseLimitBenchQuery, "")
 		if len(resp.Errors) != 0 || len(resp.Data) < 100 {
 			t.Fatalf("%s: %d bytes, errors %s", name, len(resp.Data), errorsJSON(resp.Errors))

@@ -171,14 +171,21 @@ rejected a response that fit at about half its real size, depending only on fiel
 `Splice` hands the sub-writer's reported bytes to the parent. `Put` resets even a buffer it
 will not pool, or an oversized sub-writer never gives its bytes back. Once a checkpoint sees
 the limit passed the response is rejected even if null bubbling later rewinds those bytes,
-because everything after that point was cut short. The final size check is otherwise exact;
+because everything after that point was cut short. A trip also makes every failure bubble,
+nullable or not (`writeField`, `writeList`, and a check after each concurrent group): before
+that, a nullable field or element turned the failure into a null and traversal went on, so a
+lazy list of nullable fields was pulled to the end and the root writer reached 229 times the
+limit. A concurrent list still drains its source into a slice before spawning, which predates
+the limit. The final size check is otherwise exact;
 the in-flight bound is about one field's output per concurrently written buffer. The errors
 list is not counted, so a million failing nullable elements are still a million errors in
 memory. The default was set by measurement: interleaved n=12, `BenchmarkResponseLimitOff`
 against `On` was 15.51µs vs 15.65µs (p=0.347) with 92 allocs/op both, and
-`BenchmarkFieldPathBare` against `main` 1.218µs vs 1.281µs (p=0.219) at 18 allocs/op both —
+`BenchmarkFieldPathBare` against `main` 1.218µs vs 1.281µs (p=0.219) at 18 allocs/op both,
+measured with no limit before the default changed —
 not distinguishable on this machine, which is a bound on the cost, not a proof it is zero.
-The benchmark query writes 393 bytes, so larger responses were not measured.
+The benchmark is one request writing 393 bytes, so neither larger responses nor contention on the
+shared counter from a wide concurrent list were measured.
 
 **The pure/resolver split is the core scheduling contract.** `Field`/`FieldArgs` are pure
 data access and always run inline with no goroutine and no context allocation: the
