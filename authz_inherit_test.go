@@ -176,7 +176,8 @@ func TestRequiresScopesOnAnUnenforcedLocationFailsBuild(t *testing.T) {
 		{"input object", `input MisplacedInputObject @requiresScopes(scopes: [["x"]]) { a: String }`, "MisplacedInputObject"},
 		{"input field", `input MisplacedInputField { a: String @requiresScopes(scopes: [["x"]]) }`, "MisplacedInputField.a"},
 		{"argument", `type MisplacedArgOwner { f(a: String @requiresScopes(scopes: [["x"]])): String }`, "MisplacedArgOwner.f(a:)"},
-		{"interface field argument", `interface MisplacedArgPet { name(a: String @requiresScopes(scopes: [["x"]])): String }`, "MisplacedArgPet.name(a:)"},	}
+		{"interface field argument", `interface MisplacedArgPet { name(a: String @requiresScopes(scopes: [["x"]])): String }`, "MisplacedArgPet.name(a:)"},
+	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			sdl := `
