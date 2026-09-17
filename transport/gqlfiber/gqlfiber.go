@@ -60,7 +60,8 @@ type config struct {
 	csrfHeaders []string
 	apq         apq.Cache
 
-	keepAlive time.Duration
+	keepAlive    time.Duration
+	maxStreamAge time.Duration
 
 	initTimeout  time.Duration
 	pingInterval time.Duration
@@ -123,6 +124,15 @@ func WithPersistedQueries(cache apq.Cache) Option { return func(c *config) { c.a
 // so that proxies and load balancers do not treat a quiet subscription as a
 // dead connection. The default is 15s; zero disables it.
 func WithKeepAlive(d time.Duration) Option { return func(c *config) { c.keepAlive = d } }
+
+// WithMaxStreamAge ends an SSE subscription stream after d, give or take 10%
+// so that streams opened together do not all end together, without a
+// complete event -- so the client reconnects rather than treating the
+// subscription as finished for good. A single-result query or mutation is
+// unaffected: it streams its one next and complete before the age could ever
+// matter. Zero means no limit, the default. It has no effect on the plain
+// HTTP or WebSocket handlers.
+func WithMaxStreamAge(d time.Duration) Option { return func(c *config) { c.maxStreamAge = d } }
 
 // WithInitTimeout bounds how long a WebSocket client may take to send
 // connection_init before the connection is closed. The default is 10s.
