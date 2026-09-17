@@ -264,6 +264,53 @@ type Query @requiresScopes(scopes: ["x"]) { a: String! }
 	}
 }
 
+// The shape check must also cover an interface's own @requiresScopes, not
+// only an object's: validateAuthDirectives folds ast.Interface into the same
+// switch case as ast.Object, and removing ast.Interface from that case
+// leaves this accepted while still building a schema (task-2 fix-round-1
+// review, "Important 2").
+func TestNewSchemaRejectsMalformedScopesValueOnInterface(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT | INTERFACE
+interface Pet @requiresScopes(scopes: ["x"]) { name: String! }
+type Dog implements Pet { name: String! }
+type Query { pet: Pet! }
+`
+	_, err := NewSchema(SDL(sdl),
+		Query(Field("pet", func(Root) authzPet { return &authzDog{} })),
+		Interface[authzPet]("Pet"),
+		Object[authzDog]("Dog", Field("name", func(*authzDog) string { return "" })),
+	)
+	if err == nil {
+		t.Fatal("NewSchema accepted a malformed scopes value on an interface type")
+	}
+	if !strings.Contains(err.Error(), "Pet") {
+		t.Errorf("error does not name the coordinate Pet: %v", err)
+	}
+}
+
+// Same as above, for an interface's field-level @requiresScopes rather than
+// its type-level one.
+func TestNewSchemaRejectsMalformedScopesValueOnInterfaceField(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT | INTERFACE
+interface Pet { name: String! @requiresScopes(scopes: ["x"]) }
+type Dog implements Pet { name: String! }
+type Query { pet: Pet! }
+`
+	_, err := NewSchema(SDL(sdl),
+		Query(Field("pet", func(Root) authzPet { return &authzDog{} })),
+		Interface[authzPet]("Pet"),
+		Object[authzDog]("Dog", Field("name", func(*authzDog) string { return "" })),
+	)
+	if err == nil {
+		t.Fatal("NewSchema accepted a malformed scopes value on an interface field")
+	}
+	if !strings.Contains(err.Error(), "Pet.name") {
+		t.Errorf("error does not name the coordinate Pet.name: %v", err)
+	}
+}
+
 func planForTest(t *testing.T, e *Executor, query string) (*plan, bool, []*Error) {
 	t.Helper()
 	entry, errs := e.document(query)

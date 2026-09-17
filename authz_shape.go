@@ -79,33 +79,44 @@ func (b *shapeBuilder) field(f *planField) {
 	b.walk(f.sub)
 }
 
-// requirementOf reads @requiresScopes off a definition. NewSchema's
-// validateAuthDirectives rejects any use of the directive whose "scopes"
-// value is not a non-empty list of non-empty lists of strings, so by the
-// time a plan compiles every matched directive's groups are already
-// well-formed; this function only extracts them. The nil/absent-argument
-// branches below stay as defensive fallbacks, not as the shape guarantee.
+// requirementOf reads every @requiresScopes occurrence off a definition and
+// ANDs them together. A `repeatable` directive, or an `extend type`/`extend
+// interface`/`extend schema` re-declaring it, adds a second occurrence to the
+// same Directives list rather than replacing the first -- gqlparser merges
+// extension directives into the base list and skips the non-repeatable check
+// for them (confirmed against v2.5.37) -- so reading only ds.ForName's first
+// match silently drops every declaration but the first. NewSchema's
+// validateAuthDirectives rejects any occurrence whose "scopes" value is not a
+// non-empty list of non-empty lists of strings, so by the time a plan
+// compiles every matched directive's groups are already well-formed; this
+// function only extracts and combines them. The nil/absent-argument branches
+// below stay as defensive fallbacks, not as the shape guarantee. ok reports
+// whether the directive occurred at all, regardless of how many times.
 func requirementOf(ds ast.DirectiveList) (Requirement, bool) {
-	d := ds.ForName(authDirective)
-	if d == nil {
+	occurrences := ds.ForNames(authDirective)
+	if len(occurrences) == 0 {
 		return Requirement{}, false
 	}
-	arg := d.Arguments.ForName("scopes")
-	if arg == nil || arg.Value == nil {
-		return Requirement{}, false
-	}
-	var groups [][]string
-	for _, outer := range arg.Value.Children {
-		var group []string
-		for _, inner := range outer.Value.Children {
-			group = append(group, inner.Value.Raw)
+	var req Requirement
+	for _, d := range occurrences {
+		arg := d.Arguments.ForName("scopes")
+		if arg == nil || arg.Value == nil {
+			continue
 		}
-		groups = append(groups, group)
+		var groups [][]string
+		for _, outer := range arg.Value.Children {
+			var group []string
+			for _, inner := range outer.Value.Children {
+				group = append(group, inner.Value.Raw)
+			}
+			groups = append(groups, group)
+		}
+		if groups == nil {
+			continue
+		}
+		req = req.And(NewRequirement(groups...))
 	}
-	if groups == nil {
-		return Requirement{}, false
-	}
-	return NewRequirement(groups...), true
+	return req, true
 }
 
 // validateAuthDirectives rejects a malformed or misplaced @requiresScopes at
@@ -114,9 +125,18 @@ func requirementOf(ds ast.DirectiveList) (Requirement, bool) {
 // argument presence but never the "scopes" value's shape: a flat list of
 // strings decodes to a requirement satisfied by everyone while still creating
 // a site. And a placement the engine does not enforce -- a union, enum, enum
-// value, scalar, input object, input field or argument -- would read as
-// guarded while guarding nothing, so it is an error rather than a no-op.
+// value, scalar, input object, input field, argument, the schema definition
+// itself, or a directive definition's own argument -- would read as guarded
+// while guarding nothing, so it is an error rather than a no-op. Executable
+// locations (a client document's fields, fragments, and so on) need nothing:
+// this directive is declared for type-system locations only.
 func (b *schemaBuilder) validateAuthDirectives() {
+	b.rejectUnenforced("schema", "the schema definition", b.ast.SchemaDirectives)
+	for dname, ddef := range b.ast.Directives {
+		for _, a := range ddef.Arguments {
+			b.rejectUnenforced(argCoordinate("@"+dname, a.Name), "an argument", a.Directives)
+		}
+	}
 	for name, def := range b.ast.Types {
 		if def.BuiltIn {
 			continue
@@ -128,7 +148,7 @@ func (b *schemaBuilder) validateAuthDirectives() {
 				coord := coordinate(name, f.Name)
 				b.checkRequiresScopes(coord, f.Directives)
 				for _, a := range f.Arguments {
-					b.rejectUnenforced(coord, "an argument", a.Directives)
+					b.rejectUnenforced(argCoordinate(coord, a.Name), "an argument", a.Directives)
 				}
 			}
 		case ast.InputObject:
@@ -155,41 +175,113 @@ func (b *schemaBuilder) rejectUnenforced(coord, what string, ds ast.DirectiveLis
 	}
 }
 
+// argCoordinate renders a coordinate for an argument, matching the style
+// GraphQL error messages already use for one elsewhere in this package (see
+// validateDeprecation): Q3.f(a:) for a field argument, @foo(a:) for a
+// directive definition's.
+func argCoordinate(owner, arg string) string {
+	return owner + "(" + arg + ":)"
+}
+
+// andCapped ANDs next into acc, refusing to allocate the cross product when
+// it would exceed maxRequirementGroups. Requirement.And allocates
+// len(acc)*len(next) groups unconditionally: checking the group count only
+// after combining (as an earlier version of this function did) still pays
+// for that allocation on the way to reporting the error, and four
+// interfaces of 30 groups multiply to 810,000 groups before any check runs
+// at all, repeated again per field. ok is false when the product would
+// exceed the cap -- computed in int64 so a pathological SDL cannot overflow
+// the check meant to catch it -- and acc is returned unchanged so the caller
+// can stop combining for that coordinate rather than recomputing an
+// already-oversized value.
+func andCapped(acc, next Requirement) (Requirement, bool) {
+	rc, oc := acc.groupCount(), next.groupCount()
+	predicted := int64(oc)
+	if rc != 0 {
+		if oc == 0 {
+			predicted = int64(rc)
+		} else {
+			predicted = int64(rc) * int64(oc)
+		}
+	}
+	if predicted > int64(maxRequirementGroups) {
+		return acc, false
+	}
+	return acc.And(next), true
+}
+
+// combineWithInterfaces ANDs acc with the requirement lookup returns for
+// each of obj's implemented interfaces, used for both the type-level
+// requirement (lookup reads the interface's own directives) and a field's
+// (lookup reads the same-named interface field's). Interface names are
+// deduplicated first: `type Dog implements Pet` plus `extend type Dog
+// implements Pet` gives Interfaces [Pet, Pet], and ANDing Pet's requirement
+// with itself would square its own group count rather than counting it
+// once. Combining stops at the first product that would exceed the cap,
+// reporting one error for coord rather than repeating the same explosion
+// for every remaining interface; capped reports whether that happened.
+func (b *schemaBuilder) combineWithInterfaces(coord string, acc Requirement, interfaces []string, lookup func(*ast.Definition) ast.DirectiveList) (req Requirement, capped bool) {
+	seen := make(map[string]bool, len(interfaces))
+	for _, iname := range interfaces {
+		if seen[iname] {
+			continue
+		}
+		seen[iname] = true
+		idef := b.ast.Types[iname]
+		if idef == nil {
+			continue
+		}
+		r, _ := requirementOf(lookup(idef))
+		combined, ok := andCapped(acc, r)
+		if !ok {
+			b.errorf("%s: effective @%s has more than %d groups", coord, authDirective, maxRequirementGroups)
+			return acc, true
+		}
+		acc = combined
+	}
+	return acc, false
+}
+
 // resolveAuthRequirements stores each bound field's effective requirement on
 // its fieldDef and each object's type-level one on its objectType. Every input
 // is schema-level and immutable after build, so the value is identical on
 // every path that reaches a field -- which is what keeps a memoized selection
 // set shared between parents safe to index once.
+//
+// When an object's own type-level combination already exceeds the cap, its
+// fields are skipped entirely rather than each recomputing (and re-reporting)
+// the same explosion: every field would inherit the oversized type-level
+// value, and one error per field would bury the coordinate that actually
+// caused it.
 func (b *schemaBuilder) resolveAuthRequirements(s *Schema) {
 	for name, obj := range s.objects {
 		typeReq, _ := requirementOf(obj.def.Directives)
-		for _, iname := range obj.def.Interfaces {
-			if idef := b.ast.Types[iname]; idef != nil {
-				r, _ := requirementOf(idef.Directives)
-				typeReq = typeReq.And(r)
-			}
+		typeReq, capped := b.combineWithInterfaces(name, typeReq, obj.def.Interfaces, func(idef *ast.Definition) ast.DirectiveList {
+			return idef.Directives
+		})
+		obj.requires = typeReq
+		if capped {
+			continue
 		}
 		if typeReq.groupCount() > maxRequirementGroups {
 			b.errorf("%s: effective @%s has %d groups, more than %d", name, authDirective, typeReq.groupCount(), maxRequirementGroups)
+			continue
 		}
-		obj.requires = typeReq
 
 		for _, fd := range obj.fields {
+			coord := coordinate(name, fd.name)
 			req, _ := requirementOf(fd.def.Directives)
-			req = req.And(typeReq)
-			for _, iname := range obj.def.Interfaces {
-				idef := b.ast.Types[iname]
-				if idef == nil {
-					continue
-				}
+			req, ok := andCapped(req, typeReq)
+			if !ok {
+				b.errorf("%s: effective @%s has more than %d groups", coord, authDirective, maxRequirementGroups)
+				continue
+			}
+			req, _ = b.combineWithInterfaces(coord, req, obj.def.Interfaces, func(idef *ast.Definition) ast.DirectiveList {
 				if ifd := idef.Fields.ForName(fd.name); ifd != nil {
-					r, _ := requirementOf(ifd.Directives)
-					req = req.And(r)
+					return ifd.Directives
 				}
-			}
-			if req.groupCount() > maxRequirementGroups {
-				b.errorf("%s: effective @%s has %d groups, more than %d", coordinate(name, fd.name), authDirective, req.groupCount(), maxRequirementGroups)
-			}
+				return nil
+			})
 			fd.requires = req
 		}
 	}
@@ -240,13 +332,16 @@ func (b *schemaBuilder) validateAuthCoverage(s *Schema) {
 	}
 }
 
+// checkRequiresScopes shape-checks every @requiresScopes occurrence on coord,
+// not just the first ds.ForName match: a repeatable directive or an
+// extension can add a second occurrence gqlparser never folds into the
+// first (see requirementOf), and a malformed one must fail the build exactly
+// like a malformed first occurrence would.
 func (b *schemaBuilder) checkRequiresScopes(coord string, ds ast.DirectiveList) {
-	d := ds.ForName(authDirective)
-	if d == nil {
-		return
-	}
-	if !scopesShapeValid(d.Arguments.ForName("scopes")) {
-		b.errorf("%s: @%s scopes must be a non-empty list of non-empty lists of strings", coord, authDirective)
+	for _, d := range ds.ForNames(authDirective) {
+		if !scopesShapeValid(d.Arguments.ForName("scopes")) {
+			b.errorf("%s: @%s scopes must be a non-empty list of non-empty lists of strings", coord, authDirective)
+		}
 	}
 }
 

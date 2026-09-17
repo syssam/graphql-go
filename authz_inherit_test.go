@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -157,24 +158,27 @@ type Query { big: Big! }
 }
 
 func TestRequiresScopesOnAnUnenforcedLocationFailsBuild(t *testing.T) {
+	// Names are distinctive rather than single letters so that a coordinate
+	// match in the assertion below actually pins the right location, rather
+	// than merely matching a substring of some other, unrelated identifier.
 	cases := []struct {
 		name  string
 		extra string // appended SDL carrying the misplaced directive
 		coord string
 	}{
-		{"union", `union U @requiresScopes(scopes: [["x"]]) = Q2`, "U"},
-		{"enum", `enum E @requiresScopes(scopes: [["x"]]) { A }`, "E"},
-		{"enum value", `enum E2 { A @requiresScopes(scopes: [["x"]]) }`, "E2.A"},
-		{"scalar", `scalar S @requiresScopes(scopes: [["x"]])`, "S"},
-		{"input object", `input I @requiresScopes(scopes: [["x"]]) { a: String }`, "I"},
-		{"input field", `input J { a: String @requiresScopes(scopes: [["x"]]) }`, "J.a"},
-		{"argument", `type Q3 { f(a: String @requiresScopes(scopes: [["x"]])): String }`, "Q3.f"},
+		{"union", `union MisplacedUnion @requiresScopes(scopes: [["x"]]) = UnionMember`, "MisplacedUnion"},
+		{"enum", `enum MisplacedEnum @requiresScopes(scopes: [["x"]]) { A }`, "MisplacedEnum"},
+		{"enum value", `enum MisplacedEnumValue { A @requiresScopes(scopes: [["x"]]) }`, "MisplacedEnumValue.A"},
+		{"scalar", `scalar MisplacedScalar @requiresScopes(scopes: [["x"]])`, "MisplacedScalar"},
+		{"input object", `input MisplacedInputObject @requiresScopes(scopes: [["x"]]) { a: String }`, "MisplacedInputObject"},
+		{"input field", `input MisplacedInputField { a: String @requiresScopes(scopes: [["x"]]) }`, "MisplacedInputField.a"},
+		{"argument", `type MisplacedArgOwner { f(a: String @requiresScopes(scopes: [["x"]])): String }`, "MisplacedArgOwner.f(a:)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			sdl := `
 directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT | INTERFACE | UNION | ENUM | ENUM_VALUE | SCALAR | INPUT_OBJECT | INPUT_FIELD_DEFINITION | ARGUMENT_DEFINITION
-type Q2 { a: String }
+type UnionMember { a: String }
 type Query { ok: String }
 ` + tc.extra
 			_, err := NewSchema(SDL(sdl), Query(Field("ok", func(Root) string { return "" })))
@@ -185,5 +189,239 @@ type Query { ok: String }
 				t.Errorf("error should name %q and say it is not enforced: %v", tc.coord, err)
 			}
 		})
+	}
+}
+
+// A directive naming it repeatable, or an extension re-declaring it, adds a
+// second occurrence to the same Directives list rather than replacing the
+// first: gqlparser merges extension directives and skips the non-repeatable
+// check for them. requirementOf must AND every occurrence it finds, or the
+// second declaration is silently dropped from the effective requirement.
+func TestRequirementCombinesEveryOccurrenceOnExtendType(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+type Dog @requiresScopes(scopes: [["a"]]) { name: String! }
+extend type Dog @requiresScopes(scopes: [["b"]])
+type Query { dog: Dog! }
+`
+	s, err := NewSchema(SDL(sdl),
+		Query(Field("dog", func(Root) *authzDog { return &authzDog{} })),
+		Object[authzDog]("Dog", Field("name", func(*authzDog) string { return "" })),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	req := s.objects["Dog"].requires
+	held := func(names ...string) map[string]bool {
+		m := map[string]bool{}
+		for _, n := range names {
+			m[n] = true
+		}
+		return m
+	}
+	if req.Satisfied(held("a")) {
+		t.Error("extend type Dog's second @requiresScopes was dropped: satisfied by a alone")
+	}
+	if !req.Satisfied(held("a", "b")) {
+		t.Errorf("Dog's type-level requirement should be a AND b, got %v", req.anyOf)
+	}
+}
+
+// Same as above for an interface split across a base declaration and an
+// extension, which is where the reviewer confirmed the merge behaviour.
+func TestRequirementCombinesEveryOccurrenceOnExtendInterface(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT | INTERFACE
+interface Pet @requiresScopes(scopes: [["a"]]) { name: String! }
+extend interface Pet @requiresScopes(scopes: [["b"]])
+type Dog implements Pet { name: String! }
+type Query { pet: Pet! }
+`
+	s, err := NewSchema(SDL(sdl),
+		Query(Field("pet", func(Root) authzPet { return &authzDog{} })),
+		Interface[authzPet]("Pet"),
+		Object[authzDog]("Dog", Field("name", func(*authzDog) string { return "" })),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	req := s.objects["Dog"].requires
+	held := func(names ...string) map[string]bool {
+		m := map[string]bool{}
+		for _, n := range names {
+			m[n] = true
+		}
+		return m
+	}
+	if req.Satisfied(held("a")) {
+		t.Error("extend interface Pet's second @requiresScopes was dropped: Dog satisfied by a alone")
+	}
+	if !req.Satisfied(held("a", "b")) {
+		t.Errorf("Dog's inherited type-level requirement should be a AND b, got %v", req.anyOf)
+	}
+}
+
+// A directive declared repeatable can occur twice on one field without any
+// extend at all; the same ForName-only bug drops the second occurrence here
+// too.
+func TestRequirementCombinesRepeatableDirectiveOccurrencesOnAField(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) repeatable on FIELD_DEFINITION | OBJECT
+type Query { a: String! @requiresScopes(scopes: [["x"]]) @requiresScopes(scopes: [["y"]]) }
+`
+	s, err := NewSchema(SDL(sdl), Query(Field("a", func(Root) string { return "" })))
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	req := s.objects["Query"].fields["a"].requires
+	held := func(names ...string) map[string]bool {
+		m := map[string]bool{}
+		for _, n := range names {
+			m[n] = true
+		}
+		return m
+	}
+	if req.Satisfied(held("x")) {
+		t.Error("the second @requiresScopes occurrence was dropped: satisfied by x alone")
+	}
+	if !req.Satisfied(held("x", "y")) {
+		t.Errorf("Query.a's requirement should be x AND y, got %v", req.anyOf)
+	}
+}
+
+// checkRequiresScopes must shape-check every occurrence, not only the first
+// ForName match, or a malformed second declaration silently passes the build.
+func TestNewSchemaRejectsMalformedSecondOccurrence(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) repeatable on FIELD_DEFINITION | OBJECT
+type Query { a: String! @requiresScopes(scopes: [["x"]]) @requiresScopes(scopes: ["y"]) }
+`
+	_, err := NewSchema(SDL(sdl), Query(Field("a", func(Root) string { return "" })))
+	if err == nil {
+		t.Fatal("NewSchema accepted a malformed second @requiresScopes occurrence")
+	}
+	if !strings.Contains(err.Error(), "Query.a") {
+		t.Errorf("error does not name the coordinate Query.a: %v", err)
+	}
+}
+
+// A @requiresScopes on the schema definition itself reads as "the whole API
+// requires x" while guarding nothing: nothing walks b.ast.SchemaDirectives.
+func TestRequiresScopesOnSchemaDefinitionFailsBuild(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on SCHEMA | FIELD_DEFINITION
+schema @requiresScopes(scopes: [["x"]]) { query: Query }
+type Query { ok: String }
+`
+	_, err := NewSchema(SDL(sdl), Query(Field("ok", func(Root) string { return "" })))
+	if err == nil {
+		t.Fatal("NewSchema accepted @requiresScopes on the schema definition")
+	}
+	if !strings.Contains(err.Error(), "not enforced") {
+		t.Errorf("error does not say the schema-level directive is unenforced: %v", err)
+	}
+}
+
+// Same as above via `extend schema`, which gqlparser folds into the same
+// b.ast.SchemaDirectives list as the primary schema block.
+func TestRequiresScopesOnExtendSchemaFailsBuild(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on SCHEMA | FIELD_DEFINITION
+type Query { ok: String }
+extend schema @requiresScopes(scopes: [["x"]])
+`
+	_, err := NewSchema(SDL(sdl), Query(Field("ok", func(Root) string { return "" })))
+	if err == nil {
+		t.Fatal("NewSchema accepted @requiresScopes on an extend schema block")
+	}
+	if !strings.Contains(err.Error(), "not enforced") {
+		t.Errorf("error does not say the schema-level directive is unenforced: %v", err)
+	}
+}
+
+// A directive definition's own argument is a type-system position nothing
+// enforces either: b.ast.Directives[name].Arguments is never walked.
+func TestRequiresScopesOnADirectiveDefinitionArgumentFailsBuild(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | ARGUMENT_DEFINITION
+directive @foo(a: String @requiresScopes(scopes: [["x"]])) on FIELD_DEFINITION
+type Query { ok: String }
+`
+	_, err := NewSchema(SDL(sdl), Query(Field("ok", func(Root) string { return "" })))
+	if err == nil {
+		t.Fatal("NewSchema accepted @requiresScopes on a directive definition's argument")
+	}
+	if !strings.Contains(err.Error(), "@foo(a:)") || !strings.Contains(err.Error(), "not enforced") {
+		t.Errorf("error should name @foo(a:) and say it is not enforced: %v", err)
+	}
+}
+
+// And allocates len(acc)*len(next) groups; combining several interfaces'
+// many-group requirements can multiply into an enormous allocation before a
+// check made only after the fact ever runs. The fix must check the product
+// before each And, fail once with the type's own coordinate, and skip the
+// object's fields entirely rather than have each of them redo the same
+// explosion and report its own error.
+func TestEffectiveRequirementCapCheckedBeforeCombining(t *testing.T) {
+	manyGroups := func(prefix string, n int) string {
+		var b strings.Builder
+		b.WriteString("[")
+		for i := 0; i < n; i++ {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(`["` + prefix + strconv.Itoa(i) + `"]`)
+		}
+		b.WriteString("]")
+		return b.String()
+	}
+	sdl := `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT | INTERFACE
+interface I1 @requiresScopes(scopes: ` + manyGroups("a", 30) + `) { f: String! g: String! }
+interface I2 @requiresScopes(scopes: ` + manyGroups("b", 30) + `) { f: String! g: String! }
+type Big implements I1 & I2 { f: String! g: String! }
+type Query { big: Big! }
+`
+	_, err := NewSchema(SDL(sdl),
+		Query(Field("big", func(Root) *authzFoo { return &authzFoo{} })),
+		Object[authzFoo]("Big",
+			Field("f", func(*authzFoo) string { return "" }),
+			Field("g", func(*authzFoo) string { return "" }),
+		),
+	)
+	if err == nil {
+		t.Fatal("NewSchema accepted an effective requirement whose product is astronomically large")
+	}
+	if !strings.Contains(err.Error(), "Big") {
+		t.Errorf("error does not name the type Big: %v", err)
+	}
+	if n := strings.Count(err.Error(), "@requiresScopes"); n != 1 {
+		t.Errorf("got %d cap-related errors, want exactly 1 (per-field errors must be suppressed once the type-level value already failed): %v", n, err)
+	}
+}
+
+// `type Dog implements Pet` plus `extend type Dog implements Pet` gives
+// obj.def.Interfaces = [Pet, Pet]; ANDing Pet's requirement with itself
+// squares its own group count and can trip the cap on a schema that would
+// otherwise be well within it.
+func TestDuplicateInterfaceNameIsNotCombinedTwice(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT | INTERFACE
+interface Pet @requiresScopes(scopes: [["a"], ["b"], ["c"], ["d"], ["e"], ["f"], ["g"], ["h"]]) { name: String! }
+type Dog implements Pet { name: String! }
+extend type Dog implements Pet
+type Query { pet: Pet! }
+`
+	s, err := NewSchema(SDL(sdl),
+		Query(Field("pet", func(Root) authzPet { return &authzDog{} })),
+		Interface[authzPet]("Pet"),
+		Object[authzDog]("Dog", Field("name", func(*authzDog) string { return "" })),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v (Pet's 8 groups combined with itself would be 64, exactly at the cap, but combined with anything else would trip it)", err)
+	}
+	dog := s.objects["Dog"]
+	if got := dog.requires.groupCount(); got != 8 {
+		t.Errorf("Dog's type-level requirement has %d groups, want 8 (Pet counted once, not squared to 64)", got)
 	}
 }
