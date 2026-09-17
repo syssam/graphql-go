@@ -129,8 +129,8 @@ func (b *shapeBuilder) objectSiteFor(obj *objectType) int32 {
 // dropped every declaration but the first (round 1), and combining every
 // occurrence with plain And silently paid for an unbounded cross product
 // before any caller-level cap check ever ran (round 2): four occurrences of
-// 30 groups already multiply to 810,000 before resolveAuthRequirements' own
-// post-hoc check gets a chance to reject them. Capping every combination step
+// 30 groups already multiply to 810,000 before a post-hoc check could reject
+// them. Capping every combination step
 // here, inside the one function every combination passes through, is what
 // makes every caller safe regardless of how many occurrences a definition
 // has -- an object's own directives, a field's own, and an interface's or
@@ -335,10 +335,6 @@ func (b *schemaBuilder) resolveAuthRequirements(s *Schema) {
 		})
 		obj.requires = typeReq
 		if capped {
-			continue
-		}
-		if typeReq.groupCount() > maxRequirementGroups {
-			b.errorf("%s: effective @%s has %d groups, more than %d", name, authDirective, typeReq.groupCount(), maxRequirementGroups)
 			continue
 		}
 

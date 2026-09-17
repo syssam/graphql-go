@@ -433,8 +433,8 @@ type Query { pet: Pet! }
 // the directive is not declared repeatable, and requirementOf must AND every
 // occurrence (fix round 1) -- but combining them is itself where the
 // resource cost was: four occurrences of 30 groups multiply to 810,000
-// before any caller-level check (resolveAuthRequirements' post-hoc
-// groupCount comparison) ever got a chance to run, all inside requirementOf
+// before any caller-level check (a post-hoc groupCount comparison in
+// resolveAuthRequirements, since removed as unreachable) ever got a chance to run, all inside requirementOf
 // with no cap of its own (fix round 2). Correctness held even before round
 // 2 -- this exact scenario already failed with one error under the
 // unmodified round-1 code, just after paying for the full 810,000-group
@@ -474,6 +474,76 @@ type Query { big: Big! }
 	}
 	if n := strings.Count(err.Error(), "@requiresScopes"); n != 1 {
 		t.Errorf("got %d cap-related errors, want exactly 1: %v", n, err)
+	}
+}
+
+// The tests above pin the error an over-cap requirement produces, but an
+// uncapped build still produces it: a later andCapped rejects the oversized
+// value after it was built, so replacing andCapped with plain And kept every
+// one of them green. What the cap exists to prevent is the cross product
+// being allocated at all, so this bounds NewSchema's allocations. Three
+// occurrences of 64 groups is 262,144 groups -- one allocation each --
+// uncapped, and a capped build stops before the second product. A count of
+// allocations, not a duration, so a slow or loaded machine cannot flip it.
+func TestEffectiveRequirementCapPreventsBuildingTheProduct(t *testing.T) {
+	groups := func(prefix string) string {
+		var b strings.Builder
+		b.WriteString("[")
+		for i := 0; i < maxRequirementGroups; i++ {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(`["` + prefix + strconv.Itoa(i) + `"]`)
+		}
+		b.WriteString("]")
+		return b.String()
+	}
+	cases := []struct {
+		name string
+		sdl  string
+	}{
+		{
+			// requirementOf combines every occurrence on one definition.
+			name: "extend occurrences",
+			sdl: `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT | INTERFACE
+type Big @requiresScopes(scopes: ` + groups("a") + `) { f: String! }
+extend type Big @requiresScopes(scopes: ` + groups("b") + `)
+extend type Big @requiresScopes(scopes: ` + groups("c") + `)
+type Query { big: Big! }
+`,
+		},
+		{
+			// combineWithInterfaces combines each implemented interface.
+			name: "interfaces",
+			sdl: `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT | INTERFACE
+interface I1 @requiresScopes(scopes: ` + groups("a") + `) { f: String! }
+interface I2 @requiresScopes(scopes: ` + groups("b") + `) { f: String! }
+interface I3 @requiresScopes(scopes: ` + groups("c") + `) { f: String! }
+type Big implements I1 & I2 & I3 { f: String! }
+type Query { big: Big! }
+`,
+		},
+	}
+	const product = maxRequirementGroups * maxRequirementGroups * maxRequirementGroups
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var err error
+			allocs := testing.AllocsPerRun(1, func() {
+				_, err = NewSchema(SDL(tc.sdl),
+					Query(Field("big", func(Root) *authzFoo { return &authzFoo{} })),
+					Object[authzFoo]("Big", Field("f", func(*authzFoo) string { return "" })),
+				)
+			})
+			if err == nil || !strings.Contains(err.Error(), "more than 64 groups") {
+				t.Fatalf("NewSchema did not reject the over-cap requirement: %v", err)
+			}
+			t.Logf("NewSchema allocations: %.0f", allocs)
+			if allocs >= product/4 {
+				t.Errorf("NewSchema made %.0f allocations; the uncapped product alone is %d, so the cross product was built before the cap rejected it", allocs, product)
+			}
+		})
 	}
 }
 
