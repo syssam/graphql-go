@@ -132,6 +132,7 @@ type schemaBuilder struct {
 	directives    map[string]*directiveBinding
 	introspection bool
 	authCoverage  bool
+	authCapped    map[string]bool
 	errs          []error
 }
 

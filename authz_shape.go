@@ -295,17 +295,29 @@ func (b *schemaBuilder) combineWithInterfaces(coord string, acc Requirement, int
 			// r is not trustworthy (see requirementOf): the interface's own
 			// occurrences already exceeded the cap before we ever got to
 			// combine it with acc, so there is nothing valid left to AND.
-			b.errorf("%s: effective @%s has more than %d groups", coord, authDirective, maxRequirementGroups)
+			b.capExceeded(coord)
 			return acc, true
 		}
 		combined, within := andCapped(acc, r)
 		if !within {
-			b.errorf("%s: effective @%s has more than %d groups", coord, authDirective, maxRequirementGroups)
+			b.capExceeded(coord)
 			return acc, true
 		}
 		acc = combined
 	}
 	return acc, false
+}
+
+// capExceeded reports coord's effective requirement as over the cap and
+// remembers it, so validateAuthCoverage does not add a "declares no
+// authorization" error per field of it: the stored requirement is zero only
+// because the cap stopped it, and those errors would bury the real cause.
+func (b *schemaBuilder) capExceeded(coord string) {
+	b.errorf("%s: effective @%s has more than %d groups", coord, authDirective, maxRequirementGroups)
+	if b.authCapped == nil {
+		b.authCapped = make(map[string]bool)
+	}
+	b.authCapped[coord] = true
 }
 
 // resolveAuthRequirements stores each bound field's effective requirement on
@@ -327,7 +339,7 @@ func (b *schemaBuilder) resolveAuthRequirements(s *Schema) {
 			// own occurrences alone already exceeded the cap, so there is
 			// nothing valid to combine with its interfaces or hand to any
 			// field, and obj.requires is left at its zero value.
-			b.errorf("%s: effective @%s has more than %d groups", name, authDirective, maxRequirementGroups)
+			b.capExceeded(name)
 			continue
 		}
 		typeReq, capped := b.combineWithInterfaces(name, typeReq, obj.def.Interfaces, func(idef *ast.Definition) ast.DirectiveList {
@@ -342,12 +354,12 @@ func (b *schemaBuilder) resolveAuthRequirements(s *Schema) {
 			coord := coordinate(name, fd.name)
 			req, _, fieldCapped := requirementOf(fd.def.Directives)
 			if fieldCapped {
-				b.errorf("%s: effective @%s has more than %d groups", coord, authDirective, maxRequirementGroups)
+				b.capExceeded(coord)
 				continue
 			}
 			req, within := andCapped(req, typeReq)
 			if !within {
-				b.errorf("%s: effective @%s has more than %d groups", coord, authDirective, maxRequirementGroups)
+				b.capExceeded(coord)
 				continue
 			}
 			req, _ = b.combineWithInterfaces(coord, req, obj.def.Interfaces, func(idef *ast.Definition) ast.DirectiveList {
@@ -386,6 +398,9 @@ func (b *schemaBuilder) validateAuthCoverage(s *Schema) {
 				continue
 			}
 			if !fd.requires.IsZero() {
+				continue
+			}
+			if b.authCapped[name] || b.authCapped[coordinate(name, fd.name)] {
 				continue
 			}
 			b.errorf("field %s declares no authorization; add @requiresScopes or @public", coordinate(obj.name, fd.name))

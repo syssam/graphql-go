@@ -547,6 +547,73 @@ type Query { big: Big! }
 	}
 }
 
+// A requirement that hit the cap leaves the coordinate's stored requirement
+// zero, so coverage would otherwise add "declares no authorization" for every
+// field of it -- a misleading error per field burying the one real cause.
+func TestCapErrorIsNotBuriedUnderCoverageErrors(t *testing.T) {
+	nine := func(prefix string) string {
+		var b strings.Builder
+		b.WriteString("[")
+		for i := 0; i < 9; i++ {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(`["` + prefix + strconv.Itoa(i) + `"]`)
+		}
+		b.WriteString("]")
+		return b.String()
+	}
+	const header = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+directive @public on FIELD_DEFINITION | OBJECT
+type Query { big: Big! @public }
+`
+	cases := []struct {
+		name  string
+		sdl   string
+		coord string
+	}{
+		{
+			name: "type-level cap",
+			sdl: header + `type Big @requiresScopes(scopes: ` + nine("a") + `) { f: String! g: String! }
+extend type Big @requiresScopes(scopes: ` + nine("b") + `)
+`,
+			coord: "Big:",
+		},
+		{
+			name: "field-level cap",
+			sdl: header + `type Big @requiresScopes(scopes: ` + nine("a") + `) { f: String! @requiresScopes(scopes: ` + nine("b") + `) g: String! }
+`,
+			coord: "Big.f:",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewSchema(SDL(tc.sdl),
+				Query(Field("big", func(Root) *authzFoo { return &authzFoo{} })),
+				Object[authzFoo]("Big",
+					Field("f", func(*authzFoo) string { return "" }),
+					Field("g", func(*authzFoo) string { return "" }),
+				),
+				RequireAuthCoverage(),
+			)
+			if err == nil {
+				t.Fatal("NewSchema accepted an over-cap requirement")
+			}
+			msg := err.Error()
+			if n := strings.Count(msg, "more than 64 groups"); n != 1 {
+				t.Errorf("got %d cap errors, want 1: %v", n, msg)
+			}
+			if !strings.Contains(msg, tc.coord) {
+				t.Errorf("cap error does not name %q: %v", tc.coord, msg)
+			}
+			if n := strings.Count(msg, "declares no authorization"); n != 0 {
+				t.Errorf("got %d coverage errors for a capped coordinate, want 0: %v", n, msg)
+			}
+		})
+	}
+}
+
 func inheritExec(t testing.TB, held ...string) *Executor {
 	t.Helper()
 	have := map[string]bool{}
