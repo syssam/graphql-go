@@ -158,6 +158,28 @@ offset rather than building an intermediate value tree. `errNonNull` is the inte
 for "null reached a non-null position"; `indexedError` carries a list index so error paths
 can be reconstructed.
 
+**The response byte limit (`WithMaxResponseBytes`, 64 MiB by default) is counted on the
+writer, not on `execState`.** `execState` has no padding left, and concurrent fields and list
+elements write into their own pooled sub-writers that the root writer never sees until they
+are spliced, so the budget is embedded in the root `jsonw.Writer` and shared by pointer with
+every sub-writer (`ShareLimit`). Each `writeFieldValue` checkpoint reports the writer's growth
+since its last report (`OverLimit`) — on every call, not in fixed-size blocks, because a list
+element's buffer is usually far smaller than any block and ten thousand of them would never
+report. **Splicing must move the count, not copy it**: sub-writers are put back only after
+every sibling is spliced, so `Raw` there let a later checkpoint count the same bytes twice and
+rejected a response that fit at about half its real size, depending only on field order;
+`Splice` hands the sub-writer's reported bytes to the parent. `Put` resets even a buffer it
+will not pool, or an oversized sub-writer never gives its bytes back. Once a checkpoint sees
+the limit passed the response is rejected even if null bubbling later rewinds those bytes,
+because everything after that point was cut short. The final size check is otherwise exact;
+the in-flight bound is about one field's output per concurrently written buffer. The errors
+list is not counted, so a million failing nullable elements are still a million errors in
+memory. The default was set by measurement: interleaved n=12, `BenchmarkResponseLimitOff`
+against `On` was 15.51µs vs 15.65µs (p=0.347) with 92 allocs/op both, and
+`BenchmarkFieldPathBare` against `main` 1.218µs vs 1.281µs (p=0.219) at 18 allocs/op both —
+not distinguishable on this machine, which is a bound on the cost, not a proof it is zero.
+The benchmark query writes 393 bytes, so larger responses were not measured.
+
 **The pure/resolver split is the core scheduling contract.** `Field`/`FieldArgs` are pure
 data access and always run inline with no goroutine and no context allocation: the
 `FieldContext` is attached to the context only for resolver fields, and a field interceptor
@@ -469,8 +491,8 @@ from it, because the timings it first recorded were single samples and have been
 
 Status: phases 1-4 complete and merged to `main` — engine, both codegen binding modes,
 subscriptions, five transports, DataLoader, APQ, limits with actual cost accounting,
-OpenTelemetry with field observation, bounded plan expansion and a plan cache bounded by
-query text, the authorization spine (`Authorizer`, `AuthShape`, `RequireAuthCoverage`,
+OpenTelemetry with field observation, bounded plan expansion, a plan cache bounded by
+query text and a response size limit, the authorization spine (`Authorizer`, `AuthShape`, `RequireAuthCoverage`,
 `SubscriptionInterceptor`), and the `lint/` analyzer; plus `relay/`, `fed/`, `ext/throttle`,
 `ext/trusted` and DataLoader tracing. Not built: `ext/authz` (the Apollo directive vocabulary
 and a batched `Guard`) and APQ over WebSocket, which belongs in the

@@ -93,7 +93,8 @@ func WithMaxDepth(n int) ExecutorOption {
 // discarded the bytes that passed it. While executing, a field is checked
 // before it is written, so each buffer being written concurrently can pass
 // the limit by about one field's output before execution notices. The errors
-// list is not counted. Zero means unlimited, the default.
+// list is not counted. Zero means unlimited. The default is 64 MiB, which
+// measured no cost distinguishable from no limit.
 func WithMaxResponseBytes(n int64) ExecutorOption {
 	return func(e *Executor) { e.maxResponseBytes = n }
 }

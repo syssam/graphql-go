@@ -241,3 +241,17 @@ func TestResponseLimitPerSubscriptionEvent(t *testing.T) {
 	second.Release()
 	expectClosed(t, out)
 }
+
+// TestExecutorResponseLimitDefault pins the default. It was set only after an
+// enabled limit measured no cost distinguishable from none; a change to the
+// write path that makes the limit expensive should revisit it, not drop it
+// silently.
+func TestExecutorResponseLimitDefault(t *testing.T) {
+	_, base := newFixtureExecutor(t)
+	if got := NewExecutor(base.Schema()).maxResponseBytes; got != 64<<20 {
+		t.Fatalf("default maxResponseBytes = %d, want 64 MiB", got)
+	}
+	if got := NewExecutor(base.Schema(), WithMaxResponseBytes(0)).maxResponseBytes; got != 0 {
+		t.Fatalf("WithMaxResponseBytes(0) = %d, want 0 (unlimited)", got)
+	}
+}

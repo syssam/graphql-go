@@ -127,6 +127,8 @@ func NewExecutor(s *Schema, opts ...ExecutorOption) *Executor {
 		recover:        true,
 		cacheSize:      1024,
 		cacheBytes:     16 << 20,
+
+		maxResponseBytes: 64 << 20,
 	}
 	for _, o := range opts {
 		o(e)
