@@ -425,3 +425,51 @@ type Query { pet: Pet! }
 		t.Errorf("Dog's type-level requirement has %d groups, want 8 (Pet counted once, not squared to 64)", got)
 	}
 }
+
+// gqlparser accepts repeated `extend type T @requiresScopes(...)` even when
+// the directive is not declared repeatable, and requirementOf must AND every
+// occurrence (fix round 1) -- but combining them is itself where the
+// resource cost was: four occurrences of 30 groups multiply to 810,000
+// before any caller-level check (resolveAuthRequirements' post-hoc
+// groupCount comparison) ever got a chance to run, all inside requirementOf
+// with no cap of its own (fix round 2). Correctness held even before round
+// 2 -- this exact scenario already failed with one error under the
+// unmodified round-1 code, just after paying for the full 810,000-group
+// allocation first; see the task-2 fix-round-2 report for the measured
+// before/after cost of that allocation. This pins the correctness outcome
+// permanently; andCapped inside requirementOf is what makes it cheap.
+func TestExtendOccurrencesOverTheCapFailBuildWithOneError(t *testing.T) {
+	manyGroups := func(prefix string, n int) string {
+		var b strings.Builder
+		b.WriteString("[")
+		for i := 0; i < n; i++ {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(`["` + prefix + strconv.Itoa(i) + `"]`)
+		}
+		b.WriteString("]")
+		return b.String()
+	}
+	sdl := `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+type Big @requiresScopes(scopes: ` + manyGroups("a", 30) + `) { f: String! }
+extend type Big @requiresScopes(scopes: ` + manyGroups("b", 30) + `)
+extend type Big @requiresScopes(scopes: ` + manyGroups("c", 30) + `)
+extend type Big @requiresScopes(scopes: ` + manyGroups("d", 30) + `)
+type Query { big: Big! }
+`
+	_, err := NewSchema(SDL(sdl),
+		Query(Field("big", func(Root) *authzFoo { return &authzFoo{} })),
+		Object[authzFoo]("Big", Field("f", func(*authzFoo) string { return "" })),
+	)
+	if err == nil {
+		t.Fatal("NewSchema accepted a type whose extend occurrences multiply to 810,000 groups")
+	}
+	if !strings.Contains(err.Error(), "Big") {
+		t.Errorf("error does not name the type Big: %v", err)
+	}
+	if n := strings.Count(err.Error(), "@requiresScopes"); n != 1 {
+		t.Errorf("got %d cap-related errors, want exactly 1: %v", n, err)
+	}
+}

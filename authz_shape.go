@@ -63,7 +63,11 @@ func (b *shapeBuilder) walk(sel *selectionSet) {
 func (b *shapeBuilder) field(f *planField) {
 	f.authIdx = -1
 	if f.def != nil && f.def.def != nil {
-		if req, ok := requirementOf(f.def.def.Directives); ok {
+		// capped is ignored here, not unchecked: resolveAuthRequirements reads
+		// this exact ast.FieldDefinition.Directives at NewSchema and already
+		// fails the build for any combination requirementOf would report as
+		// capped, so a schema that ever reaches plan compile cannot have one.
+		if req, ok, _ := requirementOf(f.def.def.Directives); ok {
 			f.authIdx = int32(len(b.sites))
 			b.sites = append(b.sites, AuthSite{
 				Coord:    coordinate(f.def.object.name, f.name),
@@ -80,24 +84,40 @@ func (b *shapeBuilder) field(f *planField) {
 }
 
 // requirementOf reads every @requiresScopes occurrence off a definition and
-// ANDs them together. A `repeatable` directive, or an `extend type`/`extend
-// interface`/`extend schema` re-declaring it, adds a second occurrence to the
-// same Directives list rather than replacing the first -- gqlparser merges
-// extension directives into the base list and skips the non-repeatable check
-// for them (confirmed against v2.5.37) -- so reading only ds.ForName's first
-// match silently drops every declaration but the first. NewSchema's
-// validateAuthDirectives rejects any occurrence whose "scopes" value is not a
-// non-empty list of non-empty lists of strings, so by the time a plan
-// compiles every matched directive's groups are already well-formed; this
-// function only extracts and combines them. The nil/absent-argument branches
-// below stay as defensive fallbacks, not as the shape guarantee. ok reports
-// whether the directive occurred at all, regardless of how many times.
-func requirementOf(ds ast.DirectiveList) (Requirement, bool) {
+// ANDs them together, through andCapped rather than plain And. A
+// `repeatable` directive, or an `extend type`/`extend interface`/`extend
+// schema` re-declaring it, adds a second occurrence to the same Directives
+// list rather than replacing the first -- gqlparser merges extension
+// directives into the base list and skips the non-repeatable check for them
+// (confirmed against v2.5.37), and does so even when the directive is not
+// declared repeatable -- so reading only ds.ForName's first match silently
+// dropped every declaration but the first (round 1), and combining every
+// occurrence with plain And silently paid for an unbounded cross product
+// before any caller-level cap check ever ran (round 2): four occurrences of
+// 30 groups already multiply to 810,000 before resolveAuthRequirements' own
+// post-hoc check gets a chance to reject them. Capping every combination step
+// here, inside the one function every combination passes through, is what
+// makes every caller safe regardless of how many occurrences a definition
+// has -- an object's own directives, a field's own, and an interface's or
+// interface field's read through combineWithInterfaces's lookup.
+//
+// NewSchema's validateAuthDirectives rejects any occurrence whose "scopes"
+// value is not a non-empty list of non-empty lists of strings, so by the
+// time a plan compiles every matched directive's groups are already
+// well-formed; this function only extracts and combines them. The
+// nil/absent-argument branches below stay as defensive fallbacks, not as the
+// shape guarantee.
+//
+// ok reports whether the directive occurred at all, regardless of how many
+// times. capped reports whether combining its occurrences would exceed
+// maxRequirementGroups; when capped is true, req is not the true combined
+// value and every caller must record a build error rather than treat it as
+// this coordinate's real (or a weakened, or a zero) requirement.
+func requirementOf(ds ast.DirectiveList) (req Requirement, ok bool, capped bool) {
 	occurrences := ds.ForNames(authDirective)
 	if len(occurrences) == 0 {
-		return Requirement{}, false
+		return Requirement{}, false, false
 	}
-	var req Requirement
 	for _, d := range occurrences {
 		arg := d.Arguments.ForName("scopes")
 		if arg == nil || arg.Value == nil {
@@ -114,9 +134,13 @@ func requirementOf(ds ast.DirectiveList) (Requirement, bool) {
 		if groups == nil {
 			continue
 		}
-		req = req.And(NewRequirement(groups...))
+		combined, within := andCapped(req, NewRequirement(groups...))
+		if !within {
+			return req, true, true
+		}
+		req = combined
 	}
-	return req, true
+	return req, true, false
 }
 
 // validateAuthDirectives rejects a malformed or misplaced @requiresScopes at
@@ -231,9 +255,16 @@ func (b *schemaBuilder) combineWithInterfaces(coord string, acc Requirement, int
 		if idef == nil {
 			continue
 		}
-		r, _ := requirementOf(lookup(idef))
-		combined, ok := andCapped(acc, r)
-		if !ok {
+		r, _, rcapped := requirementOf(lookup(idef))
+		if rcapped {
+			// r is not trustworthy (see requirementOf): the interface's own
+			// occurrences already exceeded the cap before we ever got to
+			// combine it with acc, so there is nothing valid left to AND.
+			b.errorf("%s: effective @%s has more than %d groups", coord, authDirective, maxRequirementGroups)
+			return acc, true
+		}
+		combined, within := andCapped(acc, r)
+		if !within {
 			b.errorf("%s: effective @%s has more than %d groups", coord, authDirective, maxRequirementGroups)
 			return acc, true
 		}
@@ -255,7 +286,15 @@ func (b *schemaBuilder) combineWithInterfaces(coord string, acc Requirement, int
 // caused it.
 func (b *schemaBuilder) resolveAuthRequirements(s *Schema) {
 	for name, obj := range s.objects {
-		typeReq, _ := requirementOf(obj.def.Directives)
+		typeReq, _, typeCapped := requirementOf(obj.def.Directives)
+		if typeCapped {
+			// typeReq is not trustworthy (see requirementOf): the object's
+			// own occurrences alone already exceeded the cap, so there is
+			// nothing valid to combine with its interfaces or hand to any
+			// field, and obj.requires is left at its zero value.
+			b.errorf("%s: effective @%s has more than %d groups", name, authDirective, maxRequirementGroups)
+			continue
+		}
 		typeReq, capped := b.combineWithInterfaces(name, typeReq, obj.def.Interfaces, func(idef *ast.Definition) ast.DirectiveList {
 			return idef.Directives
 		})
@@ -270,9 +309,13 @@ func (b *schemaBuilder) resolveAuthRequirements(s *Schema) {
 
 		for _, fd := range obj.fields {
 			coord := coordinate(name, fd.name)
-			req, _ := requirementOf(fd.def.Directives)
-			req, ok := andCapped(req, typeReq)
-			if !ok {
+			req, _, fieldCapped := requirementOf(fd.def.Directives)
+			if fieldCapped {
+				b.errorf("%s: effective @%s has more than %d groups", coord, authDirective, maxRequirementGroups)
+				continue
+			}
+			req, within := andCapped(req, typeReq)
+			if !within {
 				b.errorf("%s: effective @%s has more than %d groups", coord, authDirective, maxRequirementGroups)
 				continue
 			}
@@ -312,7 +355,10 @@ func (b *schemaBuilder) validateAuthCoverage(s *Schema) {
 		if obj.def.Directives.ForName("public") != nil {
 			continue
 		}
-		_, objDeclared := requirementOf(obj.def.Directives)
+		// Coverage only asks whether the directive occurred (ok); resolveAuthRequirements
+		// has already run and independently rejected the build if either of these
+		// occurrences was capped, so capped is discarded here rather than re-checked.
+		_, objDeclared, _ := requirementOf(obj.def.Directives)
 		for _, fd := range obj.fields {
 			if strings.HasPrefix(fd.name, "__") {
 				continue
@@ -320,7 +366,7 @@ func (b *schemaBuilder) validateAuthCoverage(s *Schema) {
 			if fd.def.Directives.ForName("public") != nil {
 				continue
 			}
-			if _, ok := requirementOf(fd.def.Directives); ok {
+			if _, ok, _ := requirementOf(fd.def.Directives); ok {
 				continue
 			}
 			if objDeclared {
