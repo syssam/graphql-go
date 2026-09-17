@@ -12,6 +12,7 @@ import (
 	"github.com/vektah/gqlparser/v2/ast"
 
 	"github.com/syssam/graphql-go"
+	"github.com/syssam/graphql-go/internal/jitter"
 )
 
 // Serve runs the protocol over sock until the connection ends. ctx is the
@@ -36,10 +37,16 @@ func Serve(ctx context.Context, sock Socket, cfg Config) {
 		streams:     streams,
 		stopStreams: stopStreams,
 	}
+	var aged <-chan time.Time
+	if cfg.MaxConnectionAge > 0 {
+		t := time.NewTimer(jitter.Spread(cfg.MaxConnectionAge))
+		defer t.Stop()
+		aged = t.C
+	}
 	served, watched := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(watched)
-		c.watch(parent, served)
+		c.watch(parent, served, aged)
 	}()
 	// Deferred so that a panic out of serve -- a panicking OnConnect, which
 	// net/http recovers -- still releases the watcher instead of leaving it
@@ -59,10 +66,18 @@ func Serve(ctx context.Context, sock Socket, cfg Config) {
 // to reach a Read that ignores its context. It watches parent rather than the
 // connection's own context, which Serve cancels on its way out: only a cancel
 // from the caller -- a drain giving up -- should close the socket.
-func (c *conn) watch(parent context.Context, served <-chan struct{}) {
+func (c *conn) watch(parent context.Context, served <-chan struct{}, aged <-chan time.Time) {
 	select {
 	case <-c.cfg.Closing:
-		c.drain(parent, served)
+		c.drain(parent, served, "The server is shutting down.", nil)
+	case <-aged:
+		var grace <-chan time.Time
+		if g := c.cfg.MaxConnectionAgeGrace; g > 0 {
+			t := time.NewTimer(g)
+			defer t.Stop()
+			grace = t.C
+		}
+		c.drain(parent, served, "The connection has reached its maximum age.", grace)
 	case <-parent.Done():
 		c.close(StatusGoingAway, "Going away")
 	case <-served:
@@ -94,9 +109,10 @@ func closed(ch <-chan struct{}) bool {
 // here rather than in watch's select, so the wait must watch parent too: an
 // operation that ignores cancellation would otherwise hold the socket open
 // for as long as it runs.
-func (c *conn) drain(parent context.Context, served <-chan struct{}) {
+func (c *conn) drain(parent context.Context, served <-chan struct{}, reason string, grace <-chan time.Time) {
 	c.mu.Lock()
 	c.draining = true
+	c.drainReason = reason
 	c.mu.Unlock()
 	c.stopStreams()
 	waited := make(chan struct{})
@@ -107,6 +123,9 @@ func (c *conn) drain(parent context.Context, served <-chan struct{}) {
 	select {
 	case <-waited:
 	case <-parent.Done():
+		c.close(StatusGoingAway, "Going away")
+		return
+	case <-grace:
 		c.close(StatusGoingAway, "Going away")
 		return
 	}
@@ -140,6 +159,13 @@ type conn struct {
 	// starts before the drain waits or is refused.
 	draining bool
 
+	// drainReason is what a refused operation is told; set with draining.
+	drainReason string
+
+	// idle closes the connection once it has had no operation in flight for
+	// MaxConnectionIdle; nil without that limit. Stopped and reset under mu.
+	idle *time.Timer
+
 	// streams parents every subscription and is cancelled by the drain;
 	// queries and mutations do not derive from it, so they run to the end.
 	streams     context.Context
@@ -155,6 +181,14 @@ func (c *conn) serve() {
 	defer func() {
 		// First, so cancelAll's own cancel does not send 1001 on a
 		// connection that is already ending for some other reason.
+		// Teardown deletes every operation; marking draining first keeps
+		// those deletions from re-arming the idle timer.
+		c.mu.Lock()
+		c.draining = true
+		if c.idle != nil {
+			c.idle.Stop()
+		}
+		c.mu.Unlock()
 		c.stopOnDone()
 		c.cancelAll()
 		c.wg.Wait()
@@ -226,6 +260,9 @@ func (c *conn) handshake() bool {
 			c.stopOnDone = context.AfterFunc(c.ctx, func() {
 				c.close(StatusGoingAway, "Going away")
 			})
+			if d := c.cfg.MaxConnectionIdle; d > 0 {
+				c.idle = time.AfterFunc(d, c.closeIfIdle)
+			}
 			return true
 		case TypePing:
 			if err := c.write(ctx, OutMessage{Type: TypePong, Payload: msg.Payload}); err != nil {
@@ -290,9 +327,13 @@ func (c *conn) subscribe(msg InMessage) bool {
 	// That window is too narrow to test deterministically (removing the
 	// channel check failed 0 of 50 runs); keep it on this reasoning.
 	if c.draining || closed(c.cfg.Closing) {
+		reason := c.drainReason
+		if !c.draining {
+			reason = "The server is shutting down."
+		}
 		c.mu.Unlock()
 		cancel()
-		return c.writeError(msg.ID, graphql.Errorf("The server is shutting down.")) == nil
+		return c.writeError(msg.ID, graphql.Errorf("%s", reason)) == nil
 	}
 	if _, exists := c.subs[msg.ID]; exists {
 		c.mu.Unlock()
@@ -308,6 +349,9 @@ func (c *conn) subscribe(msg InMessage) bool {
 		return c.writeError(msg.ID, graphql.Errorf("This connection allows at most %d operations at a time.", c.cfg.MaxSubs)) == nil
 	}
 	c.subs[msg.ID] = cancel
+	if c.idle != nil && len(c.subs) == 1 {
+		c.idle.Stop()
+	}
 	c.wg.Add(1)
 	c.mu.Unlock()
 
@@ -438,8 +482,11 @@ func (c *conn) writeNext(id string, resp *graphql.Response) error {
 // write failure.
 func (c *conn) stop(id string) {
 	c.mu.Lock()
-	cancel := c.subs[id]
+	cancel, ok := c.subs[id]
 	delete(c.subs, id)
+	if ok {
+		c.resetIdleLocked()
+	}
 	c.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -450,8 +497,35 @@ func (c *conn) stop(id string) {
 // cancel handles that.
 func (c *conn) forget(id string) {
 	c.mu.Lock()
-	delete(c.subs, id)
+	if _, ok := c.subs[id]; ok {
+		delete(c.subs, id)
+		c.resetIdleLocked()
+	}
 	c.mu.Unlock()
+}
+
+// resetIdleLocked starts the idle period again when the last operation has
+// ended. A complete for an id that was never running changes nothing, so it
+// cannot keep an idle connection alive.
+func (c *conn) resetIdleLocked() {
+	if c.idle != nil && len(c.subs) == 0 && !c.draining {
+		c.idle.Reset(c.cfg.MaxConnectionIdle)
+	}
+}
+
+// closeIfIdle runs when the idle period ends. An operation may have started
+// since the timer fired, so it checks again under the lock, and marks the
+// connection draining so a subscribe racing the close is refused.
+func (c *conn) closeIfIdle() {
+	c.mu.Lock()
+	if len(c.subs) > 0 || c.draining {
+		c.mu.Unlock()
+		return
+	}
+	c.draining = true
+	c.drainReason = "The connection was idle."
+	c.mu.Unlock()
+	c.close(StatusNormalClosure, "Idle timeout")
 }
 
 // cancelAll is deliberately redundant with c.cancel: every subscription's

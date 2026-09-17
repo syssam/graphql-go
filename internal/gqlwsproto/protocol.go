@@ -31,6 +31,10 @@ const (
 
 // Close codes defined by the protocol, beyond the RFC 6455 range.
 const (
+	// StatusNormalClosure is RFC 6455's 1000, sent when an idle connection is
+	// closed: nothing was in flight, so a client reconnects only when it next
+	// needs to.
+	StatusNormalClosure = 1000
 	// StatusGoingAway is RFC 6455's 1001, sent when the server is shutting
 	// down. graphql-ws clients treat it as retryable.
 	StatusGoingAway                = 1001
