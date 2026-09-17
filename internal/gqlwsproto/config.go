@@ -53,6 +53,24 @@ type Config struct {
 	// refused, and the connection then closes with StatusGoingAway. Optional.
 	Closing <-chan struct{}
 
+	// MaxConnectionAge, when positive, drains a connection once it has been
+	// open this long, give or take 10% so that connections opened together
+	// do not drain together: new operations are refused, subscriptions end
+	// without complete, queries and mutations finish, and the connection
+	// closes with StatusGoingAway. It lets a load balancer spread long-lived
+	// connections again. Optional.
+	MaxConnectionAge time.Duration
+
+	// MaxConnectionAgeGrace, when positive, bounds how long an age drain
+	// waits for operations before closing anyway. Zero waits for them.
+	MaxConnectionAgeGrace time.Duration
+
+	// MaxConnectionIdle, when positive, closes a connection with
+	// StatusNormalClosure once it has had no operation in flight for this
+	// long, counted from the handshake or from the last operation ending.
+	// Subscriptions count as in flight; pings do not. Optional.
+	MaxConnectionIdle time.Duration
+
 	// DecorateContext adds driver-specific values to the context a
 	// ConnectFunc receives. gqlws uses it to carry the upgrade request,
 	// which is where cookie auth arrives; a fasthttp driver carries its own

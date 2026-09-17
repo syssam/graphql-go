@@ -23,6 +23,7 @@ import (
 	"github.com/syssam/graphql-go"
 	"github.com/syssam/graphql-go/ext/apq"
 	"github.com/syssam/graphql-go/internal/httpreq"
+	"github.com/syssam/graphql-go/internal/jitter"
 	"github.com/syssam/graphql-go/transport/drain"
 )
 
@@ -38,14 +39,15 @@ var DefaultCSRFHeaders = httpreq.DefaultCSRFHeaders
 
 // Handler streams GraphQL operations over Server-Sent Events.
 type Handler struct {
-	exec        *graphql.Executor
-	maxBody     int64
-	csrf        bool
-	csrfHeaders []string
-	keepAlive   time.Duration
-	apq         apq.Cache
-	logger      *slog.Logger
-	drain       *drain.Drain
+	exec         *graphql.Executor
+	maxBody      int64
+	csrf         bool
+	csrfHeaders  []string
+	keepAlive    time.Duration
+	maxStreamAge time.Duration
+	apq          apq.Cache
+	logger       *slog.Logger
+	drain        *drain.Drain
 }
 
 // Option configures a Handler.
@@ -71,6 +73,14 @@ func WithCSRFPrevention(enabled bool, headers ...string) Option {
 // that proxies and load balancers do not treat a quiet subscription as a dead
 // connection. The default is 15s; zero disables it.
 func WithKeepAlive(d time.Duration) Option { return func(h *Handler) { h.keepAlive = d } }
+
+// WithMaxStreamAge ends a subscription stream after d, give or take 10% so
+// that streams opened together do not all end together, without a complete
+// event -- so the client reconnects rather than treating the subscription as
+// finished for good. It does not apply to a single-result query or mutation,
+// however long that takes. Zero
+// means no limit, the default.
+func WithMaxStreamAge(d time.Duration) Option { return func(h *Handler) { h.maxStreamAge = d } }
 
 // WithPersistedQueries enables automatic persisted queries backed by cache,
 // for example apq.NewCache(1000). Disabled by default.
@@ -236,6 +246,13 @@ func (h *Handler) subscribe(w http.ResponseWriter, r *http.Request, req *graphql
 		idle = t.C
 	}
 
+	var aged <-chan time.Time
+	if h.maxStreamAge > 0 {
+		t := time.NewTimer(jitter.Spread(h.maxStreamAge))
+		defer t.Stop()
+		aged = t.C
+	}
+
 	for {
 		select {
 		case resp, ok := <-events:
@@ -265,6 +282,9 @@ func (h *Handler) subscribe(w http.ResponseWriter, r *http.Request, req *graphql
 		case <-h.drain.Closing():
 			// No complete: it would tell the client the subscription ended
 			// for good, where ending the response makes it reconnect.
+			return
+		case <-aged:
+			// No complete, as with a drain: the client should reconnect.
 			return
 		case <-ctx.Done():
 			return

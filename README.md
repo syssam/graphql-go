@@ -153,6 +153,11 @@ wg.Wait()
 `gqlecho.SSE`/`WS` take the same options, and `gqlfiber.WithDrain` does the same
 for Fiber. Past the deadline `d.Shutdown` cuts what is left and returns.
 
+Behind a load balancer, `gqlws.WithMaxConnectionAge(age, grace)` retires WebSocket connections
+after `age` (±10%, spread out so they do not all reconnect at once) the same way, so clients reconnect to wherever the balancer now
+sends them; `WithMaxConnectionIdle` closes one with nothing in flight, and `gqlsse.WithMaxStreamAge`
+ends SSE subscription streams. `gqlfiber` has the same options; all are off by default.
+
 A fuller example with interfaces, unions, enums, custom scalars, input objects,
 `Omittable` PATCH semantics, a schema directive, a DataLoader for `Post.author`
 and a subscription fed by the `createPost` mutation lives in

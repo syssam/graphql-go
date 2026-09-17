@@ -341,7 +341,7 @@ Getting this backwards produces a leak test that cannot fail, which this branch'
 did once, caught in review before it reached a commit. Two related, deliberate limits: `gqlfiber`'s WebSocket sets no read deadline (the
 only candidate interval is `PingInterval`, and the protocol tracks no pongs, so a derived
 deadline would drop slow-but-live clients), and `WithKeepAlive(0)` on its SSE leaves an idle
-subscription with no write that can fail, so it is held open until its source ends — the
+subscription with no write that can fail, so it is held open until its source ends (or `WithMaxStreamAge` ends it) — the
 handler warns at construction rather than reinterpreting the option's meaning. Its WebSocket
 layer (`gofiber/contrib/v3/websocket`, over `fasthttp/websocket`) has no origin-check hook of
 its own, so `transport/gqlfiber/ws.go` hand-rolls one mirroring `coder/websocket`'s semantics
@@ -380,6 +380,27 @@ known: `gqlws` checks the drain before anything else, so a non-upgrade GET while
 `*echo.HTTPError`. Two guards in `gqlwsproto` have no deterministic
 test and say so beside them (`closed(cfg.Closing)` in `subscribe`, and `Serve` waiting for
 `watch`); a reviewer's 50-run break of each failed 0 and 3 times. `gqlhttp` needs nothing.
+
+**Connection age and idle limits mirror grpc's `keepalive.ServerParameters`**, all off by
+default. On a WebSocket (`WithMaxConnectionAge(age, grace)`, `WithMaxConnectionIdle` on `gqlws`
+and `gqlfiber`, both driving `gqlwsproto.Config`) age is counted from `Serve` starting and spread
+±10% by `internal/jitter.Spread`, so connections opened together do not reconnect together; it
+runs the shutdown drain for that one connection (refusal message "The connection has reached its
+maximum age.", subscriptions end without `complete`, queries finish, 1001), and a positive grace
+closes 1001 anyway once it passes. `Spread` clamps at `MaxInt64`: the first version wrapped
+negative for huge ages, so setting an age of "never" drained every connection at once. Idle means
+no operation in flight — subscriptions count, pings and a `complete` for an unknown id do not — and
+closes 1000, since nothing was lost. A rotation is not free for a busy client: an operation sent
+while the age drain waits for a long query gets a terminal `error`, which graphql-ws does not
+retry, and that happens every age period, not only at shutdown. **The idle timer's `Stop` in `subscribe` and `closeIfIdle`'s
+re-check under `mu` are deliberately redundant**: breaking either alone leaves every test green,
+and only breaking both fails, the same shape as `cancelAll`. `closeIfIdle` also refuses to close
+before `idleDeadline`, for a timer that fired just as a fast query started and finished; no test
+forces that, and none covers `serve`'s defer stopping the timer. SSE has only
+`WithMaxStreamAge` (`gqlsse`, `gqlfiber`): a stream is one subscription, never idle while open,
+and ends without `complete` so the client reconnects. The protocol-level tests run in
+`testing/synctest`, hours of fake time exact and instant; the transport tests use real 100 ms
+limits with deadlines, since sockets cannot run in a bubble.
 
 `internal/gqlwsproto` is `graphql-transport-ws` extracted so `gqlws` and `gqlfiber`'s
 WebSocket layer both drive it. It locks around every write: `coder/websocket` serializes
@@ -596,7 +617,7 @@ from it, because the timings it first recorded were single samples and have been
 Status: phases 1-4 complete and merged to `main` — engine, both codegen binding modes,
 subscriptions, five transports, DataLoader, APQ, limits with actual cost accounting,
 OpenTelemetry with field observation, bounded plan expansion, a plan cache bounded by
-query text, a response size limit, an operation timeout and a shutdown drain for WebSocket and SSE, the authorization spine (`Authorizer`, `AuthShape`, `RequireAuthCoverage`,
+query text, a response size limit, an operation timeout, a shutdown drain and connection age and idle limits for WebSocket and SSE, the authorization spine (`Authorizer`, `AuthShape`, `RequireAuthCoverage`,
 `SubscriptionInterceptor`), and the `lint/` analyzer; plus `relay/`, `fed/`, `ext/throttle`,
 `ext/trusted` and DataLoader tracing. Not built: `ext/authz` (the Apollo directive vocabulary
 and a batched `Guard`) and APQ over WebSocket, which belongs in the

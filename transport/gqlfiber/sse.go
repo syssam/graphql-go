@@ -16,6 +16,7 @@ import (
 	"github.com/syssam/graphql-go"
 	"github.com/syssam/graphql-go/ext/apq"
 	"github.com/syssam/graphql-go/internal/httpreq"
+	"github.com/syssam/graphql-go/internal/jitter"
 )
 
 // MediaTypeEventStream is the response type of an open stream.
@@ -244,6 +245,13 @@ func (h *sseHandler) stream(ctx context.Context, w *bufio.Writer, events <-chan 
 		idle = t.C
 	}
 
+	var aged <-chan time.Time
+	if h.maxStreamAge > 0 {
+		t := time.NewTimer(jitter.Spread(h.maxStreamAge))
+		defer t.Stop()
+		aged = t.C
+	}
+
 	for {
 		select {
 		case resp, ok := <-events:
@@ -274,6 +282,9 @@ func (h *sseHandler) stream(ctx context.Context, w *bufio.Writer, events <-chan 
 			}
 		case <-h.drain.Closing():
 			// No complete event, as in gqlsse: the client should reconnect.
+			return
+		case <-aged:
+			// No complete, as with a drain: the client should reconnect.
 			return
 		case <-ctx.Done():
 			return

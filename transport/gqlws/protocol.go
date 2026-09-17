@@ -15,6 +15,7 @@ const Subprotocol = gqlwsproto.Subprotocol
 
 // Close codes defined by the protocol, beyond the RFC 6455 range.
 const (
+	StatusNormalClosure            = gqlwsproto.StatusNormalClosure
 	StatusGoingAway                = gqlwsproto.StatusGoingAway
 	StatusSubprotocolNotAcceptable = gqlwsproto.StatusSubprotocolNotAcceptable
 	StatusBadRequest               = gqlwsproto.StatusBadRequest

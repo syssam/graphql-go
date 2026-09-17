@@ -60,7 +60,8 @@ type config struct {
 	csrfHeaders []string
 	apq         apq.Cache
 
-	keepAlive time.Duration
+	keepAlive    time.Duration
+	maxStreamAge time.Duration
 
 	initTimeout  time.Duration
 	pingInterval time.Duration
@@ -68,6 +69,10 @@ type config struct {
 	readLimit    int64
 	writeTimeout time.Duration
 	onConnect    ConnectFunc
+
+	maxAge      time.Duration
+	maxAgeGrace time.Duration
+	maxIdle     time.Duration
 
 	originPatterns     []string
 	insecureSkipOrigin bool
@@ -119,6 +124,14 @@ func WithPersistedQueries(cache apq.Cache) Option { return func(c *config) { c.a
 // so that proxies and load balancers do not treat a quiet subscription as a
 // dead connection. The default is 15s; zero disables it.
 func WithKeepAlive(d time.Duration) Option { return func(c *config) { c.keepAlive = d } }
+
+// WithMaxStreamAge ends an SSE subscription stream after d, give or take 10%
+// so that streams opened together do not all end together, without a
+// complete event -- so the client reconnects rather than treating the
+// subscription as finished for good. It does not apply to a single-result
+// query or mutation, however long that takes. Zero means no limit, the default. It has no effect on the plain
+// HTTP or WebSocket handlers.
+func WithMaxStreamAge(d time.Duration) Option { return func(c *config) { c.maxStreamAge = d } }
 
 // WithInitTimeout bounds how long a WebSocket client may take to send
 // connection_init before the connection is closed. The default is 10s.
@@ -182,6 +195,28 @@ func WithLogger(l *slog.Logger) Option { return func(c *config) { c.logger = l }
 // It has no effect on the plain HTTP handler, which Fiber's own Shutdown
 // already waits for.
 func WithDrain(d *drain.Drain) Option { return func(c *config) { c.drain = d } }
+
+// WithMaxConnectionAge drains a WebSocket connection once it has been open
+// this long, give or take 10% so that connections opened together do not
+// drain together: new operations are refused, subscriptions end without
+// complete, queries and mutations in flight finish, and the connection
+// closes with StatusGoingAway. It lets a load balancer spread long-lived
+// connections again. grace, when positive, bounds how long the drain waits
+// for those operations before closing anyway; zero waits for them. Zero age
+// means no limit, the default. It has no effect on the plain HTTP or SSE
+// handlers. An operation sent while that drain waits gets a
+// terminal error rather than a retry, which with a long-running query in
+// flight happens on every rotation, not only at shutdown.
+func WithMaxConnectionAge(age, grace time.Duration) Option {
+	return func(c *config) { c.maxAge, c.maxAgeGrace = age, grace }
+}
+
+// WithMaxConnectionIdle closes a WebSocket connection with
+// StatusNormalClosure once it has had no operation in flight for this long,
+// counted from the handshake or from the last operation ending.
+// Subscriptions count as in flight; pings do not. Zero means no limit, the
+// default. It has no effect on the plain HTTP or SSE handlers.
+func WithMaxConnectionIdle(d time.Duration) Option { return func(c *config) { c.maxIdle = d } }
 
 // newConfig applies opts over the defaults shared by every constructor here,
 // which are the defaults of gqlhttp, gqlsse and gqlws.
