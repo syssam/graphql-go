@@ -2,7 +2,7 @@
 
 - **Date:** 2026-09-16
 - **Module:** `github.com/syssam/graphql-go`
-- **Status:** Plan 1 (P1, P2, P3, P5, P7) implemented and merged (`e57e820`); Plan 2 decomposed in §9, 2a in progress
+- **Status:** Plan 1 (P1, P2, P3, P5, P7) implemented and merged (`e57e820`); Plan 2 decomposed in §9, 2a implemented on `feat/authz-inherited-requirements`
 - **Files:** `plan.go`, `exec.go`, `exec_object.go`, `directive.go`, `subscription.go`,
   `schema.go`, `introspection.go`, new `authz.go`, new `ext/authz/`
 
@@ -532,6 +532,36 @@ addresses and making an outage indistinguishable from a denial. Such an error
 is presented as a generic internal error; the original is logged and kept as
 the presented error's cause. An `*Error` the Authorizer built on purpose passes
 through as before.
+
+**Deviations (what shipped beyond the text above):**
+
+- **Every `@requiresScopes` occurrence on a definition is ANDed**, not just the first
+  match: `repeatable`, or an `extend type`/`extend interface`/`extend schema` re-declaring
+  the directive, adds a second occurrence to the same `Directives` list rather than
+  replacing the first, and gqlparser skips its own non-repeatable check for an extension
+  occurrence even when the directive is not declared repeatable. `requirementOf`
+  (`authz_shape.go`) reads and combines all of them.
+- **The 64-group cap is checked before the product is built, not after**: `andCapped`
+  predicts the resulting group count from the two operands' counts and refuses to call
+  `Requirement.And` when the prediction exceeds `maxRequirementGroups`, because `And`
+  itself allocates the full cross product unconditionally. A post-hoc check would still
+  pay for that allocation — four interfaces of 30 groups multiply to 810,000 — on the way
+  to reporting the error it exists to avoid.
+- **Placement rejection is wider than the list above**: the schema definition itself and a
+  directive definition's own argument are build errors too, alongside the union, enum,
+  enum value, scalar, input object, input field and field-argument placements already
+  named (`validateAuthDirectives`, `authz_shape.go`).
+- **The Authorizer-error wrapper (`authorizerCause`, `exec.go`) deliberately has no
+  `Unwrap`.** It supports `errors.Is` so a custom `ErrorPresenter` can still test the
+  original cause, but a presenter that walks the chain with `errors.As` looking for an
+  `ExtensionsProvider` must not reach the policy backend's own error and merge its
+  extensions — an internal host, a trace ID — into the client-visible response.
+- **The unguarded `__typename` fast path.** `writeFieldValue` (`exec_object.go`) checks
+  `f.kind == fieldTypename && f.authIdx < 0` and returns `obj.name` before touching
+  `execState` at all, because the naive ordering (check `execState` first) cost +6.26%
+  (n=12) on a `__typename`-dense benchmark; reordering narrowed it to +1.35% (p=0.005,
+  n=24, interleaved), which is the residual accepted as the cost of the object-site check
+  existing at all.
 
 ### 9.3 2b — argument sites (decided here, planned separately)
 

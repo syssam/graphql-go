@@ -419,13 +419,17 @@ gets `-1`, so the ordinary request path pays one integer compare and no allocati
 `execState` (64 bytes) and `OperationContext` (160 bytes) held those sizes through this
 branch (`TestStructSizes`, `authz_bench_test.go`) — re-measure both, interleaved, before
 adding a field to either; see the `execState`/`OperationContext` entry above for why a
-non-interleaved reading is not evidence. **Object-level and interface-level
-`@requiresScopes` are not enforced**: `shapeBuilder.field` only ever builds a `SiteOutput`
-from a field's own directive, never from its enclosing object or an interface it
-implements, so `RequireAuthCoverage` deliberately refuses to treat either as covering a
-concrete field — a green build under coverage is not evidence that an object- or
-interface-level declaration does anything; only a field's own `@requiresScopes` or
-`@public` does.
+non-interleaved reading is not evidence. Effective requirements — a field's own
+`@requiresScopes` ANDed with its object type's and with each implemented interface's
+type-level and same-named-field requirement — are resolved once, in
+`resolveAuthRequirements` (`authz_shape.go`), and stored on `fieldDef.requires` /
+`objectType.requires`; `shapeBuilder` and `validateAuthCoverage` both read those stored
+values, never recomputing them. **Never compute a requirement from `requirementOf` directly
+at plan compile or in coverage** — that bypasses the one place the cap and the
+interface-combination logic live, and is how enforcement and coverage would silently
+diverge. The unguarded `__typename` fast path in `writeFieldValue` (`exec_object.go`) —
+returning `obj.name` before `execState` is even touched — is what keeps the measured cost
+of this at about 1%.
 
 Two facts only exist because authorization and bounded plan expansion landed together.
 compileSelection's memo makes one `*selectionSet` reachable from several parents, so the
