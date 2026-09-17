@@ -25,6 +25,8 @@ import (
 type Executor struct {
 	schema         *Schema
 	cache          *planCache
+	cacheSize      int
+	cacheBytes     int64
 	sem            chan struct{}
 	maxConcurrency int
 	presenter      ErrorPresenter
@@ -56,7 +58,22 @@ func WithMaxConcurrency(n int) ExecutorOption {
 // WithPlanCache sets the number of parsed documents kept in the LRU cache.
 // Zero disables caching. The default is 1024.
 func WithPlanCache(size int) ExecutorOption {
-	return func(e *Executor) { e.cache = newPlanCache(size) }
+	return func(e *Executor) { e.cacheSize = size }
+}
+
+// WithPlanCacheBytes bounds the query text the plan cache holds, evicting the
+// least recently used documents to stay within it. Zero means no byte limit;
+// the entry count from WithPlanCache still applies. The default is 16 MiB.
+//
+// The budget is on query text because that is what can be counted cheaply, but
+// what it actually bounds is memory: a parsed and validated document retains
+// roughly 26 times its query text, so without this limit 1024 distinct valid
+// 1 MiB queries hold tens of gigabytes. Ordinary queries are a few kilobytes,
+// so the default entry count binds long before this does and only unusually
+// large queries ever reach it. A query larger than the whole budget is not
+// cached but still executes.
+func WithPlanCacheBytes(n int64) ExecutorOption {
+	return func(e *Executor) { e.cacheBytes = n }
 }
 
 // WithErrorPresenter replaces DefaultErrorPresenter.
@@ -78,13 +95,15 @@ func NewExecutor(s *Schema, opts ...ExecutorOption) *Executor {
 		maxConcurrency: runtime.GOMAXPROCS(0) * 4,
 		presenter:      DefaultErrorPresenter,
 		recover:        true,
+		cacheSize:      1024,
+		cacheBytes:     16 << 20,
 	}
 	for _, o := range opts {
 		o(e)
 	}
-	if e.cache == nil {
-		e.cache = newPlanCache(1024)
-	}
+	// Built after every option has run, so WithPlanCache and WithPlanCacheBytes
+	// compose in either order.
+	e.cache = newPlanCache(e.cacheSize, e.cacheBytes)
 	if e.maxConcurrency > 0 {
 		e.sem = make(chan struct{}, e.maxConcurrency)
 	}
