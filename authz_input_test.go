@@ -11,13 +11,29 @@ import (
 
 // authzInputSDL is named distinctly from input_test.go's inputSDL, which
 // already exists in this package for the decode tests.
+//
+// JSON is a custom scalar that accepts a bare identifier literal (fix
+// round 1, R3): the same lexical shape as an enum value, so it is the fixture
+// for proving a custom scalar is never mistaken for one. Where.and takes
+// nullable elements so a literal or variable list can carry an explicit null
+// element (R5a) without failing validation. Choice is a oneOf input (item 4);
+// gqlparser enforces its "exactly one key" rule itself, and the walk needs no
+// special case for it because it never looks at directives.
 const authzInputSDL = `
+scalar JSON
+
+directive @oneOf on INPUT_OBJECT
+
 enum OrderField { NAME TAX_NUMBER }
 enum Direction { ASC DESC }
 input Order { field: OrderField! direction: Direction = ASC }
-input Where { not: Where and: [Where!] nameContains: String taxNumber: String }
+input Where { not: Where and: [Where] nameContains: String taxNumber: String meta: JSON metaTags: [JSON] }
 input Patch { name: String taxNumber: String }
-type Query { customers(where: Where, orderBy: [Order!], groupBy: [OrderField!]): [String!]! }
+input Choice @oneOf { byId: ID byName: String }
+type Query {
+  customers(where: Where, orderBy: [Order!], groupBy: [OrderField!], meta: JSON, tags: [String]): [String!]!
+  lookup(choice: Choice): String
+}
 type Mutation { update(patch: Patch!): String }
 `
 
@@ -107,6 +123,75 @@ func TestInputKeys(t *testing.T) {
 		{"argument not supplied",
 			`{ customers }`, "customers", "where", nil,
 			nil},
+
+		// Fix round 1, R3: a custom scalar's bare-identifier literal is
+		// lexically an ast.EnumValue but must never be reported as Enum.
+		{"custom scalar literal at top level is not an enum",
+			`{ customers(meta: SECRET) }`, "customers", "meta", nil,
+			nil},
+		{"custom scalar literal in an input field is a bare key",
+			`{ customers(where: {meta: SECRET}) }`, "customers", "where", nil,
+			[]string{"meta"}},
+		{"custom scalar literal in a list is a bare key, deduplicated",
+			`{ customers(where: {metaTags: [SECRET1, SECRET2]}) }`, "customers", "where", nil,
+			[]string{"metaTags"}},
+
+		// Fix round 1, R4: a literal key whose value is a variable resolving
+		// to an object or list is itself reported, exactly as for a literal
+		// composite value at that key.
+		{"literal key holding an empty variable object is still reported",
+			`query($w: Where) { customers(where: {not: $w}) }`, "customers", "where",
+			map[string]any{"w": map[string]any{}},
+			[]string{"not"}},
+		{"literal key holding an empty variable list is still reported",
+			`query($a: [Where]) { customers(where: {and: $a}) }`, "customers", "where",
+			map[string]any{"a": []any{}},
+			[]string{"and"}},
+		{"literal key holding a non-empty variable object reports the key and its contents",
+			`query($w: Where) { customers(where: {not: $w}) }`, "customers", "where",
+			map[string]any{"w": map[string]any{"nameContains": "x"}},
+			[]string{"not", "not.nameContains"}},
+
+		// Fix round 1, R5a: a null list element is not a null at the list's
+		// key; the key is still reported as an intermediate key when nested.
+		{"null element in a nested literal list is not a null at that key",
+			`{ customers(where: {and: [null]}) }`, "customers", "where", nil,
+			[]string{"and"}},
+		{"null element in a top-level literal list reports nothing",
+			`{ customers(tags: [null]) }`, "customers", "tags", nil,
+			nil},
+		{"null element in a nested variable list is not a null at that key",
+			`query($a: [Where]) { customers(where: {and: $a}) }`, "customers", "where",
+			map[string]any{"a": []any{nil}},
+			[]string{"and"}},
+		{"null element in a top-level variable list reports nothing",
+			`query($t: [String]) { customers(tags: $t) }`, "customers", "tags",
+			map[string]any{"t": []any{nil}},
+			nil},
+
+		// Fix round 1, R5c: an enum value a variable supplies that is not
+		// declared on the enum is not reported at all; coercion would have
+		// rejected it.
+		{"an enum value not declared on the enum is not reported",
+			`query($f: OrderField!) { customers(orderBy: [{field: $f}]) }`, "customers", "orderBy",
+			map[string]any{"f": "BOGUS"},
+			nil},
+
+		// Item 4 follow-ups.
+		{"argument itself sent as an explicit null",
+			`{ customers(where: null) }`, "customers", "where", nil,
+			[]string{"=null"}},
+		{"argument sent as a variable resolved to null",
+			`query($w: Where) { customers(where: $w) }`, "customers", "where",
+			map[string]any{"w": nil},
+			[]string{"=null"}},
+		{"a single value stands in for a list through a variable",
+			`query($o: [Order!]) { customers(orderBy: $o) }`, "customers", "orderBy",
+			map[string]any{"o": map[string]any{"field": "TAX_NUMBER", "direction": "DESC"}},
+			[]string{"direction=DESC", "field=TAX_NUMBER"}},
+		{"a oneOf input reports whichever field was supplied",
+			`{ lookup(choice: {byId: "1"}) }`, "lookup", "choice", nil,
+			[]string{"byId"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -119,6 +204,29 @@ func TestInputKeys(t *testing.T) {
 				t.Errorf("keys = %v, want %v", r, tc.want)
 			}
 		})
+	}
+}
+
+// Fix round 1, R5b: the variable-object walk must visit map keys in sorted
+// order so the reported slice is deterministic. This does not go through
+// render(), which sorts its output and so cannot tell a fixed order from a
+// lucky one; asserting the raw slice order is the point.
+func TestInputKeysVariableMapOrderDeterministic(t *testing.T) {
+	types, typ, v := supplied(t, `query($w: Where) { customers(where: $w) }`, "customers", "where")
+	vars := map[string]any{"w": map[string]any{
+		"taxNumber":    nil,
+		"and":          nil,
+		"not":          nil,
+		"nameContains": nil,
+	}}
+	keys := inputKeys(types, typ, v, vars)
+	var got []string
+	for _, k := range keys {
+		got = append(got, strings.Join(k.Path, "."))
+	}
+	want := []string{"and", "nameContains", "not", "taxNumber"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("order = %v, want %v (map iteration must be sorted)", got, want)
 	}
 }
 

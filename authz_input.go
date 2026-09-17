@@ -1,6 +1,7 @@
 package graphql
 
 import (
+	"maps"
 	"slices"
 	"strings"
 
@@ -50,6 +51,29 @@ func (w *inputWalk) add(path []string, enum string, null bool) {
 	w.keys = append(w.keys, InputKey{Path: slices.Clone(path), Enum: enum, Null: null})
 }
 
+// isComposite reports whether v's supplied value is an object or a list,
+// literal or through a variable: an object/list value at a key makes that
+// key itself a reportable position, on top of whatever it contains.
+func (w *inputWalk) isComposite(v *ast.Value) bool {
+	if v == nil {
+		return false
+	}
+	switch v.Kind {
+	case ast.ObjectValue, ast.ListValue:
+		return true
+	case ast.Variable:
+		raw, ok := w.vars[v.Raw]
+		if !ok {
+			return false
+		}
+		switch raw.(type) {
+		case map[string]any, []any:
+			return true
+		}
+	}
+	return false
+}
+
 func (w *inputWalk) ast(t *ast.Type, v *ast.Value, path []string) {
 	if v == nil {
 		return
@@ -69,6 +93,12 @@ func (w *inputWalk) ast(t *ast.Type, v *ast.Value, path []string) {
 			elem = t.Elem
 		}
 		for _, c := range v.Children {
+			// A null element is not a position of its own: it says nothing
+			// about the key the list lives under, which is reported (or
+			// not) independently of what the list contains.
+			if c.Value != nil && c.Value.Kind == ast.NullValue {
+				continue
+			}
 			w.ast(elem, c.Value, path)
 		}
 	case ast.ObjectValue:
@@ -82,13 +112,20 @@ func (w *inputWalk) ast(t *ast.Type, v *ast.Value, path []string) {
 				continue
 			}
 			child := append(slices.Clone(path), c.Name)
-			if c.Value != nil && (c.Value.Kind == ast.ObjectValue || c.Value.Kind == ast.ListValue) {
+			if w.isComposite(c.Value) {
 				w.add(child, "", false)
 			}
 			w.ast(fd.Type, c.Value, child)
 		}
 	case ast.EnumValue:
-		w.add(path, v.Raw, false)
+		// A custom scalar accepts a bare identifier, which parses to the
+		// same ast.EnumValue kind as a real enum literal; only a value whose
+		// named type is actually an enum in the schema is an enum here.
+		if def := w.types[t.Name()]; def != nil && def.Kind == ast.Enum {
+			w.add(path, v.Raw, false)
+		} else if len(path) > 0 {
+			w.add(path, "", false)
+		}
 	default:
 		if len(path) > 0 {
 			w.add(path, "", false)
@@ -104,6 +141,13 @@ func (w *inputWalk) raw(t *ast.Type, v any, path []string) {
 	if t.Elem != nil {
 		if list, ok := v.([]any); ok {
 			for _, e := range list {
+				// See the matching skip in ast(): a null element is not a
+				// position, and reporting it as one would make an
+				// explicit-null write indistinguishable from a stray nil in
+				// a filter list.
+				if e == nil {
+					continue
+				}
 				w.raw(t.Elem, e, path)
 			}
 			return
@@ -118,7 +162,10 @@ func (w *inputWalk) raw(t *ast.Type, v any, path []string) {
 	}
 	switch def.Kind {
 	case ast.Enum:
-		if s, ok := v.(string); ok {
+		// A value coercion would reject is not one the client meaningfully
+		// supplied at this position; report nothing rather than a
+		// fabricated identifier.
+		if s, ok := v.(string); ok && def.EnumValues.ForName(s) != nil {
 			w.add(path, s, false)
 		}
 	case ast.InputObject:
@@ -126,11 +173,14 @@ func (w *inputWalk) raw(t *ast.Type, v any, path []string) {
 		if !ok {
 			return
 		}
-		for name, fv := range m {
+		// Sorted so the reported order does not depend on Go's randomized
+		// map iteration.
+		for _, name := range slices.Sorted(maps.Keys(m)) {
 			fd := def.Fields.ForName(name)
 			if fd == nil {
 				continue
 			}
+			fv := m[name]
 			child := append(slices.Clone(path), name)
 			switch fv.(type) {
 			case map[string]any, []any:
