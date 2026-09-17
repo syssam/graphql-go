@@ -277,9 +277,9 @@ func (e *Executor) execute(ctx context.Context, req *Request) *Response {
 
 // requestError builds a response for errors raised before execution. Each
 // err is presented exactly once here: a caller must pass a raw, unpresented
-// *Error (Errorf(...).WithCode(...), or toError of some other error), never
-// the output of e.presenter itself, or a custom ErrorPresenter that logs or
-// attaches an incident ID would run twice per rejection.
+// *Error (Errorf(...).WithCode(...), or authorizerError of some other
+// error), never the output of e.presenter itself, or a custom ErrorPresenter
+// that logs or attaches an incident ID would run twice per rejection.
 func (e *Executor) requestError(ctx context.Context, errs ...*Error) *Response {
 	resp := &Response{Errors: make([]*Error, 0, len(errs))}
 	for _, err := range errs {
@@ -288,24 +288,31 @@ func (e *Executor) requestError(ctx context.Context, errs ...*Error) *Response {
 	return resp
 }
 
-// toError converts a generic error into an *Error without presenting it, so
-// it can be handed to requestError (which presents) without a double
-// presentation. It preserves an existing *Error's code and extensions rather
-// than discarding them behind a generic wrapper.
-func toError(err error) *Error {
+// authorizerError prepares an Authorize failure for presentation. An *Error
+// the Authorizer built on purpose passes through. Anything else is typically a
+// policy backend's own failure -- a transport error carrying an internal
+// address -- and would otherwise reach the client verbatim, both disclosing
+// the address and making an outage look like a denial. It is presented as a
+// generic internal error with the original kept as the cause, and logged
+// unless it is a recovered panic, which runAuthorizer has already logged.
+func authorizerError(ctx context.Context, err error) *Error {
 	var e *Error
 	if errors.As(err, &e) {
 		return e
 	}
-	return &Error{Message: err.Error(), Err: err}
+	var p *panicError
+	if !errors.As(err, &p) {
+		slog.ErrorContext(ctx, "graphql: authorizer failed", "error", err)
+	}
+	return (&Error{Message: "internal system error", Err: err}).WithCode(CodeInternal)
 }
 
 // authorize runs the Authorizer against p's shape and returns the resulting
 // Decision, or nil when no Authorizer is configured or the shape is empty —
 // which is also what makes the call free for an operation that touches
-// nothing requiring authorization. A non-nil error means the whole
-// operation (or, for a subscription, the one event being evaluated) must be
-// rejected without resolving any field.
+// nothing requiring authorization. A non-nil error rejects the whole
+// operation, one subscription event, or — when called as the stream opens —
+// the subscription itself.
 func (e *Executor) authorize(ctx context.Context, p *plan) (*Decision, error) {
 	if e.authorizer == nil || p.shape.IsEmpty() {
 		return nil, nil
@@ -349,7 +356,7 @@ func (e *Executor) runOperation(ctx context.Context, oc *OperationContext) *Resp
 	p := oc.plan
 	decision, err := e.authorize(ctx, p)
 	if err != nil {
-		return e.requestError(ctx, toError(err))
+		return e.requestError(ctx, authorizerError(ctx, err))
 	}
 	if oc.event != nil {
 		return e.runSubscriptionEvent(ctx, oc, decision)

@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strconv"
 	"strings"
@@ -819,5 +820,63 @@ type Query { pet: Pet! @public }
 		RequireAuthCoverage(),
 	); err != nil {
 		t.Fatalf("NewSchema rejected a field covered by its interface's type-level requirement: %v", err)
+	}
+}
+
+var errPolicyDown = errors.New("dial tcp 10.0.3.7:8181: connect: connection refused")
+
+func TestAuthorizerTransportErrorIsNotShownToClients(t *testing.T) {
+	var presented error
+	e := NewExecutor(shapeSchema(t),
+		WithAuthorizer(AuthorizerFunc(func(context.Context, *AuthShape, *Decision) error {
+			return errPolicyDown
+		})),
+		WithErrorPresenter(func(ctx context.Context, err error) *Error {
+			presented = err
+			return DefaultErrorPresenter(ctx, err)
+		}),
+	)
+	resp := run(t, e, `{ me { salary } }`, "")
+	if len(resp.Errors) == 0 {
+		t.Fatal("operation was not rejected")
+	}
+	if strings.Contains(resp.Errors[0].Message, "10.0.3.7") || strings.Contains(resp.Errors[0].Message, "dial tcp") {
+		t.Errorf("client saw the policy backend's error: %q", resp.Errors[0].Message)
+	}
+	if got := resp.Errors[0].Extensions["code"]; got != CodeInternal {
+		t.Errorf("code = %v, want %v", got, CodeInternal)
+	}
+	var ge *Error
+	if !errors.As(presented, &ge) || !errors.Is(ge.Err, errPolicyDown) {
+		t.Errorf("the presenter lost the original cause; got %v", presented)
+	}
+}
+
+func TestAuthorizerStructuredErrorStillShown(t *testing.T) {
+	e := NewExecutor(shapeSchema(t), WithAuthorizer(AuthorizerFunc(
+		func(context.Context, *AuthShape, *Decision) error {
+			return Errorf("tenant suspended").WithCode(CodeForbidden)
+		})))
+	resp := run(t, e, `{ me { salary } }`, "")
+	if len(resp.Errors) == 0 || resp.Errors[0].Message != "tenant suspended" {
+		t.Fatalf("an *Error built on purpose was not passed through: %s", errorsJSON(resp.Errors))
+	}
+}
+
+func TestAuthorizerTransportErrorIsNotShownAtSubscribe(t *testing.T) {
+	src, e := newAuthSubGuardedExecutor(t, nil)
+	e.authorizer = AuthorizerFunc(func(context.Context, *AuthShape, *Decision) error {
+		return errPolicyDown
+	})
+	_, err := e.Subscribe(t.Context(), &Request{Query: `subscription { messages { id } }`})
+	var se *SubscribeError
+	if !errors.As(err, &se) || se.Response == nil || len(se.Response.Errors) == 0 {
+		t.Fatalf("Subscribe error = %v, want a SubscribeError with a response", err)
+	}
+	if msg := se.Response.Errors[0].Message; strings.Contains(msg, "10.0.3.7") {
+		t.Errorf("subscriber saw the policy backend's error: %q", msg)
+	}
+	if n := src.opens.Load(); n != 0 {
+		t.Errorf("source opened %d times", n)
 	}
 }
