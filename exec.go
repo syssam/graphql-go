@@ -288,13 +288,36 @@ func (e *Executor) requestError(ctx context.Context, errs ...*Error) *Response {
 	return resp
 }
 
+// authorizerCause holds a non-*Error Authorize failure behind Error's Err
+// field so a custom ErrorPresenter can still test the cause with errors.Is
+// (errPolicyDown, for instance), without exposing it to errors.As. Deliberately
+// no Unwrap: DefaultErrorPresenter (and any other presenter) walks the error
+// chain with errors.As looking for an ExtensionsProvider, and if this type
+// unwrapped to the policy backend's own error, whatever extensions that
+// error's type carries -- an internal host, a trace ID -- would be merged
+// into the client-visible response right along with it. Do not add Unwrap or
+// As here; that is exactly the leak this type exists to close.
+type authorizerCause struct {
+	cause error
+}
+
+// Error deliberately does not return cause's text: it is what the message
+// would be if something stringified Err directly instead of going through
+// Error.Message, so it must carry no more than Message already does.
+func (c *authorizerCause) Error() string { return "internal system error" }
+
+// Is delegates to the real cause so errors.Is(presented, errPolicyDown)
+// still works, even though errors.As cannot see past this wrapper.
+func (c *authorizerCause) Is(target error) bool { return errors.Is(c.cause, target) }
+
 // authorizerError prepares an Authorize failure for presentation. An *Error
 // the Authorizer built on purpose passes through. Anything else is typically a
 // policy backend's own failure -- a transport error carrying an internal
 // address -- and would otherwise reach the client verbatim, both disclosing
 // the address and making an outage look like a denial. It is presented as a
-// generic internal error with the original kept as the cause, and logged
-// unless it is a recovered panic, which runAuthorizer has already logged.
+// generic internal error with the original cause logged in full and kept,
+// behind authorizerCause, for a presenter that wants to test it -- unless it
+// is a recovered panic, which runAuthorizer has already logged.
 func authorizerError(ctx context.Context, err error) *Error {
 	var e *Error
 	if errors.As(err, &e) {
@@ -304,7 +327,7 @@ func authorizerError(ctx context.Context, err error) *Error {
 	if !errors.As(err, &p) {
 		slog.ErrorContext(ctx, "graphql: authorizer failed", "error", err)
 	}
-	return (&Error{Message: "internal system error", Err: err}).WithCode(CodeInternal)
+	return (&Error{Message: "internal system error", Err: &authorizerCause{cause: err}}).WithCode(CodeInternal)
 }
 
 // authorize runs the Authorizer against p's shape and returns the resulting

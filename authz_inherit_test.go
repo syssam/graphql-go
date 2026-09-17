@@ -3,6 +3,7 @@ package graphql
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -878,5 +879,82 @@ func TestAuthorizerTransportErrorIsNotShownAtSubscribe(t *testing.T) {
 	}
 	if n := src.opens.Load(); n != 0 {
 		t.Errorf("source opened %d times", n)
+	}
+}
+
+// authzExtError mimics a policy backend's transport error type that also
+// happens to implement ExtensionsProvider -- a real client for a tracing or
+// observability system might attach exactly this kind of metadata to its own
+// errors, with no idea that graphql-go would otherwise forward it verbatim.
+type authzExtError struct {
+	msg string
+}
+
+func (e *authzExtError) Error() string { return e.msg }
+
+func (e *authzExtError) GraphQLExtensions() map[string]any {
+	return map[string]any{"internalHost": "10.0.3.7:8181", "traceID": "abc-secret-123"}
+}
+
+func TestAuthorizerCauseExtensionsAreNotMergedOnQuery(t *testing.T) {
+	e := NewExecutor(shapeSchema(t), WithAuthorizer(AuthorizerFunc(
+		func(context.Context, *AuthShape, *Decision) error {
+			return &authzExtError{msg: "dial tcp 10.0.3.7:8181: connect: connection refused"}
+		})))
+	resp := run(t, e, `{ me { salary } }`, "")
+	if len(resp.Errors) == 0 {
+		t.Fatal("operation was not rejected")
+	}
+	if _, ok := resp.Errors[0].Extensions["internalHost"]; ok {
+		t.Errorf("the cause's extensions leaked to the client: %v", resp.Errors[0].Extensions)
+	}
+	if got := resp.Errors[0].Extensions["code"]; got != CodeInternal {
+		t.Errorf("code = %v, want %v", got, CodeInternal)
+	}
+}
+
+func TestAuthorizerCauseExtensionsAreNotMergedAtSubscribe(t *testing.T) {
+	src, e := newAuthSubGuardedExecutor(t, nil)
+	e.authorizer = AuthorizerFunc(func(context.Context, *AuthShape, *Decision) error {
+		return &authzExtError{msg: "dial tcp 10.0.3.7:8181: connect: connection refused"}
+	})
+	_, err := e.Subscribe(t.Context(), &Request{Query: `subscription { messages { id } }`})
+	var se *SubscribeError
+	if !errors.As(err, &se) || se.Response == nil || len(se.Response.Errors) == 0 {
+		t.Fatalf("Subscribe error = %v, want a SubscribeError with a response", err)
+	}
+	if _, ok := se.Response.Errors[0].Extensions["internalHost"]; ok {
+		t.Errorf("the cause's extensions leaked to the subscriber: %v", se.Response.Errors[0].Extensions)
+	}
+	if n := src.opens.Load(); n != 0 {
+		t.Errorf("source opened %d times", n)
+	}
+}
+
+// TestAuthorizerWrappedCauseStillMatchesErrorsIs proves errors.Is still
+// finds errPolicyDown through fmt.Errorf's %w wrapping and then through
+// authorizerCause, even though authorizerCause has no Unwrap for errors.As
+// to walk.
+func TestAuthorizerWrappedCauseStillMatchesErrorsIs(t *testing.T) {
+	var presented error
+	e := NewExecutor(shapeSchema(t),
+		WithAuthorizer(AuthorizerFunc(func(context.Context, *AuthShape, *Decision) error {
+			return fmt.Errorf("policy: %w", errPolicyDown)
+		})),
+		WithErrorPresenter(func(ctx context.Context, err error) *Error {
+			presented = err
+			return DefaultErrorPresenter(ctx, err)
+		}),
+	)
+	resp := run(t, e, `{ me { salary } }`, "")
+	if len(resp.Errors) == 0 {
+		t.Fatal("operation was not rejected")
+	}
+	if resp.Errors[0].Message != "internal system error" {
+		t.Errorf("message = %q, want the generic message", resp.Errors[0].Message)
+	}
+	var ge *Error
+	if !errors.As(presented, &ge) || !errors.Is(ge.Err, errPolicyDown) {
+		t.Errorf("errors.Is could not find the cause through the wrapper; got %v", presented)
 	}
 }
