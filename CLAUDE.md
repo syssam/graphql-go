@@ -122,7 +122,15 @@ parsed and validated document retained roughly 26 times its query text, measured
 64 KiB to 1 MiB on an alias-heavy query (other shapes will differ), so without it 1024 distinct
 valid 1 MiB queries of that shape would hold tens of gigabytes. The
 document is cached before the depth and complexity guard runs, so that guard does not bound
-this. Each `(operation, @skip/@include variant)` compiles to an
+this. **Concurrent misses for one query text share a single parse** (`Executor.document`,
+`docCall`): a 100 KB query measured about 8 ms and 6.8 MB to parse and validate, and 64 identical
+requests on a cold cache took 19 times the wall time of one. Plan compilation already had this
+property through `docEntry.mu`; parsing did not. Only a success is cached — a failure is shared
+with requests already waiting and no further, so distinct invalid queries cannot evict valid
+documents, which is why caching validation failures was declined. Waiters get cloned errors
+(a presenter may annotate its `*Error`) and an internal error rather than a nil entry if the parse
+panicked. The tests hold the parse open with `testHookParseDocument` inside `testing/synctest`,
+so "concurrent" is exact. Each `(operation, @skip/@include variant)` compiles to an
 immutable `plan` with fragments flattened, directives constant-folded per variant (up to
 `maxCondVars` boolean variables), arguments pre-decoded and response keys pre-serialized.
 `selectionSet` carries `byType` for abstract parents plus the scheduling counts the
