@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/syssam/graphql-go"
 	"github.com/syssam/graphql-go/transport/drain"
 	"github.com/syssam/graphql-go/transport/gqlecho"
+	"github.com/syssam/graphql-go/transport/gqlsse"
 	"github.com/syssam/graphql-go/transport/gqlws"
 )
 
@@ -157,6 +159,65 @@ func TestSSEStreamsSubscriptionEventsIncrementally(t *testing.T) {
 		t.Fatal("timed out publishing the second event")
 	}
 	close(ch)
+}
+
+// TestSSEDrainEndsStreamWithoutComplete proves gqlecho.SSE inherits
+// gqlsse.WithDrain: a live subscription's stream ends once the drain shuts
+// down, with no complete event, so the client reconnects rather than
+// treating the subscription as finished for good.
+func TestSSEDrainEndsStreamWithoutComplete(t *testing.T) {
+	ch, exec := newSubscriptionExecutor(t)
+	d := drain.New()
+	e := echo.New()
+	e.POST("/graphql", gqlecho.SSE(exec, gqlsse.WithDrain(d)))
+
+	srv := httptest.NewServer(e)
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/graphql",
+		strings.NewReader(`{"query":"subscription { ticks }"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+
+	select {
+	case ch <- "one":
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out publishing the event")
+	}
+
+	buf := make([]byte, 512)
+	if _, err := resp.Body.Read(buf); err != nil {
+		t.Fatalf("reading the first event: %v", err)
+	}
+
+	go func() { _ = d.Shutdown(context.Background()) }()
+
+	body := make(chan []byte, 1)
+	go func() {
+		b, _ := io.ReadAll(resp.Body)
+		body <- b
+	}()
+
+	select {
+	case b := <-body:
+		if strings.Contains(string(b), "event: complete") {
+			t.Fatalf("stream carried a complete event: %s", b)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out reading the stream to EOF")
+	}
 }
 
 // frame is one graphql-transport-ws protocol message.

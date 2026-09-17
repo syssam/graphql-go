@@ -23,6 +23,7 @@ import (
 	"github.com/syssam/graphql-go"
 	"github.com/syssam/graphql-go/ext/apq"
 	"github.com/syssam/graphql-go/internal/httpreq"
+	"github.com/syssam/graphql-go/transport/drain"
 )
 
 // MediaTypeEventStream is the response type of an open stream.
@@ -44,6 +45,7 @@ type Handler struct {
 	keepAlive   time.Duration
 	apq         apq.Cache
 	logger      *slog.Logger
+	drain       *drain.Drain
 }
 
 // Option configures a Handler.
@@ -77,6 +79,12 @@ func WithPersistedQueries(cache apq.Cache) Option { return func(h *Handler) { h.
 // WithLogger sets the logger for transport-level failures such as write
 // errors. The default is slog.Default.
 func WithLogger(l *slog.Logger) Option { return func(h *Handler) { h.logger = l } }
+
+// WithDrain registers every subscription stream with d, so d.Shutdown ends
+// them without a complete event, which lets the client reconnect. Queries and
+// mutations are ordinary requests that the server's own Shutdown waits for.
+// Once d is draining, new subscriptions are refused with 503.
+func WithDrain(d *drain.Drain) Option { return func(h *Handler) { h.drain = d } }
 
 // New creates a handler streaming operations executed by exec.
 func New(exec *graphql.Executor, opts ...Option) *Handler {
@@ -199,7 +207,13 @@ func (h *Handler) single(w http.ResponseWriter, r *http.Request, req *graphql.Re
 
 // subscribe streams one next event per source event.
 func (h *Handler) subscribe(w http.ResponseWriter, r *http.Request, req *graphql.Request) {
-	ctx := r.Context()
+	ctx, leave, ok := h.drain.Enter(r.Context())
+	if !ok {
+		h.writeError(w, http.StatusServiceUnavailable, "The server is shutting down.")
+		return
+	}
+	defer leave()
+
 	events, err := h.exec.Subscribe(ctx, req)
 	if err != nil {
 		var se *graphql.SubscribeError
@@ -248,6 +262,10 @@ func (h *Handler) subscribe(w http.ResponseWriter, r *http.Request, req *graphql
 				return
 			}
 			h.flush(rc)
+		case <-h.drain.Closing():
+			// No complete: it would tell the client the subscription ended
+			// for good, where ending the response makes it reconnect.
+			return
 		case <-ctx.Done():
 			return
 		}
