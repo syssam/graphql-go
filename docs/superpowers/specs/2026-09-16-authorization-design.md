@@ -815,8 +815,20 @@ other length is an Authorizer error, not a silent partial allow.
 2a made it: one type-level decision per plan, which guards `__typename`.
 `SiteInstance` is recorded per *field position* that returns an
 instance-guarded type, so the policy sees the coordinate that produced the
-value, and `planField` carries the index. A field returning an unmarked type
-keeps the -1 it has today.
+value. A field returning an unmarked type keeps the `authIdx` of -1 it has
+today.
+
+**`planField` cannot carry another field, so the index is derived.** The struct
+is exactly full at 176 bytes: an added `int32` measures 184, and so does an
+added `bool` (measured, both). So a field's sites keep the contiguous layout
+2b introduced and extend it by one position — output site, argument sites,
+then the instance site — and the high bit of `argSites` records that the
+instance site is present. The instance site is then at
+`authIdx + 1 + argSites&countMask`, and a field with an instance-guarded target
+gets the zero-requirement output site that 2b already synthesizes for argument
+sites, so `authIdx >= 0` routes it. Both halves of `argSites` must be read
+through named helpers, never inline, and the count's mask must be asserted in
+the same test that pins the struct size.
 
 **D4. Batching follows the existing wave boundary.** `writeListConcurrent`
 already drains a list's elements before spawning tasks, and `pushWave`
@@ -869,9 +881,11 @@ event.
 
 **D11. Cost.** A plan that selects no instance-guarded type must measure
 unchanged, and `execState` (64 bytes), `OperationContext` (160) and `planField`
-(176) must all hold. `planField` has no spare word, so the instance site index
-occupies the same padding argument sites now share; the plan may spend that
-padding but not grow the struct. No reflection is added to the write path.
+(176) must all hold — see D3 for why the last of those forces the derived
+index rather than a new field. An instance-guarded plan pays one
+`AuthorizeObjects` call per wave plus the slice of checks it carries; the
+check slice is built only when a wave contains a guarded value. No reflection
+is added to the write path.
 
 **D12. Out of scope for 2c**, to be taken up only if the consumer needs it:
 per-`(field, instance)` masking, where an instance decision changes a *field's*
