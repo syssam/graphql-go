@@ -284,7 +284,9 @@ func Zero() Outcome { return Outcome{act: actionZero} }
 // Redact resolves the field and rewrites the result.
 func Redact(fn func(any) any) Outcome { return Outcome{act: actionRedact, redact: fn} }
 
-// Drop omits the value from its enclosing list.
+// Drop omits the value from its enclosing list. It is valid only at a list
+// element position; dropping renumbers the indices that follow, so a later
+// denial is reported at the index the client actually sees.
 func Drop() Outcome { return Outcome{act: actionDrop} }
 
 func (o Outcome) denial() *Error {

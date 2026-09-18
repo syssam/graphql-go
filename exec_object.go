@@ -222,21 +222,33 @@ func (st *execState) callResolve(ctx context.Context, f *planField, parent, args
 // writeValue writes a composite result: null handling, lists, abstract type
 // resolution and objects. path is the full path of the value being written.
 func (st *execState) writeValue(ctx context.Context, w *jsonw.Writer, v any, t *ast.Type, shape *valueShape, f *planField, path *pathNode) bool {
+	return st.writeComposite(ctx, w, v, t, shape, f, path, true)
+}
+
+// writeComposite is writeValue with an explicit instance check. A list that
+// has already decided its elements passes false so each row is not checked
+// again, which would turn one batched policy call into N+1.
+func (st *execState) writeComposite(ctx context.Context, w *jsonw.Writer, v any, t *ast.Type, shape *valueShape, f *planField, path *pathNode, checkInstance bool) bool {
 	if v == nil || (shape.isNil != nil && shape.isNil(v)) {
 		return st.writeNullValue(ctx, w, t, f, path)
 	}
 	if t.Elem != nil {
 		return st.writeList(ctx, w, v, t, shape, f, path)
 	}
-	obj := f.target
-	if obj != nil {
-		if shape.toPtr != nil {
-			v = shape.toPtr(v)
+	obj, v, isNil, err := st.elementObject(f, shape, v)
+	if err != nil {
+		st.addFieldError(ctx, err, path, f.ast.Position)
+		if t.NonNull {
+			return false
 		}
-	} else {
-		var err error
-		var isNil bool
-		obj, v, isNil, err = st.e.schema.concreteValue(f.abstract, v)
+		w.Null()
+		return true
+	}
+	if isNil {
+		return st.writeNullValue(ctx, w, t, f, path)
+	}
+	if checkInstance {
+		o, err := st.instanceOutcome(ctx, f, obj, v)
 		if err != nil {
 			st.addFieldError(ctx, err, path, f.ast.Position)
 			if t.NonNull {
@@ -245,7 +257,18 @@ func (st *execState) writeValue(ctx context.Context, w *jsonw.Writer, v any, t *
 			w.Null()
 			return true
 		}
-		if isNil {
+		switch o.act {
+		case actionNull:
+			return st.writeNullValue(ctx, w, t, f, path)
+		case actionDeny:
+			st.addFieldError(ctx, o.denial(), path, f.ast.Position)
+			if t.NonNull {
+				return false
+			}
+			w.Null()
+			return true
+		case actionDrop:
+			st.addFieldError(ctx, Errorf("authorization: Drop is valid only for a list element, not at %s", coordinate(f.def.object.name, f.def.name)), path, f.ast.Position)
 			return st.writeNullValue(ctx, w, t, f, path)
 		}
 	}
@@ -283,13 +306,101 @@ func (s *Schema) concreteValue(at *abstractType, v any) (obj *objectType, ptr an
 	return obj, v, false, nil
 }
 
+// elementObject resolves one value to its concrete object type and pointer,
+// the work writeValue does between f.target and concreteValue.
+func (st *execState) elementObject(f *planField, shape *valueShape, v any) (obj *objectType, ptr any, isNil bool, err error) {
+	if v == nil || (shape != nil && shape.isNil != nil && shape.isNil(v)) {
+		return nil, nil, true, nil
+	}
+	if shape != nil && shape.elem != nil {
+		// Still a list; the inner writeList decides these values.
+		return nil, v, false, nil
+	}
+	obj = f.target
+	if obj != nil {
+		if shape != nil && shape.toPtr != nil {
+			v = shape.toPtr(v)
+		}
+		return obj, v, false, nil
+	}
+	return st.e.schema.concreteValue(f.abstract, v)
+}
+
+func instanceSiteOf(f *planField) AuthSite {
+	return AuthSite{Coord: f.def.def.Type.Name(), Kind: SiteInstance}
+}
+
+// instanceOutcome asks the ObjectAuthorizer about one value about to be
+// written at f. It returns the zero Outcome when nothing guards it, so the
+// caller needs no nil check.
+func (st *execState) instanceOutcome(ctx context.Context, f *planField, obj *objectType, v any) (Outcome, error) {
+	if st.e.objectAuthorizer == nil || !f.hasInstanceSite() || obj == nil || !obj.instanceGuarded {
+		return Outcome{}, nil
+	}
+	site := instanceSiteOf(f)
+	outs, err := st.checkObjects(ctx, site, []ObjectCheck{{Site: site, Type: obj.name, Object: v}})
+	if err != nil || len(outs) == 0 {
+		return Outcome{}, err
+	}
+	return outs[0], nil
+}
+
+// instanceOutcomes decides a whole drained list at once, which is what keeps
+// a remote policy to one call per list rather than one per row. Dropped
+// elements leave no null, no error and no gap; keep them out of the write.
+func (st *execState) instanceOutcomes(ctx context.Context, f *planField, shape *valueShape, elems []any) (outs []Outcome, err error) {
+	if st.e.objectAuthorizer == nil || !f.hasInstanceSite() || len(elems) == 0 {
+		return nil, nil
+	}
+	site := instanceSiteOf(f)
+	elemShape := shape
+	if shape != nil && shape.elem != nil {
+		elemShape = shape.elem
+	}
+	checks := make([]ObjectCheck, 0, len(elems))
+	at := make([]int, 0, len(elems))
+	for i, e := range elems {
+		obj, v, isNil, cerr := st.elementObject(f, elemShape, e)
+		if cerr != nil || isNil || obj == nil || !obj.instanceGuarded {
+			continue
+		}
+		checks = append(checks, ObjectCheck{Site: site, Type: obj.name, Object: v})
+		at = append(at, i)
+	}
+	if len(checks) == 0 {
+		return nil, nil
+	}
+	batch, err := st.checkObjects(ctx, site, checks)
+	if err != nil {
+		return nil, err
+	}
+	outs = make([]Outcome, len(elems))
+	for j, i := range at {
+		outs[i] = batch[j]
+	}
+	return outs, nil
+}
+
+func instanceAct(outs []Outcome, i int) action {
+	if i < 0 || i >= len(outs) {
+		return actionAllow
+	}
+	return outs[i].act
+}
+
 // writeList writes list elements, nulling failed nullable elements and
-// failing the whole list when a non-null element fails.
+// failing the whole list when a non-null element fails. Instance checks
+// drain first so one policy call covers the list; without them the sequential
+// path stays a single pass, so a lazy source can stop when an element fails
+// or the response limit trips.
 func (st *execState) writeList(ctx context.Context, w *jsonw.Writer, v any, t *ast.Type, shape *valueShape, f *planField, path *pathNode) bool {
+	if st.e.objectAuthorizer != nil && f.hasInstanceSite() {
+		return st.writeListGuarded(ctx, w, v, t, shape, f, path)
+	}
 	var drained []any
 	drainedList := false
 	if f.sub != nil && f.sub.deepSchedulable && st.e.sem != nil {
-		ok, handled, elems := st.writeListConcurrent(ctx, w, v, t, shape, f, path)
+		ok, handled, elems := st.writeListConcurrentPlain(ctx, w, v, t, shape, f, path)
 		if handled {
 			return ok
 		}
@@ -318,6 +429,73 @@ func (st *execState) writeList(ctx context.Context, w *jsonw.Writer, v any, t *a
 		}
 	} else {
 		shape.traverse(v, writeElem)
+	}
+	if failed {
+		w.Rewind(mark)
+		return false
+	}
+	w.EndArray()
+	return true
+}
+
+func (st *execState) writeListGuarded(ctx context.Context, w *jsonw.Writer, v any, t *ast.Type, shape *valueShape, f *planField, path *pathNode) bool {
+	var drained []any
+	shape.traverse(v, func(_ int, e any) bool {
+		drained = append(drained, e)
+		return true
+	})
+	outs, aerr := st.instanceOutcomes(ctx, f, shape, drained)
+	if aerr != nil {
+		st.addFieldError(ctx, aerr, path, f.ast.Position)
+		return false
+	}
+	if f.sub != nil && f.sub.deepSchedulable && st.e.sem != nil {
+		ok, handled := st.writeListConcurrent(ctx, w, t, shape, f, path, drained, outs)
+		if handled {
+			return ok
+		}
+	}
+	mark := w.Mark()
+	w.BeginArray()
+	failed := false
+	writeElem := func(i int, e any) bool {
+		em := w.Mark()
+		if !st.writeComposite(ctx, w, e, t.Elem, shape.elem, f, &pathNode{parent: path, index: i, isIndex: true}, false) {
+			if t.Elem.NonNull || w.LimitExceeded() {
+				failed = true
+				return false
+			}
+			w.Rewind(em)
+			w.Null()
+		}
+		return true
+	}
+	n := 0
+	for i, e := range drained {
+		switch instanceAct(outs, i) {
+		case actionDrop:
+			continue
+		case actionDeny:
+			st.addFieldError(ctx, outs[i].denial(), &pathNode{parent: path, index: n, isIndex: true}, f.ast.Position)
+			if t.Elem.NonNull {
+				failed = true
+			} else {
+				w.Null()
+				n++
+			}
+			continue
+		case actionNull:
+			if !st.writeNullValue(ctx, w, t.Elem, f, &pathNode{parent: path, index: n, isIndex: true}) {
+				failed = true
+				continue
+			}
+			n++
+			continue
+		}
+		if !writeElem(n, e) {
+			break
+		}
+		n++
 	}
 	if failed {
 		w.Rewind(mark)
@@ -456,11 +634,11 @@ func (st *execState) writeFieldsConcurrent(ctx context.Context, w *jsonw.Writer,
 	return true
 }
 
-// writeListConcurrent writes list elements in parallel when there are at
+// writeListConcurrentPlain writes list elements in parallel when there are at
 // least two. handled is false when the list is too short; the drained
 // elements come back with it so the caller can write them without traversing
 // the value again, which a single-pass iter.Seq would answer with nothing.
-func (st *execState) writeListConcurrent(ctx context.Context, w *jsonw.Writer, v any, t *ast.Type, shape *valueShape, f *planField, path *pathNode) (ok, handled bool, drained []any) {
+func (st *execState) writeListConcurrentPlain(ctx context.Context, w *jsonw.Writer, v any, t *ast.Type, shape *valueShape, f *planField, path *pathNode) (ok, handled bool, drained []any) {
 	var elems []any
 	shape.traverse(v, func(_ int, e any) bool {
 		elems = append(elems, e)
@@ -517,6 +695,101 @@ func (st *execState) writeListConcurrent(ctx context.Context, w *jsonw.Writer, v
 	}
 	w.EndArray()
 	return true, true, nil
+}
+
+// writeListConcurrent writes list elements in parallel when there are at
+// least two after drops. handled is false when the list is too short; the
+// caller writes the remaining elements without traversing the value again.
+// Drop is removed before pushWave so a loader is not left waiting for a task
+// that will never begin; Deny and Null still occupy a written position.
+func (st *execState) writeListConcurrent(ctx context.Context, w *jsonw.Writer, t *ast.Type, shape *valueShape, f *planField, path *pathNode, elems []any, outs []Outcome) (ok, handled bool) {
+	type item struct {
+		elem    any
+		written int
+		act     action
+		out     Outcome
+	}
+	var kept []item
+	n := 0
+	for i, e := range elems {
+		act := instanceAct(outs, i)
+		if act == actionDrop {
+			continue
+		}
+		var out Outcome
+		if i < len(outs) {
+			out = outs[i]
+		}
+		kept = append(kept, item{elem: e, written: n, act: act, out: out})
+		n++
+	}
+	if len(kept) < 2 {
+		return false, false
+	}
+
+	results := make([]taskResult, len(kept))
+	defer func() {
+		for _, r := range results {
+			if r.buf != nil {
+				jsonw.Put(r.buf)
+			}
+		}
+	}()
+
+	endWave := st.pushWave(ctx, len(kept))
+	defer endWave()
+
+	g := taskGroup{st: st, async: true}
+	// Every remaining element is spawned even after a trip: the wave announced
+	// all of them, and a loader flushes only once every announced task has
+	// begun, so skipping one would strand each Load already parked. A task
+	// started after the trip fails at its first checkpoint.
+	for i, it := range kept {
+		g.run(func() {
+			st.waveTaskBegin(ctx)
+			defer st.waveTaskEnd(ctx)
+			sub := jsonw.Get()
+			sub.ShareLimit(w)
+			elemPath := &pathNode{parent: path, index: it.written, isIndex: true}
+			var okElem bool
+			switch it.act {
+			case actionDeny:
+				st.addFieldError(ctx, it.out.denial(), elemPath, f.ast.Position)
+				if t.Elem.NonNull {
+					okElem = false
+				} else {
+					sub.Null()
+					okElem = true
+				}
+			case actionNull:
+				okElem = st.writeNullValue(ctx, sub, t.Elem, f, elemPath)
+			default:
+				okElem = st.writeComposite(ctx, sub, it.elem, t.Elem, shape.elem, f, elemPath, false)
+			}
+			results[i] = taskResult{buf: sub, ok: okElem}
+		})
+	}
+	g.wait()
+
+	if w.LimitExceeded() {
+		return false, true
+	}
+
+	mark := w.Mark()
+	w.BeginArray()
+	for _, r := range results {
+		switch {
+		case r.ok:
+			w.Splice(r.buf)
+		case t.Elem.NonNull:
+			w.Rewind(mark)
+			return false, true
+		default:
+			w.Null()
+		}
+	}
+	w.EndArray()
+	return true, true
 }
 
 func (st *execState) pushWave(ctx context.Context, n int) func() {

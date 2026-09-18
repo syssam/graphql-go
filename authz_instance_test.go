@@ -162,10 +162,36 @@ type instanceWhereIn struct{ NameContains *string }
 
 type instanceFilteredArgs struct{ Where *instanceWhereIn }
 
+var (
+	instanceC1 = authzInstanceCustomer{ID: "c1", Name: "one"}
+	instanceC2 = authzInstanceCustomer{ID: "c2", Name: "two"}
+	instanceC3 = authzInstanceCustomer{ID: "c3", Name: "three"}
+)
+
 // newInstanceExecutor builds an executor over instanceSDL. Node is left
 // unbound, as fixtureSDL's is: an interface whose implementers are distinct Go
 // types resolves its concrete type from the dynamic value alone.
 func newInstanceExecutor(t *testing.T, opts ...ExecutorOption) *Executor {
+	t.Helper()
+	return newInstanceExecutorNode(t, func(context.Context, Root) (any, error) {
+		return &instanceC1, nil
+	}, opts...)
+}
+
+func newInstanceExecutorWith(t *testing.T, a ObjectAuthorizer, opts ...ExecutorOption) *Executor {
+	t.Helper()
+	opts = append([]ExecutorOption{WithObjectAuthorizer(a)}, opts...)
+	return newInstanceExecutor(t, opts...)
+}
+
+func newInstanceExecutorOpenNode(t *testing.T, a ObjectAuthorizer) *Executor {
+	t.Helper()
+	return newInstanceExecutorNode(t, func(context.Context, Root) (any, error) {
+		return &instanceOpen{ID: "o1"}, nil
+	}, WithObjectAuthorizer(a))
+}
+
+func newInstanceExecutorNode(t *testing.T, node func(context.Context, Root) (any, error), opts ...ExecutorOption) *Executor {
 	t.Helper()
 	s, err := NewSchema(SDL(instanceSDL),
 		Input[instanceWhereIn]("Where",
@@ -182,10 +208,14 @@ func newInstanceExecutor(t *testing.T, opts ...ExecutorOption) *Executor {
 			Field("id", func(o *instanceOpen) ID { return ID(o.ID) }),
 		),
 		Query(
-			Field("customers", func(Root) []authzInstanceCustomer { return nil }),
-			Field("maybe", func(Root) *authzInstanceCustomer { return nil }),
-			FieldArgs("filtered", func(Root, instanceFilteredArgs) []authzInstanceCustomer { return nil }),
-			Resolve("node", func(context.Context, Root) (any, error) { return nil, nil }),
+			Field("customers", func(Root) []authzInstanceCustomer {
+				return []authzInstanceCustomer{instanceC1, instanceC2, instanceC3}
+			}),
+			Field("maybe", func(Root) *authzInstanceCustomer { return &instanceC1 }),
+			FieldArgs("filtered", func(Root, instanceFilteredArgs) []authzInstanceCustomer {
+				return []authzInstanceCustomer{instanceC1, instanceC2, instanceC3}
+			}),
+			Resolve("node", node),
 			Field("plain", func(Root) string { return "" }),
 		),
 	)
@@ -193,6 +223,49 @@ func newInstanceExecutor(t *testing.T, opts ...ExecutorOption) *Executor {
 		t.Fatalf("NewSchema: %v", err)
 	}
 	return NewExecutor(s, opts...)
+}
+
+func constantObjectPolicy(o Outcome) ObjectAuthorizer {
+	return objectAuthorizerFunc(func(_ context.Context, checks []ObjectCheck) ([]Outcome, error) {
+		outs := make([]Outcome, len(checks))
+		for i := range outs {
+			outs[i] = o
+		}
+		return outs, nil
+	})
+}
+
+func idOf(v any) string {
+	switch c := v.(type) {
+	case *authzInstanceCustomer:
+		return c.ID
+	case authzInstanceCustomer:
+		return c.ID
+	}
+	return ""
+}
+
+func assertJSON(t *testing.T, data []byte, want string) {
+	t.Helper()
+	if got := string(data); got != want {
+		t.Fatalf("data mismatch\n got: %s\nwant: %s", got, want)
+	}
+}
+
+func assertErrorContains(t *testing.T, errs []*Error, want string) {
+	t.Helper()
+	if want == "" {
+		if len(errs) != 0 {
+			t.Fatalf("errors = %s, want none", errorsJSON(errs))
+		}
+		return
+	}
+	for _, e := range errs {
+		if e != nil && strings.Contains(e.Message, want) {
+			return
+		}
+	}
+	t.Fatalf("errors = %s, want one containing %q", errorsJSON(errs), want)
 }
 
 // fieldByName finds a root planField by its response key.
@@ -389,4 +462,125 @@ func TestCheckObjectsRecoversAPanic(t *testing.T) {
 	if indexOf(err.Error(), "policy exploded") >= 0 {
 		t.Fatalf("the panic value reached the client: %v", err)
 	}
+}
+
+func TestInstanceOutcomesOnASingleObject(t *testing.T) {
+	cases := []struct {
+		name     string
+		outcome  Outcome
+		query    string
+		wantData string
+		wantErr  string
+	}{
+		{name: "allow", outcome: Allow(), query: `{ maybe { id } }`, wantData: `{"maybe":{"id":"c1"}}`},
+		{name: "null", outcome: Null(), query: `{ maybe { id } }`, wantData: `{"maybe":null}`},
+		{name: "deny", outcome: Deny("customer:read", "Customer"), query: `{ maybe { id } }`, wantData: `{"maybe":null}`, wantErr: "denied"},
+		{name: "drop outside a list", outcome: Drop(), query: `{ maybe { id } }`, wantData: `{"maybe":null}`, wantErr: "Drop is valid only for a list element"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := newInstanceExecutorWith(t, constantObjectPolicy(c.outcome))
+			resp := run(t, e, c.query, "")
+			assertJSON(t, resp.Data, c.wantData)
+			assertErrorContains(t, resp.Errors, c.wantErr)
+		})
+	}
+}
+
+func TestInstanceDropOmitsListElements(t *testing.T) {
+	// customers resolves c1, c2, c3; the policy drops c2.
+	e := newInstanceExecutorWith(t, objectAuthorizerFunc(func(_ context.Context, checks []ObjectCheck) ([]Outcome, error) {
+		outs := make([]Outcome, len(checks))
+		for i, c := range checks {
+			if idOf(c.Object) == "c2" {
+				outs[i] = Drop()
+			}
+		}
+		return outs, nil
+	}))
+	resp := run(t, e, `{ customers { id } }`, "")
+	assertJSON(t, resp.Data, `{"customers":[{"id":"c1"},{"id":"c3"}]}`)
+	if len(resp.Errors) != 0 {
+		t.Fatalf("errors = %v, want none: a dropped row leaves no trace", resp.Errors)
+	}
+}
+
+func TestInstanceDenyInAListReportsTheWrittenIndex(t *testing.T) {
+	// Drop c1, deny c2: the denied element is written at index 0, because
+	// dropping renumbers what follows it.
+	e := newInstanceExecutorWith(t, objectAuthorizerFunc(func(_ context.Context, checks []ObjectCheck) ([]Outcome, error) {
+		outs := make([]Outcome, len(checks))
+		for i, c := range checks {
+			switch idOf(c.Object) {
+			case "c1":
+				outs[i] = Drop()
+			case "c2":
+				outs[i] = Deny("customer:read", "Customer")
+			}
+		}
+		return outs, nil
+	}))
+	resp := run(t, e, `{ customers { id } }`, "")
+	if len(resp.Errors) != 1 {
+		t.Fatalf("errors = %v, want exactly one", resp.Errors)
+	}
+	if got := resp.Errors[0].Path.String(); got != "customers[0]" {
+		t.Fatalf("path = %q, want customers[0]", got)
+	}
+}
+
+func TestInstanceNullBubblesThroughANonNullElement(t *testing.T) {
+	// customers is [Customer!]!, so Null on an element nulls the whole field
+	// by the ordinary rules -- which is why Drop exists.
+	e := newInstanceExecutorWith(t, constantObjectPolicy(Null()))
+	resp := run(t, e, `{ customers { id } }`, "")
+	assertJSON(t, resp.Data, `null`)
+	assertErrorContains(t, resp.Errors, "non-nullable")
+}
+
+func TestInstanceChecksAreBatchedPerList(t *testing.T) {
+	var calls, seen int
+	e := newInstanceExecutorWith(t, objectAuthorizerFunc(func(_ context.Context, checks []ObjectCheck) ([]Outcome, error) {
+		calls++
+		seen += len(checks)
+		return make([]Outcome, len(checks)), nil
+	}))
+	run(t, e, `{ customers { id } }`, "")
+	if calls != 1 || seen != 3 {
+		t.Fatalf("calls=%d checks=%d, want 1 call carrying 3 checks", calls, seen)
+	}
+}
+
+func TestInstanceCheckCarriesTheConcreteType(t *testing.T) {
+	var got ObjectCheck
+	e := newInstanceExecutorWith(t, objectAuthorizerFunc(func(_ context.Context, checks []ObjectCheck) ([]Outcome, error) {
+		got = checks[0]
+		return make([]Outcome, len(checks)), nil
+	}))
+	run(t, e, `{ node { __typename } }`, "")
+	if got.Type != "Customer" || got.Site.Coord != "Node" {
+		t.Fatalf("check = type %q at %q, want Customer at Node", got.Type, got.Site.Coord)
+	}
+	if got.Object == nil {
+		t.Fatal("the check carries no object")
+	}
+}
+
+func TestUnguardedTypeInAnAbstractPositionIsNotChecked(t *testing.T) {
+	// node resolves an Open, which carries no @authorizeObject.
+	var calls int
+	e := newInstanceExecutorOpenNode(t, objectAuthorizerFunc(func(_ context.Context, checks []ObjectCheck) ([]Outcome, error) {
+		calls++
+		return make([]Outcome, len(checks)), nil
+	}))
+	run(t, e, `{ node { __typename } }`, "")
+	if calls != 0 {
+		t.Fatalf("calls = %d, want 0 for an unguarded concrete type", calls)
+	}
+}
+
+func TestNoObjectAuthorizerEnforcesNothing(t *testing.T) {
+	e := newInstanceExecutor(t) // no WithObjectAuthorizer
+	resp := run(t, e, `{ customers { id } }`, "")
+	assertJSON(t, resp.Data, `{"customers":[{"id":"c1"},{"id":"c2"},{"id":"c3"}]}`)
 }
