@@ -33,7 +33,12 @@ func buildAuthShape(root *objectType, sel *selectionSet) *AuthShape {
 		return nil
 	}
 	slices.Sort(b.scopes)
-	s := &AuthShape{sites: b.sites, scopes: slices.Compact(b.scopes), hasArgSites: b.hasArgSites}
+	s := &AuthShape{
+		sites:            b.sites,
+		scopes:           slices.Compact(b.scopes),
+		hasArgSites:      b.hasArgSites,
+		hasInstanceSites: b.hasInstanceSites,
+	}
 	s.src.shape = s
 	return s
 }
@@ -41,9 +46,10 @@ func buildAuthShape(root *objectType, sel *selectionSet) *AuthShape {
 type shapeBuilder struct {
 	sites       []AuthSite
 	scopes      []string
-	seen        map[*selectionSet]bool
-	objectSite  map[*objectType]int32
-	hasArgSites bool
+	seen             map[*selectionSet]bool
+	objectSite       map[*objectType]int32
+	hasArgSites      bool
+	hasInstanceSites bool
 }
 
 // walk visits a selection set whose parent is obj (concrete) or abs (abstract).
@@ -158,7 +164,49 @@ func (b *shapeBuilder) field(obj *objectType, f *planField) {
 		}
 	}
 
+	// Appended after the argument sites, which is what makes instanceIdx --
+	// authIdx + 1 + the count -- land on it. As above, a field with no
+	// requirement of its own still needs an output site so the one authIdx
+	// compare on the write path routes it into enforceAuth; a zero
+	// Requirement allows.
+	if f.def != nil && b.instanceGuardedAt(f) {
+		if f.authIdx < 0 {
+			f.authIdx = int32(len(b.sites))
+			b.sites = append(b.sites, AuthSite{
+				Coord:  coordinate(f.def.object.name, f.name),
+				Field:  f.def.def,
+				Object: f.def.object.def,
+				Kind:   SiteOutput,
+				leaf:   f.def.leaf,
+			})
+		}
+		b.sites = append(b.sites, AuthSite{
+			Coord: f.def.def.Type.Name(),
+			Kind:  SiteInstance,
+		})
+		f.argSites |= instanceSiteBit
+		b.hasInstanceSites = true
+	}
+
 	b.walk(f.target, f.abstract, f.sub)
+}
+
+// instanceGuardedAt reports whether f can return a value an ObjectAuthorizer
+// decides on. An abstract position is guarded when any implementer is, since
+// the concrete type is known only once the value resolves.
+func (b *shapeBuilder) instanceGuardedAt(f *planField) bool {
+	if f.target != nil {
+		return f.target.instanceGuarded
+	}
+	if f.abstract == nil {
+		return false
+	}
+	for _, obj := range f.abstract.possible {
+		if obj.instanceGuarded {
+			return true
+		}
+	}
+	return false
 }
 
 // objectSiteFor returns the one SiteObject site for obj in this plan, so every

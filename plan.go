@@ -96,15 +96,31 @@ type planField struct {
 	// for fields that declare nothing.
 	authIdx int32
 
-	// argSites counts this field's argument sites. They are stored
-	// contiguously in the plan's AuthShape immediately after the field's own
-	// output site -- shape.sites[authIdx+1 : authIdx+1+int(argSites)] -- so
-	// this can stay a count instead of a slice: runSubscriptionEvent copies
-	// a planField by value (`f := *src`) once per event, and a slice header
-	// here pushed the struct from 176 to 200 bytes, into the next size
-	// class, paid on every event.
+	// argSites packs two things into the word beside authIdx, because
+	// planField is exactly full at 176 bytes: an added int32 or even an added
+	// bool measures 184, crossing a size class that runSubscriptionEvent pays
+	// per event (`f := *src` copies a planField), and a slice header here
+	// measured 200. The low bits count this field's argument sites and
+	// instanceSiteBit records that an instance site follows them. The plan's
+	// AuthShape stores a field's sites contiguously -- output site, argument
+	// sites, instance site -- so both are indices derived from authIdx rather
+	// than stored.
 	argSites int32
 }
+
+const (
+	// instanceSiteBit rides above any plausible argument count: a field's
+	// arguments are bounded by its SDL definition.
+	instanceSiteBit int32 = 1 << 30
+	argSiteMask     int32 = instanceSiteBit - 1
+)
+
+func (f *planField) argSiteCount() int32 { return f.argSites & argSiteMask }
+
+func (f *planField) hasInstanceSite() bool { return f.argSites&instanceSiteBit != 0 }
+
+// instanceIdx is valid only when hasInstanceSite reports true.
+func (f *planField) instanceIdx() int32 { return f.authIdx + 1 + f.argSiteCount() }
 
 // fieldExec holds the executor functions used for a field within one plan.
 // They start as copies of the fieldDef functions and are replaced by

@@ -185,6 +185,10 @@ type AuthShape struct {
 	// argument sites pays nothing for it.
 	hasArgSites bool
 
+	// hasInstanceSites gates the per-wave instance check the same way, so a
+	// plan that selects no @authorizeObject type never assembles a batch.
+	hasInstanceSites bool
+
 	// src is the input-free decisionSource every Decision over this shape
 	// shares when there is no input to carry, so newDecision allocates no
 	// source of its own.

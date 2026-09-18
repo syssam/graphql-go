@@ -501,8 +501,8 @@ func TestArgumentSitesAtPlanCompile(t *testing.T) {
 			if f.authIdx < 0 {
 				t.Error("a field with argument sites must carry an output site to route into enforceAuth")
 			}
-			if f.argSites != 2 {
-				t.Errorf("customers argSites = %d, want 2", f.argSites)
+			if f.argSiteCount() != 2 {
+				t.Errorf("customers argSites = %d, want 2", f.argSiteCount())
 			}
 		case "plain":
 			if f.authIdx != -1 || f.argSites != 0 {
@@ -571,8 +571,8 @@ func TestArgumentSiteRoutingPreservesFieldRequirement(t *testing.T) {
 	if got := out.Requires.Scopes(); !slices.Equal(got, []string{"c:read"}) {
 		t.Errorf("guarded's own requirement = %v, want [c:read]: routing overwrote it with a zero-Requires site", got)
 	}
-	if f.argSites != 1 {
-		t.Fatalf("guarded argSites = %d, want 1", f.argSites)
+	if f.argSiteCount() != 1 {
+		t.Fatalf("guarded argSites = %d, want 1", f.argSiteCount())
 	}
 	arg := p.shape.sites[f.authIdx+1]
 	if arg.Kind != SiteFilterArg || arg.Arg != "where" {

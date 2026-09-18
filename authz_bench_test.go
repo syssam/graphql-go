@@ -24,6 +24,14 @@ func TestStructSizes(t *testing.T) {
 		t.Errorf("planField = %d bytes, want 176 (argSites must stay a count, not a slice)", got)
 	}
 
+	// argSites is the only word left, so the instance-site flag rides in its
+	// high bits. If the mask and the bit ever overlapped, a field with enough
+	// arguments would read as instance-guarded and index a site that is not
+	// there.
+	if argSiteMask&instanceSiteBit != 0 {
+		t.Fatal("the instance bit overlaps the argument-site count")
+	}
+
 	// Every authorized request allocates a Decision. Holding the argument
 	// input table inline ([][]InputKey) took it from 32 to 56 bytes, the
 	// 64-byte size class: +32 B/op on BenchmarkExecuteWithAuthorizer for a

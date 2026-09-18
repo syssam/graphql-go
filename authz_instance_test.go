@@ -1,6 +1,7 @@
 package graphql
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -134,5 +135,157 @@ func TestInstanceSiteAdmitsOnlyAllowNullDenyDrop(t *testing.T) {
 		if !strings.Contains(err.Error(), "instance site") {
 			t.Fatalf("%s error does not identify the site as an instance site: %v", name, err)
 		}
+	}
+}
+
+const instanceSDL = `
+directive @authorizeObject on OBJECT
+directive @authorizeInput(kind: AuthorizeInputKind!) on ARGUMENT_DEFINITION
+enum AuthorizeInputKind { FILTER WRITE }
+input Where { nameContains: String }
+interface Node { id: ID! }
+type Customer implements Node @authorizeObject { id: ID! name: String! }
+type Open implements Node { id: ID! }
+type Query {
+  customers: [Customer!]!
+  maybe: Customer
+  filtered(where: Where @authorizeInput(kind: FILTER)): [Customer!]!
+  node: Node
+  plain: String!
+}
+`
+
+type instanceOpen struct{ ID string }
+
+type instanceWhereIn struct{ NameContains *string }
+
+type instanceFilteredArgs struct{ Where *instanceWhereIn }
+
+// newInstanceExecutor builds an executor over instanceSDL. Node is left
+// unbound, as fixtureSDL's is: an interface whose implementers are distinct Go
+// types resolves its concrete type from the dynamic value alone.
+func newInstanceExecutor(t *testing.T, opts ...ExecutorOption) *Executor {
+	t.Helper()
+	s, err := NewSchema(SDL(instanceSDL),
+		Input[instanceWhereIn]("Where",
+			InputField("nameContains", func(w *instanceWhereIn, v *string) { w.NameContains = v }),
+		),
+		Args[instanceFilteredArgs](
+			InputField("where", func(a *instanceFilteredArgs, v *instanceWhereIn) { a.Where = v }),
+		),
+		Object[authzInstanceCustomer]("Customer",
+			Field("id", func(c *authzInstanceCustomer) ID { return ID(c.ID) }),
+			Field("name", func(c *authzInstanceCustomer) string { return c.Name }),
+		),
+		Object[instanceOpen]("Open",
+			Field("id", func(o *instanceOpen) ID { return ID(o.ID) }),
+		),
+		Query(
+			Field("customers", func(Root) []authzInstanceCustomer { return nil }),
+			Field("maybe", func(Root) *authzInstanceCustomer { return nil }),
+			FieldArgs("filtered", func(Root, instanceFilteredArgs) []authzInstanceCustomer { return nil }),
+			Resolve("node", func(context.Context, Root) (any, error) { return nil, nil }),
+			Field("plain", func(Root) string { return "" }),
+		),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	return NewExecutor(s, opts...)
+}
+
+// fieldByName finds a root planField by its response key.
+func fieldByName(t *testing.T, p *plan, key string) *planField {
+	t.Helper()
+	for _, f := range p.sel.forType(p.root).fields {
+		if f.alias == key {
+			return f
+		}
+	}
+	t.Fatalf("no root field %q in plan", key)
+	return nil
+}
+
+func planFor(t *testing.T, e *Executor, query string) *plan {
+	t.Helper()
+	p, _, perrs := planForTest(t, e, query)
+	if perrs != nil {
+		t.Fatalf("plan: %v", perrs)
+	}
+	return p
+}
+
+func TestInstanceSitesAtPlanCompile(t *testing.T) {
+	e := newInstanceExecutor(t)
+	p := planFor(t, e, `{ customers { id } plain }`)
+
+	f := fieldByName(t, p, "customers")
+	if f.authIdx < 0 {
+		t.Fatal("a field returning a guarded type must route through enforceAuth")
+	}
+	if !f.hasInstanceSite() {
+		t.Fatal("customers has no instance site")
+	}
+	if f.argSiteCount() != 0 {
+		t.Fatalf("argSiteCount = %d, want 0", f.argSiteCount())
+	}
+	site := p.shape.sites[f.instanceIdx()]
+	if site.Kind != SiteInstance || site.Coord != "Customer" {
+		t.Fatalf("site = %v/%q, want SiteInstance/Customer", site.Kind, site.Coord)
+	}
+	if !site.Requires.IsZero() {
+		t.Fatal("an instance site carries no requirement of its own")
+	}
+	if site.Field != nil {
+		t.Fatal("an instance site has no field of its own")
+	}
+	if out := p.shape.sites[f.authIdx]; out.Kind != SiteOutput || !out.Requires.IsZero() {
+		t.Fatalf("routing site = %v, want a zero-requirement SiteOutput", out.Kind)
+	}
+
+	plain := fieldByName(t, p, "plain")
+	if plain.authIdx != -1 || plain.hasInstanceSite() {
+		t.Fatalf("plain: authIdx=%d hasInstanceSite=%v, want -1/false", plain.authIdx, plain.hasInstanceSite())
+	}
+	if !p.shape.hasInstanceSites {
+		t.Fatal("shape does not record instance sites")
+	}
+}
+
+func TestInstanceSiteFollowsArgumentSitesContiguously(t *testing.T) {
+	e := newInstanceExecutor(t)
+	p := planFor(t, e, `{ filtered(where: {nameContains: "a"}) { id } }`)
+	f := fieldByName(t, p, "filtered")
+	if f.argSiteCount() != 1 || !f.hasInstanceSite() {
+		t.Fatalf("argSiteCount=%d hasInstanceSite=%v, want 1/true", f.argSiteCount(), f.hasInstanceSite())
+	}
+	if k := p.shape.sites[f.authIdx+1].Kind; k != SiteFilterArg {
+		t.Fatalf("site after the output site = %v, want SiteFilterArg", k)
+	}
+	if k := p.shape.sites[f.instanceIdx()].Kind; k != SiteInstance {
+		t.Fatalf("site at instanceIdx = %v, want SiteInstance", k)
+	}
+	if f.instanceIdx() != f.authIdx+2 {
+		t.Fatalf("instanceIdx = %d, want %d", f.instanceIdx(), f.authIdx+2)
+	}
+}
+
+func TestInstanceSiteOnAnAbstractPosition(t *testing.T) {
+	e := newInstanceExecutor(t)
+	p := planFor(t, e, `{ node { __typename } }`)
+	f := fieldByName(t, p, "node")
+	if !f.hasInstanceSite() {
+		t.Fatal("an abstract position with a guarded implementer needs an instance site")
+	}
+	if c := p.shape.sites[f.instanceIdx()].Coord; c != "Node" {
+		t.Fatalf("Coord = %q, want the abstract type's name Node", c)
+	}
+}
+
+func TestPlanWithoutInstanceSitesIsUnchanged(t *testing.T) {
+	e := newInstanceExecutor(t)
+	p := planFor(t, e, `{ plain }`)
+	if p.shape != nil {
+		t.Fatalf("shape = %v, want nil for a plan that touches nothing guarded", p.shape)
 	}
 }
