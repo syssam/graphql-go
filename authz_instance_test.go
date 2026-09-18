@@ -22,6 +22,92 @@ func TestObjectAuthBatchDefaultsAndOverrides(t *testing.T) {
 	}
 }
 
+const authzObjectSDL = `
+directive @authorizeObject on OBJECT
+type Customer @authorizeObject { id: ID! name: String! }
+type Query { customers: [Customer!]! }
+`
+
+// The valid cases below declare @authorizeObject with a wider location list
+// than D1's `on OBJECT` alone: with only OBJECT declared, gqlparser's own
+// location check rejects the bad placements before validateObjectDirectives
+// ever runs, and the test would prove nothing about this validator.
+func TestAuthorizeObjectPlacementAtBuild(t *testing.T) {
+	cases := []struct {
+		name    string
+		sdl     string
+		wantErr string
+	}{
+		{
+			name: "on an object type",
+			sdl:  authzObjectSDL,
+		},
+		{
+			name:    "on an interface",
+			sdl:     "directive @authorizeObject on OBJECT | INTERFACE\ninterface Node @authorizeObject { id: ID! }\ntype Customer implements Node { id: ID! }\ntype Query { c: Customer! }",
+			wantErr: "Node: @authorizeObject is valid only on an object type, not an interface",
+		},
+		{
+			name:    "on a field",
+			sdl:     "directive @authorizeObject on OBJECT | FIELD_DEFINITION\ntype Query { c: String @authorizeObject }",
+			wantErr: "Query.c: @authorizeObject is valid only on an object type, not a field",
+		},
+		{
+			name:    "on an input object",
+			sdl:     "directive @authorizeObject on OBJECT | INPUT_OBJECT\ninput Where @authorizeObject { name: String }\ntype Query { c(w: Where): String }",
+			wantErr: "Where: @authorizeObject is valid only on an object type, not an input object",
+		},
+		{
+			name:    "on a union",
+			sdl:     "directive @authorizeObject on OBJECT | UNION\ntype A { id: ID! }\ntype B { id: ID! }\nunion AB @authorizeObject = A | B\ntype Query { c: AB }",
+			wantErr: "AB: @authorizeObject is valid only on an object type, not a union",
+		},
+		{
+			name:    "more than once on one type",
+			sdl:     "directive @authorizeObject repeatable on OBJECT\ntype Customer @authorizeObject @authorizeObject { id: ID! }\ntype Query { c: Customer }",
+			wantErr: "Customer: @authorizeObject must not occur more than once",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := NewSchema(SDL(c.sdl))
+			if c.wantErr == "" {
+				if err != nil && strings.Contains(err.Error(), "authorizeObject") {
+					t.Fatalf("valid placement rejected: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+				t.Fatalf("error = %v, want one containing %q", err, c.wantErr)
+			}
+		})
+	}
+}
+
+type authzInstanceCustomer struct {
+	ID   string
+	Name string
+}
+
+func TestAuthorizeObjectMarksTheType(t *testing.T) {
+	s, err := NewSchema(SDL(authzObjectSDL),
+		Object[authzInstanceCustomer]("Customer",
+			Field("id", func(*authzInstanceCustomer) ID { return "" }),
+			Field("name", func(*authzInstanceCustomer) string { return "" }),
+		),
+		Query(Field("customers", func(Root) []authzInstanceCustomer { return nil })),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	if !s.objects["Customer"].instanceGuarded {
+		t.Fatal("Customer is not marked instance-guarded")
+	}
+	if s.objects["Query"].instanceGuarded {
+		t.Fatal("Query is marked instance-guarded")
+	}
+}
+
 func TestInstanceSiteAdmitsOnlyAllowNullDenyDrop(t *testing.T) {
 	site := AuthSite{Coord: "Customer", Kind: SiteInstance}
 	for _, o := range []Outcome{Allow(), Null(), Deny("read", "Customer"), Drop()} {

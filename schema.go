@@ -118,6 +118,10 @@ type objectType struct {
 	// requires is the object's effective type-level requirement (its own
 	// AND its interfaces'), which guards __typename on this type.
 	requires Requirement
+
+	// instanceGuarded reports that the type carries @authorizeObject, so a
+	// value of it is offered to the ObjectAuthorizer before being written.
+	instanceGuarded bool
 }
 
 // schemaBuilder accumulates bindings while options are applied and resolves
@@ -204,6 +208,7 @@ func (b *schemaBuilder) build() *Schema {
 		}
 		obj := &objectType{name: name, def: def, shapes: ob.shapes, fields: make(map[string]*fieldDef, len(def.Fields))}
 		obj.isRoot = isRootType(b.ast, def)
+		obj.instanceGuarded = def.Directives.ForName(objectDirective) != nil
 		if obj.isRoot && ob.shapes.elem != reflect.TypeFor[Root]() {
 			b.errorf("Object %q: root operation types must be bound to graphql.Root, got %s", name, ob.shapes.elem)
 			continue
@@ -244,6 +249,7 @@ func (b *schemaBuilder) build() *Schema {
 	b.validateCoverage(s)
 	b.validateAuthDirectives()
 	b.validateInputDirectives()
+	b.validateObjectDirectives()
 	b.resolveAuthRequirements(s)
 	b.validateAuthCoverage(s)
 

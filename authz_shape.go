@@ -18,6 +18,10 @@ const authDirective = "requiresScopes"
 // Authorizer is shown before the field runs.
 const inputDirective = "authorizeInput"
 
+// objectDirective marks a type whose individual values an ObjectAuthorizer
+// decides on.
+const objectDirective = "authorizeObject"
+
 // buildAuthShape walks a compiled selection and records every position that
 // declares a requirement, effective (own AND inherited) requirements
 // included. It runs once per plan, so the walk is O(plan size) and never
@@ -349,6 +353,68 @@ func (b *schemaBuilder) validateInputDirectives() {
 		}
 		for _, v := range def.EnumValues {
 			reject(coordinate(name, v.Name), "an enum value", v.Directives)
+		}
+	}
+}
+
+// validateObjectDirectives rejects @authorizeObject anywhere the executor
+// would not consult an ObjectAuthorizer. Every rejected location is one where
+// a schema author could reasonably expect enforcement and get silence.
+func (b *schemaBuilder) validateObjectDirectives() {
+	reject := func(coord, what string, ds ast.DirectiveList) {
+		if ds.ForName(objectDirective) != nil {
+			b.errorf("%s: @%s is valid only on an object type, not %s", coord, objectDirective, what)
+		}
+	}
+	reject("schema", "the schema definition", b.ast.SchemaDirectives)
+	for dname, ddef := range b.ast.Directives {
+		for _, a := range ddef.Arguments {
+			reject(argCoordinate("@"+dname, a.Name), "a directive argument", a.Directives)
+		}
+	}
+	for name, def := range b.ast.Types {
+		if def.BuiltIn {
+			continue
+		}
+		switch def.Kind {
+		case ast.Object:
+			if occ := def.Directives.ForNames(objectDirective); len(occ) > 1 {
+				// gqlparser merges an extension's directives into the base
+				// list and skips its own non-repeatable check for them, so a
+				// second occurrence reaches here even when the directive is
+				// not declared repeatable.
+				b.errorf("%s: @%s must not occur more than once on one type", name, objectDirective)
+			}
+			for _, f := range def.Fields {
+				coord := coordinate(name, f.Name)
+				reject(coord, "a field", f.Directives)
+				for _, a := range f.Arguments {
+					reject(argCoordinate(coord, a.Name), "a field argument", a.Directives)
+				}
+			}
+		case ast.Interface:
+			reject(name, "an interface", def.Directives)
+			for _, f := range def.Fields {
+				coord := coordinate(name, f.Name)
+				reject(coord, "an interface field", f.Directives)
+				for _, a := range f.Arguments {
+					reject(argCoordinate(coord, a.Name), "an interface field's argument", a.Directives)
+				}
+			}
+		case ast.InputObject:
+			reject(name, "an input object", def.Directives)
+			for _, f := range def.Fields {
+				reject(coordinate(name, f.Name), "an input field", f.Directives)
+			}
+		case ast.Enum:
+			reject(name, "an enum", def.Directives)
+			for _, v := range def.EnumValues {
+				reject(coordinate(name, v.Name), "an enum value", v.Directives)
+			}
+		case ast.Union:
+			reject(name, "a union", def.Directives)
+		case ast.Scalar:
+			reject(name, "a scalar", def.Directives)
 		}
 	}
 }
