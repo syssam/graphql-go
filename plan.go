@@ -91,9 +91,12 @@ type planField struct {
 	costWeight int
 
 	// authIdx indexes this field's site in the plan's AuthShape, or -1 when
-	// the field declares no requirement and has no argument site. An integer
-	// compare on a field already in cache is what keeps authorization free
-	// for fields that declare nothing.
+	// the field declares no requirement, has no argument site and returns
+	// nothing instance-guarded. Each of the latter two synthesizes a
+	// zero-requirement output site here purely so the field routes into
+	// enforceAuth, since the other sites are found by offset from this one.
+	// An integer compare on a field already in cache is what keeps
+	// authorization free for fields that declare nothing.
 	authIdx int32
 
 	// argSites packs two things into the word beside authIdx, because

@@ -44,8 +44,8 @@ func buildAuthShape(root *objectType, sel *selectionSet) *AuthShape {
 }
 
 type shapeBuilder struct {
-	sites       []AuthSite
-	scopes      []string
+	sites            []AuthSite
+	scopes           []string
 	seen             map[*selectionSet]bool
 	objectSite       map[*objectType]int32
 	hasArgSites      bool
@@ -159,9 +159,13 @@ func (b *shapeBuilder) field(obj *objectType, f *planField) {
 				argType:  ad.Type,
 				argValue: supplied,
 			})
-			f.argSites++
 			b.hasArgSites = true
 		}
+		// Set once from the pre-pass rather than incremented per append, so a
+		// later append landing inside this loop cannot raise the count --
+		// which would shift instanceIdx past the instance site while
+		// hasInstanceSite still reported true.
+		f.argSites = int32(nArgSites)
 	}
 
 	// Appended after the argument sites, which is what makes instanceIdx --

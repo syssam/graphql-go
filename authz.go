@@ -147,9 +147,17 @@ const (
 
 // AuthSite is one position in a plan that may need a decision.
 type AuthSite struct {
-	Coord    string
-	Field    *ast.FieldDefinition // nil when Kind is SiteObject
-	Object   *ast.Definition
+	Coord string
+
+	// Field and Object describe the position. Neither names a field for the
+	// two kinds that are about a type rather than a field position:
+	// SiteObject leaves Field nil, and SiteInstance leaves both nil, since an
+	// instance is decided by its type and the value alone and the same
+	// resolved object can reach several field positions. Coord carries the
+	// type name for both.
+	Field  *ast.FieldDefinition
+	Object *ast.Definition
+
 	Kind     SiteKind
 	Requires Requirement
 	Grants   []string
