@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -287,5 +288,105 @@ func TestPlanWithoutInstanceSitesIsUnchanged(t *testing.T) {
 	p := planFor(t, e, `{ plain }`)
 	if p.shape != nil {
 		t.Fatalf("shape = %v, want nil for a plan that touches nothing guarded", p.shape)
+	}
+}
+
+// indexOf is strings.Index under a name that reads as a boolean-ish check at
+// the call site: err.Error() does not contain a fixed substring at a fixed
+// position, only somewhere or nowhere.
+func indexOf(s, substr string) int { return strings.Index(s, substr) }
+
+// newInstanceState builds an executor over instanceSDL with an
+// ObjectAuthorizer installed and returns an execState for it, the way
+// runOperation builds one -- checkObjects needs nothing from a live request.
+func newInstanceState(t *testing.T, a ObjectAuthorizer, opts ...ExecutorOption) *execState {
+	t.Helper()
+	opts = append([]ExecutorOption{WithObjectAuthorizer(a)}, opts...)
+	e := newInstanceExecutor(t, opts...)
+	return &execState{e: e}
+}
+
+type objectAuthorizerFunc func(ctx context.Context, checks []ObjectCheck) ([]Outcome, error)
+
+func (f objectAuthorizerFunc) AuthorizeObjects(ctx context.Context, checks []ObjectCheck) ([]Outcome, error) {
+	return f(ctx, checks)
+}
+
+func TestCheckObjectsSplitsAtTheBatchSize(t *testing.T) {
+	var sizes []int
+	a := objectAuthorizerFunc(func(_ context.Context, checks []ObjectCheck) ([]Outcome, error) {
+		sizes = append(sizes, len(checks))
+		out := make([]Outcome, len(checks))
+		for i := range out {
+			out[i] = Null()
+		}
+		return out, nil
+	})
+	st := newInstanceState(t, a, WithObjectAuthBatch(2))
+	checks := make([]ObjectCheck, 5)
+	outs, err := st.checkObjects(context.Background(), AuthSite{Coord: "Customer", Kind: SiteInstance}, checks)
+	if err != nil {
+		t.Fatalf("checkObjects: %v", err)
+	}
+	if len(outs) != 5 {
+		t.Fatalf("len(outs) = %d, want 5", len(outs))
+	}
+	if len(sizes) != 3 || sizes[0] != 2 || sizes[1] != 2 || sizes[2] != 1 {
+		t.Fatalf("batch sizes = %v, want [2 2 1]", sizes)
+	}
+	for i, o := range outs {
+		if o.act != actionNull {
+			t.Fatalf("outs[%d] = %v, want Null", i, o.act)
+		}
+	}
+}
+
+func TestCheckObjectsRejectsAShortResult(t *testing.T) {
+	a := objectAuthorizerFunc(func(_ context.Context, checks []ObjectCheck) ([]Outcome, error) {
+		return make([]Outcome, len(checks)-1), nil
+	})
+	st := newInstanceState(t, a)
+	_, err := st.checkObjects(context.Background(), AuthSite{Coord: "Customer", Kind: SiteInstance}, make([]ObjectCheck, 3))
+	if err == nil {
+		t.Fatal("a short result was accepted, which would silently allow the rows it does not cover")
+	}
+}
+
+func TestCheckObjectsRejectsAnInvalidOutcome(t *testing.T) {
+	a := objectAuthorizerFunc(func(_ context.Context, checks []ObjectCheck) ([]Outcome, error) {
+		return []Outcome{Zero()}, nil
+	})
+	st := newInstanceState(t, a)
+	_, err := st.checkObjects(context.Background(), AuthSite{Coord: "Customer", Kind: SiteInstance}, make([]ObjectCheck, 1))
+	if err == nil || indexOf(err.Error(), "instance site") < 0 {
+		t.Fatalf("err = %v, want the validFor rejection", err)
+	}
+}
+
+func TestCheckObjectsHidesABackendFailure(t *testing.T) {
+	a := objectAuthorizerFunc(func(_ context.Context, _ []ObjectCheck) ([]Outcome, error) {
+		return nil, errors.New("dial tcp 10.0.3.7:8181: connection refused")
+	})
+	st := newInstanceState(t, a)
+	_, err := st.checkObjects(context.Background(), AuthSite{Coord: "Customer", Kind: SiteInstance}, make([]ObjectCheck, 1))
+	if err == nil {
+		t.Fatal("no error")
+	}
+	if indexOf(err.Error(), "10.0.3.7") >= 0 {
+		t.Fatalf("the backend's address reached the client: %v", err)
+	}
+}
+
+func TestCheckObjectsRecoversAPanic(t *testing.T) {
+	a := objectAuthorizerFunc(func(_ context.Context, _ []ObjectCheck) ([]Outcome, error) {
+		panic("policy exploded")
+	})
+	st := newInstanceState(t, a)
+	_, err := st.checkObjects(context.Background(), AuthSite{Coord: "Customer", Kind: SiteInstance}, make([]ObjectCheck, 1))
+	if err == nil {
+		t.Fatal("a panic in the ObjectAuthorizer was not recovered")
+	}
+	if indexOf(err.Error(), "policy exploded") >= 0 {
+		t.Fatalf("the panic value reached the client: %v", err)
 	}
 }
