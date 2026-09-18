@@ -755,3 +755,127 @@ against the code, not while planning.
    equal in every sample (54/18/529). Struct sizes held: `execState` 64 bytes,
    `OperationContext` 160, `planField` 176.
 
+
+### 9.5 2c — instance sites: decisions made before planning
+
+§9 places `ObjectAuthorizer`, wave batching and `Drop()` in 2c and calls it the
+largest design. What follows is decided, and an implementation plan may not
+reopen it without recording a deviation.
+
+The shape is taken from what the established systems do, because the consumer
+asked for the industry standard rather than a novel mechanism:
+
+- **graphql-ruby** checks an instance at the *type*: `authorized?(object,
+  context)` runs whenever an object of that type is about to be returned, and
+  an unauthorized object is *silently replaced with nil* unless
+  `Schema.unauthorized_object` raises or substitutes. Its list pre-filtering is
+  a separate hook (`scope_items`), not the same call.
+- **ent** (Go) evaluates privacy rules returning Allow, Deny or Skip, and its
+  `Filter` pushes a `Where` into the query, so bulk row filtering happens in
+  the data layer.
+- **Pothos** states that "can this user see THIS row" belongs in the loader or
+  service rather than in field scopes, and that an unauthorized field returns
+  null or a caller-supplied result.
+- **OpenFGA/Zanzibar** filter a list by `BatchCheck`: narrow and sort in the
+  database, then batch-check the page, with a correlation id per check and a
+  bounded batch size (50 by default).
+
+So: the hook is at the type, the default for an unauthorized instance is a
+null rather than an error, checks are batched, and the docs must say that bulk
+filtering belongs in the query when the data layer can express it.
+
+**D1. `directive @authorizeObject on OBJECT` marks a type as instance-guarded.**
+As in 2a and 2b, the marker is in the SDL so the shape is known at plan
+compile and an unmarked type pays nothing. It takes no arguments: what the
+policy needs to know is the type, the instance and the principal, all of which
+it has. `@authorizeObject` on a location the engine cannot enforce is a build
+error, as `@requiresScopes` is.
+
+**D2. Instance decisions do not live in `Decision`.** A `Decision` is built once
+per request, before any resolver runs, and cannot name instances that do not
+exist yet. Instance outcomes come from a second, optional interface called
+during execution:
+
+```go
+type ObjectAuthorizer interface {
+    AuthorizeObjects(ctx context.Context, checks []ObjectCheck) ([]Outcome, error)
+}
+
+type ObjectCheck struct {
+    Site   AuthSite // Kind SiteInstance, Coord the type name
+    Object any      // the resolved Go value about to be written
+}
+```
+
+It is registered with `WithObjectAuthorizer`, beside `WithAuthorizer`. The
+returned slice is positional and must have the same length as `checks`; any
+other length is an Authorizer error, not a silent partial allow.
+
+**D3. The site is `SiteInstance`, a new `SiteKind`.** `SiteObject` stays what
+2a made it: one type-level decision per plan, which guards `__typename`.
+`SiteInstance` is recorded per *field position* that returns an
+instance-guarded type, so the policy sees the coordinate that produced the
+value, and `planField` carries the index. A field returning an unmarked type
+keeps the -1 it has today.
+
+**D4. Batching follows the existing wave boundary.** `writeListConcurrent`
+already drains a list's elements before spawning tasks, and `pushWave`
+announces the sibling count that makes DataLoader batching work. An
+instance-guarded list issues one `AuthorizeObjects` call for the whole drained
+list before any element is written; an inline list batches per list; a single
+object is a batch of one. Batches are split at `WithObjectAuthBatch(n)`,
+default 50, matching OpenFGA's default, and the splits run sequentially — a
+policy that wants more parallelism has the whole batch in one call and may do
+as it likes with it.
+
+**D5. Only Allow, Null, Deny and Drop are valid for an instance site.** `Zero`
+and `Redact` are leaf outcomes and have no meaning for an object. `Null`
+writes null, which is graphql-ruby's default and therefore this engine's:
+**an `ObjectAuthorizer` returning the zero `Outcome` allows**, as elsewhere, so
+a policy must say `Null()` deliberately. `Deny` produces the ordinary
+`CodeForbidden` error at the field's path.
+
+**D6. `Drop` omits the value from its enclosing list**, and is finally
+implemented here. It is valid only at a list element position; on a bare field
+it is an Authorizer error, as `Drop` on a non-list is meaningless. Dropping
+from `[T!]!` is allowed: the result is a shorter list, which is what AppSync
+and Hasura produce, and refusing it would make the commonest guarded case —
+a non-null element list — the one case the feature cannot express. Two
+consequences are documented rather than fixed: a client cannot tell a filtered
+list from a short one, and **the response's list indices renumber**, so an
+error reported for a later element names its written index, not its index in
+the source data.
+
+**D7. A null on a non-null element position bubbles as it always has.** `Null`
+inside `[T!]!` nulls the list, then the field, by the existing rules. That is
+the reason `Drop` exists, and the docs must show the pair together.
+
+**D8. Existence hiding is exactly what `Drop` gives, and nothing more.** §9.2's
+known limit stands for everything else: a guarded single object still answers
+null, an empty selection still answers `{}`, and a union that names only an
+unguarded member still reveals that some other member is present. A field that
+must not disclose a count filters in its own query — the engine cannot know
+what "the same list, filtered" means for the caller's data source.
+
+**D9. `ObjectAuthorizer` errors are hardened exactly as `Authorizer` errors
+are.** A non-`*Error` failure is presented as a generic internal error with the
+original behind the unexported cause, and a panic is recovered into one. A
+batch that fails fails every check in it: no instance in that batch is written.
+
+**D10. Subscriptions check instances per event.** The root object and every
+guarded object below it go through the same path the query executor uses, so a
+principal who loses access mid-stream stops seeing those rows on the next
+event.
+
+**D11. Cost.** A plan that selects no instance-guarded type must measure
+unchanged, and `execState` (64 bytes), `OperationContext` (160) and `planField`
+(176) must all hold. `planField` has no spare word, so the instance site index
+occupies the same padding argument sites now share; the plan may spend that
+padding but not grow the struct. No reflection is added to the write path.
+
+**D12. Out of scope for 2c**, to be taken up only if the consumer needs it:
+per-`(field, instance)` masking, where an instance decision changes a *field's*
+outcome rather than the object's; `scope_items`-style pre-filtering hooks; and
+static folding of instance checks into the data source's query. The engine's
+answer to bulk filtering stays "push it into the query", documented beside
+`Drop`.
