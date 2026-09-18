@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestObjectAuthBatchDefaultsAndOverrides(t *testing.T) {
@@ -583,4 +584,91 @@ func TestNoObjectAuthorizerEnforcesNothing(t *testing.T) {
 	e := newInstanceExecutor(t) // no WithObjectAuthorizer
 	resp := run(t, e, `{ customers { id } }`, "")
 	assertJSON(t, resp.Data, `{"customers":[{"id":"c1"},{"id":"c2"},{"id":"c3"}]}`)
+}
+
+// instanceSubSource is a channel the test writes to, so each event is
+// published only after the previous response has been consumed. The policy
+// reads a shared event counter; a source that raced ahead would decide the
+// next event with the previous counter.
+type instanceSubSource struct {
+	ch chan []authzInstanceCustomer
+}
+
+func sendInstanceBatch(t *testing.T, ch chan<- []authzInstanceCustomer, batch []authzInstanceCustomer) {
+	t.Helper()
+	select {
+	case ch <- batch:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out sending an event")
+	}
+}
+
+func newInstanceSubExecutor(t *testing.T, a ObjectAuthorizer) (*instanceSubSource, *Executor) {
+	t.Helper()
+	src := &instanceSubSource{ch: make(chan []authzInstanceCustomer)}
+	const sdl = `
+directive @authorizeObject on OBJECT
+type Customer @authorizeObject { id: ID! name: String! }
+type Query { ping: String! }
+type Subscription { batches: [Customer!]! }
+`
+	s, err := NewSchema(SDL(sdl),
+		Object[authzInstanceCustomer]("Customer",
+			Field("id", func(c *authzInstanceCustomer) ID { return ID(c.ID) }),
+			Field("name", func(c *authzInstanceCustomer) string { return c.Name }),
+		),
+		Query(Field("ping", func(Root) string { return "" })),
+		Subscription(
+			Subscribe("batches", func(context.Context) (<-chan []authzInstanceCustomer, error) {
+				return src.ch, nil
+			}),
+		),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	return src, NewExecutor(s, WithObjectAuthorizer(a))
+}
+
+func TestSubscriptionEventInstanceDropAppliesPerEvent(t *testing.T) {
+	var event int
+	src, e := newInstanceSubExecutor(t, objectAuthorizerFunc(func(_ context.Context, checks []ObjectCheck) ([]Outcome, error) {
+		outs := make([]Outcome, len(checks))
+		if event == 2 {
+			for i, c := range checks {
+				if idOf(c.Object) == "c2" {
+					outs[i] = Drop()
+				}
+			}
+		}
+		return outs, nil
+	}))
+
+	ch, err := e.Subscribe(t.Context(), &Request{Query: `subscription { batches { id } }`})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	batch := []authzInstanceCustomer{instanceC1, instanceC2, instanceC3}
+	want := []string{
+		`{"batches":[{"id":"c1"},{"id":"c2"},{"id":"c3"}]}`,
+		`{"batches":[{"id":"c1"},{"id":"c3"}]}`,
+		`{"batches":[{"id":"c1"},{"id":"c2"},{"id":"c3"}]}`,
+	}
+	for i, w := range want {
+		event = i + 1
+		sendInstanceBatch(t, src.ch, batch)
+		select {
+		case resp, ok := <-ch:
+			if !ok {
+				t.Fatalf("stream closed after %d events; a dropped row must not end it", i)
+			}
+			if len(resp.Errors) != 0 {
+				t.Fatalf("event %d errors = %v, want none", i+1, resp.Errors)
+			}
+			assertJSON(t, resp.Data, w)
+			resp.Release()
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for event %d", i+1)
+		}
+	}
 }
