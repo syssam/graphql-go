@@ -64,6 +64,9 @@ type Executor struct {
 	timeoutCause error
 	cost         *QueryCost
 	authorizer   Authorizer
+
+	objectAuthorizer ObjectAuthorizer
+	objectAuthBatch  int
 }
 
 // ExecutorOption configures an Executor.
@@ -146,6 +149,8 @@ func NewExecutor(s *Schema, opts ...ExecutorOption) *Executor {
 
 		maxResponseBytes: 64 << 20,
 		maxErrors:        1000,
+
+		objectAuthBatch: 50,
 	}
 	for _, o := range opts {
 		o(e)

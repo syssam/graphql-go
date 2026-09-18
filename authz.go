@@ -138,6 +138,11 @@ const (
 	// SiteInputWrite is an argument marked @authorizeInput(kind: WRITE) on
 	// an object field. Only Allow and Deny are valid outcomes for it.
 	SiteInputWrite
+	// SiteInstance is one resolved object of an @authorizeObject type, about
+	// to be written at this field position. Unlike every other site it is
+	// decided during execution by an ObjectAuthorizer, because the values do
+	// not exist when a Decision is built.
+	SiteInstance
 )
 
 // AuthSite is one position in a plan that may need a decision.
@@ -313,6 +318,12 @@ func (o Outcome) validFor(site AuthSite) error {
 	if (site.Kind == SiteFilterArg || site.Kind == SiteInputWrite) && o.act != actionAllow && o.act != actionDeny {
 		return Errorf("authorization: only Allow and Deny are valid for %s, an argument site", site.Coord)
 	}
+	// An instance site decides whether one object may be seen. Zero and
+	// Redact act on a leaf's value and have nothing to act on here.
+	if site.Kind == SiteInstance && o.act != actionAllow && o.act != actionDeny &&
+		o.act != actionNull && o.act != actionDrop {
+		return Errorf("authorization: only Allow, Null, Deny and Drop are valid for %s, an instance site", site.Coord)
+	}
 	switch o.act {
 	case actionNull:
 		// A literal null on a non-null field is not a value the schema
@@ -346,8 +357,6 @@ func (o Outcome) validFor(site AuthSite) error {
 		if o.redact == nil {
 			return Errorf("authorization: Redact for %s was constructed with a nil function", site.Coord)
 		}
-	case actionDrop:
-		return Errorf("authorization: Drop is not yet implemented")
 	}
 	return nil
 }
@@ -378,6 +387,43 @@ func (f AuthorizerFunc) Authorize(ctx context.Context, shape *AuthShape, d *Deci
 // WithAuthorizer sets the authorizer consulted once per operation.
 func WithAuthorizer(a Authorizer) ExecutorOption {
 	return func(e *Executor) { e.authorizer = a }
+}
+
+// ObjectCheck is one resolved object an ObjectAuthorizer decides on. Type is
+// the concrete object type's name, which differs from Site.Coord when the
+// field's declared type is an interface or a union.
+type ObjectCheck struct {
+	Site   AuthSite
+	Type   string
+	Object any
+}
+
+// ObjectAuthorizer decides whether a principal may see individual objects.
+// It is called once per wave with every guarded value in it, so a policy
+// backed by a remote decision point issues one batched call rather than one
+// per row. The returned slice is positional and must have the same length as
+// checks; any other length is an error, because a short slice would silently
+// allow the rows it does not cover.
+type ObjectAuthorizer interface {
+	AuthorizeObjects(ctx context.Context, checks []ObjectCheck) ([]Outcome, error)
+}
+
+// WithObjectAuthorizer enables instance-level authorization. Without it,
+// @authorizeObject describes positions and nothing is enforced.
+func WithObjectAuthorizer(a ObjectAuthorizer) ExecutorOption {
+	return func(e *Executor) { e.objectAuthorizer = a }
+}
+
+// WithObjectAuthBatch bounds how many checks one AuthorizeObjects call
+// carries; larger waves are split into sequential calls. The default of 50
+// matches OpenFGA's BatchCheck default, which is the shape most remote
+// policy backends are tuned for.
+func WithObjectAuthBatch(n int) ExecutorOption {
+	return func(e *Executor) {
+		if n > 0 {
+			e.objectAuthBatch = n
+		}
+	}
 }
 
 // Decision records the outcome for each site in a shape. It is passed to the
