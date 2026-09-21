@@ -352,6 +352,12 @@ func (st *execState) instanceOutcome(ctx context.Context, f *planField, obj *obj
 // instanceOutcomes decides a whole drained list at once, which is what keeps
 // a remote policy to one call per list rather than one per row. Dropped
 // elements leave no null, no error and no gap; keep them out of the write.
+//
+// Each element is resolved to its concrete type twice, here and again when it
+// is written. Carrying the resolved (objectType, pointer) pair forward would
+// cost a slice of them per list, which is the worse trade against a path that
+// has just made a policy call; on a concrete position the second resolution is
+// a nil check and shape.toPtr.
 func (st *execState) instanceOutcomes(ctx context.Context, f *planField, shape *valueShape, elems []any) (outs []Outcome, err error) {
 	if st.e.objectAuthorizer == nil || !f.hasInstanceSite() || len(elems) == 0 {
 		return nil, nil

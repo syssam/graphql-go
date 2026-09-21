@@ -446,11 +446,21 @@ type ObjectCheck struct {
 }
 
 // ObjectAuthorizer decides whether a principal may see individual objects.
-// It is called once per wave with every guarded value in it, so a policy
-// backed by a remote decision point issues one batched call rather than one
-// per row. The returned slice is positional and must have the same length as
-// checks; any other length is an error, because a short slice would silently
-// allow the rows it does not cover.
+//
+// Batching is per list: a list of guarded values is drained and decided in one
+// call before any element is written, split into several only by
+// WithObjectAuthBatch. That is what keeps a policy backed by a remote decision
+// point to one call per list rather than one per row. It is not per wave -- a
+// guarded object reached through a field that is not a list is one call
+// carrying one check, so a selection that reaches guarded objects through
+// nested single-object fields issues one call per such field. Where that
+// matters, model the position as a list or cache inside the implementation.
+//
+// The returned slice is positional over checks and must have the same length;
+// any other length is an error, because a short slice would silently allow the
+// rows it does not cover. checks is only valid for the duration of the call:
+// do not retain it, and do not reorder it in place, since the outcomes are
+// mapped back by position in the order it was given.
 type ObjectAuthorizer interface {
 	AuthorizeObjects(ctx context.Context, checks []ObjectCheck) ([]Outcome, error)
 }

@@ -575,6 +575,33 @@ diverge. The unguarded `__typename` fast path in `writeFieldValue` (`exec_object
 returning `obj.name` before `execState` is even touched — is what keeps the measured cost
 of this at about 1%.
 
+**Instance sites (`@authorizeObject`, `authz_instance.go`) are decided during execution, not
+in the `Decision`** — the values do not exist when a `Decision` is built. A marked object type
+sets `objectType.instanceGuarded`; a field that can return one gets `instanceSiteBit` in
+`planField.argSites` (the bit rides above the argument count because `planField` is exactly
+full at 176 bytes). **The bit is the whole routing mechanism**: `writeList` and
+`writeComposite` check `st.e.objectAuthorizer != nil && f.hasInstanceSite()` and never reach
+an instance site through `authIdx`, so the shape stores one purely so an `Authorizer` can see
+that instance checks will happen. It therefore synthesizes no output site, `Decision.Set`
+refuses it, and `AuthShape.IsEmpty` counts only `decidable` sites — otherwise a plan selecting
+a guarded type and declaring nothing else called a configured `Authorizer` once per request
+for a decision that could change nothing. **Batching is per list, not per wave**: the list is
+drained, decided in one `AuthorizeObjects` call (split by `WithObjectAuthBatch`, 50 by
+default), and only then written, while a guarded object behind a non-list field is one call of
+one check — an N+1 the godoc now states rather than promises away. A batch that fails at all
+fails every outstanding check, so a policy backend that is down cannot be why a row becomes
+visible. Two things that only a deliberate break finds: **`Drop` must be removed before
+`pushWave`** (announcing a task that never begins strands every parked `Load` and the request
+hangs to its deadline — `TestInstanceDropDoesNotStrandTheWave`, in `loader/`), and
+**`writeListGuarded` must stop at the first fatal failure** the way `writeList` does, or a
+denied non-null list keeps resolving elements into a buffer that is about to be rewound and
+appends one error per element, every one of them carrying the first element's index. `Null` is
+rejected at a non-null position by `valueNonNull` on the site, since an instance site has no
+`Field` for the ordinary guard to read. `writeListConcurrent` and `writeListConcurrentPlain`
+are a deliberate near-copy: merging them measured +20% time and +76% B/op on
+`BenchmarkExecuteConcurrentList`, and `TestConcurrentListPathsAgree` pins what they write —
+but not every branch, and the comment on them says which.
+
 Two facts only exist because authorization and bounded plan expansion landed together.
 compileSelection's memo makes one `*selectionSet` reachable from several parents, so the
 `seen` set in `shapeBuilder.walk` is load-bearing — it keeps the walk linear in the DAG —
@@ -653,7 +680,8 @@ Status: phases 1-4 complete and merged to `main` — engine, both codegen bindin
 subscriptions, five transports, DataLoader, APQ, limits with actual cost accounting,
 OpenTelemetry with field observation, bounded plan expansion, a plan cache bounded by
 query text, a response size limit, an operation timeout, a shutdown drain and connection age and idle limits for WebSocket and SSE, runtime metrics (`Executor.Stats`, `otel.ObserveExecutor`, `otel.ObserveDrain`), the authorization spine (`Authorizer`, `AuthShape`, `RequireAuthCoverage`,
-`SubscriptionInterceptor`) with `@authorizeInput` argument sites, and the `lint/` analyzer; plus `relay/`, `fed/`, `ext/throttle`,
+`SubscriptionInterceptor`) with `@authorizeInput` argument sites and `@authorizeObject`
+instance sites (`ObjectAuthorizer`, batched per list, with `Drop`), and the `lint/` analyzer; plus `relay/`, `fed/`, `ext/throttle`,
 `ext/trusted` and DataLoader tracing. Not built: `ext/authz` (the Apollo directive vocabulary
 and a batched `Guard`) and APQ over WebSocket, which belongs in the
 `graphql-transport-ws` state machine. `@defer`/`@stream` is not merely unbuilt — the prelude's

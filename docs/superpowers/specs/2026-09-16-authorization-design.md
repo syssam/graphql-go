@@ -893,3 +893,76 @@ outcome rather than the object's; `scope_items`-style pre-filtering hooks; and
 static folding of instance checks into the data source's query. The engine's
 answer to bulk filtering stays "push it into the query", documented beside
 `Drop`.
+
+## Phase 2c Deviations
+
+These are authoritative where they disagree with the D1-D12 decisions above.
+Each was found by reviewing the implemented branch and is covered by a test.
+
+**P1. `Null` is refused at a non-null instance position, reversing D7.** D7 said
+a null on a non-null element "bubbles as it always has". It does, but with no
+attribution: the client sees only `Cannot return null for non-nullable field
+Query.me.` and nothing says a policy decided it, which is exactly the outcome
+the same guard rejects for every other site kind. `AuthSite.valueNonNull`
+records the nullability of the position the value occupies -- an instance site
+has no `Field` for the ordinary guard to read -- and `validFor` refuses `Null`
+there, naming `Drop` for a list element and `Deny` otherwise.
+
+**P2. The instance site synthesizes no output site and is not indexed from
+`authIdx`, narrowing D3 and D11.** The derived index (`authIdx + 1 +
+argSiteCount`) had no production caller: `writeList` and `writeComposite` route
+on `planField.hasInstanceSite` alone, and the executor cannot reach the shape
+anyway when only `WithObjectAuthorizer` is configured, because `execState`
+holds a `*Decision` that is nil without an `Authorizer` and has no room for a
+shape pointer. `instanceIdx` is gone; `instanceSiteBit` stays, because
+`hasInstanceSite` is the routing mechanism. The zero-requirement `SiteOutput`
+that was synthesized to "route the field into `enforceAuth`" went with it: it
+routed nothing and enlarged every request's `Decision`.
+
+**P3. An operation whose only sites are instance sites does not consult the
+`Authorizer`, completing D2.** D2 said instance decisions do not live in a
+`Decision`; the first implementation still put the site in `AuthShape.sites`,
+which made `IsEmpty` false and called a configured `Authorizer` once per
+request for a decision it could not make. `AuthShape.decidable` counts the
+non-instance sites and `IsEmpty` reads that. `Sites` still reports instance
+sites, so an `Authorizer` consulted for another reason can see that instance
+checks will happen, and `Decision.Set` refuses one rather than accepting an
+outcome nothing reads.
+
+**P4. Batching is per list, not per wave, correcting D4.** `writeListGuarded`
+drains its list, decides it in one `AuthorizeObjects` call and only then writes
+-- but a guarded object behind a field that is not a list is one call carrying
+one check, so nested single-object fields are an N+1 against a remote decision
+point. Measured: `{ customers { id manager { id } } }` over four customers is
+five calls for eight checks. The `ObjectAuthorizer` godoc states this instead
+of promising per-wave batching.
+
+**P5. `@authorizeObject` is refused on a root operation type.** A root object is
+written by `writeObject` directly and never reaches `writeValue`, so the marker
+was accepted at build and never enforced -- zero `AuthorizeObjects` calls
+against a deny-everything policy. `validateObjectDirectives` rejects it, which
+is the promise the rest of that function already made.
+
+**P6. A guarded list stops at its first fatal failure, as the unguarded one
+does.** A denied non-null element failed the list, which is then rewound, but
+the loop kept deciding and resolving what followed: real I/O for a response
+nobody sees, and one error per element all carrying the first element's index.
+The `Deny` and `Null` branches also bypassed `writeElem`'s response-limit
+checkpoint.
+
+**P7. Each policy batch is a three-index slice.** `checks[start:end:end]`, so a
+policy that appends to the batch it was handed allocates instead of rewriting
+the checks the next call has not been asked about yet. The godoc also states
+that the slice must not be retained or reordered, since outcomes map back by
+position.
+
+**P8. `writeListConcurrent` and `writeListConcurrentPlain` stay separate.**
+Merging them -- one implementation with a nil outcomes slice for the unguarded
+case -- was implemented and reverted: interleaved n=12, +20.18% sec/op
+(p=0.000) and +76.28% B/op on `BenchmarkExecuteConcurrentList`, because the
+merged loop carries an `Outcome` (a func and two strings) per element. The
+leaner `[]int32` of written indices is kept on the guarded side, `drainList`
+removes the escaping closure both shared, and `TestConcurrentListPathsAgree`
+pins what the two write. D11's cost bar holds: every benchmark measured equal
+in allocations and bytes, `execState` 64, `OperationContext` 160, `planField`
+176.
