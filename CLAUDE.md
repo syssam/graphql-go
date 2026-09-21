@@ -589,7 +589,11 @@ through constructors, which is strictly worse than the file prefix it has now. `
 is the one exception, with no engine coupling at all; it is the natural seam if a split is
 ever forced, and nothing else is.
 
-The three implementations worth comparing against agree with this. **grpc-go** is the only
+The three implementations worth comparing against agree with this. The counts below are from
+grpc-go 1.85.0-dev (e4711283) in `ref/`, which is gitignored and not part of any module, so a
+fresh clone cannot check them and they will drift; the shape of the answer is the part that
+matters, not the digits. The async-graphql and graphql-js readings are from docs.rs and
+graphql-js.org/api-v17 respectively, not from source. **grpc-go** is the only
 true peer, and its root is *larger*: 22 non-test files and 10,390 lines against this
 repository's 32 and 9,544. What grpc-go keeps out of root is vocabulary (`codes` 361 lines,
 `status` 162, `metadata` 426, `keepalive` 99) and implementations — `grpc-go/authz` is a
