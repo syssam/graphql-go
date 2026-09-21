@@ -989,3 +989,36 @@ batching stays the contract; the N+1 for nested single objects is pinned by
 `TestNestedSingleObjectIsOneCallEach` and stated in the `ObjectAuthorizer`
 godoc. Fixing it properly needs breadth-first writing of a level before its
 children, which is an execution-order change well outside 2c.
+
+**P10. The nested single-object N+1 is where this stops, and the comparison says
+why.** P4 records that batching is per list and P9 that coalescing across a wave
+does not work. The remaining question is whether to restructure execution --
+write a level breadth-first before its children -- to batch the checks for
+objects reached through fields that are not lists. The answer is no, on three
+grounds.
+
+First, capability. `async_graphql::Guard::check(&self, ctx) -> Result<()>`
+returns unit: it is a pre-condition on a field, with no per-instance identity
+and no slice, so it cannot decide one row differently from another and has
+nothing to batch. gqlgen and Apollo answer the same question with field
+directives, which are the same shape. Per-list batching already expresses more
+than any of them, and the N+1 that remains is the price of a capability the
+peers do not offer at all, not a shortfall against them.
+
+Second, precedent. No reference implementation writes breadth-first.
+graphql-js completes values depth-first and answers N+1 with DataLoader at the
+resolver layer, which is exactly what `loader/` is and what `WaveCoordinator`
+exists to drive. Changing the executor's traversal order to serve one feature
+would be this engine alone among them.
+
+Third, cost. Breadth-first writing means buffering a level's values before
+descending, which is the response-shaped intermediate tree this engine exists
+to avoid -- the write path streams into a pooled buffer and rewinds, and null
+bubbling is implemented as a rewind for that reason.
+
+What is offered instead: `WithObjectAuthBatch` matches OpenFGA's BatchCheck
+default, a list is one call, and an ObjectAuthorizer that wants to coalesce
+further can hold request-scoped state through `OperationContext.GetOrSet` --
+which works from a non-list position now that `Park` falls back when the wave
+is spent. `TestNestedSingleObjectIsOneCallEach` pins the current behaviour so
+it cannot regress silently.

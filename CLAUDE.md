@@ -666,7 +666,11 @@ a guarded type and declaring nothing else called a configured `Authorizer` once 
 for a decision that could change nothing. **Batching is per list, not per wave**: the list is
 drained, decided in one `AuthorizeObjects` call (split by `WithObjectAuthBatch`, 50 by
 default), and only then written, while a guarded object behind a non-list field is one call of
-one check — an N+1 the godoc now states rather than promises away. A batch that fails at all
+one check — an N+1 the godoc now states rather than promises away, and P10 in the design
+spec records why it is not fixed by writing breadth-first: `async_graphql::Guard::check`
+returns `Result<()>` with no per-instance identity to batch, so per-list batching already
+expresses more than the peers can, and no reference implementation reorders traversal for
+this. A batch that fails at all
 fails every outstanding check, so a policy backend that is down cannot be why a row becomes
 visible. Two things that only a deliberate break finds: **`Drop` must be removed before
 `pushWave`** (announcing a task that never begins strands every parked `Load` and the request
