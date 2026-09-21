@@ -555,7 +555,11 @@ func ScopeAuthorizer(held func(context.Context) map[string]bool) Authorizer {
 		// shape.sites directly, not shape.Sites(): this is in-package,
 		// read-only iteration, so it has no reason to pay for the defensive
 		// copy Sites() makes for caller-supplied code.
-		for i, site := range shape.sites {
+		// By index rather than by value: an AuthSite is 136 bytes and this is
+		// the built-in Authorizer, run for every request of every operation
+		// that declares anything.
+		for i := range shape.sites {
+			site := &shape.sites[i]
 			if site.Requires.Satisfied(have) {
 				continue
 			}

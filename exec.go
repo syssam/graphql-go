@@ -525,7 +525,10 @@ func (e *Executor) runAuthorizer(ctx context.Context, p *plan, vars map[string]a
 	// and allocates nothing.
 	if p.shape.hasArgSites {
 		src := &decisionSource{shape: p.shape, inputs: make([][]InputKey, len(p.shape.sites))}
-		for i, s := range p.shape.sites {
+		// By index: an AuthSite is 136 bytes and this runs per request, so
+		// ranging by value memmoves the whole table every time.
+		for i := range p.shape.sites {
+			s := &p.shape.sites[i]
 			if s.argValue != nil {
 				src.inputs[i] = inputKeys(e.schema.ast.Types, s.argType, s.argValue, vars)
 			}

@@ -110,6 +110,12 @@ func WithSubscriptionInterceptor(is ...SubscriptionInterceptor) ExecutorOption {
 	return func(e *Executor) { e.subInterceptors = append(e.subInterceptors, is...) }
 }
 
+// The WithRequestInterceptor, WithOperationInterceptor, WithFieldInterceptor
+// and WithSubscriptionInterceptor options are variadic and already chain what
+// they are given, which is how an application registers several. The four
+// Chain functions are for the other case: a package that exports one composed
+// interceptor value rather than a list of options.
+
 // ChainRequestInterceptors composes interceptors so that the first is
 // outermost. A nil or empty list is a no-op interceptor.
 func ChainRequestInterceptors(is ...RequestInterceptor) RequestInterceptor {
@@ -215,4 +221,48 @@ func (e *Executor) interceptedExec(pf *planField) fieldExec {
 		}
 	}
 	return fieldExec{resolve: chain}
+}
+
+// ChainFieldInterceptors composes interceptors so that the first is outermost.
+// A nil or empty list is a no-op interceptor.
+func ChainFieldInterceptors(is ...FieldInterceptor) FieldInterceptor {
+	switch len(is) {
+	case 0:
+		return FieldInterceptorFunc(func(ctx context.Context, _ *FieldContext, next FieldHandler) (any, error) {
+			return next(ctx)
+		})
+	case 1:
+		return is[0]
+	}
+	return FieldInterceptorFunc(func(ctx context.Context, fc *FieldContext, next FieldHandler) (any, error) {
+		h := next
+		for i := len(is) - 1; i >= 0; i-- {
+			inner, fi := h, is[i]
+			h = func(ctx context.Context) (any, error) { return fi.InterceptField(ctx, fc, inner) }
+		}
+		return h(ctx)
+	})
+}
+
+// ChainSubscriptionInterceptors composes interceptors so that the first is
+// outermost. A nil or empty list is a no-op interceptor.
+func ChainSubscriptionInterceptors(is ...SubscriptionInterceptor) SubscriptionInterceptor {
+	switch len(is) {
+	case 0:
+		return SubscriptionInterceptorFunc(func(ctx context.Context, oc *OperationContext, next SubscriptionHandler) (<-chan *Response, error) {
+			return next(ctx, oc)
+		})
+	case 1:
+		return is[0]
+	}
+	return SubscriptionInterceptorFunc(func(ctx context.Context, oc *OperationContext, next SubscriptionHandler) (<-chan *Response, error) {
+		h := next
+		for i := len(is) - 1; i >= 0; i-- {
+			inner, si := h, is[i]
+			h = func(ctx context.Context, oc *OperationContext) (<-chan *Response, error) {
+				return si.InterceptSubscription(ctx, oc, inner)
+			}
+		}
+		return h(ctx, oc)
+	})
 }

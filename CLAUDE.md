@@ -460,6 +460,21 @@ together say whether `DefaultListSize` is near reality. Weights are resolved ont
 `planField.costWeight` at plan compile, so the write path adds an integer rather than
 looking up a coordinate, and the weight is zero unless the feature is on.
 
+**`AuthSite` is 136 bytes where 120 would fit the next size class down, and that was
+measured and left alone.** `fieldalignment` reports the 11% waste; the three small fields
+(`Kind`, `leaf`, `valueNonNull`) sit apart because the struct is grouped by meaning and
+godoc shows exported fields in declaration order. Before reordering it, note what the
+measurement said about the larger version of the same cost: `ScopeAuthorizer` and the
+argument-input walk used to range over `shape.sites` *by value*, copying all 136 bytes per
+site per request, and converting both to indexing (which is the right idiom and is what
+`gocritic`'s `rangeValCopy` asks for) moved nothing — interleaved n=12 over
+`BenchmarkAuthorizerWide16/64/256`, p=0.434, p=0.164 and p=0.630, allocations equal sample
+for sample. If copying the whole struct per site is invisible at 256 sites, 16 bytes of
+padding inside it is not the thing to spend a layout change on. Those benchmarks exist
+because `BenchmarkExecuteWithAuthorizer` has two sites, which is too few to show any
+per-site cost at all; `TestWideAuthzSchemaHasASitePerField` keeps them honest by pinning
+that the fixture really does produce one site per field.
+
 **Adding a field to `execState` or `OperationContext` is a hot-path change.** Both are
 allocated per request and both sit exactly on a size-class boundary. An `atomic.Int64`
 counter on `execState` measured +3.2% B/op with the feature disabled; as an `atomic.Int32`
