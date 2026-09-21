@@ -289,6 +289,37 @@ func requirementOf(ds ast.DirectiveList) (req Requirement, ok bool, capped bool)
 	return req, true, false
 }
 
+// validateRequirementDirectives rejects a declaration that would read as "no
+// requirement" on every site while the schema builds clean: an undeclared
+// shape, a name the SDL never declares, an argument the directive does not
+// have, or the same name twice. It runs before the other validators so none of
+// them walks a malformed declaration.
+func (b *schemaBuilder) validateRequirementDirectives() {
+	seen := make(map[string]bool, len(b.reqDirectives))
+	for _, rd := range b.reqDirectives {
+		if seen[rd.name] {
+			b.errorf("requirement directive @%s is already declared", rd.name)
+			continue
+		}
+		seen[rd.name] = true
+		if rd.shape < ScopesNested || rd.shape > ScopesAnyOf {
+			b.errorf("requirement directive @%s: shape must be declared as ScopesNested, ScopesAllOf or ScopesAnyOf", rd.name)
+			continue
+		}
+		if rd.builtin {
+			continue
+		}
+		def, ok := b.ast.Directives[rd.name]
+		if !ok {
+			b.errorf("requirement directive: no directive @%s is declared in the SDL", rd.name)
+			continue
+		}
+		if def.Arguments.ForName(rd.arg) == nil {
+			b.errorf("requirement directive @%s has no argument %q", rd.name, rd.arg)
+		}
+	}
+}
+
 // validateAuthDirectives rejects a malformed or misplaced @requiresScopes at
 // schema build, joined into NewSchema's errors like every other Go-vs-SDL
 // shape mismatch. gqlparser checks the directive's name, location and

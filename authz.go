@@ -18,6 +18,49 @@ type Requirement struct {
 	anyOf [][]string
 }
 
+// ScopeShape says how a requirement directive's argument composes into a
+// Requirement. There is no valid zero value: reading a flat [String!] as AND
+// when the author meant OR silently widens access, and the SDL cannot tell the
+// two apart -- @auth(requires: ["a","b"]) is the same text either way.
+type ScopeShape uint8
+
+const (
+	// ScopesNested reads [[String!]!] as an OR of ANDs, which is Apollo's
+	// @requiresScopes.
+	ScopesNested ScopeShape = iota + 1
+	// ScopesAllOf reads [String!] as one AND group: every scope is required.
+	ScopesAllOf
+	// ScopesAnyOf reads [String!] as one group per scope: any one suffices.
+	ScopesAnyOf
+)
+
+// reqDirective is one declared spelling. The engine holds the name so it can
+// reject a misplacement and name the offender in an error; a caller-supplied
+// function could not be rejected that way, which is why this is a value and
+// not a hook.
+type reqDirective struct {
+	name  string
+	arg   string
+	shape ScopeShape
+
+	// builtin marks the engine's own @requiresScopes entry. A caller naming a
+	// directive the SDL never declares has made a typo, and the option would
+	// silently do nothing; the default is not a typo, and most schemas never
+	// declare @requiresScopes because they never use it.
+	builtin bool
+}
+
+// RequirementDirective declares an additional SDL directive read into a
+// Requirement, so a schema that spells its requirements @auth(requires:) is
+// enforced without renaming every site. @requiresScopes stays active, so one
+// schema can carry a legacy spelling for existing coordinates and the Apollo
+// one for new work; a coordinate carrying both must satisfy both.
+func RequirementDirective(name, arg string, shape ScopeShape) SchemaOption {
+	return schemaOptionFunc(func(b *schemaBuilder) {
+		b.reqDirectives = append(b.reqDirectives, reqDirective{name: name, arg: arg, shape: shape})
+	})
+}
+
 // NewRequirement builds a Requirement from its groups.
 // Each group is cloned to prevent external mutations from changing the requirement
 // after construction, which is important for Requirement's use on the concurrent
