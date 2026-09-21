@@ -2,7 +2,7 @@ package codegen
 
 import (
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -51,7 +51,7 @@ func (b *builder) uniqueGroups() []string {
 	for g := range seen {
 		out = append(out, g)
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }
 

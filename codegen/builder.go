@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -45,7 +45,7 @@ func newBuilder(dir string, cfg Config) (*builder, error) {
 		if len(matches) == 0 {
 			return nil, fmt.Errorf("codegen: glob %q matched no files", glob)
 		}
-		sort.Strings(matches)
+		slices.Sort(matches)
 		for _, path := range matches {
 			raw, err := os.ReadFile(path)
 			if err != nil {
@@ -108,7 +108,7 @@ func (b *builder) typeNames(kind ast.DefinitionKind) []string {
 			names = append(names, name)
 		}
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return names
 }
 

@@ -2,7 +2,7 @@ package codegen
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/vektah/gqlparser/v2/ast"
@@ -204,7 +204,7 @@ func newManifest(src *Manifest, schema *ast.Schema, models map[string]string) (*
 		m.fields[tb.Name] = fields
 	}
 	if len(errs) > 0 {
-		sort.Strings(errs)
+		slices.Sort(errs)
 		return nil, nil, fmt.Errorf("%s", strings.Join(errs, "\n"))
 	}
 	return m, merged, nil
@@ -215,6 +215,6 @@ func sortedKeys[V any](m map[string]V) []string {
 	for k := range m {
 		out = append(out, k)
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"go/types"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/vektah/gqlparser/v2/ast"
@@ -38,7 +38,7 @@ func autoBind(dir string, patterns []string, schema *ast.Schema, want func(*ast.
 		}
 	}
 	if len(loadErrs) > 0 {
-		sort.Strings(loadErrs)
+		slices.Sort(loadErrs)
 		return nil, fmt.Errorf("auto-bind: %s", strings.Join(loadErrs, "\n"))
 	}
 
@@ -99,7 +99,7 @@ func objectNames(schema *ast.Schema) []string {
 		}
 		out = append(out, name)
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }
 

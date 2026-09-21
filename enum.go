@@ -2,7 +2,7 @@ package graphql
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/vektah/gqlparser/v2/ast"
@@ -39,7 +39,7 @@ func Enum[T comparable](name string, values map[T]string) SchemaOption {
 			}
 		}
 		if len(missing) > 0 {
-			sort.Strings(missing)
+			slices.Sort(missing)
 			b.errorf("Enum %q: values %s have no Go mapping", name, strings.Join(missing, ", "))
 			return
 		}

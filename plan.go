@@ -5,7 +5,6 @@ import (
 	"context"
 	"hash/maphash"
 	"slices"
-	"sort"
 	"strconv"
 	"sync"
 
@@ -247,7 +246,7 @@ func (c *compiler) compileSelection(obj *objectType, abs *abstractType, sels ast
 	for name := range abs.possible {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	out.byType = make(map[string]*selectionSet, len(names))
 	for _, name := range names {
 		concrete := c.compileSelection(abs.possible[name], nil, sels)

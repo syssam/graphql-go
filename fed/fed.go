@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/vektah/gqlparser/v2/ast"
@@ -72,7 +72,7 @@ func Subgraph(sdl string, entities ...Entity) (graphql.Source, graphql.SchemaOpt
 		}
 	}
 	if len(missing) > 0 {
-		sort.Strings(missing)
+		slices.Sort(missing)
 		return graphql.Source{}, nil, fmt.Errorf("fed: @key types with no resolver: %s", strings.Join(missing, ", "))
 	}
 
@@ -80,7 +80,7 @@ func Subgraph(sdl string, entities ...Entity) (graphql.Source, graphql.SchemaOpt
 	for name := range keyed {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 
 	src := graphql.Sources(graphql.SDL(prelude(names)), graphql.SDL(sdl))
 	return src, bindings(sdl, names, byName), nil
