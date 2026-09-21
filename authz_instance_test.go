@@ -317,7 +317,7 @@ func planFor(t *testing.T, e *Executor, query string) *plan {
 	return p
 }
 
-// instanceSiteOf finds the one instance site for a type in a shape, the way a
+// instanceSiteIn finds the one instance site for a type in a shape, the way a
 // caller reading AuthShape.Sites() would. The executor does not index it: it
 // routes on planField.hasInstanceSite, so there is no derived index to assert.
 func instanceSiteIn(t *testing.T, p *plan, coord string) AuthSite {
