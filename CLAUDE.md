@@ -48,6 +48,15 @@ like if the thing under test were broken:
   go test -short -coverpkg=./internal/httpreq/... ./internal/httpreq/... ./transport/...
   ```
 
+  `internal/gqlwsproto` is the same story with its own tests present: 77.0% alone, **91.2%**
+  measured with the transports that drive it, and `finishWithErrors` reads as 0% there while
+  being fully exercised by them. A protocol state machine that looks two-thirds tested is
+  the wrong signal to act on.
+
+  ```sh
+  go test -short -coverpkg=./internal/gqlwsproto/...     ./internal/gqlwsproto/... ./transport/gqlws/... ./transport/gqlfiber/... ./transport/gqlecho/...
+  ```
+
   `-short` distorts in the other direction: it puts `codegen` at 70.4% when the full run,
   which compiles the generated output, measures 90.1%.
 
