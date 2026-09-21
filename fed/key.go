@@ -1,6 +1,7 @@
 package fed
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/vektah/gqlparser/v2/ast"
@@ -62,7 +63,7 @@ func parseFieldSet(fields string) (ast.SelectionSet, error) {
 		return nil, err
 	}
 	if len(doc.Operations) != 1 {
-		return nil, fmt.Errorf("not a field set")
+		return nil, errors.New("not a field set")
 	}
 	return doc.Operations[0].SelectionSet, nil
 }

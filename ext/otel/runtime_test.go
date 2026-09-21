@@ -29,8 +29,7 @@ func collectInts(t *testing.T, reader *sdkmetric.ManualReader) map[string]int64 
 			continue
 		}
 		for _, m := range sm.Metrics {
-			switch data := m.Data.(type) {
-			case metricdata.Sum[int64]:
+			if data, ok := m.Data.(metricdata.Sum[int64]); ok {
 				for _, dp := range data.DataPoints {
 					out[m.Name] += dp.Value
 				}

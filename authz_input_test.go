@@ -46,7 +46,7 @@ type Mutation { update(patch: Patch!): String }
 func supplied(t *testing.T, query, field, arg string) (map[string]*ast.Definition, *ast.Type, *ast.Value) {
 	t.Helper()
 	schema := gqlparser.MustLoadSchema(&ast.Source{Input: authzInputSDL})
-	doc, errs := gqlparser.LoadQuery(schema, query)
+	doc, errs := gqlparser.LoadQueryWithRules(schema, query, nil)
 	if errs != nil {
 		t.Fatalf("query: %v", errs)
 	}

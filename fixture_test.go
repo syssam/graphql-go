@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"iter"
 	"strconv"
 	"sync/atomic"
@@ -140,8 +139,6 @@ func newFixture() *fixture {
 	}
 	return f
 }
-
-func (f *fixture) user(id string) *fUser { return f.users[id] }
 
 func (f *fixture) options() []SchemaOption {
 	return []SchemaOption{
@@ -363,5 +360,3 @@ func expectError(t *testing.T, resp *Response, wantData string, wantPath string,
 		t.Fatalf("error has no location: %s", errorsJSON(resp.Errors))
 	}
 }
-
-func fmtInts(v []int) string { return fmt.Sprint(v) }

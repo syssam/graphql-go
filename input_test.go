@@ -364,6 +364,9 @@ func TestAutoFieldCount(t *testing.T) {
 	type wrapped struct {
 		embed
 		Name string
+		// Unexported on purpose: autoInputFields must not report it, which
+		// is what the count below asserts. Never read, by design.
+		//lint:ignore U1000 the point of this field is that nothing uses it
 		skip string
 	}
 	fields := autoInputFields(reflect.TypeFor[wrapped]())

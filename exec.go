@@ -220,6 +220,11 @@ func (e *Executor) timeoutFieldError(err error) *Error {
 // timedOut reports whether ctx ended because of this executor's timeout
 // rather than anything the caller did.
 func (e *Executor) timedOut(ctx context.Context) bool {
+	// Identity, not errors.Is: the question is whether this executor's own
+	// cause value ended the context. errors.Is would also match a resolver
+	// that wrapped and returned that value, reporting OPERATION_TIMEOUT for a
+	// deadline the caller owns -- the split this function exists to make.
+	//nolint:errorlint // deliberate identity comparison; see above
 	return e.timeoutCause != nil && context.Cause(ctx) == e.timeoutCause
 }
 
