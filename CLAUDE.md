@@ -445,6 +445,20 @@ and ends without `complete` so the client reconnects. The protocol-level tests r
 `testing/synctest`, hours of fake time exact and instant; the transport tests use real 100 ms
 limits with deadlines, since sockets cannot run in a bubble.
 
+**`fakeSocket` cannot fail a write**, so for a long time nothing in `gqlwsproto` reached any
+write-failure branch; `failWriteSocket` (`writefail_test.go`) fails exactly one write and then
+behaves, which is what lets a test see what the connection does after losing a message rather
+than after losing all of them. The guard worth knowing about is `c.stop(id)` in `run`'s
+write-failure branch, and **it is not what releases the source** — subscribe launches the pump
+as `go func() { defer cancel(); c.run(...) }()`, so the source is freed however `run` returns.
+What only `stop` does is delete the entry from `c.subs`, and while that entry is there the
+connection believes an operation is in flight: it never goes idle, the id cannot be reused,
+and the slot stays counted against `MaxSubs`. Removing it leaves every other test in this
+package green and fails only `TestCancelledConnectContextCloses` in `transport/gqlws`, which
+is about a different guard entirely. `TestWriteFailureRetiresTheSubscription` holds it
+directly, using idle under `synctest` as the observable because polling for a `MaxSubs`
+refusal races the pump and reads whichever answer arrives first.
+
 `internal/gqlwsproto` is `graphql-transport-ws` extracted so `gqlws` and `gqlfiber`'s
 WebSocket layer both drive it. It locks around every write: `coder/websocket` serializes
 writers itself, but `fasthttp/websocket` (a gorilla derivative) does not, and concurrent
