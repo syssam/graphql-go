@@ -510,17 +510,27 @@ func condVariables(doc *ast.QueryDocument) []string {
 }
 
 // variantKey folds the values of the conditional variables into a bitmask.
-func variantKey(condVars []string, vars map[string]any) (uint16, map[string]bool) {
+func variantKey(condVars []string, vars map[string]any) uint16 {
 	var key uint16
-	values := make(map[string]bool, len(condVars))
 	for i, name := range condVars {
-		b, _ := vars[name].(bool)
-		values[name] = b
-		if b {
+		if b, _ := vars[name].(bool); b {
 			key |= 1 << i
 		}
 	}
-	return key, values
+	return key
+}
+
+// condValues materializes the conditional variables a compile needs. A plan
+// cache hit never calls it, so a request that reuses a plan builds no map.
+func condValues(condVars []string, vars map[string]any) map[string]bool {
+	if len(condVars) == 0 {
+		return nil
+	}
+	values := make(map[string]bool, len(condVars))
+	for _, name := range condVars {
+		values[name], _ = vars[name].(bool)
+	}
+	return values
 }
 
 // planUncacheable reports that this document has too many @skip/@include
@@ -533,21 +543,16 @@ func (d *docEntry) planUncacheable() bool { return len(d.condVars) > maxCondVars
 // requests for the same query will hit.
 func (d *docEntry) planFor(s *Schema, e *Executor, op *ast.OperationDefinition, vars map[string]any) (*plan, bool, []*Error) {
 	if d.planUncacheable() {
-		cond := make(map[string]bool, len(d.condVars))
-		for _, name := range d.condVars {
-			cond[name], _ = vars[name].(bool)
-		}
-		return d.compile(s, e, op, cond, planKey{}, false)
+		return d.compile(s, e, op, condValues(d.condVars, vars), planKey{}, false)
 	}
-	variant, cond := variantKey(d.condVars, vars)
-	key := planKey{op: op.Name, variant: variant}
+	key := planKey{op: op.Name, variant: variantKey(d.condVars, vars)}
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if p, ok := d.plans[key]; ok {
 		return p, true, nil
 	}
-	return d.compile(s, e, op, cond, key, true)
+	return d.compile(s, e, op, condValues(d.condVars, vars), key, true)
 }
 
 // compile runs the pre-compile guard and then compiles. store is false for the

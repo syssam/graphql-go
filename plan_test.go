@@ -93,7 +93,7 @@ func TestPlanConditions(t *testing.T) {
 	if got := fieldNames(p.sel.fields[0].sub.fields); got != "tags" {
 		t.Fatalf("fields = %s", got)
 	}
-	key, _ := variantKey([]string{"a", "b"}, map[string]any{"a": true, "b": true})
+	key := variantKey([]string{"a", "b"}, map[string]any{"a": true, "b": true})
 	if key != 3 {
 		t.Fatalf("variant key = %d", key)
 	}
@@ -242,5 +242,29 @@ func TestPlanAtCondVarCapIsCached(t *testing.T) {
 	}
 	if !seen[1].CacheHit {
 		t.Fatal("second identical request missed the plan cache")
+	}
+}
+
+// A cached plan needs no conditional-variable map: cond is read only while
+// compiling. Pinned by allocation count because nothing else can see it --
+// the plan the map would have been passed to already exists, so building it
+// and dropping it changes no answer, only the garbage a request leaves.
+func TestPlanCacheHitBuildsNoConditionMap(t *testing.T) {
+	_, e := newFixtureExecutor(t)
+	entry, errs := e.document(`query($a: Boolean!) { me { id @include(if: $a) } }`)
+	if errs != nil {
+		t.Fatal(errs[0])
+	}
+	op, vars := entry.doc.Operations[0], map[string]any{"a": true}
+	if _, _, errs := entry.planFor(e.schema, e, op, vars); errs != nil {
+		t.Fatal(errs[0])
+	}
+	allocs := testing.AllocsPerRun(100, func() {
+		if _, hit, _ := entry.planFor(e.schema, e, op, vars); !hit {
+			t.Fatal("plan cache missed a repeated lookup")
+		}
+	})
+	if allocs != 0 {
+		t.Errorf("plan cache hit allocated %v times, want 0", allocs)
 	}
 }

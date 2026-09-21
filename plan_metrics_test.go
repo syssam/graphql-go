@@ -65,7 +65,7 @@ func TestOperationMetricsMatchesPlan(t *testing.T) {
 			}
 			// variantKey is the same decode planFor uses internally, so cond
 			// here matches the variant p was actually compiled for.
-			_, cond := variantKey(entry.condVars, tc.vars)
+			cond := condValues(entry.condVars, tc.vars)
 			want := planMetricsOracle(p)
 			got := operationMetrics(s, entry.doc, op, cond)
 			if got.complexity != want.complexity {
