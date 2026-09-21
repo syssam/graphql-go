@@ -235,6 +235,9 @@ n=14, sec/op unchanged on every one of them; allocation counts are the figure):
   asked; **errors do not test that**, since `addFieldError` materializes there and then, so a
   slab refilling one chunk in place passed the first version of the test and the whole suite
   with it. `TestListElementPathNodesSurviveTheLoop` reads the `FieldContext` afterwards.
+  The trade is disclosed rather than hidden: a three-element list now takes a four-node chunk,
+  so `BenchmarkExecuteTypenameHeavy` pays **+4.45% B/op** (2.633Ki → 2.750Ki, +40 bytes a
+  list) for -3 allocs/op. B/op is down on every other benchmark and -2.75% geomean.
 
 **The response byte limit (`WithMaxResponseBytes`, 64 MiB by default) is counted on the
 writer, not on `execState`.** `execState` has no padding left, and concurrent fields and list
