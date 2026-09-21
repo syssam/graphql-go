@@ -1,0 +1,152 @@
+# The storefront back office: staff, support agents and customers read the
+# same graph and are allowed to see different parts of it.
+#
+# The five directives below are how that is written down. Only @requiresScopes
+# is built in; the other four are declared here and wired in storefront.go,
+# because the engine reads the spelling a schema chooses rather than imposing
+# one. Nothing here names a role: the SDL says what a position requires, and
+# who holds what is the Authorizer's business.
+
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+
+"""Presence alone is a requirement, Apollo's shape. Wired by MarkerDirective."""
+directive @authenticated on FIELD_DEFINITION | OBJECT
+
+"""Deliberately reachable by anyone. RequireAuthCoverage refuses a field that says neither this nor a requirement."""
+directive @public on FIELD_DEFINITION | OBJECT
+
+"""Marks an argument whose contents the Authorizer inspects before the field runs."""
+directive @authorizeInput(kind: AuthorizeInputKind!) on ARGUMENT_DEFINITION
+
+"""Marks a type whose individual values are authorized one by one, during execution."""
+directive @authorizeObject on OBJECT
+
+enum AuthorizeInputKind {
+  FILTER
+  WRITE
+}
+
+"""An amount in minor units, serialized as a decimal string: 1234 is "12.34"."""
+scalar Money
+
+"""An RFC 3339 timestamp."""
+scalar Time
+
+enum OrderStatus {
+  PENDING
+  PAID
+  SHIPPED
+  REFUNDED
+}
+
+"""
+A customer.
+
+@authorizeObject: which customers a principal may see is a property of the
+values, not of the query, so it is decided during execution.
+"""
+type Customer @authorizeObject @authenticated {
+  id: ID!
+  name: String!
+
+  """Personal data. Masked rather than refused for a caller without the scope, so a support agent can still tell two customers apart."""
+  email: String! @requiresScopes(scopes: [["customer:pii"]])
+
+  orders: [Order!]!
+}
+
+"""
+An order.
+
+The type-level @authenticated is ANDed into every field below it, so the
+fields do not repeat it and RequireAuthCoverage is satisfied for all of them.
+"""
+type Order @authorizeObject @authenticated {
+  id: ID!
+  reference: String!
+  status: OrderStatus!
+  placedAt: Time!
+  total: Money!
+
+  """What the order earned. Refused outright rather than zeroed: a zero margin is a number, and a wrong number is worse than a refusal."""
+  margin: Money! @requiresScopes(scopes: [["finance:read"]])
+
+  customer: Customer!
+  lines: [OrderLine!]!
+}
+
+type OrderLine @authenticated {
+  sku: String!
+  description: String!
+  quantity: Int!
+  unitPrice: Money!
+}
+
+input OrderWhere {
+  status: OrderStatus
+
+  """
+  Filtering by margin reads margin. A caller who cannot select the field can
+  still learn it a comparison at a time, which is why the argument is a site
+  of its own and not covered by the requirement on Order.margin.
+  """
+  minMargin: Money
+}
+
+type Query {
+  """Liveness. The one position in this schema that requires nothing."""
+  health: String! @public
+
+  orders(
+    where: OrderWhere @authorizeInput(kind: FILTER)
+    first: Int! = 20
+  ): [Order!]! @authenticated
+
+  order(id: ID!): Order @authenticated
+  customer(id: ID!): Customer @authenticated
+}
+
+input OrderLineInput {
+  sku: String!
+  description: String!
+  quantity: Int!
+  unitPrice: Money!
+}
+
+input PlaceOrderInput {
+  """
+  Omit it to order for yourself. Supplying it is ordering on someone else's
+  behalf, which is a staff action -- and the rule is written as "was this key
+  supplied", not "whose id is it", because Decision.Input reports key paths
+  and never scalar values. A schema whose policy needs the value has been
+  shaped wrong.
+  """
+  customerId: ID
+
+  lines: [OrderLineInput!]!
+}
+
+type Mutation {
+  placeOrder(input: PlaceOrderInput! @authorizeInput(kind: WRITE)): Order!
+    @authenticated
+
+  refundOrder(id: ID!, reason: String!): Order!
+    @requiresScopes(scopes: [["order:write"]])
+}
+
+type Subscription {
+  """
+  Emits every order as it is placed, instance-guarded like any other Order:
+  the policy runs again for every event, so a scope revoked mid-stream applies
+  to the next one.
+
+  The limit worth knowing, and measured rather than assumed: the row check
+  hides the payload, not the event. A subscriber who may not see an order
+  still receives an event carrying the refusal, so the timing of other
+  people's orders leaks even though their contents do not. Withholding the
+  event itself is the source's job -- filter in the resolver that opens the
+  stream -- and this example deliberately does not, so that what the engine
+  does and does not do here is visible.
+  """
+  orderPlaced: Order! @authenticated
+}

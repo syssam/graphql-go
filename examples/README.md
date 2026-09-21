@@ -4,8 +4,13 @@
 |---|---|
 | [`quickstart`](quickstart) | The smallest thing that runs: one SDL file, hand-written bindings, no codegen, no layers. |
 | [`blog`](blog) | A layered service: generated bindings, a domain isolated from the wire format, a DataLoader, subscriptions. |
+| [`storefront`](storefront) | Authorization: scopes, an argument site, per-row instance checks, and the server wiring a deployment needs. |
 | [`echo`](echo) | Serving `blog` through Echo v5 — routing and shutdown wiring only. |
 | [`fiber`](fiber) | Serving `blog` through Fiber v3 — routing and shutdown wiring only. |
+
+`storefront` is the one to read for anything about authorization, limits or
+shutdown; `blog` is the one to read for layering and codegen. They do not
+overlap on purpose.
 
 `echo` and `fiber` build the same schema `blog/cmd/server` does. One schema
 over three frameworks is the point: nothing in `blog` knows which transport is
@@ -54,9 +59,68 @@ copy `gqlc` writes for the `//go:embed`; editing it is undone by the next
 
     cd examples/blog && go generate
 
+## Authorization in `storefront`
+
+`blog` shows how to build a schema. `storefront` shows what has to be true
+before one is deployed: every position declares who may reach it, and
+`RequireAuthCoverage` fails the build for a field that declares nothing.
+
+| Mechanism | Where | What it is for |
+|---|---|---|
+| `@requiresScopes` | `Customer.email`, `Order.margin`, `Mutation.refundOrder` | A scope on one position. |
+| `MarkerDirective` | `@authenticated` on `Order`, `Customer`, the roots | A no-argument directive whose presence is the requirement. Type-level, so it is ANDed into every field below. |
+| `@authorizeInput(kind: FILTER)` | `Query.orders(where:)` | Filtering by `minMargin` reads margin, so it needs the same scope as selecting it. |
+| `@authorizeInput(kind: WRITE)` | `Mutation.placeOrder(input:)` | Naming someone else's `customerId` is a staff action. |
+| `@authorizeObject` | `Order`, `Customer` | Which rows a principal may see, decided per value during execution and batched per list. |
+| `RequireAuthCoverage` | `NewSchema` | A field with neither a requirement nor `@public` fails the build. |
+
+Four principals read the same graph and see different parts of it. Run the
+server and try them:
+
+    go run ./examples/storefront/cmd/server
+
+    # The header stands in for a verified token. Anything unrecognised is
+    # anonymous, because a credential the server cannot read is not one.
+    GQL='curl -s localhost:8080/graphql -H content-type:application/json'
+
+    # anonymous: Query.health and nothing else
+    $GQL -d '{"query":"{ health }"}'
+    $GQL -d '{"query":"{ orders { reference } }"}'
+
+    # staff: everything
+    $GQL -H authorization:staff -d '{"query":"{ orders { reference margin customer { name email } } }"}'
+
+    # support: every order, masked addresses, margin refused
+    $GQL -H authorization:support -d '{"query":"{ orders { reference customer { email } } }"}'
+    $GQL -H authorization:support -d '{"query":"{ orders { margin } }"}'
+
+    # a customer: their own two orders, and no sign that a third exists
+    $GQL -H authorization:customer:c1 -d '{"query":"{ orders { reference } }"}'
+
+The four withholding outcomes are each used where they are right, which is a
+product decision and not a mechanical one:
+
+- **Allow** — the row is yours.
+- **Redact** — `Customer.email` is masked for a support agent, because an
+  agent has to tell two customers apart. The field still resolves; Redact
+  rewrites a result rather than preventing one, so it is wrong for anything
+  whose computation is itself the secret.
+- **Deny** — `Order.margin` is refused outright. A zeroed margin is a number,
+  and a wrong number is worse than a refusal. The field is non-null, so
+  refusing it bubbles the order away; that is the visible cost of the choice.
+- **Drop** — a customer's listing omits rows that are not theirs, so it does
+  not report how many exist. Valid only at a list element position, which
+  `AuthSite.ListElement` is what tells the policy.
+
+One limit the example states rather than hides: on a subscription the row
+check withholds the payload, not the event. A subscriber who may not see an
+order still receives an event carrying the refusal, so timing leaks even
+though contents do not. Withholding the event itself is the source's job.
+
 ## Running
 
-    go run ./examples/quickstart          # :8080 /graphql, /graphql/stream
-    go run ./examples/blog/cmd/server     # :8080 + /graphql/ws
-    go run ./examples/echo                # same schema, Echo v5
-    go run ./examples/fiber               # same schema, Fiber v3
+    go run ./examples/quickstart            # :8080 /graphql, /graphql/stream
+    go run ./examples/blog/cmd/server       # :8080 + /graphql/ws
+    go run ./examples/storefront/cmd/server # :8080, all three, with limits and a drain
+    go run ./examples/echo                  # same schema, Echo v5
+    go run ./examples/fiber                 # same schema, Fiber v3
