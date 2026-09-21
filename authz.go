@@ -238,6 +238,14 @@ type AuthSite struct {
 	// the client supplied there.
 	Arg string
 
+	// ListElement reports that the value at this position is an element of a
+	// list. It exists for SiteInstance, whose Field is nil: an
+	// ObjectAuthorizer has to choose between Drop and Deny for a row it
+	// withholds, Drop is valid only at a list element position, and without
+	// this the only way to tell was to know the schema by heart. Every other
+	// kind can read the same fact from Field.Type.
+	ListElement bool
+
 	// leaf records whether Field is a scalar or enum, precomputed at shape
 	// build from fieldDef.leaf (object.go). AuthSite carries only the AST,
 	// and a field's own ast.FieldDefinition cannot answer this on its own:

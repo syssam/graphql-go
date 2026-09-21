@@ -719,3 +719,37 @@ func TestSubscriptionEventInstanceDropAppliesPerEvent(t *testing.T) {
 		}
 	}
 }
+
+// An ObjectAuthorizer has to choose between Drop and Deny for a row it
+// withholds, and Drop is valid only at a list element position -- returning it
+// anywhere else is a hard error in the response. An instance site leaves Field
+// nil, so ListElement is the only thing that tells a policy which position it
+// is being asked about; without it the choice had to come from knowing the
+// schema by heart, which a policy written against a growing schema does not.
+//
+// One policy, two positions, no knowledge of the query: the same closure has
+// to drop from the list and refuse at the single field.
+func TestInstanceSiteReportsWhetherItIsAListElement(t *testing.T) {
+	byPosition := objectAuthorizerFunc(func(_ context.Context, checks []ObjectCheck) ([]Outcome, error) {
+		outs := make([]Outcome, len(checks))
+		for i, c := range checks {
+			if c.Site.ListElement {
+				outs[i] = Drop()
+				continue
+			}
+			outs[i] = Deny("customer:read", c.Type)
+		}
+		return outs, nil
+	})
+	e := newInstanceExecutorWith(t, byPosition)
+
+	resp := run(t, e, `{ customers { id } }`, "")
+	assertJSON(t, resp.Data, `{"customers":[]}`)
+	if len(resp.Errors) != 0 {
+		t.Fatalf("errors = %v, want none: dropped rows leave no trace", resp.Errors)
+	}
+
+	resp = run(t, e, `{ maybe { id } }`, "")
+	assertJSON(t, resp.Data, `{"maybe":null}`)
+	assertErrorContains(t, resp.Errors, "denied")
+}

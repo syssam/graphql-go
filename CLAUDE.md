@@ -820,7 +820,16 @@ hangs to its deadline — `TestInstanceDropDoesNotStrandTheWave`, in `loader/`),
 denied non-null list keeps resolving elements into a buffer that is about to be rewound and
 appends one error per element, every one of them carrying the first element's index. `Null` is
 rejected at a non-null position by `valueNonNull` on the site, since an instance site has no
-`Field` for the ordinary guard to read. `writeListConcurrent` and `writeListConcurrentPlain`
+`Field` for the ordinary guard to read. **`AuthSite.ListElement` exists for the same reason**:
+an `ObjectAuthorizer` has to choose between `Drop` and `Deny` for a row it withholds, `Drop` is
+valid only at a list element position, and with `Field` nil there was nothing to read it from —
+so a policy could only choose by knowing the schema by heart, which a policy written against a
+growing schema does not. Every existing test hardcoded `Drop()` for a query it knew, so nothing
+noticed; `examples/storefront` is what found it, which is the argument for an example that has
+to work rather than one that reads well. The site is built by `instanceSiteOf` (`exec_object.go`)
+for both the shape builder and the executor, because when they were two copies `ListElement`
+was added to one and every policy still saw `false`. The bool fits the padding
+`AuthSite` already had: still 136 bytes. `writeListConcurrent` and `writeListConcurrentPlain`
 are a deliberate near-copy: merging them measured +20% time and +76% B/op on
 `BenchmarkExecuteConcurrentList`, and `TestConcurrentListPathsAgree` pins what they write —
 but not every branch, and the comment on them says which.

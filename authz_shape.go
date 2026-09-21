@@ -179,11 +179,7 @@ func (b *shapeBuilder) field(obj *objectType, f *planField) {
 	// authIdx -- writeList and writeComposite route on hasInstanceSite alone
 	// -- so a site here would only enlarge every request's Decision.
 	if f.def != nil && b.instanceGuardedAt(f) {
-		b.sites = append(b.sites, AuthSite{
-			Coord:        f.def.def.Type.Name(),
-			Kind:         SiteInstance,
-			valueNonNull: positionNonNull(f.def.def.Type),
-		})
+		b.sites = append(b.sites, instanceSiteOf(f))
 		f.argSites |= instanceSiteBit
 	}
 

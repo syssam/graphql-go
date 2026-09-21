@@ -328,11 +328,18 @@ func (st *execState) elementObject(f *planField, shape *valueShape, v any) (obj 
 	return st.e.schema.concreteValue(f.abstract, v)
 }
 
+// instanceSiteOf builds the site describing one instance-guarded position.
+// The shape builder records the same value at plan compile and the executor
+// rebuilds it here, so this is the one place that knows what such a site
+// carries: when it was two copies, ListElement was added to one of them and
+// every policy still saw false.
 func instanceSiteOf(f *planField) AuthSite {
+	t := f.def.def.Type
 	return AuthSite{
-		Coord:        f.def.def.Type.Name(),
+		Coord:        t.Name(),
 		Kind:         SiteInstance,
-		valueNonNull: positionNonNull(f.def.def.Type),
+		ListElement:  t.Elem != nil,
+		valueNonNull: positionNonNull(t),
 	}
 }
 
