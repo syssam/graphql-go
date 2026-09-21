@@ -185,8 +185,9 @@ func (b *shapeBuilder) field(obj *objectType, f *planField) {
 			})
 		}
 		b.sites = append(b.sites, AuthSite{
-			Coord: f.def.def.Type.Name(),
-			Kind:  SiteInstance,
+			Coord:        f.def.def.Type.Name(),
+			Kind:         SiteInstance,
+			valueNonNull: positionNonNull(f.def.def.Type),
 		})
 		f.argSites |= instanceSiteBit
 		b.hasInstanceSites = true

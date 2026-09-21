@@ -180,6 +180,24 @@ type AuthSite struct {
 	// against the request's variables.
 	argType  *ast.Type
 	argValue *ast.Value
+
+	// valueNonNull records whether the position a SiteInstance value occupies
+	// is non-null. Every other kind reads that from Field, which an instance
+	// site deliberately leaves nil, so without it validFor cannot tell
+	// Customer from Customer! and Null would pass at a position the schema
+	// forbids it.
+	valueNonNull bool
+}
+
+// positionNonNull reports whether the position an object value occupies --
+// the field's declared type with every list wrapper stripped -- is non-null.
+// An instance site is about the value, so [Customer!]! and Customer! are the
+// same answer and [Customer]! is the other one.
+func positionNonNull(t *ast.Type) bool {
+	for t.Elem != nil {
+		t = t.Elem
+	}
+	return t.NonNull
 }
 
 // AuthShape is what an operation touches, independent of who is asking. It
@@ -350,6 +368,13 @@ func (o Outcome) validFor(site AuthSite) error {
 		// system can represent.
 		if site.Field != nil && site.Field.Type.NonNull {
 			return Errorf("authorization: Null is not valid for %s, which is non-null; use Zero or Deny", site.Coord)
+		}
+		// Same rule, read from the site rather than from Field: an instance
+		// site has no Field, and writeComposite hands its Null straight to
+		// writeNullValue, so a non-null position would bubble to the client
+		// as a bare spec error with nothing saying a policy decided it.
+		if site.Kind == SiteInstance && site.valueNonNull {
+			return Errorf("authorization: Null is not valid for %s, an instance site at a non-null position; use Drop in a list or Deny", site.Coord)
 		}
 	case actionZero:
 		if site.Field == nil {

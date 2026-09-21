@@ -151,6 +151,7 @@ type Open implements Node { id: ID! }
 type Query {
   customers: [Customer!]!
   maybe: Customer
+  required: Customer!
   filtered(where: Where @authorizeInput(kind: FILTER)): [Customer!]!
   node: Node
   plain: String!
@@ -213,6 +214,7 @@ func newInstanceExecutorNode(t *testing.T, node func(context.Context, Root) (any
 				return []authzInstanceCustomer{instanceC1, instanceC2, instanceC3}
 			}),
 			Field("maybe", func(Root) *authzInstanceCustomer { return &instanceC1 }),
+			Field("required", func(Root) authzInstanceCustomer { return instanceC1 }),
 			FieldArgs("filtered", func(Root, instanceFilteredArgs) []authzInstanceCustomer {
 				return []authzInstanceCustomer{instanceC1, instanceC2, instanceC3}
 			}),
@@ -528,15 +530,6 @@ func TestInstanceDenyInAListReportsTheWrittenIndex(t *testing.T) {
 	if got := resp.Errors[0].Path.String(); got != "customers[0]" {
 		t.Fatalf("path = %q, want customers[0]", got)
 	}
-}
-
-func TestInstanceNullBubblesThroughANonNullElement(t *testing.T) {
-	// customers is [Customer!]!, so Null on an element nulls the whole field
-	// by the ordinary rules -- which is why Drop exists.
-	e := newInstanceExecutorWith(t, constantObjectPolicy(Null()))
-	resp := run(t, e, `{ customers { id } }`, "")
-	assertJSON(t, resp.Data, `null`)
-	assertErrorContains(t, resp.Errors, "non-nullable")
 }
 
 func TestInstanceChecksAreBatchedPerList(t *testing.T) {

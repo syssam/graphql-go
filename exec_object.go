@@ -327,7 +327,11 @@ func (st *execState) elementObject(f *planField, shape *valueShape, v any) (obj 
 }
 
 func instanceSiteOf(f *planField) AuthSite {
-	return AuthSite{Coord: f.def.def.Type.Name(), Kind: SiteInstance}
+	return AuthSite{
+		Coord:        f.def.def.Type.Name(),
+		Kind:         SiteInstance,
+		valueNonNull: positionNonNull(f.def.def.Type),
+	}
 }
 
 // instanceOutcome asks the ObjectAuthorizer about one value about to be
