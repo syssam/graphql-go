@@ -46,6 +46,21 @@ func TestAuthorizeObjectPlacementAtBuild(t *testing.T) {
 			sdl:  authzObjectSDL,
 		},
 		{
+			// A root object is written by writeObject directly and never
+			// reaches writeValue, so an ObjectAuthorizer is never consulted
+			// for it. Accepting the marker here is silence where the author
+			// expects enforcement, which is what this validation exists to
+			// prevent everywhere else.
+			name:    "on a root operation type",
+			sdl:     "directive @authorizeObject on OBJECT\ntype Query @authorizeObject { c: String }",
+			wantErr: "Query: @authorizeObject is valid only on an object type, not a root operation type",
+		},
+		{
+			name:    "on a root operation type named by the schema block",
+			sdl:     "directive @authorizeObject on OBJECT\nschema { query: Root }\ntype Root @authorizeObject { c: String }",
+			wantErr: "Root: @authorizeObject is valid only on an object type, not a root operation type",
+		},
+		{
 			name:    "on an interface",
 			sdl:     "directive @authorizeObject on OBJECT | INTERFACE\ninterface Node @authorizeObject { id: ID! }\ntype Customer implements Node { id: ID! }\ntype Query { c: Customer! }",
 			wantErr: "Node: @authorizeObject is valid only on an object type, not an interface",

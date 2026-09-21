@@ -431,6 +431,13 @@ func (b *schemaBuilder) validateObjectDirectives() {
 		}
 		switch def.Kind {
 		case ast.Object:
+			// A root operation type is written by writeObject directly and
+			// never reaches writeValue, so no ObjectAuthorizer is ever
+			// consulted for it. Rejecting it here keeps the promise the rest
+			// of this function makes.
+			if isRootType(b.ast, def) {
+				reject(name, "a root operation type", def.Directives)
+			}
 			if occ := def.Directives.ForNames(objectDirective); len(occ) > 1 {
 				// gqlparser merges an extension's directives into the base
 				// list and skips its own non-repeatable check for them, so a

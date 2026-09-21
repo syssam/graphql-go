@@ -507,6 +507,12 @@ func (d *Decision) Set(site int, o Outcome) error {
 	if d == nil || site < 0 || site >= len(d.outcomes) {
 		return Errorf("authorization: site %d is out of range", site)
 	}
+	if s := d.src.shape.sites[site]; s.Kind == SiteInstance {
+		// The executor reads an instance outcome from the ObjectAuthorizer's
+		// reply, never from here, so recording one would be a decision that
+		// silently does nothing.
+		return Errorf("authorization: %s is an instance site; its outcome comes from the ObjectAuthorizer, not from Decision.Set", s.Coord)
+	}
 	if err := o.validFor(d.src.shape.sites[site]); err != nil {
 		return err
 	}
