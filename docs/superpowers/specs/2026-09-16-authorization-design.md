@@ -452,7 +452,10 @@ Migrating 1,589 sites to `@requiresScopes(scopes: [[String!]!]!)` is mechanical
 but buys the consumer nothing it needs — it is not a federated graph, and the
 only capability it gains is AND composition, which none of its 1,589 sites use.
 P1 accepts any directive that yields a `Requirement`, so the core package is
-indifferent. `ext/authz` binds the Apollo vocabulary (`@authenticated`,
+indifferent. *(That was an intent, not the implementation: `authDirective` was a
+constant and `requirementOf` read only `@requiresScopes` until
+`2026-09-21-pluggable-requirement-directives-design.md` made it true. Use
+`graphql.RequirementDirective(name, arg, shape)`.)* `ext/authz` binds the Apollo vocabulary (`@authenticated`,
 `@requiresScopes`, `@policy`) so a new user gets the standard by default and an
 existing one is not forced through a rename to adopt the engine.
 

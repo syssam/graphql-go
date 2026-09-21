@@ -232,3 +232,64 @@ func TestCustomDirectiveIsCapped(t *testing.T) {
 		t.Fatalf("cap error does not name the offending directive: %v", err)
 	}
 }
+
+type authDirDoc struct {
+	ID   string
+	Body string
+}
+
+// A custom directive must inherit exactly as @requiresScopes does: a field's
+// own requirement ANDed with its object type's and each implemented
+// interface's. resolveAuthRequirements owns that logic and must not have been
+// bypassed by the new reading path.
+func TestCustomDirectiveInherits(t *testing.T) {
+	const sdl = `
+directive @auth(requires: [String!]) on OBJECT | INTERFACE | FIELD_DEFINITION
+interface Node @auth(requires: ["node"]) { id: ID! }
+type Doc implements Node @auth(requires: ["doc"]) {
+  id: ID!
+  body: String! @auth(requires: ["body"])
+}
+type Query { doc: Doc! }
+`
+	s, err := NewSchema(SDL(sdl),
+		RequirementDirective("auth", "requires", ScopesAllOf),
+		Object[authDirDoc]("Doc",
+			Field("id", func(d *authDirDoc) ID { return ID(d.ID) }),
+			Field("body", func(d *authDirDoc) string { return d.Body }),
+		),
+		Query(Field("doc", func(Root) authDirDoc { return authDirDoc{ID: "1"} })),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	got := scopesOf(t, s, "Doc", "body")
+	if len(got) != 1 {
+		t.Fatalf("groups = %v, want a single ANDed group", got)
+	}
+	has := map[string]bool{}
+	for _, sc := range got[0] {
+		has[sc] = true
+	}
+	for _, want := range []string{"body", "doc", "node"} {
+		if !has[want] {
+			t.Fatalf("effective requirement %v is missing %q", got, want)
+		}
+	}
+}
+
+// With no option supplied, the default entry must behave exactly as the
+// constant did. This is the regression guard for every existing schema.
+func TestDefaultSpellingUnchanged(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION
+type Query { secret: String! @requiresScopes(scopes: [["a","b"],["c"]]) }
+`
+	s, err := NewSchema(SDL(sdl), Query(Field("secret", func(Root) string { return "s" })))
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	if got := scopesOf(t, s, "Query", "secret"); !sameGroups(got, [][]string{{"a", "b"}, {"c"}}) {
+		t.Fatalf("groups = %v, want [[a b] [c]]", got)
+	}
+}

@@ -653,6 +653,29 @@ diverge. The unguarded `__typename` fast path in `writeFieldValue` (`exec_object
 returning `obj.name` before `execState` is even touched — is what keeps the measured cost
 of this at about 1%.
 
+**Which SDL directive yields a `Requirement` is declared, not hardcoded.**
+`RequirementDirective(name, arg, shape)` adds a spelling; `@requiresScopes` is seeded as a
+built-in entry before options apply, so it always works and redeclaring it collides. The
+option *adds*, and two spellings on one coordinate AND — the rule repeated occurrences of one
+directive already follow, so more declarations never mean less restrictive. `ScopeShape` has
+no valid zero value on purpose: `@auth(requires: ["a","b"])` is the same text whether the
+author meant AND or OR, so reading a flat list as AND when they meant OR silently widens
+access and the SDL cannot say which was intended.
+
+**The spelling is welded into four places and they move together**: reading
+(`requirementOf`/`groupsOf`), the literal type-check (`checkRequirementDirectives` — gqlparser
+never type-checks a directive argument's literal), misplacement rejection (`rejectUnenforced`)
+and the error wording. Reading a directive without also rejecting its misplacement is the
+fail-open the design exists to prevent: `@auth` on a schema definition would be silently
+ignored while the author believes a requirement is in force. Breaking each of the three fails
+`TestCustomDirectiveMalformedLiteralIsRejected`,
+`TestCustomDirectiveMisplacementIsRejected` and `TestCustomDirectiveIsCapped` respectively.
+Two things that cost time to learn: the built-in entry must skip the "is this directive
+declared in the SDL" check, because almost no schema declares `@requiresScopes` and requiring
+it broke every existing schema; and the cap is on *group count*, which AND multiplies, so
+single-group occurrences never overflow it however many there are — a cap test needs
+occurrences contributing more than one group each.
+
 **Instance sites (`@authorizeObject`, `authz_instance.go`) are decided during execution, not
 in the `Decision`** — the values do not exist when a `Decision` is built. A marked object type
 sets `objectType.instanceGuarded`; a field that can return one gets `instanceSiteBit` in
