@@ -47,14 +47,26 @@ runs taken in one sitting. Allocation counts are deterministic.
 
 ### In process
 
-| Operation | graphql-go | gqlgen | ratio |
-|---|---:|---:|---:|
-| Leaf fields | 1 103 ns, 16 allocs | 98 323 ns, 975 allocs | **89x** |
-| Owner (nested resolver) | 1 223 ns, 20 allocs | 95 448 ns, 954 allocs | **78x** |
-| Mutation | 1 123 ns, 17 allocs | 79 276 ns, 926 allocs | **71x** |
-| Connection, 20 rows | 31 076 ns, 233 allocs | 231 434 ns, 2 715 allocs | **7.4x** |
-| Nested connection | 157 774 ns, 1 525 allocs | 573 931 ns, 10 757 allocs | **3.6x** |
-| Full introspection | 14.7 ms, 122 666 allocs | 65.9 ms, 1 739 712 allocs | **4.5x** |
+Re-measured 2026-09-21, both engines in one run, after the allocation work in
+`32d994e..d542c6b`. gqlgen's allocation counts came back within 0.03% of the
+previous reading (975, 954, 926, 2 715, 10 756, 1 740 242), which is what says
+the fixture and the method are the same and only this side moved. The timings
+are from a busier machine than the earlier sitting, so compare them with each
+other rather than with the numbers this table used to carry; the allocation
+columns are deterministic and carry no such caveat.
+
+| Operation | graphql-go | gqlgen | time ratio | alloc ratio |
+|---|---:|---:|---:|---:|
+| Leaf fields | 1 149 ns, 12 allocs | 81 920 ns, 975 allocs | **71x** | **81x** |
+| Owner (nested resolver) | 1 147 ns, 14 allocs | 77 984 ns, 954 allocs | **68x** | **68x** |
+| Mutation | 980 ns, 13 allocs | 80 931 ns, 926 allocs | **83x** | **71x** |
+| Connection, 20 rows | 32 920 ns, 185 allocs | 219 159 ns, 2 715 allocs | **6.7x** | **15x** |
+| Nested connection | 124 723 ns, 1 199 allocs | 531 987 ns, 10 756 allocs | **4.3x** | **9.0x** |
+| Full introspection | 12.5 ms, 117 528 allocs | 62.8 ms, 1 740 242 allocs | **5.0x** | **15x** |
+
+The HTTP and saturation tables below are from the earlier sitting and have not
+been re-measured; their graphql-go allocation columns are therefore high by
+roughly the same four allocations a request that this one lost.
 
 ### Over HTTP, one request at a time
 

@@ -5,9 +5,9 @@ none is estimated. Detail, method and caveats are in the linked documents.
 
 | Dimension | Result | Detail |
 |---|---|---|
-| Query execution | **3.6-89x** faster in process | [compare](../compare/README.md) |
+| Query execution | **4.3-83x** faster in process | [compare](../compare/README.md) |
 | Over HTTP, saturated | **4.5-5.6x** faster | [compare](../compare/README.md) |
-| Allocations per request | **9-61x** fewer | [compare](../compare/README.md) |
+| Allocations per request | **9.0-81x** fewer in process | [compare](../compare/README.md) |
 | Code generation | **95x** faster, **56x** less memory | [benchmarks](benchmarks.md) |
 | Compile time | roughly level | [benchmarks](benchmarks.md) |
 | Edit to rebuilt | **3.4x** faster | [benchmarks](benchmarks.md) |
@@ -18,14 +18,19 @@ none is estimated. Detail, method and caveats are in the linked documents.
 | GraphQL over HTTP spec | **0 errors**, 13/13 MUST | [audit](graphql-http-audit.md) |
 
 Measured against gqlgen 0.17.95 on a 200-entity ORM-shaped schema (~1 600
-types), Go 1.27.1, Windows, i7-12700.
+types), Go 1.27.1, Windows, i7-12700. The in-process rows were re-measured on
+2026-09-21 with both engines in one run; the HTTP and saturation rows are from
+the earlier sitting and predate that allocation work, so they understate the
+gap by about four allocations a request.
 
 ## The shape of it
 
 **What graphql-go buys.** A request costs what the query costs, not what the
 schema costs. gqlgen allocates 975 objects to answer a two-field query against
-a 200-entity schema and 168 against a 2-entity one; graphql-go allocates 16
-either way. That is the compiled-plan design: the plan is built once per
+a 200-entity schema and 168 against a 2-entity one; graphql-go allocates 12
+against the 200-entity schema, and answered both schemas with the identical
+count when the pair was measured (16 each, before the allocation work in
+`32d994e..d542c6b` took it to 12). That is the compiled-plan design: the plan is built once per
 operation, so schema size stops mattering at request time. Under saturation
 this is 5.6x the throughput.
 
