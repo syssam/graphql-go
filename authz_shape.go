@@ -259,16 +259,35 @@ func (b *shapeBuilder) objectSiteFor(obj *objectType) int32 {
 // maxRequirementGroups; when capped is true, req is not the true combined
 // value and every caller must record a build error rather than treat it as
 // this coordinate's real (or a weakened, or a zero) requirement.
-func requirementOf(ds ast.DirectiveList) (req Requirement, ok bool, capped bool) {
-	occurrences := ds.ForNames(authDirective)
-	if len(occurrences) == 0 {
-		return Requirement{}, false, false
-	}
-	for _, d := range occurrences {
-		arg := d.Arguments.ForName("scopes")
-		if arg == nil || arg.Value == nil {
-			continue
+func (b *schemaBuilder) requirementOf(ds ast.DirectiveList) (req Requirement, ok bool, capped bool) {
+	for _, rd := range b.reqDirectives {
+		for _, d := range ds.ForNames(rd.name) {
+			arg := d.Arguments.ForName(rd.arg)
+			if arg == nil || arg.Value == nil {
+				continue
+			}
+			groups := groupsOf(arg, rd.shape)
+			if groups == nil {
+				continue
+			}
+			ok = true
+			combined, within := andCapped(req, NewRequirement(groups...))
+			if !within {
+				return req, true, true
+			}
+			req = combined
 		}
+	}
+	return req, ok, false
+}
+
+// groupsOf reads one argument into requirement groups according to the declared
+// shape. nil means the literal does not match the shape;
+// checkRequirementDirectives reports that as a build error, so nil here is
+// "already reported" rather than "no requirement".
+func groupsOf(arg *ast.Argument, shape ScopeShape) [][]string {
+	switch shape {
+	case ScopesNested:
 		var groups [][]string
 		for _, outer := range arg.Value.Children {
 			var group []string
@@ -277,16 +296,24 @@ func requirementOf(ds ast.DirectiveList) (req Requirement, ok bool, capped bool)
 			}
 			groups = append(groups, group)
 		}
-		if groups == nil {
-			continue
+		return groups
+	case ScopesAllOf:
+		var group []string
+		for _, elem := range arg.Value.Children {
+			group = append(group, elem.Value.Raw)
 		}
-		combined, within := andCapped(req, NewRequirement(groups...))
-		if !within {
-			return req, true, true
+		if group == nil {
+			return nil
 		}
-		req = combined
+		return [][]string{group}
+	case ScopesAnyOf:
+		var groups [][]string
+		for _, elem := range arg.Value.Children {
+			groups = append(groups, []string{elem.Value.Raw})
+		}
+		return groups
 	}
-	return req, true, false
+	return nil
 }
 
 // validateRequirementDirectives rejects a declaration that would read as "no
@@ -581,7 +608,7 @@ func (b *schemaBuilder) combineWithInterfaces(coord string, acc Requirement, int
 		if idef == nil {
 			continue
 		}
-		r, _, rcapped := requirementOf(lookup(idef))
+		r, _, rcapped := b.requirementOf(lookup(idef))
 		if rcapped {
 			// r is not trustworthy (see requirementOf): the interface's own
 			// occurrences already exceeded the cap before we ever got to
@@ -624,7 +651,7 @@ func (b *schemaBuilder) capExceeded(coord string) {
 // caused it.
 func (b *schemaBuilder) resolveAuthRequirements(s *Schema) {
 	for name, obj := range s.objects {
-		typeReq, _, typeCapped := requirementOf(obj.def.Directives)
+		typeReq, _, typeCapped := b.requirementOf(obj.def.Directives)
 		if typeCapped {
 			// typeReq is not trustworthy (see requirementOf): the object's
 			// own occurrences alone already exceeded the cap, so there is
@@ -643,7 +670,7 @@ func (b *schemaBuilder) resolveAuthRequirements(s *Schema) {
 
 		for _, fd := range obj.fields {
 			coord := coordinate(name, fd.name)
-			req, _, fieldCapped := requirementOf(fd.def.Directives)
+			req, _, fieldCapped := b.requirementOf(fd.def.Directives)
 			if fieldCapped {
 				b.capExceeded(coord)
 				continue
