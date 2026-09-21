@@ -706,6 +706,16 @@ it broke every existing schema; and the cap is on *group count*, which AND multi
 single-group occurrences never overflow it however many there are — a cap test needs
 occurrences contributing more than one group each.
 
+**`build()` accumulates errors and keeps going, so `groupsOf` reads literals
+`checkRequirementDirectives` has already condemned** — confirmed by making `groupsOf` panic
+and watching a rejected `[[1]]` reach it. The reader must therefore be panic-free on input
+the validator refused, not merely on input it accepted, which is what
+`FuzzRequirementDirectiveLiteral` holds: 172k executions over the three shapes found nothing,
+and it also fails a schema that builds carrying an empty requirement group, since `Satisfied`
+over one is vacuously true and would read as guarded while guarding nothing. It is the only
+fuzz target that reaches `NewSchema`; `FuzzExecute` and `FuzzOperationMetrics` never get that
+far. CI discovers targets by grepping the root package, so a new one needs no workflow edit.
+
 **Instance sites (`@authorizeObject`, `authz_instance.go`) are decided during execution, not
 in the `Decision`** — the values do not exist when a `Decision` is built. A marked object type
 sets `objectType.instanceGuarded`; a field that can return one gets `instanceSiteBit` in
