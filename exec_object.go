@@ -392,6 +392,20 @@ func instanceAct(outs []Outcome, i int) action {
 	return outs[i].act
 }
 
+// drainList collects a list's elements. It is a function rather than a closure
+// at each call site because a closure appending to a caller's local forces
+// that slice header onto the heap on every call of the enclosing function,
+// whether or not the list is ever drained -- measured as +1 alloc/op on
+// BenchmarkFieldPathBare, which writes no concurrent list at all.
+func drainList(v any, shape *valueShape) []any {
+	var elems []any
+	shape.traverse(v, func(_ int, e any) bool {
+		elems = append(elems, e)
+		return true
+	})
+	return elems
+}
+
 // writeList writes list elements, nulling failed nullable elements and
 // failing the whole list when a non-null element fails. Instance checks
 // drain first so one policy call covers the list; without them the sequential
@@ -443,11 +457,7 @@ func (st *execState) writeList(ctx context.Context, w *jsonw.Writer, v any, t *a
 }
 
 func (st *execState) writeListGuarded(ctx context.Context, w *jsonw.Writer, v any, t *ast.Type, shape *valueShape, f *planField, path *pathNode) bool {
-	var drained []any
-	shape.traverse(v, func(_ int, e any) bool {
-		drained = append(drained, e)
-		return true
-	})
+	drained := drainList(v, shape)
 	outs, aerr := st.instanceOutcomes(ctx, f, shape, drained)
 	if aerr != nil {
 		st.addFieldError(ctx, aerr, path, f.ast.Position)
@@ -646,15 +656,25 @@ func (st *execState) writeFieldsConcurrent(ctx context.Context, w *jsonw.Writer,
 }
 
 // writeListConcurrentPlain writes list elements in parallel when there are at
-// least two. handled is false when the list is too short; the drained
+// least two.
+//
+// It is a deliberate near-copy of writeListConcurrent, which does the same for
+// a list whose elements an ObjectAuthorizer has decided. Merging the two by
+// giving this one a nil outcomes slice was tried and reverted: the merged loop
+// costs an allocation on every concurrent list, guarded or not, and this is
+// the hot path (BenchmarkExecuteConcurrentList). The wave, splice and rewind
+// halves must stay in step. TestConcurrentListPathsAgree writes one list
+// through both and requires the same bytes, which catches a divergence in what
+// they write -- a reviewer's reversal of the splice loop in one of them failed
+// it -- but not one in a branch that does not change the output for that
+// input: breaking only the guarded path's LimitExceeded early return still
+// passed. Neither the response limit nor any outcome but Allow is covered by
+// it, so a change to those halves needs its own test.
+// handled is false when the list is too short; the drained
 // elements come back with it so the caller can write them without traversing
 // the value again, which a single-pass iter.Seq would answer with nothing.
 func (st *execState) writeListConcurrentPlain(ctx context.Context, w *jsonw.Writer, v any, t *ast.Type, shape *valueShape, f *planField, path *pathNode) (ok, handled bool, drained []any) {
-	var elems []any
-	shape.traverse(v, func(_ int, e any) bool {
-		elems = append(elems, e)
-		return true
-	})
+	elems := drainList(v, shape)
 	if len(elems) < 2 {
 		return false, false, elems
 	}
@@ -709,36 +729,29 @@ func (st *execState) writeListConcurrentPlain(ctx context.Context, w *jsonw.Writ
 }
 
 // writeListConcurrent writes list elements in parallel when there are at
-// least two after drops. handled is false when the list is too short; the
+// least two after drops. See writeListConcurrentPlain for why the two are
+// kept apart, and what must stay in step between them. handled is false when the list is too short; the
 // caller writes the remaining elements without traversing the value again.
 // Drop is removed before pushWave so a loader is not left waiting for a task
 // that will never begin; Deny and Null still occupy a written position.
 func (st *execState) writeListConcurrent(ctx context.Context, w *jsonw.Writer, t *ast.Type, shape *valueShape, f *planField, path *pathNode, elems []any, outs []Outcome) (ok, handled bool) {
-	type item struct {
-		elem    any
-		written int
-		act     action
-		out     Outcome
-	}
-	var kept []item
-	n := 0
-	for i, e := range elems {
-		act := instanceAct(outs, i)
-		if act == actionDrop {
-			continue
+	// keep[j] is the index in elems of the j-th element actually written, so j
+	// is its index in the response and Drop renumbers what follows. An index
+	// rather than a copied {elem, act, Outcome} per element: Outcome carries a
+	// func and two strings, and holding one per element measured +76% B/op
+	// here against carrying none.
+	keep := make([]int32, 0, len(elems))
+	for i := range elems {
+		if instanceAct(outs, i) != actionDrop {
+			keep = append(keep, int32(i))
 		}
-		var out Outcome
-		if i < len(outs) {
-			out = outs[i]
-		}
-		kept = append(kept, item{elem: e, written: n, act: act, out: out})
-		n++
 	}
-	if len(kept) < 2 {
+	if len(keep) < 2 {
 		return false, false
 	}
+	n := len(keep)
 
-	results := make([]taskResult, len(kept))
+	results := make([]taskResult, n)
 	defer func() {
 		for _, r := range results {
 			if r.buf != nil {
@@ -747,7 +760,7 @@ func (st *execState) writeListConcurrent(ctx context.Context, w *jsonw.Writer, t
 		}
 	}()
 
-	endWave := st.pushWave(ctx, len(kept))
+	endWave := st.pushWave(ctx, n)
 	defer endWave()
 
 	g := taskGroup{st: st, async: true}
@@ -755,17 +768,18 @@ func (st *execState) writeListConcurrent(ctx context.Context, w *jsonw.Writer, t
 	// all of them, and a loader flushes only once every announced task has
 	// begun, so skipping one would strand each Load already parked. A task
 	// started after the trip fails at its first checkpoint.
-	for i, it := range kept {
+	for j := range n {
 		g.run(func() {
 			st.waveTaskBegin(ctx)
 			defer st.waveTaskEnd(ctx)
 			sub := jsonw.Get()
 			sub.ShareLimit(w)
-			elemPath := &pathNode{parent: path, index: it.written, isIndex: true}
+			i := int(keep[j])
+			elemPath := &pathNode{parent: path, index: j, isIndex: true}
 			var okElem bool
-			switch it.act {
+			switch instanceAct(outs, i) {
 			case actionDeny:
-				st.addFieldError(ctx, it.out.denial(), elemPath, f.ast.Position)
+				st.addFieldError(ctx, outs[i].denial(), elemPath, f.ast.Position)
 				if t.Elem.NonNull {
 					okElem = false
 				} else {
@@ -775,9 +789,9 @@ func (st *execState) writeListConcurrent(ctx context.Context, w *jsonw.Writer, t
 			case actionNull:
 				okElem = st.writeNullValue(ctx, sub, t.Elem, f, elemPath)
 			default:
-				okElem = st.writeComposite(ctx, sub, it.elem, t.Elem, shape.elem, f, elemPath, false)
+				okElem = st.writeComposite(ctx, sub, elems[i], t.Elem, shape.elem, f, elemPath, false)
 			}
-			results[i] = taskResult{buf: sub, ok: okElem}
+			results[j] = taskResult{buf: sub, ok: okElem}
 		})
 	}
 	g.wait()

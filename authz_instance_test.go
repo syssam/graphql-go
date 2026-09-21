@@ -161,7 +161,7 @@ directive @authorizeInput(kind: AuthorizeInputKind!) on ARGUMENT_DEFINITION
 enum AuthorizeInputKind { FILTER WRITE }
 input Where { nameContains: String }
 interface Node { id: ID! }
-type Customer implements Node @authorizeObject { id: ID! name: String! }
+type Customer implements Node @authorizeObject { id: ID! name: String! owner: String! }
 type Open implements Node { id: ID! }
 type Query {
   customers: [Customer!]!
@@ -220,6 +220,11 @@ func newInstanceExecutorNode(t *testing.T, node func(context.Context, Root) (any
 		Object[authzInstanceCustomer]("Customer",
 			Field("id", func(c *authzInstanceCustomer) ID { return ID(c.ID) }),
 			Field("name", func(c *authzInstanceCustomer) string { return c.Name }),
+			// A resolver field, so a selection that includes it is deeply
+			// schedulable and the list takes the concurrent path.
+			Resolve("owner", func(_ context.Context, c *authzInstanceCustomer) (string, error) {
+				return "owner-" + c.ID, nil
+			}),
 		),
 		Object[instanceOpen]("Open",
 			Field("id", func(o *instanceOpen) ID { return ID(o.ID) }),

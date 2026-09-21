@@ -102,3 +102,36 @@ func TestInstanceDenyStopsANonNullList(t *testing.T) {
 		t.Fatalf("path = %q, want customers[0]", got)
 	}
 }
+
+// writeListConcurrentPlain and writeListConcurrent are deliberate near-copies
+// (merging them costs an allocation on every concurrent list). Nothing else
+// notices if one is changed and the other is not, so write the same list
+// through both -- the plain path with no ObjectAuthorizer configured, the
+// guarded path with one that allows everything -- and require the same bytes.
+//
+// What it holds: a divergence in what the two loops write. Reversing the
+// splice loop in one of them fails it. What it does not hold: a branch that
+// does not change the output for this input -- breaking only the guarded
+// path's LimitExceeded early return passed -- so the limit subtest pins that
+// the two agree once tripped, not that either check exists.
+func TestConcurrentListPathsAgree(t *testing.T) {
+	const q = `{ customers { id name owner } }`
+	for _, c := range []struct {
+		name string
+		opts []ExecutorOption
+	}{
+		{name: "success"},
+		{name: "response limit tripped", opts: []ExecutorOption{WithMaxResponseBytes(64)}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			plain := run(t, newInstanceExecutor(t, c.opts...), q, "")
+			guarded := run(t, newInstanceExecutorWith(t, constantObjectPolicy(Allow()), c.opts...), q, "")
+			if string(plain.Data) != string(guarded.Data) {
+				t.Fatalf("the two concurrent list paths diverged:\n plain   = %s\n guarded = %s", plain.Data, guarded.Data)
+			}
+			if len(plain.Errors) != len(guarded.Errors) {
+				t.Fatalf("errors diverged: plain = %v, guarded = %v", plain.Errors, guarded.Errors)
+			}
+		})
+	}
+}
