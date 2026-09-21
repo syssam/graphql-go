@@ -14,7 +14,9 @@
 #   cd compare && go run gen.go -n 200
 #
 # Without them the script reports compare as skipped rather than failing, since
-# a missing fixture is not a broken build.
+# a missing fixture is not a broken build. Set GATE_REQUIRE_ALL=1 to turn that
+# skip into a failure: CI generates the fixtures, and a skip there means the
+# gate is quietly covering one module less than it prints.
 set -eu
 
 short=""
@@ -59,7 +61,13 @@ for m in $modules; do
 done
 rm -f /tmp/gate.$$
 
-[ -n "$skipped" ] && echo "skipped:$skipped"
+if [ -n "$skipped" ]; then
+  echo "skipped:$skipped"
+  if [ "${GATE_REQUIRE_ALL:-}" = "1" ]; then
+    echo "GATE_REQUIRE_ALL=1 and a module was skipped"
+    exit 1
+  fi
+fi
 if [ -n "$failed" ]; then
   echo "FAILED:$failed"
   exit 1

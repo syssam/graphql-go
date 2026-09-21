@@ -42,12 +42,24 @@ jobs:
             echo "not gofmt'd:"; echo "$unformatted"; exit 1
           fi
 
+      # compare/ is generated, not committed, and the gate skips a module whose
+      # fixtures are missing. Without this step the gate printed "compare
+      # skipped" and exited 0, so TestEnginesAgree -- the correctness
+      # cross-check against gqlgen -- never ran in CI at all. 25 entities is
+      # the generator's default and enough to compare behaviour; the 200 the
+      # published numbers use is a benchmarking size, not a correctness one.
+      - name: Generate compare fixtures
+        shell: bash
+        run: cd compare && go run gen.go -n 25
+
       # scripts/gate.sh walks every go.mod. go vet and go test reach only the
       # module they run in, and this repository has four; a root-only run
       # reports success while testing none of benchmarks, compare or lint.
+      # GATE_REQUIRE_ALL turns the skip above into a failure, so dropping the
+      # generate step cannot quietly take compare out of the gate again.
       - name: Gate every module
         shell: bash
-        run: sh scripts/gate.sh
+        run: GATE_REQUIRE_ALL=1 sh scripts/gate.sh
 
       - name: Generated code is current
         shell: bash
@@ -97,9 +109,16 @@ jobs:
           cache: true
       # Short by design. This is a smoke test that the fuzz targets still build
       # and that the seed corpus passes, not a fuzzing campaign.
+      #
+      # Discovery is go test -list over every package. Grepping the root
+      # package's *_test.go, which this replaced, silently left internal/jsonw
+      # out: its FuzzString and FuzzKey guard the JSON string escaping, where
+      # a bug is a corrupted response, and neither had ever been fuzzed here.
       - name: Fuzz targets
         run: |
-          for target in $(grep -ho 'func Fuzz[A-Za-z0-9_]*' *_test.go | sed 's/func //'); do
-            echo "== $target"
-            go test -run '^$' -fuzz "^${target}$" -fuzztime 30s .
+          for pkg in $(go list ./...); do
+            for target in $(go test -list 'Fuzz.*' "$pkg" | grep '^Fuzz'); do
+              echo "== $pkg $target"
+              go test -run '^$' -fuzz "^${target}$" -fuzztime 30s "$pkg"
+            done
           done
