@@ -32,6 +32,12 @@ const (
 	ScopesAllOf
 	// ScopesAnyOf reads [String!] as one group per scope: any one suffices.
 	ScopesAnyOf
+	// scopesMarker is a no-argument directive whose presence alone requires
+	// one scope, named by the caller. It is unexported because MarkerDirective
+	// is the only way to reach it: the scope lives where the argument name
+	// would, and a caller passing it to RequirementDirective would be
+	// declaring an argument that does not exist.
+	scopesMarker
 )
 
 // reqDirective is one declared spelling. The engine holds the name so it can
@@ -48,6 +54,20 @@ type reqDirective struct {
 	// silently do nothing; the default is not a typo, and most schemas never
 	// declare @requiresScopes because they never use it.
 	builtin bool
+}
+
+// MarkerDirective declares a no-argument SDL directive whose presence alone is
+// a requirement for scope, which is the shape of Apollo's @authenticated: the
+// field is guarded, and what the guard means is whatever the Authorizer takes
+// that scope to be.
+//
+// It composes like any other spelling. A coordinate carrying both a marker and
+// a scope directive must satisfy both, which is how @authenticated and
+// @requiresScopes sit together.
+func MarkerDirective(name, scope string) SchemaOption {
+	return schemaOptionFunc(func(b *schemaBuilder) {
+		b.reqDirectives = append(b.reqDirectives, reqDirective{name: name, arg: scope, shape: scopesMarker})
+	})
 }
 
 // RequirementDirective declares an additional SDL directive read into a

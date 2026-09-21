@@ -41,7 +41,9 @@
 // @auth(requires: [String!]) is enforced without renaming every site. The
 // shape is declared rather than inferred, because @auth(requires: ["a","b"])
 // is the same text whether the author meant AND or OR and guessing wrongly
-// widens access. @requiresScopes and @authorizeInput only describe positions
+// widens access. MarkerDirective(name, scope) covers a directive with no
+// argument, whose presence alone is the requirement, which is the shape of
+// Apollo's @authenticated. @requiresScopes and @authorizeInput only describe positions
 // in the schema; nothing is enforced against them unless an Authorizer is
 // configured with WithAuthorizer. At plan compile, buildAuthShape walks the
 // plan once and records every such field, and every field that selects an

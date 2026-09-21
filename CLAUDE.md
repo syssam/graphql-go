@@ -681,6 +681,17 @@ no valid zero value on purpose: `@auth(requires: ["a","b"])` is the same text wh
 author meant AND or OR, so reading a flat list as AND when they meant OR silently widens
 access and the SDL cannot say which was intended.
 
+`MarkerDirective(name, scope)` covers the other shape Apollo uses: a directive with no
+argument at all, `@authenticated`, whose presence alone is a requirement for one scope the
+caller names. It is a `reqDirective` entry like any other, so inheritance, the cap,
+misplacement rejection and ANDing with a scope directive all come free -- breaking either the
+reading or the misplacement half fails `TestMarkerDirectiveIsEnforced` or
+`TestMarkerMisplacementIsRejected`. **Apollo's `@policy` needs nothing**: it is
+`[[String!]!]` like `@requiresScopes`, so `RequirementDirective("policy", "policies",
+ScopesNested)` enforces it today and the namespace is the Authorizer's business. That is most
+of what `ext/authz` was scoped to be, which is why the package is still unbuilt rather than
+overdue.
+
 **The spelling is welded into four places and they move together**: reading
 (`requirementOf`/`groupsOf`), the literal type-check (`checkRequirementDirectives` — gqlparser
 never type-checks a directive argument's literal), misplacement rejection (`rejectUnenforced`)
@@ -809,10 +820,11 @@ instance sites (`ObjectAuthorizer`, batched per list, with `Drop`), requirement 
 declared rather than hardcoded (`RequirementDirective`, so a schema spelling its requirements
 `@auth(requires:)` is enforced without renaming every site), and the `lint/` analyzer; plus
 `relay/`, `fed/`, `ext/throttle`,
-`ext/trusted` and DataLoader tracing. Not built: `ext/authz`, which is now smaller than it
-was scoped as -- `@requiresScopes` is core and any other spelling is one `RequirementDirective`
-call, so what is left of it is `@authenticated` (needs a no-argument shape), `@policy` (a
-second namespace that is not scopes) and a batched `Guard`. `@defer`/`@stream` is not merely unbuilt — the prelude's
+`ext/trusted` and DataLoader tracing. Not built: `ext/authz`, and what is left of it is
+smaller than a package. `@requiresScopes` is core, `@policy` is one
+`RequirementDirective("policy", "policies", ScopesNested)` call (measured, not assumed), and
+`@authenticated` is one `MarkerDirective`. Only a batched `Guard` remains, and whether that
+justifies a package is a question for a consumer that has migrated. `@defer`/`@stream` is not merely unbuilt — the prelude's
 `@defer` is stripped in `introspection.go` so the validator and introspection agree the
 server says no; adding it reverses a decision rather than filling a gap. Not measured, both
 needing Linux: latency percentiles, which this machine's ~522us clock granularity makes

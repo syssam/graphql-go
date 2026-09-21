@@ -293,3 +293,94 @@ type Query { secret: String! @requiresScopes(scopes: [["a","b"],["c"]]) }
 		t.Fatalf("groups = %v, want [[a b] [c]]", got)
 	}
 }
+
+// @authenticated is Apollo's marker for "any authenticated principal". It
+// takes no argument, so no ScopeShape reading an argument can express it.
+// Its presence alone is the requirement.
+func TestMarkerDirectiveIsEnforced(t *testing.T) {
+	const sdl = `
+directive @authenticated on OBJECT | FIELD_DEFINITION
+type Query { secret: String! @authenticated  open: String! }
+`
+	s, err := NewSchema(SDL(sdl),
+		MarkerDirective("authenticated", "authn"),
+		Query(
+			Field("secret", func(Root) string { return "s" }),
+			Field("open", func(Root) string { return "o" }),
+		))
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	if got := scopesOf(t, s, "Query", "secret"); !sameGroups(got, [][]string{{"authn"}}) {
+		t.Fatalf("groups = %v, want [[authn]]", got)
+	}
+	if got := scopesOf(t, s, "Query", "open"); len(got) != 0 {
+		t.Fatalf("an unmarked field carries %v, want nothing", got)
+	}
+
+	held := map[string]bool{}
+	e := NewExecutor(s, WithAuthorizer(ScopeAuthorizer(
+		func(context.Context) map[string]bool { return held })))
+	if resp := run(t, e, `{ secret }`, ""); len(resp.Errors) == 0 {
+		t.Fatal("a marked field resolved for an unauthenticated principal")
+	}
+	if resp := run(t, e, `{ open }`, ""); len(resp.Errors) != 0 {
+		t.Fatalf("an unmarked field was denied: %v", resp.Errors)
+	}
+	held["authn"] = true
+	if resp := run(t, e, `{ secret }`, ""); len(resp.Errors) != 0 {
+		t.Fatalf("denied while holding the scope: %v", resp.Errors)
+	}
+}
+
+// A marker composes with a scope directive the ordinary way: both must be
+// satisfied, which is what lets @authenticated sit alongside @requiresScopes
+// as Apollo uses them.
+func TestMarkerAndsWithAScopeDirective(t *testing.T) {
+	const sdl = `
+directive @authenticated on FIELD_DEFINITION
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION
+type Query { secret: String! @authenticated @requiresScopes(scopes: [["pay"]]) }
+`
+	s, err := NewSchema(SDL(sdl),
+		MarkerDirective("authenticated", "authn"),
+		Query(Field("secret", func(Root) string { return "s" })))
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	got := scopesOf(t, s, "Query", "secret")
+	if len(got) != 1 || len(got[0]) != 2 {
+		t.Fatalf("groups = %v, want one group of two (authn AND pay)", got)
+	}
+}
+
+// A marker gets the same safety nets as every other spelling: a position the
+// engine does not enforce is a build error naming it.
+func TestMarkerMisplacementIsRejected(t *testing.T) {
+	const sdl = `
+directive @authenticated on FIELD_DEFINITION | INPUT_FIELD_DEFINITION
+input Where { name: String @authenticated }
+type Query { secret(w: Where): String! }
+`
+	_, err := NewSchema(SDL(sdl), MarkerDirective("authenticated", "authn"))
+	if err == nil {
+		t.Fatal("a misplaced marker was accepted")
+	}
+	if !strings.Contains(err.Error(), "@authenticated") {
+		t.Fatalf("error does not name the marker: %v", err)
+	}
+}
+
+// A marker must declare the scope it stands for; an empty one would make
+// every marked field carry a requirement nothing can hold.
+func TestMarkerRequiresAScope(t *testing.T) {
+	const sdl = `
+directive @authenticated on FIELD_DEFINITION
+type Query { secret: String! @authenticated }
+`
+	_, err := NewSchema(SDL(sdl), MarkerDirective("authenticated", ""),
+		Query(Field("secret", func(Root) string { return "s" })))
+	if err == nil || !strings.Contains(err.Error(), "scope") {
+		t.Fatalf("error = %v, want a rejection naming the missing scope", err)
+	}
+}

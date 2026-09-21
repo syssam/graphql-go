@@ -262,11 +262,16 @@ func (b *shapeBuilder) objectSiteFor(obj *objectType) int32 {
 func (b *schemaBuilder) requirementOf(ds ast.DirectiveList) (req Requirement, ok bool, capped bool) {
 	for _, rd := range b.reqDirectives {
 		for _, d := range ds.ForNames(rd.name) {
-			arg := d.Arguments.ForName(rd.arg)
-			if arg == nil || arg.Value == nil {
-				continue
+			var groups [][]string
+			if rd.shape == scopesMarker {
+				groups = [][]string{{rd.arg}}
+			} else {
+				arg := d.Arguments.ForName(rd.arg)
+				if arg == nil || arg.Value == nil {
+					continue
+				}
+				groups = groupsOf(arg, rd.shape)
 			}
-			groups := groupsOf(arg, rd.shape)
 			if groups == nil {
 				continue
 			}
@@ -329,8 +334,19 @@ func (b *schemaBuilder) validateRequirementDirectives() {
 			continue
 		}
 		seen[rd.name] = true
-		if rd.shape < ScopesNested || rd.shape > ScopesAnyOf {
+		if rd.shape < ScopesNested || rd.shape > scopesMarker {
 			b.errorf("requirement directive @%s: shape must be declared as ScopesNested, ScopesAllOf or ScopesAnyOf", rd.name)
+			continue
+		}
+		if rd.shape == scopesMarker {
+			// arg holds the scope, not an argument name. An empty one would
+			// give every marked field a requirement nothing can hold.
+			if rd.arg == "" {
+				b.errorf("marker directive @%s must declare the scope it stands for", rd.name)
+			}
+			if _, ok := b.ast.Directives[rd.name]; !ok {
+				b.errorf("marker directive: no directive @%s is declared in the SDL", rd.name)
+			}
 			continue
 		}
 		if rd.builtin {
@@ -743,6 +759,10 @@ func (b *schemaBuilder) validateAuthCoverage(s *Schema) {
 // like a malformed first occurrence would.
 func (b *schemaBuilder) checkRequirementDirectives(coord string, ds ast.DirectiveList) {
 	for _, rd := range b.reqDirectives {
+		if rd.shape == scopesMarker {
+			// No argument, so no literal to shape-check.
+			continue
+		}
 		for _, d := range ds.ForNames(rd.name) {
 			arg := d.Arguments.ForName(rd.arg)
 			valid := false
