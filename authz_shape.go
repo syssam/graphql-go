@@ -338,6 +338,10 @@ func (b *schemaBuilder) validateRequirementDirectives() {
 			b.errorf("requirement directive @%s: shape must be declared as ScopesNested, ScopesAllOf or ScopesAnyOf", rd.name)
 			continue
 		}
+		if rd.shape == scopesMarker && !rd.viaMarker {
+			b.errorf("requirement directive @%s: this shape is reached with MarkerDirective, whose second argument is a scope rather than an argument name", rd.name)
+			continue
+		}
 		if rd.shape == scopesMarker {
 			// arg holds the scope, not an argument name. An empty one would
 			// give every marked field a requirement nothing can hold.

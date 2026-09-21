@@ -49,6 +49,14 @@ type reqDirective struct {
 	arg   string
 	shape ScopeShape
 
+	// viaMarker records that MarkerDirective made this entry. ScopeShape is a
+	// public named type, so a caller can construct the unexported marker
+	// value and hand it to RequirementDirective, where arg means an SDL
+	// argument name rather than a scope -- the same parameter silently
+	// meaning something else, which is the failure this option set exists to
+	// avoid. The flag is what lets the validator tell the two apart.
+	viaMarker bool
+
 	// builtin marks the engine's own @requiresScopes entry. A caller naming a
 	// directive the SDL never declares has made a typo, and the option would
 	// silently do nothing; the default is not a typo, and most schemas never
@@ -66,7 +74,7 @@ type reqDirective struct {
 // @requiresScopes sit together.
 func MarkerDirective(name, scope string) SchemaOption {
 	return schemaOptionFunc(func(b *schemaBuilder) {
-		b.reqDirectives = append(b.reqDirectives, reqDirective{name: name, arg: scope, shape: scopesMarker})
+		b.reqDirectives = append(b.reqDirectives, reqDirective{name: name, arg: scope, shape: scopesMarker, viaMarker: true})
 	})
 }
 

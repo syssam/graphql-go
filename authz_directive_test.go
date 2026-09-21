@@ -384,3 +384,41 @@ type Query { secret: String! @authenticated }
 		t.Fatalf("error = %v, want a rejection naming the missing scope", err)
 	}
 }
+
+// ScopeShape is a public named type, so a caller can construct any value of
+// it, including the unexported marker shape. RequirementDirective must refuse
+// it: its arg is an SDL argument name, and the marker shape would silently
+// reinterpret that same parameter as a scope. Silent reinterpretation is the
+// failure this whole option set is built to avoid.
+func TestRequirementDirectiveRejectsTheMarkerShape(t *testing.T) {
+	const sdl = `
+directive @authenticated on FIELD_DEFINITION
+type Query { a: String! @authenticated }
+`
+	_, err := NewSchema(SDL(sdl),
+		RequirementDirective("authenticated", "sneaky-scope", scopesMarker),
+		Query(Field("a", func(Root) string { return "" })))
+	if err == nil {
+		t.Fatal("RequirementDirective accepted the marker shape")
+	}
+	if !strings.Contains(err.Error(), "MarkerDirective") {
+		t.Fatalf("error does not point at the right constructor: %v", err)
+	}
+}
+
+// And the constructor that is meant to reach it still does.
+func TestMarkerDirectiveStillReachesTheMarkerShape(t *testing.T) {
+	const sdl = `
+directive @authenticated on FIELD_DEFINITION
+type Query { a: String! @authenticated }
+`
+	s, err := NewSchema(SDL(sdl),
+		MarkerDirective("authenticated", "authn"),
+		Query(Field("a", func(Root) string { return "" })))
+	if err != nil {
+		t.Fatalf("MarkerDirective rejected: %v", err)
+	}
+	if got := scopesOf(t, s, "Query", "a"); !sameGroups(got, [][]string{{"authn"}}) {
+		t.Fatalf("groups = %v, want [[authn]]", got)
+	}
+}
