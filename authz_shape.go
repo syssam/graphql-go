@@ -18,6 +18,10 @@ const authDirective = "requiresScopes"
 // Authorizer is shown before the field runs.
 const inputDirective = "authorizeInput"
 
+// objectDirective marks a type whose individual values an ObjectAuthorizer
+// decides on.
+const objectDirective = "authorizeObject"
+
 // buildAuthShape walks a compiled selection and records every position that
 // declares a requirement, effective (own AND inherited) requirements
 // included. It runs once per plan, so the walk is O(plan size) and never
@@ -29,7 +33,18 @@ func buildAuthShape(root *objectType, sel *selectionSet) *AuthShape {
 		return nil
 	}
 	slices.Sort(b.scopes)
-	s := &AuthShape{sites: b.sites, scopes: slices.Compact(b.scopes), hasArgSites: b.hasArgSites}
+	decidable := 0
+	for i := range b.sites {
+		if b.sites[i].Kind != SiteInstance {
+			decidable++
+		}
+	}
+	s := &AuthShape{
+		sites:       b.sites,
+		scopes:      slices.Compact(b.scopes),
+		hasArgSites: b.hasArgSites,
+		decidable:   decidable,
+	}
 	s.src.shape = s
 	return s
 }
@@ -149,12 +164,48 @@ func (b *shapeBuilder) field(obj *objectType, f *planField) {
 				argType:  ad.Type,
 				argValue: supplied,
 			})
-			f.argSites++
 			b.hasArgSites = true
 		}
+		// Set once from the pre-pass rather than incremented per append, so a
+		// later append landing inside this loop cannot raise the count --
+		// which would shift instanceIdx past the instance site while
+		// hasInstanceSite still reported true.
+		f.argSites = int32(nArgSites)
+	}
+
+	// Recorded so an Authorizer consulted for some other reason can see that
+	// instance checks will happen here. It synthesizes no output site: unlike
+	// an argument site, the executor never reaches an instance check through
+	// authIdx -- writeList and writeComposite route on hasInstanceSite alone
+	// -- so a site here would only enlarge every request's Decision.
+	if f.def != nil && b.instanceGuardedAt(f) {
+		b.sites = append(b.sites, AuthSite{
+			Coord:        f.def.def.Type.Name(),
+			Kind:         SiteInstance,
+			valueNonNull: positionNonNull(f.def.def.Type),
+		})
+		f.argSites |= instanceSiteBit
 	}
 
 	b.walk(f.target, f.abstract, f.sub)
+}
+
+// instanceGuardedAt reports whether f can return a value an ObjectAuthorizer
+// decides on. An abstract position is guarded when any implementer is, since
+// the concrete type is known only once the value resolves.
+func (b *shapeBuilder) instanceGuardedAt(f *planField) bool {
+	if f.target != nil {
+		return f.target.instanceGuarded
+	}
+	if f.abstract == nil {
+		return false
+	}
+	for _, obj := range f.abstract.possible {
+		if obj.instanceGuarded {
+			return true
+		}
+	}
+	return false
 }
 
 // objectSiteFor returns the one SiteObject site for obj in this plan, so every
@@ -349,6 +400,75 @@ func (b *schemaBuilder) validateInputDirectives() {
 		}
 		for _, v := range def.EnumValues {
 			reject(coordinate(name, v.Name), "an enum value", v.Directives)
+		}
+	}
+}
+
+// validateObjectDirectives rejects @authorizeObject anywhere the executor
+// would not consult an ObjectAuthorizer. Every rejected location is one where
+// a schema author could reasonably expect enforcement and get silence.
+func (b *schemaBuilder) validateObjectDirectives() {
+	reject := func(coord, what string, ds ast.DirectiveList) {
+		if ds.ForName(objectDirective) != nil {
+			b.errorf("%s: @%s is valid only on an object type, not %s", coord, objectDirective, what)
+		}
+	}
+	reject("schema", "the schema definition", b.ast.SchemaDirectives)
+	for dname, ddef := range b.ast.Directives {
+		for _, a := range ddef.Arguments {
+			reject(argCoordinate("@"+dname, a.Name), "a directive argument", a.Directives)
+		}
+	}
+	for name, def := range b.ast.Types {
+		if def.BuiltIn {
+			continue
+		}
+		switch def.Kind {
+		case ast.Object:
+			// A root operation type is written by writeObject directly and
+			// never reaches writeValue, so no ObjectAuthorizer is ever
+			// consulted for it. Rejecting it here keeps the promise the rest
+			// of this function makes.
+			if isRootType(b.ast, def) {
+				reject(name, "a root operation type", def.Directives)
+			}
+			if occ := def.Directives.ForNames(objectDirective); len(occ) > 1 {
+				// gqlparser merges an extension's directives into the base
+				// list and skips its own non-repeatable check for them, so a
+				// second occurrence reaches here even when the directive is
+				// not declared repeatable.
+				b.errorf("%s: @%s must not occur more than once on one type", name, objectDirective)
+			}
+			for _, f := range def.Fields {
+				coord := coordinate(name, f.Name)
+				reject(coord, "a field", f.Directives)
+				for _, a := range f.Arguments {
+					reject(argCoordinate(coord, a.Name), "a field argument", a.Directives)
+				}
+			}
+		case ast.Interface:
+			reject(name, "an interface", def.Directives)
+			for _, f := range def.Fields {
+				coord := coordinate(name, f.Name)
+				reject(coord, "an interface field", f.Directives)
+				for _, a := range f.Arguments {
+					reject(argCoordinate(coord, a.Name), "an interface field's argument", a.Directives)
+				}
+			}
+		case ast.InputObject:
+			reject(name, "an input object", def.Directives)
+			for _, f := range def.Fields {
+				reject(coordinate(name, f.Name), "an input field", f.Directives)
+			}
+		case ast.Enum:
+			reject(name, "an enum", def.Directives)
+			for _, v := range def.EnumValues {
+				reject(coordinate(name, v.Name), "an enum value", v.Directives)
+			}
+		case ast.Union:
+			reject(name, "a union", def.Directives)
+		case ast.Scalar:
+			reject(name, "a scalar", def.Directives)
 		}
 	}
 }

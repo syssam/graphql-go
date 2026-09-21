@@ -216,7 +216,7 @@ func (e *Executor) Subscribe(ctx context.Context, req *Request) (<-chan *Respons
 			if o := d.Outcome(int(f.authIdx)); o.act == actionDeny {
 				return nil, e.subscribeError(ctx, o.denial().WithPath(Path{{Key: f.alias}}))
 			}
-			for i := f.authIdx + 1; i <= f.authIdx+f.argSites; i++ {
+			for i := f.authIdx + 1; i <= f.authIdx+f.argSiteCount(); i++ {
 				if o := d.Outcome(int(i)); o.act == actionDeny {
 					return nil, e.subscribeError(ctx, o.denial().WithPath(Path{{Key: f.alias}}))
 				}

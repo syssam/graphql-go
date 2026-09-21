@@ -19,7 +19,7 @@ func (st *execState) enforceAuth(ctx context.Context, w *jsonw.Writer, f *planFi
 	// input the policy refused, and Null or Zero would hide that the request
 	// was refused at all. The argument sites follow the output site
 	// contiguously (see planField.argSites).
-	for i := f.authIdx + 1; i <= f.authIdx+f.argSites; i++ {
+	for i := f.authIdx + 1; i <= f.authIdx+f.argSiteCount(); i++ {
 		if o := st.decision.Outcome(int(i)); o.act == actionDeny {
 			st.fieldError(ctx, o.denial(), path, f)
 			return true, false

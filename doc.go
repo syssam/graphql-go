@@ -113,6 +113,28 @@
 // restricts is the consumer's naming convention rather than the engine's;
 // RequireAuthCoverage does not require an argument to declare
 // @authorizeInput, for the same reason.
+// Individual values are decided separately. An object type marked
+// @authorizeObject has every value of it offered to the ObjectAuthorizer
+// registered with WithObjectAuthorizer before it is written; without one the
+// marker describes positions and nothing is enforced. These decisions cannot
+// live in a Decision, which is built before any resolver runs and so cannot
+// name values that do not exist yet. Checks are batched per list -- a list of
+// guarded values is drained and decided in one call before any element is
+// written, split only by WithObjectAuthBatch (50 by default) -- while a
+// guarded object reached through a field that is not a list is one call
+// carrying one check. Allow, Deny, Null and Drop apply; Null only where the
+// position is nullable, and Drop only to a list element, where it omits the
+// value and renumbers the indices that follow, so a later denial is reported
+// at the index the client actually sees. A batch that fails -- an error, a
+// mismatched length, an outcome the site cannot represent, a panic -- fails
+// every check still outstanding rather than allowing the ones a later batch
+// would have covered. The marker is rejected at NewSchema anywhere the
+// executor would not consult an ObjectAuthorizer, a root operation type
+// included. An instance site appears in AuthShape.Sites so an Authorizer can
+// see that instance checks will happen, but its outcome comes from the
+// ObjectAuthorizer: Decision.Set refuses it, and an operation whose only
+// sites are instance sites does not consult the Authorizer at all.
+//
 // An Authorizer failure that is not a *Error -- typically a policy backend's
 // own transport failure -- is never shown to a client: it is presented as a
 // generic internal error, with the original logged and kept behind an

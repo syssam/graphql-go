@@ -755,3 +755,214 @@ against the code, not while planning.
    equal in every sample (54/18/529). Struct sizes held: `execState` 64 bytes,
    `OperationContext` 160, `planField` 176.
 
+
+### 9.5 2c — instance sites: decisions made before planning
+
+§9 places `ObjectAuthorizer`, wave batching and `Drop()` in 2c and calls it the
+largest design. What follows is decided, and an implementation plan may not
+reopen it without recording a deviation.
+
+The shape is taken from what the established systems do, because the consumer
+asked for the industry standard rather than a novel mechanism:
+
+- **graphql-ruby** checks an instance at the *type*: `authorized?(object,
+  context)` runs whenever an object of that type is about to be returned, and
+  an unauthorized object is *silently replaced with nil* unless
+  `Schema.unauthorized_object` raises or substitutes. Its list pre-filtering is
+  a separate hook (`scope_items`), not the same call.
+- **ent** (Go) evaluates privacy rules returning Allow, Deny or Skip, and its
+  `Filter` pushes a `Where` into the query, so bulk row filtering happens in
+  the data layer.
+- **Pothos** states that "can this user see THIS row" belongs in the loader or
+  service rather than in field scopes, and that an unauthorized field returns
+  null or a caller-supplied result.
+- **OpenFGA/Zanzibar** filter a list by `BatchCheck`: narrow and sort in the
+  database, then batch-check the page, with a correlation id per check and a
+  bounded batch size (50 by default).
+
+So: the hook is at the type, the default for an unauthorized instance is a
+null rather than an error, checks are batched, and the docs must say that bulk
+filtering belongs in the query when the data layer can express it.
+
+**D1. `directive @authorizeObject on OBJECT` marks a type as instance-guarded.**
+As in 2a and 2b, the marker is in the SDL so the shape is known at plan
+compile and an unmarked type pays nothing. It takes no arguments: what the
+policy needs to know is the type, the instance and the principal, all of which
+it has. `@authorizeObject` on a location the engine cannot enforce is a build
+error, as `@requiresScopes` is.
+
+**D2. Instance decisions do not live in `Decision`.** A `Decision` is built once
+per request, before any resolver runs, and cannot name instances that do not
+exist yet. Instance outcomes come from a second, optional interface called
+during execution:
+
+```go
+type ObjectAuthorizer interface {
+    AuthorizeObjects(ctx context.Context, checks []ObjectCheck) ([]Outcome, error)
+}
+
+type ObjectCheck struct {
+    Site   AuthSite // Kind SiteInstance, Coord the type name
+    Object any      // the resolved Go value about to be written
+}
+```
+
+It is registered with `WithObjectAuthorizer`, beside `WithAuthorizer`. The
+returned slice is positional and must have the same length as `checks`; any
+other length is an Authorizer error, not a silent partial allow.
+
+**D3. The site is `SiteInstance`, a new `SiteKind`.** `SiteObject` stays what
+2a made it: one type-level decision per plan, which guards `__typename`.
+`SiteInstance` is recorded per *field position* that returns an
+instance-guarded type, so the policy sees the coordinate that produced the
+value. A field returning an unmarked type keeps the `authIdx` of -1 it has
+today.
+
+**`planField` cannot carry another field, so the index is derived.** The struct
+is exactly full at 176 bytes: an added `int32` measures 184, and so does an
+added `bool` (measured, both). So a field's sites keep the contiguous layout
+2b introduced and extend it by one position — output site, argument sites,
+then the instance site — and the high bit of `argSites` records that the
+instance site is present. The instance site is then at
+`authIdx + 1 + argSites&countMask`, and a field with an instance-guarded target
+gets the zero-requirement output site that 2b already synthesizes for argument
+sites, so `authIdx >= 0` routes it. Both halves of `argSites` must be read
+through named helpers, never inline, and the count's mask must be asserted in
+the same test that pins the struct size.
+
+**D4. Batching follows the existing wave boundary.** `writeListConcurrent`
+already drains a list's elements before spawning tasks, and `pushWave`
+announces the sibling count that makes DataLoader batching work. An
+instance-guarded list issues one `AuthorizeObjects` call for the whole drained
+list before any element is written; an inline list batches per list; a single
+object is a batch of one. Batches are split at `WithObjectAuthBatch(n)`,
+default 50, matching OpenFGA's default, and the splits run sequentially — a
+policy that wants more parallelism has the whole batch in one call and may do
+as it likes with it.
+
+**D5. Only Allow, Null, Deny and Drop are valid for an instance site.** `Zero`
+and `Redact` are leaf outcomes and have no meaning for an object. `Null`
+writes null, which is graphql-ruby's default and therefore this engine's:
+**an `ObjectAuthorizer` returning the zero `Outcome` allows**, as elsewhere, so
+a policy must say `Null()` deliberately. `Deny` produces the ordinary
+`CodeForbidden` error at the field's path.
+
+**D6. `Drop` omits the value from its enclosing list**, and is finally
+implemented here. It is valid only at a list element position; on a bare field
+it is an Authorizer error, as `Drop` on a non-list is meaningless. Dropping
+from `[T!]!` is allowed: the result is a shorter list, which is what AppSync
+and Hasura produce, and refusing it would make the commonest guarded case —
+a non-null element list — the one case the feature cannot express. Two
+consequences are documented rather than fixed: a client cannot tell a filtered
+list from a short one, and **the response's list indices renumber**, so an
+error reported for a later element names its written index, not its index in
+the source data.
+
+**D7. A null on a non-null element position bubbles as it always has.** `Null`
+inside `[T!]!` nulls the list, then the field, by the existing rules. That is
+the reason `Drop` exists, and the docs must show the pair together.
+
+**D8. Existence hiding is exactly what `Drop` gives, and nothing more.** §9.2's
+known limit stands for everything else: a guarded single object still answers
+null, an empty selection still answers `{}`, and a union that names only an
+unguarded member still reveals that some other member is present. A field that
+must not disclose a count filters in its own query — the engine cannot know
+what "the same list, filtered" means for the caller's data source.
+
+**D9. `ObjectAuthorizer` errors are hardened exactly as `Authorizer` errors
+are.** A non-`*Error` failure is presented as a generic internal error with the
+original behind the unexported cause, and a panic is recovered into one. A
+batch that fails fails every check in it: no instance in that batch is written.
+
+**D10. Subscriptions check instances per event.** The root object and every
+guarded object below it go through the same path the query executor uses, so a
+principal who loses access mid-stream stops seeing those rows on the next
+event.
+
+**D11. Cost.** A plan that selects no instance-guarded type must measure
+unchanged, and `execState` (64 bytes), `OperationContext` (160) and `planField`
+(176) must all hold — see D3 for why the last of those forces the derived
+index rather than a new field. An instance-guarded plan pays one
+`AuthorizeObjects` call per wave plus the slice of checks it carries; the
+check slice is built only when a wave contains a guarded value. No reflection
+is added to the write path.
+
+**D12. Out of scope for 2c**, to be taken up only if the consumer needs it:
+per-`(field, instance)` masking, where an instance decision changes a *field's*
+outcome rather than the object's; `scope_items`-style pre-filtering hooks; and
+static folding of instance checks into the data source's query. The engine's
+answer to bulk filtering stays "push it into the query", documented beside
+`Drop`.
+
+## Phase 2c Deviations
+
+These are authoritative where they disagree with the D1-D12 decisions above.
+Each was found by reviewing the implemented branch and is covered by a test.
+
+**P1. `Null` is refused at a non-null instance position, reversing D7.** D7 said
+a null on a non-null element "bubbles as it always has". It does, but with no
+attribution: the client sees only `Cannot return null for non-nullable field
+Query.me.` and nothing says a policy decided it, which is exactly the outcome
+the same guard rejects for every other site kind. `AuthSite.valueNonNull`
+records the nullability of the position the value occupies -- an instance site
+has no `Field` for the ordinary guard to read -- and `validFor` refuses `Null`
+there, naming `Drop` for a list element and `Deny` otherwise.
+
+**P2. The instance site synthesizes no output site and is not indexed from
+`authIdx`, narrowing D3 and D11.** The derived index (`authIdx + 1 +
+argSiteCount`) had no production caller: `writeList` and `writeComposite` route
+on `planField.hasInstanceSite` alone, and the executor cannot reach the shape
+anyway when only `WithObjectAuthorizer` is configured, because `execState`
+holds a `*Decision` that is nil without an `Authorizer` and has no room for a
+shape pointer. `instanceIdx` is gone; `instanceSiteBit` stays, because
+`hasInstanceSite` is the routing mechanism. The zero-requirement `SiteOutput`
+that was synthesized to "route the field into `enforceAuth`" went with it: it
+routed nothing and enlarged every request's `Decision`.
+
+**P3. An operation whose only sites are instance sites does not consult the
+`Authorizer`, completing D2.** D2 said instance decisions do not live in a
+`Decision`; the first implementation still put the site in `AuthShape.sites`,
+which made `IsEmpty` false and called a configured `Authorizer` once per
+request for a decision it could not make. `AuthShape.decidable` counts the
+non-instance sites and `IsEmpty` reads that. `Sites` still reports instance
+sites, so an `Authorizer` consulted for another reason can see that instance
+checks will happen, and `Decision.Set` refuses one rather than accepting an
+outcome nothing reads.
+
+**P4. Batching is per list, not per wave, correcting D4.** `writeListGuarded`
+drains its list, decides it in one `AuthorizeObjects` call and only then writes
+-- but a guarded object behind a field that is not a list is one call carrying
+one check, so nested single-object fields are an N+1 against a remote decision
+point. Measured: `{ customers { id manager { id } } }` over four customers is
+five calls for eight checks. The `ObjectAuthorizer` godoc states this instead
+of promising per-wave batching.
+
+**P5. `@authorizeObject` is refused on a root operation type.** A root object is
+written by `writeObject` directly and never reaches `writeValue`, so the marker
+was accepted at build and never enforced -- zero `AuthorizeObjects` calls
+against a deny-everything policy. `validateObjectDirectives` rejects it, which
+is the promise the rest of that function already made.
+
+**P6. A guarded list stops at its first fatal failure, as the unguarded one
+does.** A denied non-null element failed the list, which is then rewound, but
+the loop kept deciding and resolving what followed: real I/O for a response
+nobody sees, and one error per element all carrying the first element's index.
+The `Deny` and `Null` branches also bypassed `writeElem`'s response-limit
+checkpoint.
+
+**P7. Each policy batch is a three-index slice.** `checks[start:end:end]`, so a
+policy that appends to the batch it was handed allocates instead of rewriting
+the checks the next call has not been asked about yet. The godoc also states
+that the slice must not be retained or reordered, since outcomes map back by
+position.
+
+**P8. `writeListConcurrent` and `writeListConcurrentPlain` stay separate.**
+Merging them -- one implementation with a nil outcomes slice for the unguarded
+case -- was implemented and reverted: interleaved n=12, +20.18% sec/op
+(p=0.000) and +76.28% B/op on `BenchmarkExecuteConcurrentList`, because the
+merged loop carries an `Outcome` (a func and two strings) per element. The
+leaner `[]int32` of written indices is kept on the guarded side, `drainList`
+removes the escaping closure both shared, and `TestConcurrentListPathsAgree`
+pins what the two write. D11's cost bar holds: every benchmark measured equal
+in allocations and bytes, `execState` 64, `OperationContext` 160, `planField`
+176.

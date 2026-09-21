@@ -138,13 +138,26 @@ const (
 	// SiteInputWrite is an argument marked @authorizeInput(kind: WRITE) on
 	// an object field. Only Allow and Deny are valid outcomes for it.
 	SiteInputWrite
+	// SiteInstance is one resolved object of an @authorizeObject type, about
+	// to be written at this field position. Unlike every other site it is
+	// decided during execution by an ObjectAuthorizer, because the values do
+	// not exist when a Decision is built.
+	SiteInstance
 )
 
 // AuthSite is one position in a plan that may need a decision.
 type AuthSite struct {
-	Coord    string
-	Field    *ast.FieldDefinition // nil when Kind is SiteObject
-	Object   *ast.Definition
+	Coord string
+
+	// Field and Object describe the position. Neither names a field for the
+	// two kinds that are about a type rather than a field position:
+	// SiteObject leaves Field nil, and SiteInstance leaves both nil, since an
+	// instance is decided by its type and the value alone and the same
+	// resolved object can reach several field positions. Coord carries the
+	// type name for both.
+	Field  *ast.FieldDefinition
+	Object *ast.Definition
+
 	Kind     SiteKind
 	Requires Requirement
 	Grants   []string
@@ -167,6 +180,24 @@ type AuthSite struct {
 	// against the request's variables.
 	argType  *ast.Type
 	argValue *ast.Value
+
+	// valueNonNull records whether the position a SiteInstance value occupies
+	// is non-null. Every other kind reads that from Field, which an instance
+	// site deliberately leaves nil, so without it validFor cannot tell
+	// Customer from Customer! and Null would pass at a position the schema
+	// forbids it.
+	valueNonNull bool
+}
+
+// positionNonNull reports whether the position an object value occupies --
+// the field's declared type with every list wrapper stripped -- is non-null.
+// An instance site is about the value, so [Customer!]! and Customer! are the
+// same answer and [Customer]! is the other one.
+func positionNonNull(t *ast.Type) bool {
+	for t.Elem != nil {
+		t = t.Elem
+	}
+	return t.NonNull
 }
 
 // AuthShape is what an operation touches, independent of who is asking. It
@@ -179,6 +210,14 @@ type AuthShape struct {
 	// hasArgSites gates the per-request input walk, so a plan without
 	// argument sites pays nothing for it.
 	hasArgSites bool
+
+	// decidable counts the sites an Authorizer can actually decide -- every
+	// kind but SiteInstance, whose outcome comes from the ObjectAuthorizer.
+	// A plan that selects an @authorizeObject type and declares nothing else
+	// has sites but nothing to ask about, and asking anyway is a policy round
+	// trip per request that can change nothing. The executor does not read
+	// instance sites at all: it routes on planField.hasInstanceSite.
+	decidable int
 
 	// src is the input-free decisionSource every Decision over this shape
 	// shares when there is no input to carry, so newDecision allocates no
@@ -222,10 +261,14 @@ func (s *AuthShape) Scopes() []string {
 	return slices.Clone(s.scopes)
 }
 
-// IsEmpty reports whether the operation touches nothing that declares a
-// requirement and selects no field with an @authorizeInput argument. An
-// Authorizer is not consulted for such an operation.
-func (s *AuthShape) IsEmpty() bool { return s == nil || len(s.sites) == 0 }
+// IsEmpty reports whether the operation touches nothing an Authorizer can
+// decide: it declares no requirement, selects no field with an
+// @authorizeInput argument, and -- since an instance site is decided by the
+// ObjectAuthorizer rather than here -- an operation whose only sites are
+// instance sites is empty too. An Authorizer is not consulted for such an
+// operation. Sites still reports the instance sites, so an Authorizer that is
+// consulted for some other reason can see that instance checks will happen.
+func (s *AuthShape) IsEmpty() bool { return s == nil || s.decidable == 0 }
 
 type action uint8
 
@@ -267,7 +310,9 @@ func Zero() Outcome { return Outcome{act: actionZero} }
 // Redact resolves the field and rewrites the result.
 func Redact(fn func(any) any) Outcome { return Outcome{act: actionRedact, redact: fn} }
 
-// Drop omits the value from its enclosing list.
+// Drop omits the value from its enclosing list. It is valid only at a list
+// element position; dropping renumbers the indices that follow, so a later
+// denial is reported at the index the client actually sees.
 func Drop() Outcome { return Outcome{act: actionDrop} }
 
 func (o Outcome) denial() *Error {
@@ -313,6 +358,12 @@ func (o Outcome) validFor(site AuthSite) error {
 	if (site.Kind == SiteFilterArg || site.Kind == SiteInputWrite) && o.act != actionAllow && o.act != actionDeny {
 		return Errorf("authorization: only Allow and Deny are valid for %s, an argument site", site.Coord)
 	}
+	// An instance site decides whether one object may be seen. Zero and
+	// Redact act on a leaf's value and have nothing to act on here.
+	if site.Kind == SiteInstance && o.act != actionAllow && o.act != actionDeny &&
+		o.act != actionNull && o.act != actionDrop {
+		return Errorf("authorization: only Allow, Null, Deny and Drop are valid for %s, an instance site", site.Coord)
+	}
 	switch o.act {
 	case actionNull:
 		// A literal null on a non-null field is not a value the schema
@@ -325,6 +376,13 @@ func (o Outcome) validFor(site AuthSite) error {
 		// system can represent.
 		if site.Field != nil && site.Field.Type.NonNull {
 			return Errorf("authorization: Null is not valid for %s, which is non-null; use Zero or Deny", site.Coord)
+		}
+		// Same rule, read from the site rather than from Field: an instance
+		// site has no Field, and writeComposite hands its Null straight to
+		// writeNullValue, so a non-null position would bubble to the client
+		// as a bare spec error with nothing saying a policy decided it.
+		if site.Kind == SiteInstance && site.valueNonNull {
+			return Errorf("authorization: Null is not valid for %s, an instance site at a non-null position; use Drop in a list or Deny", site.Coord)
 		}
 	case actionZero:
 		if site.Field == nil {
@@ -346,8 +404,6 @@ func (o Outcome) validFor(site AuthSite) error {
 		if o.redact == nil {
 			return Errorf("authorization: Redact for %s was constructed with a nil function", site.Coord)
 		}
-	case actionDrop:
-		return Errorf("authorization: Drop is not yet implemented")
 	}
 	return nil
 }
@@ -378,6 +434,53 @@ func (f AuthorizerFunc) Authorize(ctx context.Context, shape *AuthShape, d *Deci
 // WithAuthorizer sets the authorizer consulted once per operation.
 func WithAuthorizer(a Authorizer) ExecutorOption {
 	return func(e *Executor) { e.authorizer = a }
+}
+
+// ObjectCheck is one resolved object an ObjectAuthorizer decides on. Type is
+// the concrete object type's name, which differs from Site.Coord when the
+// field's declared type is an interface or a union.
+type ObjectCheck struct {
+	Site   AuthSite
+	Type   string
+	Object any
+}
+
+// ObjectAuthorizer decides whether a principal may see individual objects.
+//
+// Batching is per list: a list of guarded values is drained and decided in one
+// call before any element is written, split into several only by
+// WithObjectAuthBatch. That is what keeps a policy backed by a remote decision
+// point to one call per list rather than one per row. It is not per wave -- a
+// guarded object reached through a field that is not a list is one call
+// carrying one check, so a selection that reaches guarded objects through
+// nested single-object fields issues one call per such field. Where that
+// matters, model the position as a list or cache inside the implementation.
+//
+// The returned slice is positional over checks and must have the same length;
+// any other length is an error, because a short slice would silently allow the
+// rows it does not cover. checks is only valid for the duration of the call:
+// do not retain it, and do not reorder it in place, since the outcomes are
+// mapped back by position in the order it was given.
+type ObjectAuthorizer interface {
+	AuthorizeObjects(ctx context.Context, checks []ObjectCheck) ([]Outcome, error)
+}
+
+// WithObjectAuthorizer enables instance-level authorization. Without it,
+// @authorizeObject describes positions and nothing is enforced.
+func WithObjectAuthorizer(a ObjectAuthorizer) ExecutorOption {
+	return func(e *Executor) { e.objectAuthorizer = a }
+}
+
+// WithObjectAuthBatch bounds how many checks one AuthorizeObjects call
+// carries; larger waves are split into sequential calls. The default of 50
+// matches OpenFGA's BatchCheck default, which is the shape most remote
+// policy backends are tuned for.
+func WithObjectAuthBatch(n int) ExecutorOption {
+	return func(e *Executor) {
+		if n > 0 {
+			e.objectAuthBatch = n
+		}
+	}
 }
 
 // Decision records the outcome for each site in a shape. It is passed to the
@@ -421,6 +524,12 @@ func newDecision(shape *AuthShape) *Decision {
 func (d *Decision) Set(site int, o Outcome) error {
 	if d == nil || site < 0 || site >= len(d.outcomes) {
 		return Errorf("authorization: site %d is out of range", site)
+	}
+	if s := d.src.shape.sites[site]; s.Kind == SiteInstance {
+		// The executor reads an instance outcome from the ObjectAuthorizer's
+		// reply, never from here, so recording one would be a decision that
+		// silently does nothing.
+		return Errorf("authorization: %s is an instance site; its outcome comes from the ObjectAuthorizer, not from Decision.Set", s.Coord)
 	}
 	if err := o.validFor(d.src.shape.sites[site]); err != nil {
 		return err
