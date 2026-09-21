@@ -103,11 +103,12 @@ type planField struct {
 	// planField is exactly full at 176 bytes: an added int32 or even an added
 	// bool measures 184, crossing a size class that runSubscriptionEvent pays
 	// per event (`f := *src` copies a planField), and a slice header here
-	// measured 200. The low bits count this field's argument sites and
-	// instanceSiteBit records that an instance site follows them. The plan's
-	// AuthShape stores a field's sites contiguously -- output site, argument
-	// sites, instance site -- so both are indices derived from authIdx rather
-	// than stored.
+	// measured 200. The low bits count this field's argument sites, which the
+	// plan's AuthShape stores contiguously after the field's output site so
+	// enforceAuth walks them by offset from authIdx. instanceSiteBit records
+	// only that the field returns something instance-guarded: writeList and
+	// writeComposite route on that bit alone and never reach an instance site
+	// through authIdx, so there is no index to derive.
 	argSites int32
 }
 
@@ -121,9 +122,6 @@ const (
 func (f *planField) argSiteCount() int32 { return f.argSites & argSiteMask }
 
 func (f *planField) hasInstanceSite() bool { return f.argSites&instanceSiteBit != 0 }
-
-// instanceIdx is valid only when hasInstanceSite reports true.
-func (f *planField) instanceIdx() int32 { return f.authIdx + 1 + f.argSiteCount() }
 
 // fieldExec holds the executor functions used for a field within one plan.
 // They start as copies of the fieldDef functions and are replaced by

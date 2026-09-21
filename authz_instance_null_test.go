@@ -53,7 +53,9 @@ func TestDecisionSetRejectsAnInstanceSite(t *testing.T) {
 		}
 		return nil
 	})))
-	run(t, e, `{ customers { id } }`, "")
+	// A query with an argument site, so the Authorizer is consulted at all --
+	// a plan whose only sites are instance sites does not reach it.
+	run(t, e, `{ filtered(where: {nameContains: "o"}) { id } }`, "")
 	if !saw {
 		t.Fatal("no instance site was published to the Authorizer")
 	}
@@ -133,5 +135,31 @@ func TestConcurrentListPathsAgree(t *testing.T) {
 				t.Fatalf("errors diverged: plain = %v, guarded = %v", plain.Errors, guarded.Errors)
 			}
 		})
+	}
+}
+
+// An instance site is something an Authorizer can observe but not decide: its
+// outcome comes from the ObjectAuthorizer. A plan whose only sites are
+// instance sites therefore has nothing to ask about, and asking anyway is a
+// policy round trip per request that can change nothing.
+func TestInstanceOnlyPlanDoesNotCallTheAuthorizer(t *testing.T) {
+	var calls int
+	a := AuthorizerFunc(func(context.Context, *AuthShape, *Decision) error {
+		calls++
+		return nil
+	})
+	e := newInstanceExecutor(t, WithAuthorizer(a))
+	resp := run(t, e, `{ customers { id } }`, "")
+	if len(resp.Errors) != 0 {
+		t.Fatalf("errors = %v", resp.Errors)
+	}
+	if calls != 0 {
+		t.Fatalf("the Authorizer was called %d times for a plan whose only sites are instance sites", calls)
+	}
+	// The control: a field that does declare a requirement still calls it.
+	e2 := newInstanceExecutor(t, WithAuthorizer(a))
+	run(t, e2, `{ filtered(where: {nameContains: "o"}) { id } }`, "")
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1: an argument site must still reach the Authorizer", calls)
 	}
 }

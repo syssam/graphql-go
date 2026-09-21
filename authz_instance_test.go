@@ -312,58 +312,75 @@ func planFor(t *testing.T, e *Executor, query string) *plan {
 	return p
 }
 
+// instanceSiteOf finds the one instance site for a type in a shape, the way a
+// caller reading AuthShape.Sites() would. The executor does not index it: it
+// routes on planField.hasInstanceSite, so there is no derived index to assert.
+func instanceSiteIn(t *testing.T, p *plan, coord string) AuthSite {
+	t.Helper()
+	var found []AuthSite
+	for _, s := range p.shape.Sites() {
+		if s.Kind == SiteInstance && s.Coord == coord {
+			found = append(found, s)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("%d instance sites for %q, want 1", len(found), coord)
+	}
+	return found[0]
+}
+
 func TestInstanceSitesAtPlanCompile(t *testing.T) {
 	e := newInstanceExecutor(t)
 	p := planFor(t, e, `{ customers { id } plain }`)
 
 	f := fieldByName(t, p, "customers")
-	if f.authIdx < 0 {
-		t.Fatal("a field returning a guarded type must route through enforceAuth")
-	}
 	if !f.hasInstanceSite() {
 		t.Fatal("customers has no instance site")
 	}
 	if f.argSiteCount() != 0 {
 		t.Fatalf("argSiteCount = %d, want 0", f.argSiteCount())
 	}
-	site := p.shape.sites[f.instanceIdx()]
-	if site.Kind != SiteInstance || site.Coord != "Customer" {
-		t.Fatalf("site = %v/%q, want SiteInstance/Customer", site.Kind, site.Coord)
+	// A field that declares nothing of its own gets no output site for an
+	// instance check: the executor never reaches one through authIdx.
+	if f.authIdx != -1 {
+		t.Fatalf("authIdx = %d, want -1: an instance check is not routed through enforceAuth", f.authIdx)
 	}
+	site := instanceSiteIn(t, p, "Customer")
 	if !site.Requires.IsZero() {
 		t.Fatal("an instance site carries no requirement of its own")
 	}
 	if site.Field != nil {
 		t.Fatal("an instance site has no field of its own")
 	}
-	if out := p.shape.sites[f.authIdx]; out.Kind != SiteOutput || !out.Requires.IsZero() {
-		t.Fatalf("routing site = %v, want a zero-requirement SiteOutput", out.Kind)
-	}
 
 	plain := fieldByName(t, p, "plain")
 	if plain.authIdx != -1 || plain.hasInstanceSite() {
 		t.Fatalf("plain: authIdx=%d hasInstanceSite=%v, want -1/false", plain.authIdx, plain.hasInstanceSite())
 	}
-	if !p.shape.hasInstanceSites {
-		t.Fatal("shape does not record instance sites")
+	// Nothing here declares a requirement, so there is nothing to ask an
+	// Authorizer about even though the shape is not empty.
+	if !p.shape.IsEmpty() {
+		t.Fatal("a shape whose only sites are instance sites is empty to an Authorizer")
 	}
 }
 
-func TestInstanceSiteFollowsArgumentSitesContiguously(t *testing.T) {
+func TestInstanceSiteAlongsideAnArgumentSite(t *testing.T) {
 	e := newInstanceExecutor(t)
 	p := planFor(t, e, `{ filtered(where: {nameContains: "a"}) { id } }`)
 	f := fieldByName(t, p, "filtered")
 	if f.argSiteCount() != 1 || !f.hasInstanceSite() {
 		t.Fatalf("argSiteCount=%d hasInstanceSite=%v, want 1/true", f.argSiteCount(), f.hasInstanceSite())
 	}
-	if k := p.shape.sites[f.authIdx+1].Kind; k != SiteFilterArg {
-		t.Fatalf("site after the output site = %v, want SiteFilterArg", k)
+	// The argument sites still follow the output site contiguously; enforceAuth
+	// walks them by offset and the instance site must not be among them.
+	for i := f.authIdx + 1; i <= f.authIdx+f.argSiteCount(); i++ {
+		if k := p.shape.sites[i].Kind; k != SiteFilterArg && k != SiteInputWrite {
+			t.Fatalf("site %d in the argument range is %v", i, k)
+		}
 	}
-	if k := p.shape.sites[f.instanceIdx()].Kind; k != SiteInstance {
-		t.Fatalf("site at instanceIdx = %v, want SiteInstance", k)
-	}
-	if f.instanceIdx() != f.authIdx+2 {
-		t.Fatalf("instanceIdx = %d, want %d", f.instanceIdx(), f.authIdx+2)
+	instanceSiteIn(t, p, "Customer")
+	if p.shape.IsEmpty() {
+		t.Fatal("an argument site must still reach the Authorizer")
 	}
 }
 
@@ -374,9 +391,10 @@ func TestInstanceSiteOnAnAbstractPosition(t *testing.T) {
 	if !f.hasInstanceSite() {
 		t.Fatal("an abstract position with a guarded implementer needs an instance site")
 	}
-	if c := p.shape.sites[f.instanceIdx()].Coord; c != "Node" {
-		t.Fatalf("Coord = %q, want the abstract type's name Node", c)
-	}
+	// The abstract type's name, not a concrete implementer's: the concrete
+	// type is known only once the value resolves, and ObjectCheck.Type carries
+	// it then.
+	instanceSiteIn(t, p, "Node")
 }
 
 func TestPlanWithoutInstanceSitesIsUnchanged(t *testing.T) {

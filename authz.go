@@ -211,9 +211,13 @@ type AuthShape struct {
 	// argument sites pays nothing for it.
 	hasArgSites bool
 
-	// hasInstanceSites gates the per-wave instance check the same way, so a
-	// plan that selects no @authorizeObject type never assembles a batch.
-	hasInstanceSites bool
+	// decidable counts the sites an Authorizer can actually decide -- every
+	// kind but SiteInstance, whose outcome comes from the ObjectAuthorizer.
+	// A plan that selects an @authorizeObject type and declares nothing else
+	// has sites but nothing to ask about, and asking anyway is a policy round
+	// trip per request that can change nothing. The executor does not read
+	// instance sites at all: it routes on planField.hasInstanceSite.
+	decidable int
 
 	// src is the input-free decisionSource every Decision over this shape
 	// shares when there is no input to carry, so newDecision allocates no
@@ -257,10 +261,14 @@ func (s *AuthShape) Scopes() []string {
 	return slices.Clone(s.scopes)
 }
 
-// IsEmpty reports whether the operation touches nothing that declares a
-// requirement and selects no field with an @authorizeInput argument. An
-// Authorizer is not consulted for such an operation.
-func (s *AuthShape) IsEmpty() bool { return s == nil || len(s.sites) == 0 }
+// IsEmpty reports whether the operation touches nothing an Authorizer can
+// decide: it declares no requirement, selects no field with an
+// @authorizeInput argument, and -- since an instance site is decided by the
+// ObjectAuthorizer rather than here -- an operation whose only sites are
+// instance sites is empty too. An Authorizer is not consulted for such an
+// operation. Sites still reports the instance sites, so an Authorizer that is
+// consulted for some other reason can see that instance checks will happen.
+func (s *AuthShape) IsEmpty() bool { return s == nil || s.decidable == 0 }
 
 type action uint8
 

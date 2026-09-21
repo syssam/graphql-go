@@ -33,23 +33,28 @@ func buildAuthShape(root *objectType, sel *selectionSet) *AuthShape {
 		return nil
 	}
 	slices.Sort(b.scopes)
+	decidable := 0
+	for i := range b.sites {
+		if b.sites[i].Kind != SiteInstance {
+			decidable++
+		}
+	}
 	s := &AuthShape{
-		sites:            b.sites,
-		scopes:           slices.Compact(b.scopes),
-		hasArgSites:      b.hasArgSites,
-		hasInstanceSites: b.hasInstanceSites,
+		sites:       b.sites,
+		scopes:      slices.Compact(b.scopes),
+		hasArgSites: b.hasArgSites,
+		decidable:   decidable,
 	}
 	s.src.shape = s
 	return s
 }
 
 type shapeBuilder struct {
-	sites            []AuthSite
-	scopes           []string
-	seen             map[*selectionSet]bool
-	objectSite       map[*objectType]int32
-	hasArgSites      bool
-	hasInstanceSites bool
+	sites       []AuthSite
+	scopes      []string
+	seen        map[*selectionSet]bool
+	objectSite  map[*objectType]int32
+	hasArgSites bool
 }
 
 // walk visits a selection set whose parent is obj (concrete) or abs (abstract).
@@ -168,29 +173,18 @@ func (b *shapeBuilder) field(obj *objectType, f *planField) {
 		f.argSites = int32(nArgSites)
 	}
 
-	// Appended after the argument sites, which is what makes instanceIdx --
-	// authIdx + 1 + the count -- land on it. As above, a field with no
-	// requirement of its own still needs an output site so the one authIdx
-	// compare on the write path routes it into enforceAuth; a zero
-	// Requirement allows.
+	// Recorded so an Authorizer consulted for some other reason can see that
+	// instance checks will happen here. It synthesizes no output site: unlike
+	// an argument site, the executor never reaches an instance check through
+	// authIdx -- writeList and writeComposite route on hasInstanceSite alone
+	// -- so a site here would only enlarge every request's Decision.
 	if f.def != nil && b.instanceGuardedAt(f) {
-		if f.authIdx < 0 {
-			f.authIdx = int32(len(b.sites))
-			b.sites = append(b.sites, AuthSite{
-				Coord:  coordinate(f.def.object.name, f.name),
-				Field:  f.def.def,
-				Object: f.def.object.def,
-				Kind:   SiteOutput,
-				leaf:   f.def.leaf,
-			})
-		}
 		b.sites = append(b.sites, AuthSite{
 			Coord:        f.def.def.Type.Name(),
 			Kind:         SiteInstance,
 			valueNonNull: positionNonNull(f.def.def.Type),
 		})
 		f.argSites |= instanceSiteBit
-		b.hasInstanceSites = true
 	}
 
 	b.walk(f.target, f.abstract, f.sub)
