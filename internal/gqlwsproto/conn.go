@@ -450,9 +450,10 @@ func (c *conn) persistedResult(id string, resp *graphql.Response) {
 	if err := c.writeNext(id, resp); err != nil {
 		return
 	}
-	if err := c.write(c.ctx, OutMessage{ID: id, Type: TypeComplete}); err != nil {
-		return
-	}
+	// Through finish like every other terminal message, so a failed write is
+	// logged rather than dropped. Its forget is a no-op here: a persisted
+	// result returns before the id is ever registered.
+	c.finish(id, OutMessage{ID: id, Type: TypeComplete})
 }
 
 // runOnce serves a query or mutation as one next followed by complete.
