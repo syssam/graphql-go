@@ -35,7 +35,13 @@
 // what a principal may do with it, and how that decision is enforced. A
 // schema author marks a field with @requiresScopes(scopes: [[String!]!]!),
 // an OR of ANDs read into a Requirement; NewSchema rejects a malformed
-// scopes value. @requiresScopes and @authorizeInput only describe positions
+// scopes value. That spelling is the default rather than the only one:
+// RequirementDirective(name, arg, shape) declares another SDL directive read
+// into a Requirement, so a schema that already spells its requirements
+// @auth(requires: [String!]) is enforced without renaming every site. The
+// shape is declared rather than inferred, because @auth(requires: ["a","b"])
+// is the same text whether the author meant AND or OR and guessing wrongly
+// widens access. @requiresScopes and @authorizeInput only describe positions
 // in the schema; nothing is enforced against them unless an Authorizer is
 // configured with WithAuthorizer. At plan compile, buildAuthShape walks the
 // plan once and records every such field, and every field that selects an
