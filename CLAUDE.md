@@ -255,6 +255,17 @@ nothing inside a pure field, interceptor or not). A registered interceptor still
 the bounded semaphore; `Inline()`/`Concurrent()` override per field. `loader.Loader` (`loader/`)
 coalesces `Load` calls within one concurrent wave — the executor announces a wave before
 launching sibling tasks (`pushWave`), which is what makes DataLoader batching work.
+**`Park` must fall back to the tick when the wave it parks into is spent** — every announced
+task begun and ended, so `ready` (which needs a task in flight) can never be true again.
+That is precisely the state `writeFieldsConcurrent` leaves on the stack while it writes the
+fields that are *not* schedulable, after `g.wait()` and before the deferred pop, which is
+where an `Inline()` resolver runs: without the fallback its `Load` parked forever and the
+request hung to its deadline holding a shared concurrency slot
+(`TestLoadFromAnInlineResolverIsFlushed`, `TestWaveCoordinatorFallsBackWhenTheWaveIsDead`).
+The fallback must stay conditional — arming it while a sibling is still in flight dispatches
+before that sibling queues its keys and walks batching back toward N+1
+(`TestWaveCoordinatorDoesNotFallBackWhileATaskIsInFlight`); breaking the condition either way
+fails one of the two.
 
 `transport/gqlws/load_test.go` opens 150 concurrent subscriptions and requires both the
 source registrations and the goroutines back afterwards; it honours `-short`.
