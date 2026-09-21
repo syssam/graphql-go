@@ -57,6 +57,15 @@ type OperationStats struct {
 
 // Set stores an arbitrary value scoped to the operation, for use by
 // interceptors and extensions.
+//
+// Use [OperationContext.GetOrSet] to install request-scoped state. Get
+// followed by Set is a check-then-act pair, and sibling resolvers running
+// concurrently reach their first call together: each one then sees no value,
+// installs its own, and state meant to be shared is silently duplicated. For a
+// DataLoader that means the pending queue and the cache split and batching
+// degrades to N+1, with no error and no race report -- the repository ships an
+// analyzer (lint/cmd/gqlvet) for that pair because -race does not find it.
+// Set is for a value the caller knows it is the only writer of.
 func (oc *OperationContext) Set(key, value any) {
 	oc.mu.Lock()
 	defer oc.mu.Unlock()
