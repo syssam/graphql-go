@@ -371,10 +371,10 @@ func (b *schemaBuilder) validateAuthDirectives() {
 		}
 		switch def.Kind {
 		case ast.Object, ast.Interface:
-			b.checkRequiresScopes(name, def.Directives)
+			b.checkRequirementDirectives(name, def.Directives)
 			for _, f := range def.Fields {
 				coord := coordinate(name, f.Name)
-				b.checkRequiresScopes(coord, f.Directives)
+				b.checkRequirementDirectives(coord, f.Directives)
 				for _, a := range f.Arguments {
 					b.rejectUnenforced(argCoordinate(coord, a.Name), "an argument", a.Directives)
 				}
@@ -547,8 +547,10 @@ func (b *schemaBuilder) checkInputDirectiveKind(coord string, ds ast.DirectiveLi
 }
 
 func (b *schemaBuilder) rejectUnenforced(coord, what string, ds ast.DirectiveList) {
-	if ds.ForName(authDirective) != nil {
-		b.errorf("%s: @%s is not enforced on %s; declare it on an object, interface or field", coord, authDirective, what)
+	for _, rd := range b.reqDirectives {
+		if ds.ForName(rd.name) != nil {
+			b.errorf("%s: @%s is not enforced on %s; declare it on an object, interface or field", coord, rd.name, what)
+		}
 	}
 }
 
@@ -631,7 +633,15 @@ func (b *schemaBuilder) combineWithInterfaces(coord string, acc Requirement, int
 // authorization" error per field of it: the stored requirement is zero only
 // because the cap stopped it, and those errors would bury the real cause.
 func (b *schemaBuilder) capExceeded(coord string) {
-	b.errorf("%s: effective @%s has more than %d groups", coord, authDirective, maxRequirementGroups)
+	// The set, not one name: the cap is on the effective requirement, which
+	// combines a field's own declarations with its type's and its interfaces'
+	// and may draw on more than one spelling. Naming whichever occurrence
+	// happened to overflow would point at an arbitrary one of them.
+	names := make([]string, 0, len(b.reqDirectives))
+	for _, rd := range b.reqDirectives {
+		names = append(names, "@"+rd.name)
+	}
+	b.errorf("%s: effective requirement from %s has more than %d groups", coord, strings.Join(names, ", "), maxRequirementGroups)
 	if b.authCapped == nil {
 		b.authCapped = make(map[string]bool)
 	}
@@ -731,12 +741,41 @@ func (b *schemaBuilder) validateAuthCoverage(s *Schema) {
 // extension can add a second occurrence gqlparser never folds into the
 // first (see requirementOf), and a malformed one must fail the build exactly
 // like a malformed first occurrence would.
-func (b *schemaBuilder) checkRequiresScopes(coord string, ds ast.DirectiveList) {
-	for _, d := range ds.ForNames(authDirective) {
-		if !scopesShapeValid(d.Arguments.ForName("scopes")) {
-			b.errorf("%s: @%s scopes must be a non-empty list of non-empty lists of strings", coord, authDirective)
+func (b *schemaBuilder) checkRequirementDirectives(coord string, ds ast.DirectiveList) {
+	for _, rd := range b.reqDirectives {
+		for _, d := range ds.ForNames(rd.name) {
+			arg := d.Arguments.ForName(rd.arg)
+			valid := false
+			switch rd.shape {
+			case ScopesNested:
+				valid = scopesShapeValid(arg)
+			case ScopesAllOf, ScopesAnyOf:
+				valid = flatScopesValid(arg)
+			}
+			if valid {
+				continue
+			}
+			if rd.shape == ScopesNested {
+				b.errorf("%s: @%s %s must be a non-empty list of non-empty lists of strings", coord, rd.name, rd.arg)
+			} else {
+				b.errorf("%s: @%s %s must be a non-empty list of strings", coord, rd.name, rd.arg)
+			}
 		}
 	}
+}
+
+// flatScopesValid accepts a non-empty list of string literals, which is what
+// ScopesAllOf and ScopesAnyOf read.
+func flatScopesValid(arg *ast.Argument) bool {
+	if arg == nil || arg.Value == nil || arg.Value.Kind != ast.ListValue || len(arg.Value.Children) == 0 {
+		return false
+	}
+	for _, elem := range arg.Value.Children {
+		if elem.Value == nil || elem.Value.Kind != ast.StringValue {
+			return false
+		}
+	}
+	return true
 }
 
 // scopesShapeValid reports whether arg's value is a non-empty ListValue of

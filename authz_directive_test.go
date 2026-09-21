@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -159,5 +160,75 @@ func TestCustomDirectiveIsEnforced(t *testing.T) {
 	held["admin"] = true
 	if resp = run(t, e, `{ secret }`, ""); len(resp.Errors) != 0 {
 		t.Fatalf("holding the scope still denied: %v", resp.Errors)
+	}
+}
+
+// gqlparser checks a directive's name, location and argument presence, never
+// its argument literal. Without a per-shape check, @auth(requires: "admin") --
+// a string where a list belongs -- builds clean and guards nothing.
+func TestCustomDirectiveMalformedLiteralIsRejected(t *testing.T) {
+	const sdl = `
+directive @auth(requires: [String!]) on FIELD_DEFINITION
+type Query { secret: String! @auth(requires: "admin") }
+`
+	_, err := NewSchema(SDL(sdl),
+		RequirementDirective("auth", "requires", ScopesAllOf),
+		Query(Field("secret", func(Root) string { return "s" })))
+	if err == nil {
+		t.Fatal("a malformed literal was accepted")
+	}
+	if !strings.Contains(err.Error(), "@auth") {
+		t.Fatalf("error does not name the offending directive: %v", err)
+	}
+}
+
+// A custom directive in a position the engine does not enforce must be a build
+// error naming that directive, exactly as @requiresScopes is. Reading a
+// directive without also rejecting its misplacement is the fail-open this
+// design exists to prevent.
+func TestCustomDirectiveMisplacementIsRejected(t *testing.T) {
+	for _, c := range []struct{ name, sdl string }{
+		{"input field", `
+directive @auth(requires: [String!]) on FIELD_DEFINITION | INPUT_FIELD_DEFINITION
+input Where { name: String @auth(requires: ["admin"]) }
+type Query { secret(w: Where): String! }
+`},
+		{"field argument", `
+directive @auth(requires: [String!]) on FIELD_DEFINITION | ARGUMENT_DEFINITION
+type Query { secret(id: ID! @auth(requires: ["admin"])): String! }
+`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := NewSchema(SDL(c.sdl),
+				RequirementDirective("auth", "requires", ScopesAllOf))
+			if err == nil {
+				t.Fatal("a misplaced custom directive was accepted")
+			}
+			if !strings.Contains(err.Error(), "@auth") {
+				t.Fatalf("error does not name the offending directive: %v", err)
+			}
+		})
+	}
+}
+
+// The group cap protects plan compile from a combinatorial requirement, and
+// it must apply to every spelling. AND multiplies group counts, so each
+// occurrence has to contribute more than one group to overflow it: a
+// two-scope ScopesAnyOf list is two groups, and k of them are 2^k.
+func TestCustomDirectiveIsCapped(t *testing.T) {
+	var sb strings.Builder
+	sb.WriteString("directive @auth(requires: [String!]) repeatable on FIELD_DEFINITION\ntype Query {\n  secret: String!")
+	for i := range 16 {
+		fmt.Fprintf(&sb, " @auth(requires: [\"a%d\", \"b%d\"])", i, i)
+	}
+	sb.WriteString("\n}\n")
+	_, err := NewSchema(SDL(sb.String()),
+		RequirementDirective("auth", "requires", ScopesAnyOf),
+		Query(Field("secret", func(Root) string { return "s" })))
+	if err == nil {
+		t.Fatal("an over-cap requirement was accepted")
+	}
+	if !strings.Contains(err.Error(), "@auth") {
+		t.Fatalf("cap error does not name the offending directive: %v", err)
 	}
 }
