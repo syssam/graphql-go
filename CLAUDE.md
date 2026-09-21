@@ -553,8 +553,18 @@ the request that caused it. They live in `ext/otel` rather than as a loader opti
 `graphqlgo.loader.keys` is the attribute to alert on: one key per span means batching has
 degraded to N+1.
 
-`ext/apq` is automatic persisted queries, opt-in through `WithPersistedQueries` on either
-HTTP transport. **Resolution happens during parsing, not at execution**: a request carrying
+`ext/apq` is automatic persisted queries, opt-in through `WithPersistedQueries` on the HTTP
+transports and, on a subscribe message, on `gqlws` and `gqlfiber`. **A WebSocket miss goes out
+as `next` then `complete`, never as `error`**: the whole handshake depends on the client
+reading `PersistedQueryNotFound` and retrying with the full text, and graphql-ws treats
+`error` as terminal, so sending one silently breaks the protocol this implements. That is why
+it does not go through `runOnce`, which routes a response carrying request errors to
+`finishWithErrors`. `internal/gqlwsproto` takes it as `Config.ResolvePersisted`, a func rather
+than an `apq.Cache`, so the protocol core keeps depending on nothing but the root package
+while the transports — which already import `ext/apq` for their HTTP handlers — supply it.
+On both carriers **resolution happens while the request is still being read, not at
+execution** — on a WebSocket before the id is registered or a subscription slot is taken, and
+over HTTP during parsing. The HTTP ordering is load-bearing: a request carrying
 only a hash has no query text, so the "mutations are not allowed over GET" guard would have
 nothing to inspect and would wave a persisted mutation through. Registration verifies
 `sha256(query) == hash` — storing whatever text arrived would let one client choose what
@@ -793,9 +803,7 @@ declared rather than hardcoded (`RequirementDirective`, so a schema spelling its
 `ext/trusted` and DataLoader tracing. Not built: `ext/authz`, which is now smaller than it
 was scoped as -- `@requiresScopes` is core and any other spelling is one `RequirementDirective`
 call, so what is left of it is `@authenticated` (needs a no-argument shape), `@policy` (a
-second namespace that is not scopes) and a batched `Guard`. Also not built: APQ over
-WebSocket, which belongs in the
-`graphql-transport-ws` state machine. `@defer`/`@stream` is not merely unbuilt — the prelude's
+second namespace that is not scopes) and a batched `Guard`. `@defer`/`@stream` is not merely unbuilt — the prelude's
 `@defer` is stripped in `introspection.go` so the validator and introspection agree the
 server says no; adding it reverses a decision rather than filling a gap. Not measured, both
 needing Linux: latency percentiles, which this machine's ~522us clock granularity makes

@@ -327,6 +327,15 @@ func (c *conn) subscribe(msg InMessage) bool {
 		Variables:     payload.Variables,
 		Extensions:    payload.Extensions,
 	}
+	// Resolved here, where the request is still being read rather than run,
+	// which is where the HTTP handlers resolve it too. A miss returns before
+	// the id is registered or a subscription slot is taken.
+	if c.cfg.ResolvePersisted != nil {
+		if resp := c.cfg.ResolvePersisted(req); resp != nil {
+			c.persistedResult(msg.ID, resp)
+			return true
+		}
+	}
 
 	ctx, cancel := context.WithCancel(c.ctx)
 
@@ -430,6 +439,20 @@ func (c *conn) run(ctx context.Context, id string, req *graphql.Request) {
 		return
 	}
 	c.finish(id, OutMessage{ID: id, Type: TypeComplete})
+}
+
+// persistedResult sends a persisted-query resolution as an ordinary result
+// for the operation. Deliberately not through runOnce: that routes a response
+// carrying request errors to finishWithErrors, and PersistedQueryNotFound
+// reaching the client as an error message would end the operation for good
+// where the protocol expects the client to retry with the full query text.
+func (c *conn) persistedResult(id string, resp *graphql.Response) {
+	if err := c.writeNext(id, resp); err != nil {
+		return
+	}
+	if err := c.write(c.ctx, OutMessage{ID: id, Type: TypeComplete}); err != nil {
+		return
+	}
 }
 
 // runOnce serves a query or mutation as one next followed by complete.
