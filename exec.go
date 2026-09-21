@@ -409,8 +409,8 @@ func (e *Executor) execute(ctx context.Context, req *Request) *Response {
 		Stats:         OperationStats{Start: start, CacheHit: cacheHit, PlanUncacheable: entry.planUncacheable()},
 		plan:          p,
 		entry:         entry,
-		hub:           newWaveCoordinator(),
 	}
+	oc.hub = &oc.wave
 	// The cost is computed here rather than at the limit check because a
 	// rate limiter is an operation interceptor, and those wrap that check
 	// rather than following it. Without this oc.Cost() hands every

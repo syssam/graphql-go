@@ -12,8 +12,17 @@ import (
 // of the number, so a later change that crosses a boundary is visible.
 func TestStructSizes(t *testing.T) {
 	t.Logf("execState        = %d bytes", unsafe.Sizeof(execState{}))
-	t.Logf("OperationContext = %d bytes", unsafe.Sizeof(OperationContext{}))
 	t.Logf("planField        = %d bytes", unsafe.Sizeof(planField{}))
+
+	// OperationContext holds its WaveCoordinator by value, which only pays
+	// for itself because 160 + 64 lands exactly on the 224 size class: the
+	// separate coordinator cost the same bytes in a second allocation. One
+	// more word here crosses to 256 and the embedding starts costing 32
+	// bytes a request instead of saving an allocation, so re-measure that
+	// trade rather than just updating the number.
+	if got := unsafe.Sizeof(OperationContext{}); got != 224 {
+		t.Errorf("OperationContext = %d bytes, want 224 (see the comment: the embedded WaveCoordinator depends on it)", got)
+	}
 
 	// Unlike the two logged above, this one is asserted: runSubscriptionEvent
 	// copies a planField by value once per event (`f := *src`), and a slice

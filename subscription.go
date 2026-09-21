@@ -184,8 +184,8 @@ func (e *Executor) Subscribe(ctx context.Context, req *Request) (<-chan *Respons
 		Stats:         OperationStats{Start: start, CacheHit: cacheHit, PlanUncacheable: entry.planUncacheable()},
 		plan:          p,
 		entry:         entry,
-		hub:           newWaveCoordinator(),
 	}
+	base.hub = &base.wave
 	// The cost is computed here rather than at the limit check because a
 	// rate limiter is an operation interceptor, and those wrap that check
 	// rather than following it. Without this base.Cost() hands every
@@ -307,7 +307,7 @@ func (e *Executor) pump(ctx context.Context, base *OperationContext, f *planFiel
 // as a DataLoader cache must not outlive the event that populated it, or a
 // long-lived subscription would serve stale data forever.
 func (e *Executor) eventContext(base *OperationContext, f *planField, event any) *OperationContext {
-	return &OperationContext{
+	oc := &OperationContext{
 		Operation:     base.Operation,
 		Doc:           base.Doc,
 		RawQuery:      base.RawQuery,
@@ -316,9 +316,10 @@ func (e *Executor) eventContext(base *OperationContext, f *planField, event any)
 		Stats:         OperationStats{Start: time.Now(), CacheHit: base.Stats.CacheHit, PlanUncacheable: base.Stats.PlanUncacheable},
 		plan:          base.plan,
 		entry:         base.entry,
-		hub:           newWaveCoordinator(),
 		event:         &subEvent{field: f, value: event},
 	}
+	oc.hub = &oc.wave
+	return oc
 }
 
 // subEvent carries one event into the operation chain, so that interceptors,

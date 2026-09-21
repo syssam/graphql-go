@@ -28,7 +28,7 @@ func TestWaveCoordinatorNilIsInert(t *testing.T) {
 // drives: a wave is announced, its tasks begin, and dispatch happens only
 // once every in-flight task is parked -- not before.
 func TestWaveCoordinatorDispatchesWhenWaveParks(t *testing.T) {
-	w := newWaveCoordinator()
+	w := &WaveCoordinator{}
 	flushes := 0
 	w.OnReady(func() { flushes++ })
 
@@ -56,7 +56,7 @@ func TestWaveCoordinatorDispatchesWhenWaveParks(t *testing.T) {
 // exists for: a task that has not begun yet must hold back dispatch, or its
 // keys are loaded in a second batch.
 func TestWaveCoordinatorWaitsForLateTask(t *testing.T) {
-	w := newWaveCoordinator()
+	w := &WaveCoordinator{}
 	flushes := 0
 	w.OnReady(func() { flushes++ })
 
@@ -82,7 +82,7 @@ func TestWaveCoordinatorWaitsForLateTask(t *testing.T) {
 // has finished rather than after a real timeout.
 func TestWaveCoordinatorScheduleFallback(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		w := newWaveCoordinator()
+		w := &WaveCoordinator{}
 		var flushes atomic.Int32
 		w.OnReady(func() { flushes.Add(1) })
 
@@ -102,7 +102,7 @@ func TestWaveCoordinatorScheduleFallback(t *testing.T) {
 // the fallback the caller waits for its deadline.
 func TestWaveCoordinatorFallsBackWhenTheWaveIsDead(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		w := newWaveCoordinator()
+		w := &WaveCoordinator{}
 		var flushes atomic.Int32
 		w.OnReady(func() { flushes.Add(1) })
 
@@ -127,7 +127,7 @@ func TestWaveCoordinatorFallsBackWhenTheWaveIsDead(t *testing.T) {
 // degrades towards N+1.
 func TestWaveCoordinatorDoesNotFallBackWhileATaskIsInFlight(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		w := newWaveCoordinator()
+		w := &WaveCoordinator{}
 		var flushes atomic.Int32
 		w.OnReady(func() { flushes.Add(1) })
 

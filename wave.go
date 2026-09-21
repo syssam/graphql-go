@@ -42,8 +42,6 @@ type waveState struct {
 	waiting   int
 }
 
-func newWaveCoordinator() *WaveCoordinator { return &WaveCoordinator{} }
-
 // Waves returns the coordinator for this operation. It is nil when the
 // operation is not running under an Executor, in which case extensions fall
 // back to their own scheduling.

@@ -548,7 +548,16 @@ allocated per request and both sit exactly on a size-class boundary. An `atomic.
 counter on `execState` measured +3.2% B/op with the feature disabled; as an `atomic.Int32`
 packed beside `cancelled` it measures zero. Check with `unsafe.Sizeof` and `benchstat`
 before growing either, and interleave the runs — a non-interleaved comparison on this
-machine reported a 13.8% regression that vanished at n=18. **`-count=N` does not
+machine reported a 13.8% regression that vanished at n=18. **`OperationContext` now holds
+its `WaveCoordinator` by value**, and that only pays for itself because 160 + 64 lands
+exactly on the 224 size class: the separate coordinator cost the same bytes in a second
+allocation, so the change is -1 alloc/op at B/op unchanged to the byte (interleaved n=14,
+`BenchmarkExecuteUsers` 15 -> 14 allocs/op, B/op p=1.000, sec/op p=0.734). One more word
+crosses to 256 and the embedding starts costing 32 bytes a request instead of saving an
+allocation, which is why `TestStructSizes` asserts 224 rather than logging it. The
+`hub *WaveCoordinator` pointer stays beside the value because `Waves()` documents returning
+nil for an `OperationContext` nobody's executor built, and `go vet`'s copylocks is what
+proves nothing copies the struct now that it contains a mutex. **`-count=N` does not
 interleave**: `go test -bench` runs all N counts of one benchmark before the next. Build the
 test binary once (`go test -c`) and alternate separate invocations, or alternate two
 binaries. Allocation counts are deterministic, so batched runs are fine for those.
@@ -716,9 +725,9 @@ defaults the client did not choose. **A subscription's source is opened with arg
 decoded again from `oc.Variables`**, the map the Authorizer walked, not the ones decoded
 before the interceptor chain: `Variables` is writable, and an interceptor rewriting it
 showed the policy one input while the source opened with another.
-`execState` (64 bytes) and `OperationContext` (160 bytes) held those sizes through this
-branch (`TestStructSizes`, `authz_bench_test.go`) — re-measure both, interleaved, before
-adding a field to either; see the `execState`/`OperationContext` entry above for why a
+`execState` (64 bytes) and `OperationContext` (224 bytes, 160 before it took the
+`WaveCoordinator` by value) hold those sizes (`TestStructSizes`,
+`authz_bench_test.go`) — re-measure both, interleaved, before adding a field to either; see the `execState`/`OperationContext` entry above for why a
 non-interleaved reading is not evidence. Effective requirements — a field's own
 `@requiresScopes` ANDed with its object type's and with each implemented interface's
 type-level and same-named-field requirement — are resolved once, in

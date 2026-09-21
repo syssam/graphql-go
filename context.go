@@ -21,7 +21,14 @@ type OperationContext struct {
 
 	plan  *plan
 	entry *docEntry
-	hub   *WaveCoordinator
+
+	// hub points at wave for an operation the executor started, and stays nil
+	// for an OperationContext built by hand, which is the distinction Waves
+	// documents. The coordinator is held by value because both are allocated
+	// together and always live as long as each other: 160 + 64 bytes in two
+	// allocations became 224 in one, the same size class either way.
+	hub  *WaveCoordinator
+	wave WaveCoordinator
 
 	// event is set only while executing one event of a subscription, and is
 	// what routes the operation chain to the per-event writer.
