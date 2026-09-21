@@ -67,3 +67,38 @@ func TestDecisionSetRejectsAnInstanceSite(t *testing.T) {
 		t.Fatalf("error does not name the coordinate: %v", setErr)
 	}
 }
+
+// checkObjects hands the policy a window into its own checks slice. A
+// three-index slice keeps that window's capacity at its length, so a policy
+// that appends to the batch it was given allocates instead of overwriting the
+// checks the next batch has not been asked about yet.
+func TestCheckObjectsBatchHasNoSpareCapacity(t *testing.T) {
+	var widest int
+	e := newInstanceExecutorWith(t, objectAuthorizerFunc(func(_ context.Context, checks []ObjectCheck) ([]Outcome, error) {
+		if c := cap(checks) - len(checks); c > widest {
+			widest = c
+		}
+		return make([]Outcome, len(checks)), nil
+	}), WithObjectAuthBatch(2))
+	run(t, e, `{ customers { id } }`, "")
+	if widest != 0 {
+		t.Fatalf("a batch carried %d elements of spare capacity; an append by the policy would reach the next batch's checks", widest)
+	}
+}
+
+// A non-null element that is denied fails the whole list, which is then
+// rewound. Continuing to decide and resolve the elements after it spends I/O
+// on a response nobody will see and appends an error per element, all of them
+// reporting the index of the first -- the plain path stops at the first
+// failure for exactly this reason.
+func TestInstanceDenyStopsANonNullList(t *testing.T) {
+	e := newInstanceExecutorWith(t, constantObjectPolicy(Deny("read", "Customer")))
+	resp := run(t, e, `{ customers { id } }`, "")
+	assertJSON(t, resp.Data, `null`)
+	if len(resp.Errors) != 1 {
+		t.Fatalf("%d errors, want 1: the list kept going after it had already failed", len(resp.Errors))
+	}
+	if got := resp.Errors[0].Path.String(); got != "customers[0]" {
+		t.Fatalf("path = %q, want customers[0]", got)
+	}
+}

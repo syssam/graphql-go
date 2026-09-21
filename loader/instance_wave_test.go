@@ -3,6 +3,7 @@ package loader_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	graphql "github.com/syssam/graphql-go"
 	"github.com/syssam/graphql-go/loader"
@@ -73,5 +74,49 @@ func TestInstanceChecksShareTheWaveWithALoader(t *testing.T) {
 	}
 	if batches != 1 || keys != 3 {
 		t.Fatalf("batches=%d keys=%d, want 1 batch of 3: the instance check fragmented the wave", batches, keys)
+	}
+}
+
+// A dropped element is never spawned, so the wave must not have announced it.
+// pushWave(len(elems)) instead of pushWave(len(kept)) leaves the loader
+// waiting for a task that will never begin and the request hangs until its
+// deadline, holding concurrency slots the whole executor shares -- the same
+// failure shape as TestLoaderResponseLimitDoesNotStrandWave.
+func TestInstanceDropDoesNotStrandTheWave(t *testing.T) {
+	ld := loader.New(func(_ context.Context, ks []string) (map[string]string, error) {
+		out := make(map[string]string, len(ks))
+		for _, k := range ks {
+			out[k] = "owner-" + k
+		}
+		return out, nil
+	})
+	dropC2 := objectAuthorizerFunc(func(_ context.Context, checks []graphql.ObjectCheck) ([]graphql.Outcome, error) {
+		outs := make([]graphql.Outcome, len(checks))
+		for i, c := range checks {
+			if c.Object.(*instanceCustomer).ID == "c2" {
+				outs[i] = graphql.Drop()
+			}
+		}
+		return outs, nil
+	})
+	e := newGuardedLoaderExecutor(t, ld, dropC2)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan *graphql.Response, 1)
+	go func() {
+		done <- e.Execute(ctx, &graphql.Request{Query: `{ customers { id owner } }`})
+	}()
+	select {
+	case resp := <-done:
+		if len(resp.Errors) != 0 {
+			t.Fatalf("errors = %v", resp.Errors)
+		}
+		const want = `{"customers":[{"id":"c1","owner":"owner-c1"},{"id":"c3","owner":"owner-c3"}]}`
+		if got := string(resp.Data); got != want {
+			t.Fatalf("data = %s, want %s", got, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("request hung: the wave announced a dropped element that never began")
 	}
 }

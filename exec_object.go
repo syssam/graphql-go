@@ -487,19 +487,26 @@ func (st *execState) writeListGuarded(ctx context.Context, w *jsonw.Writer, v an
 				w.Null()
 				n++
 			}
-			continue
 		case actionNull:
-			if !st.writeNullValue(ctx, w, t.Elem, f, &pathNode{parent: path, index: n, isIndex: true}) {
+			if st.writeNullValue(ctx, w, t.Elem, f, &pathNode{parent: path, index: n, isIndex: true}) {
+				n++
+			} else {
 				failed = true
-				continue
 			}
-			n++
-			continue
+		default:
+			if writeElem(n, e) {
+				n++
+			}
 		}
-		if !writeElem(n, e) {
+		// Stop where the plain path stops. Once the list has failed it will be
+		// rewound, so resolving what follows spends I/O on a response nobody
+		// will see and appends one error per element, every one of them
+		// reporting the index of the first. The limit check covers the Deny
+		// and Null branches, which do not go through writeElem's own.
+		if failed || w.LimitExceeded() {
+			failed = true
 			break
 		}
-		n++
 	}
 	if failed {
 		w.Rewind(mark)

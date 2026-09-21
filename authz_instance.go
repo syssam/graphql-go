@@ -33,7 +33,10 @@ func (st *execState) checkObjects(ctx context.Context, site AuthSite, checks []O
 	outs = make([]Outcome, 0, len(checks))
 	for start := 0; start < len(checks); start += st.e.objectAuthBatch {
 		end := min(start+st.e.objectAuthBatch, len(checks))
-		batch, berr := a.AuthorizeObjects(ctx, checks[start:end])
+		// Three-index: the batch must not carry capacity into the checks the
+		// next call has not been asked about, or a policy that appends to the
+		// slice it was handed rewrites them before they are sent.
+		batch, berr := a.AuthorizeObjects(ctx, checks[start:end:end])
 		if berr != nil {
 			return nil, authorizerError(ctx, berr)
 		}
