@@ -9,6 +9,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/syssam/graphql-go"
+	"github.com/syssam/graphql-go/ext/apq"
 	"github.com/syssam/graphql-go/internal/gqlwsproto"
 	"github.com/syssam/graphql-go/transport/drain"
 )
@@ -31,6 +32,8 @@ type Handler struct {
 	accept       websocket.AcceptOptions
 	logger       *slog.Logger
 	drain        *drain.Drain
+
+	apq apq.Cache
 
 	maxAge      time.Duration
 	maxAgeGrace time.Duration
@@ -78,6 +81,21 @@ func WithInsecureSkipOriginCheck() Option {
 // WithLogger sets the logger for connection-level failures. The default is
 // slog.Default.
 func WithLogger(l *slog.Logger) Option { return func(h *Handler) { h.logger = l } }
+
+// WithPersistedQueries enables automatic persisted queries backed by cache,
+// for example apq.NewCache(1000), on subscribe messages. Disabled by default.
+// A miss reaches the client as an ordinary result carrying
+// PersistedQueryNotFound, so it retries with the full query text.
+func WithPersistedQueries(cache apq.Cache) Option { return func(h *Handler) { h.apq = cache } }
+
+// resolvePersisted adapts the cache to the protocol's hook, and returns nil
+// when no cache is configured so the protocol pays nothing for the feature.
+func (h *Handler) resolvePersisted() func(*graphql.Request) *graphql.Response {
+	if h.apq == nil {
+		return nil
+	}
+	return func(r *graphql.Request) *graphql.Response { return apq.Resolve(h.apq, r) }
+}
 
 // WithDrain registers every connection with d, so d.Shutdown winds them down:
 // subscriptions end, queries and mutations in flight finish, and the
@@ -162,6 +180,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		MaxConnectionAge:      h.maxAge,
 		MaxConnectionAgeGrace: h.maxAgeGrace,
 		MaxConnectionIdle:     h.maxIdle,
+		ResolvePersisted:      h.resolvePersisted(),
 		DecorateContext: func(ctx context.Context) context.Context {
 			return withRequest(ctx, r)
 		},

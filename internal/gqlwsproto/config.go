@@ -53,6 +53,19 @@ type Config struct {
 	// refused, and the connection then closes with StatusGoingAway. Optional.
 	Closing <-chan struct{}
 
+	// ResolvePersisted applies the persisted-query extension to a subscribe
+	// message's request before it runs, filling in Query from a hash or
+	// handing back the response to send instead. nil disables it.
+	//
+	// It is a func rather than an apq.Cache so this package keeps depending on
+	// nothing but the root package; the transports, which already import
+	// ext/apq for their HTTP handlers, supply it.
+	//
+	// A response it returns is sent as next then complete, never as error:
+	// the client is expected to read PersistedQueryNotFound and retry with
+	// the full query text, and graphql-ws treats error as terminal.
+	ResolvePersisted func(*graphql.Request) *graphql.Response
+
 	// MaxConnectionAge, when positive, drains a connection once it has been
 	// open this long, give or take 10% so that connections opened together
 	// do not drain together: new operations are refused, subscriptions end

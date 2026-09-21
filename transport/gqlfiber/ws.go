@@ -203,6 +203,7 @@ func WS(exec *graphql.Executor, opts ...Option) fiber.Handler {
 			MaxConnectionAge:      cfg.maxAge,
 			MaxConnectionAgeGrace: cfg.maxAgeGrace,
 			MaxConnectionIdle:     cfg.maxIdle,
+			ResolvePersisted:      cfg.resolvePersisted(),
 			DecorateContext: func(ctx context.Context) context.Context {
 				return context.WithValue(ctx, connKey{}, conn)
 			},

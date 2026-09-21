@@ -36,6 +36,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 
+	graphql "github.com/syssam/graphql-go"
 	"github.com/syssam/graphql-go/ext/apq"
 	"github.com/syssam/graphql-go/internal/gqlwsproto"
 	"github.com/syssam/graphql-go/internal/httpreq"
@@ -116,8 +117,20 @@ func WithCSRFPrevention(enabled bool, headers ...string) Option {
 	}
 }
 
+// resolvePersisted adapts the cache to the WebSocket protocol's hook, and
+// returns nil when no cache is configured so the protocol pays nothing.
+func (c *config) resolvePersisted() func(*graphql.Request) *graphql.Response {
+	if c.apq == nil {
+		return nil
+	}
+	return func(r *graphql.Request) *graphql.Response { return apq.Resolve(c.apq, r) }
+}
+
 // WithPersistedQueries enables automatic persisted queries backed by cache,
-// for example apq.NewCache(1000). Disabled by default.
+// for example apq.NewCache(1000). Disabled by default. It covers every
+// handler this config builds, WS included: on a subscribe message a miss
+// reaches the client as an ordinary result carrying PersistedQueryNotFound,
+// so it retries with the full query text.
 func WithPersistedQueries(cache apq.Cache) Option { return func(c *config) { c.apq = cache } }
 
 // WithKeepAlive sets how often a comment line is sent on an idle SSE stream,
