@@ -235,3 +235,57 @@ func TestFieldObserversEachGetTheirOwnContext(t *testing.T) {
 		})
 	}
 }
+
+// pathObserver records what FieldInfo.Path answers for every field it sees.
+type pathObserver struct{ paths []string }
+
+func (o *pathObserver) BeginField(ctx context.Context, f FieldInfo) context.Context {
+	o.paths = append(o.paths, f.Path().String())
+	return ctx
+}
+
+func (o *pathObserver) EndField(context.Context, FieldInfo, error) {}
+
+// FieldInfo.Path is what an observer builds a span name or a log line from,
+// and it was the one public method here with no test at all. It is also a
+// second copy of FieldContext.Path -- the two read different structs and could
+// drift apart without anything noticing -- so this asks both about the same
+// field and requires the same answer.
+func TestFieldInfoPathMatchesFieldContextPath(t *testing.T) {
+	o := &pathObserver{}
+	fromContext := map[string]string{}
+	seen := FieldInterceptorFunc(func(ctx context.Context, fc *FieldContext, next FieldHandler) (any, error) {
+		fromContext[fc.Field.Name] = fc.Path().String()
+		return next(ctx)
+	})
+	_, e := newFixtureExecutor(t, WithFieldObserver(o), WithFieldInterceptor(seen))
+	run(t, e, `{ users { id tags } }`, "")
+
+	// users returns three users, so an index has to appear for the observer to
+	// be reading the parent chain rather than the field alone.
+	var indexed bool
+	for _, p := range o.paths {
+		if p == "users[1].id" {
+			indexed = true
+		}
+	}
+	if !indexed {
+		t.Errorf("observer never reported users[1].id; saw %v", o.paths)
+	}
+	for _, p := range o.paths {
+		if p == "" {
+			t.Fatalf("observer reported an empty path; saw %v", o.paths)
+		}
+	}
+
+	// Every path the interceptor built must be one the observer built too.
+	built := map[string]bool{}
+	for _, p := range o.paths {
+		built[p] = true
+	}
+	for name, p := range fromContext {
+		if !built[p] {
+			t.Errorf("FieldContext.Path for %s = %q, which FieldInfo.Path never reported; saw %v", name, p, o.paths)
+		}
+	}
+}

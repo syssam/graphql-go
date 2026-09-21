@@ -53,6 +53,22 @@ func TestSDLFS(t *testing.T) {
 	}
 }
 
+// SDLBytes is what a caller holding an embed.FS file or a read schema reaches
+// for, and nothing here had ever called it.
+func TestSDLBytes(t *testing.T) {
+	type A struct{ ID string }
+	s, err := NewSchema(SDLBytes([]byte(`type Query { a: A } type A { id: ID! }`)),
+		Object[Root]("Query", Field("a", func(Root) *A { return nil })),
+		Object[A]("A", Field("id", func(a *A) string { return a.ID })),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.AST().Types["A"] == nil {
+		t.Fatal("type A missing from a schema built from bytes")
+	}
+}
+
 func TestSourcesCombinesFileSystems(t *testing.T) {
 	queryFS := fstest.MapFS{
 		"query.graphql": {Data: []byte(`type Query { a: A }`)},
