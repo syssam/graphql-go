@@ -25,7 +25,7 @@ very nearly missed, and they had a root API change in them at the time.
 
 **Watch for measurements that succeed while covering less than they look.** A red build is
 easy; a command that used to be complete, quietly stopped being, and still prints success is
-not. Four instances in one session, all found by asking what a passing result would look
+not. Six instances now, all found by asking what a passing result would look
 like if the thing under test were broken:
 
 - `go test ./...` printed `ok` for every package it knew about, and had silently stopped
@@ -38,9 +38,32 @@ like if the thing under test were broken:
 - Generated code that read correctly and did not compile, twice: a method taking the
   generated args struct (import cycle) and `ID!` bound to a `string` field. Both were found
   by compiling the output, neither by reading it.
+- `go test -cover ./...` reported `internal/httpreq` at **12.8%**. It is at **89.7%**, with
+  no uncovered function: coverage is attributed per package, and httpreq is driven across
+  package boundaries by the six transports. A package that owns the CSRF and body-limit
+  rules looking untested is the wrong signal in the wrong place. Measure it the way it is
+  used, and expect the same distortion for any `internal/` package with no direct caller:
+
+  ```sh
+  go test -short -coverpkg=./internal/httpreq/... ./internal/httpreq/... ./transport/...
+  ```
+
+  `-short` distorts in the other direction: it puts `codegen` at 70.4% when the full run,
+  which compiles the generated output, measures 90.1%.
 
 The habit that catches these is breaking the thing on purpose and requiring the test to
 fail. If it still passes, the test was agreeing with the code rather than checking it.
+
+**Lint is `golangci-lint run ./...`, and it is part of CI.** `.golangci.yml` is the policy
+and every disabled check there carries its reason; `staticcheck.conf` exists only so a bare
+`staticcheck ./...` agrees with it instead of burying you in findings CI does not report. Two
+things that waste time if you do not know them: a `staticcheck` binary older than the Go in
+`go.mod` fails with `export data version 4 is greater than maximum supported version 2` and
+reports nothing useful, and listing a gocritic check under `disabled-checks` that is already
+off by default makes golangci-lint warn on every run. The `exported` rule is off for
+`examples/` on purpose — the examples carry a comment wherever there is a why, and the rule
+would otherwise demand "User returns the user" twenty-six times, which is the code-narrating
+comment the conventions below exist to keep out.
 
 `benchmarks/` is a separate module (with a `replace` back to the root) because it
 depends on gqlgen:

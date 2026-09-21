@@ -26,7 +26,7 @@ type Subscription { section: Section! }
 `
 
 type limitItem struct{ n int }
-type limitSection struct{ n int }
+type limitSection struct{}
 type limitRow struct{ n int }
 type limitNote struct{ n int }
 

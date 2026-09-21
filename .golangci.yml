@@ -30,11 +30,12 @@ linters:
         # implementation use. Renaming them to satisfy a Go convention would
         # change a wire-visible string to make a linter happy.
         - -ST1005
-    gocritic:
-      disabled-checks:
-        # The executor deliberately takes small structs by value on the hot
-        # path to avoid escaping them to the heap.
-        - hugeParam
+    # Note for anyone enabling gocritic's performance tag: hugeParam must be
+    # disabled with it. The executor deliberately passes small structs by value
+    # on the hot path so they do not escape to the heap, and execState,
+    # OperationContext and planField are size-pinned by TestStructSizes. It is
+    # not listed under disabled-checks because it is already off by default,
+    # and listing it makes golangci-lint warn on every run.
 
   exclusions:
     rules:
@@ -51,6 +52,17 @@ linters:
       # matter are the explicit ones.
       - path: _test\.go$
         linters: [noctx, bodyclose, perfsprint, errcheck, unused, revive, errorlint]
+      # revive's exported rule wants a doc comment on every exported symbol.
+      # The examples already carry one wherever there is something to say --
+      # domain.Post explains why it holds AuthorID, domain.Optional why it is
+      # three-valued -- and the repository's convention is that comments
+      # explain why, not what. Satisfying the rule on the rest would mean
+      # writing "User returns the user" twenty-six times, which is the
+      # code-narrating comment that convention exists to keep out. The
+      # library's own exported API is documented and reports nothing here.
+      - path: ^examples/
+        linters: [revive]
+        text: "exported:"
       # revive's error-strings is ST1005 under another name, disabled above for
       # the same reason: GraphQL error messages are specified as sentences and
       # go to clients verbatim.
