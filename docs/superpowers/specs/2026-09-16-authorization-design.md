@@ -966,3 +966,26 @@ removes the escaping closure both shared, and `TestConcurrentListPathsAgree`
 pins what the two write. D11's cost bar holds: every benchmark measured equal
 in allocations and bytes, `execState` 64, `OperationContext` 160, `planField`
 176.
+
+**P9. Coalescing instance checks across a wave was investigated and not
+built.** The obvious answer to P4's N+1 is to park a single-object check on the
+`WaveCoordinator` the way `loader.Load` does, so sibling fields that each reach
+one guarded object issue one call between them. It does not work, for a reason
+worth recording so it is not attempted again: a nested single-object check runs
+where `writeFieldsConcurrent` writes the fields that are not schedulable --
+after `g.wait()`, with the wave's announced tasks all begun and all ended and
+the wave still pushed. `WaveCoordinator.ready` needs a task in flight, so that
+wave can never complete again. A spike parking there was never flushed and the
+request waited for its deadline.
+
+That spike did find a real bug in the engine, now fixed: an `Inline()` resolver
+is not schedulable, so its `loader.Load` parks in exactly that spent wave and
+hung the request until its deadline, holding a concurrency slot the whole
+executor shares. `Park` now falls back to the tick when the wave is spent, and
+only then. With that fix a parked instance check is live, but what it coalesces
+is whatever happens to be queued when the fallback tick fires -- a
+timing-dependent amount of batching, not a property a test can hold. Per-list
+batching stays the contract; the N+1 for nested single objects is pinned by
+`TestNestedSingleObjectIsOneCallEach` and stated in the `ObjectAuthorizer`
+godoc. Fixing it properly needs breadth-first writing of a level before its
+children, which is an execution-order change well outside 2c.

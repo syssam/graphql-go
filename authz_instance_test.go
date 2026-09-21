@@ -161,7 +161,7 @@ directive @authorizeInput(kind: AuthorizeInputKind!) on ARGUMENT_DEFINITION
 enum AuthorizeInputKind { FILTER WRITE }
 input Where { nameContains: String }
 interface Node { id: ID! }
-type Customer implements Node @authorizeObject { id: ID! name: String! owner: String! }
+type Customer implements Node @authorizeObject { id: ID! name: String! owner: String! manager: Customer }
 type Open implements Node { id: ID! }
 type Query {
   customers: [Customer!]!
@@ -224,6 +224,11 @@ func newInstanceExecutorNode(t *testing.T, node func(context.Context, Root) (any
 			// schedulable and the list takes the concurrent path.
 			Resolve("owner", func(_ context.Context, c *authzInstanceCustomer) (string, error) {
 				return "owner-" + c.ID, nil
+			}),
+			// A guarded object reached through a field that is not a list:
+			// the position whose checks coalescing has to cover.
+			Field("manager", func(c *authzInstanceCustomer) *authzInstanceCustomer {
+				return &authzInstanceCustomer{ID: "m-" + c.ID, Name: "manager of " + c.Name}
 			}),
 		),
 		Object[instanceOpen]("Open",
@@ -426,6 +431,17 @@ func (f objectAuthorizerFunc) AuthorizeObjects(ctx context.Context, checks []Obj
 	return f(ctx, checks)
 }
 
+// instanceChecks builds n checks at one instance site. The site rides on the
+// check now, because a coalesced batch can carry several.
+func instanceChecks(n int) []ObjectCheck {
+	site := AuthSite{Coord: "Customer", Kind: SiteInstance}
+	checks := make([]ObjectCheck, n)
+	for i := range checks {
+		checks[i] = ObjectCheck{Site: site, Type: "Customer"}
+	}
+	return checks
+}
+
 func TestCheckObjectsSplitsAtTheBatchSize(t *testing.T) {
 	var sizes []int
 	a := objectAuthorizerFunc(func(_ context.Context, checks []ObjectCheck) ([]Outcome, error) {
@@ -437,8 +453,8 @@ func TestCheckObjectsSplitsAtTheBatchSize(t *testing.T) {
 		return out, nil
 	})
 	st := newInstanceState(t, a, WithObjectAuthBatch(2))
-	checks := make([]ObjectCheck, 5)
-	outs, err := st.checkObjects(context.Background(), AuthSite{Coord: "Customer", Kind: SiteInstance}, checks)
+	checks := instanceChecks(5)
+	outs, err := st.checkObjects(context.Background(), checks)
 	if err != nil {
 		t.Fatalf("checkObjects: %v", err)
 	}
@@ -460,7 +476,7 @@ func TestCheckObjectsRejectsAShortResult(t *testing.T) {
 		return make([]Outcome, len(checks)-1), nil
 	})
 	st := newInstanceState(t, a)
-	_, err := st.checkObjects(context.Background(), AuthSite{Coord: "Customer", Kind: SiteInstance}, make([]ObjectCheck, 3))
+	_, err := st.checkObjects(context.Background(), instanceChecks(3))
 	if err == nil {
 		t.Fatal("a short result was accepted, which would silently allow the rows it does not cover")
 	}
@@ -471,7 +487,7 @@ func TestCheckObjectsRejectsAnInvalidOutcome(t *testing.T) {
 		return []Outcome{Zero()}, nil
 	})
 	st := newInstanceState(t, a)
-	_, err := st.checkObjects(context.Background(), AuthSite{Coord: "Customer", Kind: SiteInstance}, make([]ObjectCheck, 1))
+	_, err := st.checkObjects(context.Background(), instanceChecks(1))
 	if err == nil || indexOf(err.Error(), "instance site") < 0 {
 		t.Fatalf("err = %v, want the validFor rejection", err)
 	}
@@ -482,7 +498,7 @@ func TestCheckObjectsHidesABackendFailure(t *testing.T) {
 		return nil, errors.New("dial tcp 10.0.3.7:8181: connection refused")
 	})
 	st := newInstanceState(t, a)
-	_, err := st.checkObjects(context.Background(), AuthSite{Coord: "Customer", Kind: SiteInstance}, make([]ObjectCheck, 1))
+	_, err := st.checkObjects(context.Background(), instanceChecks(1))
 	if err == nil {
 		t.Fatal("no error")
 	}
@@ -496,7 +512,7 @@ func TestCheckObjectsRecoversAPanic(t *testing.T) {
 		panic("policy exploded")
 	})
 	st := newInstanceState(t, a)
-	_, err := st.checkObjects(context.Background(), AuthSite{Coord: "Customer", Kind: SiteInstance}, make([]ObjectCheck, 1))
+	_, err := st.checkObjects(context.Background(), instanceChecks(1))
 	if err == nil {
 		t.Fatal("a panic in the ObjectAuthorizer was not recovered")
 	}

@@ -94,3 +94,56 @@ func TestWaveCoordinatorScheduleFallback(t *testing.T) {
 		}
 	})
 }
+
+// A wave whose announced tasks have all begun and all ended has nothing in
+// flight, so ready can never be true for it again. writeFieldsConcurrent
+// leaves exactly that state on the stack while it writes the fields that are
+// not schedulable, which is where an Inline() resolver's Load parks. Without
+// the fallback the caller waits for its deadline.
+func TestWaveCoordinatorFallsBackWhenTheWaveIsDead(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		w := newWaveCoordinator()
+		var flushes atomic.Int32
+		w.OnReady(func() { flushes.Add(1) })
+
+		w.push(2)
+		for range 2 {
+			w.taskBegin()
+			w.taskEnd()
+		}
+		// Inline, after g.wait(), with the wave still pushed.
+		w.Park()
+		synctest.Wait()
+
+		if got := flushes.Load(); got != 1 {
+			t.Fatalf("flushes = %d, want 1: a park into a spent wave was never dispatched", got)
+		}
+		w.Unpark()
+	})
+}
+
+// The fallback must not fire while the wave can still become ready, or a
+// batch dispatches before its siblings have queued their keys and batching
+// degrades towards N+1.
+func TestWaveCoordinatorDoesNotFallBackWhileATaskIsInFlight(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		w := newWaveCoordinator()
+		var flushes atomic.Int32
+		w.OnReady(func() { flushes.Add(1) })
+
+		w.push(2)
+		w.taskBegin()
+		w.taskBegin()
+		// One of the two parks; the other is still working.
+		w.Park()
+		synctest.Wait()
+		if got := flushes.Load(); got != 0 {
+			t.Fatalf("flushes = %d, want 0 while a sibling is still in flight", got)
+		}
+		// When it parks too, the wave is ready and they dispatch together.
+		w.Park()
+		if got := flushes.Load(); got != 1 {
+			t.Fatalf("flushes = %d, want 1 once every in-flight task has parked", got)
+		}
+	})
+}

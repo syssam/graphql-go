@@ -67,20 +67,36 @@ func (w *WaveCoordinator) OnReady(fn func()) {
 }
 
 // Park reports that the caller is about to block on batched work. It runs
-// the ready callbacks when parking completes the current wave.
+// the ready callbacks when parking completes the current wave, and falls back
+// to the next scheduler tick both outside any wave and inside one that is
+// spent -- every announced task begun and ended -- since such a wave can
+// never complete again and the caller would otherwise wait for its deadline.
 func (w *WaveCoordinator) Park() {
 	if w == nil {
 		return
 	}
 	w.mu.Lock()
 	if n := len(w.stack); n > 0 {
-		w.stack[n-1].waiting++
-		var fns []func()
-		if w.ready(&w.stack[n-1]) {
-			fns = append(fns, w.flushes...)
+		st := &w.stack[n-1]
+		st.waiting++
+		if w.ready(st) {
+			fns := append([]func(){}, w.flushes...)
+			w.mu.Unlock()
+			w.runFlushes(fns)
+			return
 		}
+		// ready needs a task in flight. A wave whose announced tasks have all
+		// begun and all ended has none and will never have another, so a
+		// caller parking into it waits for its deadline: that is where
+		// writeFieldsConcurrent writes a field that is not schedulable, after
+		// g.wait() and before the deferred pop, which is exactly where an
+		// Inline() resolver's Load runs. Fall back to the tick there, the same
+		// as parking outside any wave.
+		dead := st.begun >= st.announced && st.begun == st.ended
 		w.mu.Unlock()
-		w.runFlushes(fns)
+		if dead {
+			w.schedule()
+		}
 		return
 	}
 	w.mu.Unlock()
