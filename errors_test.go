@@ -109,3 +109,53 @@ func TestDefaultErrorPresenterGQLError(t *testing.T) {
 		t.Fatalf("path = %s", got)
 	}
 }
+
+// writeList hands each element its path node from a chunked slab, and those
+// nodes must stay the element's own after the loop has moved on: a
+// FieldContext keeps only the parent pointer and materializes the path when
+// asked, which a resolver or interceptor may do at any time. A slab that
+// reused one node would answer every one of them with the last index. The
+// list spans several chunks so the reuse a single chunk could hide shows up
+// too. Recording the errors is not enough to catch this -- addFieldError
+// materializes the path there and then -- so the paths are read afterwards.
+func TestListElementPathNodesSurviveTheLoop(t *testing.T) {
+	const n = 300
+	var kept []*FieldContext
+	s, err := NewSchema(SDL(`type Query { items: [Item] } type Item { v: String }`),
+		Object[Root]("Query", Resolve("items", func(context.Context, Root) ([]*pathItem, error) {
+			out := make([]*pathItem, n)
+			for i := range out {
+				out[i] = &pathItem{}
+			}
+			return out, nil
+		})),
+		// A pure Field keeps the list on writeList's sequential path, which is
+		// the only one the slab serves; a resolver would schedule instead.
+		Object[pathItem]("Item", Field("v", func(*pathItem) string { return "x" })),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keep := FieldInterceptorFunc(func(ctx context.Context, fc *FieldContext, next FieldHandler) (any, error) {
+		if fc.Field.Name == "v" {
+			kept = append(kept, fc)
+		}
+		return next(ctx)
+	})
+
+	run(t, NewExecutor(s, WithFieldInterceptor(keep)), `{ items { v } }`, "")
+	if len(kept) != n {
+		t.Fatalf("intercepted %d fields, want %d", len(kept), n)
+	}
+	for want, fc := range kept {
+		p := fc.Path()
+		if len(p) != 3 || p[0].Key != "items" || !p[1].IsIndex || p[2].Key != "v" {
+			t.Fatalf("field %d path = %s, want items[i].v", want, p)
+		}
+		if p[1].Index != want {
+			t.Fatalf("field %d reports index %d; the slab handed out a shared node", want, p[1].Index)
+		}
+	}
+}
+
+type pathItem struct{}

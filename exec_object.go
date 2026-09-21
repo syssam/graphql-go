@@ -435,9 +435,10 @@ func (st *execState) writeList(ctx context.Context, w *jsonw.Writer, v any, t *a
 	mark := w.Mark()
 	w.BeginArray()
 	failed := false
+	var slab pathSlab
 	writeElem := func(i int, e any) bool {
 		em := w.Mark()
-		if !st.writeValue(ctx, w, e, t.Elem, shape.elem, f, &pathNode{parent: path, index: i, isIndex: true}) {
+		if !st.writeValue(ctx, w, e, t.Elem, shape.elem, f, slab.index(path, i)) {
 			if t.Elem.NonNull || w.LimitExceeded() {
 				failed = true
 				return false
@@ -858,4 +859,33 @@ func (st *execState) recordCancellation(ctx context.Context, err error) {
 		}
 		st.addError(ctx, Errorf("%v", err).WithCode(CodeRequestCancelled), nil, nil)
 	}
+}
+
+// pathSlab hands out index path nodes from chunks, so a list of n elements
+// costs about n/pathSlabMax allocations instead of n. A node outlives the
+// iteration that made it: a FieldContext keeps only the parent pointer and
+// materializes the path whenever it is asked, which is not necessarily before
+// the next element is written. A chunk is therefore filled once and never
+// refilled. The chunks are separate rather than one growing slice because
+// append would copy every node still pointed at into a new array and keep
+// both copies alive, not because moving them would be wrong.
+type pathSlab struct{ buf []pathNode }
+
+const (
+	pathSlabFirst = 4
+	pathSlabMax   = 128
+)
+
+func (s *pathSlab) index(parent *pathNode, i int) *pathNode {
+	if len(s.buf) == cap(s.buf) {
+		n := pathSlabFirst
+		if c := cap(s.buf); c > 0 {
+			if n = c * 2; n > pathSlabMax {
+				n = pathSlabMax
+			}
+		}
+		s.buf = make([]pathNode, 0, n)
+	}
+	s.buf = append(s.buf, pathNode{parent: parent, index: i, isIndex: true})
+	return &s.buf[len(s.buf)-1]
 }
