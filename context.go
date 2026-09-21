@@ -212,10 +212,6 @@ func (c *fieldValueCtx) Value(key any) any {
 	return c.Context.Value(key)
 }
 
-func withField(ctx context.Context, fc *FieldContext) context.Context {
-	return context.WithValue(ctx, fieldCtxKey{}, fc)
-}
-
 // OperationFrom returns the OperationContext, or nil outside a request.
 func OperationFrom(ctx context.Context) *OperationContext {
 	oc, _ := ctx.Value(operationCtxKey{}).(*OperationContext)
