@@ -19,7 +19,16 @@ type FieldOption interface {
 // name follows the gRPC CallOption style: it only affects scheduling.
 type FieldSchedule func(*fieldSpec)
 
-// FieldOpt is a synonym for FieldSchedule.
+// FieldOpt is an alias for [FieldSchedule], kept so existing code continues to
+// compile.
+//
+// It reads as an abbreviation of [FieldOption], which is a different type
+// entirely: a FieldOption declares a field, a FieldSchedule says whether that
+// field runs inline or concurrently. Two names one letter apart for two
+// unrelated concepts is the kind of thing a reader gets wrong once and then
+// distrusts both, so the constructors now name FieldSchedule.
+//
+// Deprecated: use [FieldSchedule].
 type FieldOpt = FieldSchedule
 
 // Inline forces a Resolve field to run synchronously in the parent's
@@ -143,14 +152,14 @@ func Object[E any](name string, fields ...FieldOption) SchemaOption {
 // fields are executed inline and never scheduled on their own goroutine.
 // A composite list result may be spelled iter.Seq[E] or iter.Seq[*E] wherever
 // it may be spelled []E or []*E.
-func Field[P, R any](name string, fn func(P) R, opts ...FieldOpt) FieldOption {
+func Field[P, R any](name string, fn func(P) R, opts ...FieldSchedule) FieldOption {
 	return newFieldSpec[P, R](name, nil, true, opts, func(_ context.Context, p P, _ any) (R, error) {
 		return fn(p), nil
 	})
 }
 
 // FieldArgs binds a pure field that takes arguments decoded into A.
-func FieldArgs[P, A, R any](name string, fn func(P, A) R, opts ...FieldOpt) FieldOption {
+func FieldArgs[P, A, R any](name string, fn func(P, A) R, opts ...FieldSchedule) FieldOption {
 	return newFieldSpec[P, R](name, reflect.TypeFor[A](), true, opts, func(_ context.Context, p P, args any) (R, error) {
 		return fn(p, *args.(*A)), nil
 	})
@@ -159,7 +168,7 @@ func FieldArgs[P, A, R any](name string, fn func(P, A) R, opts ...FieldOpt) Fiel
 // Resolve binds a resolver field that may perform I/O. Resolver fields are
 // eligible for concurrent scheduling. A composite list result may be spelled
 // iter.Seq[E] or iter.Seq[*E] wherever it may be spelled []E or []*E.
-func Resolve[P, R any](name string, fn func(context.Context, P) (R, error), opts ...FieldOpt) FieldOption {
+func Resolve[P, R any](name string, fn func(context.Context, P) (R, error), opts ...FieldSchedule) FieldOption {
 	return newFieldSpec[P, R](name, nil, false, opts, func(ctx context.Context, p P, _ any) (R, error) {
 		return fn(ctx, p)
 	})
@@ -167,13 +176,13 @@ func Resolve[P, R any](name string, fn func(context.Context, P) (R, error), opts
 
 // ResolveArgs binds a resolver field that takes arguments decoded into A.
 // An Args[A] registration must be present in the same schema.
-func ResolveArgs[P, A, R any](name string, fn func(context.Context, P, A) (R, error), opts ...FieldOpt) FieldOption {
+func ResolveArgs[P, A, R any](name string, fn func(context.Context, P, A) (R, error), opts ...FieldSchedule) FieldOption {
 	return newFieldSpec[P, R](name, reflect.TypeFor[A](), false, opts, func(ctx context.Context, p P, args any) (R, error) {
 		return fn(ctx, p, *args.(*A))
 	})
 }
 
-func newFieldSpec[P, R any](name string, argsType reflect.Type, pure bool, opts []FieldOpt, call func(context.Context, P, any) (R, error)) *fieldSpec {
+func newFieldSpec[P, R any](name string, argsType reflect.Type, pure bool, opts []FieldSchedule, call func(context.Context, P, any) (R, error)) *fieldSpec {
 	spec := &fieldSpec{
 		name:     name,
 		parent:   reflect.TypeFor[P](),

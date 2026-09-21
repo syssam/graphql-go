@@ -34,7 +34,7 @@ var errSubscriptionResolved = errors.New("subscription root field is resolved fr
 // subscription. An error returned here prevents the subscription from
 // starting. A channel carries no error of its own, so a source that can fail
 // mid-stream should carry the failure in its event type.
-func Subscribe[R any](name string, fn func(context.Context) (<-chan R, error), opts ...FieldOpt) FieldOption {
+func Subscribe[R any](name string, fn func(context.Context) (<-chan R, error), opts ...FieldSchedule) FieldOption {
 	return subscribeSpec[R](name, nil, opts, func(ctx context.Context, _ any) (<-chan R, error) {
 		return fn(ctx)
 	})
@@ -42,7 +42,7 @@ func Subscribe[R any](name string, fn func(context.Context) (<-chan R, error), o
 
 // SubscribeArgs binds a subscription root field that takes arguments decoded
 // into A. An Args[A] registration must be present in the same schema.
-func SubscribeArgs[A, R any](name string, fn func(context.Context, A) (<-chan R, error), opts ...FieldOpt) FieldOption {
+func SubscribeArgs[A, R any](name string, fn func(context.Context, A) (<-chan R, error), opts ...FieldSchedule) FieldOption {
 	return subscribeSpec[R](name, reflect.TypeFor[A](), opts, func(ctx context.Context, args any) (<-chan R, error) {
 		return fn(ctx, *args.(*A))
 	})
@@ -51,7 +51,7 @@ func SubscribeArgs[A, R any](name string, fn func(context.Context, A) (<-chan R,
 // subscribeSpec composes a subscription field as an ordinary Root field so
 // that argument decoding and output shape checking are the same code, then
 // adds the stream opener on top.
-func subscribeSpec[R any](name string, argsType reflect.Type, opts []FieldOpt, open func(context.Context, any) (<-chan R, error)) *fieldSpec {
+func subscribeSpec[R any](name string, argsType reflect.Type, opts []FieldSchedule, open func(context.Context, any) (<-chan R, error)) *fieldSpec {
 	spec := newFieldSpec[Root, R](name, argsType, false, opts,
 		func(context.Context, Root, any) (R, error) {
 			var zero R
@@ -102,6 +102,21 @@ func (e *SubscribeError) Error() string {
 		return "graphql: subscription failed to start"
 	}
 	return "graphql: " + e.Response.Errors[0].Message
+}
+
+// Unwrap exposes the response's errors to errors.Is and errors.As, so a
+// caller reaches a *Error or a sentinel the ordinary way instead of having to
+// know to walk Response.Errors by hand. It returns several because a
+// subscription can be refused for more than one reason at once.
+func (e *SubscribeError) Unwrap() []error {
+	if e.Response == nil {
+		return nil
+	}
+	out := make([]error, 0, len(e.Response.Errors))
+	for _, err := range e.Response.Errors {
+		out = append(out, err)
+	}
+	return out
 }
 
 func (e *Executor) subscribeError(ctx context.Context, errs ...*Error) error {
