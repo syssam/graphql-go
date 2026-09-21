@@ -45,6 +45,24 @@ Treat them as a lower bound on gqlgen cost: `executor.New` is already the
 light path (no HTTP transports, no APQ, no tracing extension). A default
 `handler.NewDefaultServer` would allocate more.
 
+### The other harness measures a much larger gap, and this one is the number to quote
+
+`compare/` runs the same two engines over a generated 200-type schema and, on
+alternated runs (n=8, both engines warmed, gqlgen given an `lru` query cache
+and the introspection extension, so neither re-parses), reports far more than
+17×: 75× on a single-entity leaf query, 72× on a one-hop object, falling to
+6.4× on a connection, 5.0× on introspection and 3.5× on a nested connection.
+Allocation follows it -- 1.375 KiB against 111.8 KiB on the leaf query.
+
+The ratio is not a constant, and the two harnesses do not disagree: the spread
+across those six shapes is the point. The gap is widest where per-request
+fixed cost dominates a small response, and narrows to single digits as the
+response grows and real field work takes over. `benchmarks/` uses a small
+schema and query shapes in that narrower band, so **~17× is the conservative
+figure and the one to quote.** Anyone citing 75× should say which query shape
+and which schema size produced it, or it reads as a claim about the engine
+rather than about one corner of its behaviour.
+
 ## Reproduce
 
 ```sh
