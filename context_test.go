@@ -83,3 +83,44 @@ func TestPathFromInsideResolver(t *testing.T) {
 }
 
 type inner struct{}
+
+// A resolver's context is a type of this package's own rather than a
+// context.WithValue wrapper, so the FieldContext and the context carrying it
+// are one allocation. Its Value must therefore delegate every other key: the
+// OperationContext that every DataLoader and request-scoped extension reaches
+// through, and anything the caller put on the context before Execute. Only
+// one subscription test noticed when delegation was broken on purpose, which
+// is why this one asks on the query path directly.
+func TestResolverContextDelegatesEveryOtherKey(t *testing.T) {
+	var (
+		oc     *OperationContext
+		fc     *FieldContext
+		caller any
+	)
+	s, err := NewSchema(SDL(`type Query { deep: Inner } type Inner { v: String }`),
+		Object[Root]("Query", Resolve("deep", func(ctx context.Context, _ Root) (*inner, error) {
+			oc, fc, caller = OperationFrom(ctx), FieldFrom(ctx), ctx.Value(callerCtxKey{})
+			return &inner{}, nil
+		})),
+		Object[inner]("Inner", Field("v", func(*inner) string { return "x" })),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.WithValue(context.Background(), callerCtxKey{}, "caller")
+	if resp := NewExecutor(s).Execute(ctx, &Request{Query: `{ deep { v } }`}); len(resp.Errors) > 0 {
+		t.Fatalf("execute: %v", resp.Errors[0])
+	}
+
+	if oc == nil {
+		t.Error("OperationFrom found nothing inside a resolver")
+	}
+	if fc == nil || fc.Field.Name != "deep" {
+		t.Errorf("FieldFrom = %+v, want the deep field", fc)
+	}
+	if caller != "caller" {
+		t.Errorf("caller's own context value = %v, want \"caller\"", caller)
+	}
+}
+
+type callerCtxKey struct{}

@@ -135,11 +135,13 @@ func (st *execState) fieldContext(ctx context.Context, f *planField, parent, arg
 	if fd.pure && len(st.e.fieldInterceptors) == 0 {
 		return ctx, nil
 	}
-	fc := &FieldContext{Field: fd.def, Object: fd.object.def, Args: args, Parent: parent, field: f, pathParent: path, alias: f.alias}
 	if fd.pure {
+		fc := &FieldContext{Field: fd.def, Object: fd.object.def, Args: args, Parent: parent, field: f, pathParent: path, alias: f.alias}
 		return ctx, fc
 	}
-	return withField(ctx, fc), fc
+	c := &fieldValueCtx{Context: ctx}
+	c.fc = FieldContext{Field: fd.def, Object: fd.object.def, Args: args, Parent: parent, field: f, pathParent: path, alias: f.alias}
+	return c, &c.fc
 }
 
 // fieldInfo builds a FieldInfo from the plan, allocating nothing: everything

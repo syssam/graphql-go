@@ -197,6 +197,21 @@ func withOperation(ctx context.Context, oc *OperationContext) context.Context {
 	return context.WithValue(ctx, operationCtxKey{}, oc)
 }
 
+// fieldValueCtx carries a FieldContext by value so a resolver field pays one
+// allocation for both, where context.WithValue would allocate the wrapper
+// separately from the FieldContext it points at.
+type fieldValueCtx struct {
+	context.Context
+	fc FieldContext
+}
+
+func (c *fieldValueCtx) Value(key any) any {
+	if _, ok := key.(fieldCtxKey); ok {
+		return &c.fc
+	}
+	return c.Context.Value(key)
+}
+
 func withField(ctx context.Context, fc *FieldContext) context.Context {
 	return context.WithValue(ctx, fieldCtxKey{}, fc)
 }
