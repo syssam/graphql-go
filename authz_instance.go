@@ -14,7 +14,7 @@ import (
 // site cannot represent -- fails every check still outstanding rather than
 // allowing the checks a later batch would have covered: a policy backend
 // that is down or misbehaving must not be the reason a row becomes visible.
-func (st *execState) checkObjects(ctx context.Context, site AuthSite, checks []ObjectCheck) (outs []Outcome, err error) {
+func (st *execState) checkObjects(ctx context.Context, checks []ObjectCheck) (outs []Outcome, err error) {
 	a := st.e.objectAuthorizer
 	if a == nil || len(checks) == 0 {
 		return nil, nil
@@ -43,10 +43,13 @@ func (st *execState) checkObjects(ctx context.Context, site AuthSite, checks []O
 		if len(batch) != end-start {
 			return nil, authorizerError(ctx, Errorf(
 				"authorization: ObjectAuthorizer returned %d outcomes for %d checks at %s",
-				len(batch), end-start, site.Coord))
+				len(batch), end-start, checks[start].Site.Coord))
 		}
-		for _, o := range batch {
-			if verr := o.validFor(site); verr != nil {
+		// Against each check's own site, not one site for the batch: a
+		// coalesced batch carries checks from several positions, and Null is
+		// valid at a nullable one and not at a non-null one.
+		for i, o := range batch {
+			if verr := o.validFor(checks[start+i].Site); verr != nil {
 				return nil, authorizerError(ctx, verr)
 			}
 		}

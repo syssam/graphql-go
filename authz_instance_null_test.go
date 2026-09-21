@@ -3,6 +3,7 @@ package graphql
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -161,5 +162,57 @@ func TestInstanceOnlyPlanDoesNotCallTheAuthorizer(t *testing.T) {
 	run(t, e2, `{ filtered(where: {nameContains: "o"}) { id } }`, "")
 	if calls != 1 {
 		t.Fatalf("calls = %d, want 1: an argument site must still reach the Authorizer", calls)
+	}
+}
+
+// A coalesced batch carries checks from several positions at once, so an
+// outcome must be validated against the site of the check it answers, not
+// against one site chosen for the whole batch: Null is valid at a nullable
+// position and not at a non-null one, and both can be in the same call.
+func TestCheckObjectsValidatesEachOutcomeAgainstItsOwnSite(t *testing.T) {
+	st := newInstanceState(t, constantObjectPolicy(Null()))
+	nullable := AuthSite{Coord: "Customer", Kind: SiteInstance}
+	nonNull := AuthSite{Coord: "Customer", Kind: SiteInstance, valueNonNull: true}
+
+	if _, err := st.checkObjects(context.Background(), []ObjectCheck{{Site: nullable}}); err != nil {
+		t.Fatalf("Null rejected at a nullable position: %v", err)
+	}
+	_, err := st.checkObjects(context.Background(), []ObjectCheck{{Site: nullable}, {Site: nonNull}})
+	if err == nil {
+		t.Fatal("Null accepted for a batch whose second check is at a non-null position")
+	}
+	if !strings.Contains(err.Error(), "non-null position") {
+		t.Fatalf("error does not name the offending position: %v", err)
+	}
+}
+
+// Batching is per list. A guarded object reached through a field that is not
+// a list is one call carrying one check, so this query is one call for the
+// list of three plus one per manager. That is the documented N+1, pinned here
+// so a change to the write path is noticed either way.
+//
+// It is not fixed by parking the check on the wave the way loader.Load does.
+// A nested single-object check runs where writeFieldsConcurrent writes the
+// fields that are not schedulable -- after g.wait(), with the wave spent --
+// and what coalesces there is whatever happens to be queued when the fallback
+// tick fires, which is a timing-dependent amount of batching and not a
+// property a test can hold. Fixing it needs breadth-first writing, not a
+// different park.
+func TestNestedSingleObjectIsOneCallEach(t *testing.T) {
+	var mu sync.Mutex
+	var calls, checks int
+	e := newInstanceExecutorWith(t, objectAuthorizerFunc(func(_ context.Context, cs []ObjectCheck) ([]Outcome, error) {
+		mu.Lock()
+		calls++
+		checks += len(cs)
+		mu.Unlock()
+		return make([]Outcome, len(cs)), nil
+	}))
+	resp := run(t, e, `{ customers { owner manager { id } } }`, "")
+	if len(resp.Errors) != 0 {
+		t.Fatalf("errors = %v", resp.Errors)
+	}
+	if calls != 4 || checks != 6 {
+		t.Fatalf("calls=%d checks=%d, want 4/6: one batched call for the list of three plus one per manager", calls, checks)
 	}
 }

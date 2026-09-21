@@ -342,7 +342,7 @@ func (st *execState) instanceOutcome(ctx context.Context, f *planField, obj *obj
 		return Outcome{}, nil
 	}
 	site := instanceSiteOf(f)
-	outs, err := st.checkObjects(ctx, site, []ObjectCheck{{Site: site, Type: obj.name, Object: v}})
+	outs, err := st.checkObjects(ctx, []ObjectCheck{{Site: site, Type: obj.name, Object: v}})
 	if err != nil || len(outs) == 0 {
 		return Outcome{}, err
 	}
@@ -380,7 +380,7 @@ func (st *execState) instanceOutcomes(ctx context.Context, f *planField, shape *
 	if len(checks) == 0 {
 		return nil, nil
 	}
-	batch, err := st.checkObjects(ctx, site, checks)
+	batch, err := st.checkObjects(ctx, checks)
 	if err != nil {
 		return nil, err
 	}
