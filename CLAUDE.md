@@ -25,11 +25,21 @@ very nearly missed, and they had a root API change in them at the time.
 
 **Watch for measurements that succeed while covering less than they look.** A red build is
 easy; a command that used to be complete, quietly stopped being, and still prints success is
-not. Six instances now, all found by asking what a passing result would look
+not. Eight instances now, all found by asking what a passing result would look
 like if the thing under test were broken:
 
 - `go test ./...` printed `ok` for every package it knew about, and had silently stopped
   reaching three modules as they were added.
+- CI's fuzz job discovered its targets by grepping the **root package's** `*_test.go`, so
+  `internal/jsonw`'s `FuzzString` and `FuzzKey` — the JSON string escaping, where a bug is a
+  corrupted response — had never run. 15s each on first contact took 745k and 2.0M executions
+  and added 28 and 112 corpus entries, which is what never having been explored looks like.
+  Discovery is `go test -list` over `go list ./...` now.
+- CI ran `scripts/gate.sh`, which **skips** a module whose fixtures are missing, and
+  `compare/` is generated and gitignored. So CI printed `compare skipped` and exited 0, and
+  `TestEnginesAgree` — the correctness cross-check against gqlgen — had never run there. CI
+  generates at `-n 25` (6s) and passes `GATE_REQUIRE_ALL=1`, which turns a skip into a
+  failure, so dropping that step cannot quietly shrink the gate again.
 - A subscription leak test passed against a deliberately broken release path, because a
   second redundant path still freed everything. It only failed when both were broken.
 - A fan-out benchmark reported 45ns per subscriber because it timed a `publish` that drops
@@ -204,6 +214,28 @@ offset rather than building an intermediate value tree. `errNonNull` is the inte
 for "null reached a non-null position"; `indexedError` carries a list index so error paths
 can be reconstructed.
 
+**Three per-request allocations that were there only because nobody looked** (interleaved
+n=14, sec/op unchanged on every one of them; allocation counts are the figure):
+
+- `variantKey` returned the `@skip`/`@include` values as a map beside the bitmask, so every
+  request built one and a plan cache **hit** dropped it unread. `condValues` is now called
+  only where a compile needs it. `TestPlanCacheHitBuildsNoConditionMap` pins a hit at zero
+  allocations, because nothing else can see the map.
+- `withField` used `context.WithValue`, so a resolver field paid two allocations, one for the
+  `FieldContext` and one for the wrapper pointing at it. `fieldValueCtx` embeds it by value:
+  `BenchmarkExecuteConcurrentList` 530 → 428 allocs/op. **The new risk is delegation** —
+  `Value` must pass every other key through, which `context.WithValue` could not get wrong,
+  and breaking it on purpose failed exactly one subscription test.
+  `TestResolverContextDelegatesEveryOtherKey` asks on the query path instead.
+- `writeList` allocated a `pathNode` per element. A chunked `pathSlab` (4 growing to 128)
+  makes a 1000-element list ~12 allocations instead of 1000: `BenchmarkLazySeqSlice`
+  3914 → 2926. **The chunk size is the whole trick** — a flat 32 cost a four-element list
+  1280 bytes for 160 bytes of nodes, +123% B/op. The invariant is that a node outlives the
+  iteration that made it, because a `FieldContext` materializes its path whenever it is
+  asked; **errors do not test that**, since `addFieldError` materializes there and then, so a
+  slab refilling one chunk in place passed the first version of the test and the whole suite
+  with it. `TestListElementPathNodesSurviveTheLoop` reads the `FieldContext` afterwards.
+
 **The response byte limit (`WithMaxResponseBytes`, 64 MiB by default) is counted on the
 writer, not on `execState`.** `execState` has no padding left, and concurrent fields and list
 elements write into their own pooled sub-writers that the root writer never sees until they
@@ -236,6 +268,16 @@ measured with no limit before the default changed —
 not distinguishable on this machine, which is a bound on the cost, not a proof it is zero.
 The benchmark is one request writing 393 bytes, so neither larger responses nor contention on the
 shared counter from a wide concurrent list were measured.
+**A CPU profile disagrees with all of this and is wrong.** `jsonw.(*Writer).overLimit` reads as
+the largest single line on the hot path — 9.32% flat, and 460ms of 4.83s on the `w.OverLimit()`
+line in `writeFieldValue` — because it is a `//go:noinline` leaf and the sampler piles onto the
+call. Two measurements say otherwise. Making the whole checkpoint `return false`, which is the
+ceiling, bought `BenchmarkFieldPathBare` -3.01% (p=0.018) and nothing significant on
+`BenchmarkExecuteUsers` or `BenchmarkExecuteConcurrentList`, interleaved n=12. And giving the
+budget an unshared fast path that skips the `LOCK`-prefixed add (a `shared` flag set before any
+sub-writer is handed off) bought **zero** on both small benchmarks and cost the concurrent list
++3.07% (p=0.028): the atomic is not what this costs, so there is nothing here to win. Do not
+re-propose it on the strength of a profile.
 
 **`WithMaxErrors` (1000 by default) bounds the errors list, and checks before it allocates.**
 Field errors — `fieldError`, a null in a non-null position, an unresolvable abstract type — go
