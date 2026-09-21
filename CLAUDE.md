@@ -786,9 +786,15 @@ subscriptions, five transports, DataLoader, APQ, limits with actual cost account
 OpenTelemetry with field observation, bounded plan expansion, a plan cache bounded by
 query text, a response size limit, an operation timeout, a shutdown drain and connection age and idle limits for WebSocket and SSE, runtime metrics (`Executor.Stats`, `otel.ObserveExecutor`, `otel.ObserveDrain`), the authorization spine (`Authorizer`, `AuthShape`, `RequireAuthCoverage`,
 `SubscriptionInterceptor`) with `@authorizeInput` argument sites and `@authorizeObject`
-instance sites (`ObjectAuthorizer`, batched per list, with `Drop`), and the `lint/` analyzer; plus `relay/`, `fed/`, `ext/throttle`,
-`ext/trusted` and DataLoader tracing. Not built: `ext/authz` (the Apollo directive vocabulary
-and a batched `Guard`) and APQ over WebSocket, which belongs in the
+instance sites (`ObjectAuthorizer`, batched per list, with `Drop`), requirement directives
+declared rather than hardcoded (`RequirementDirective`, so a schema spelling its requirements
+`@auth(requires:)` is enforced without renaming every site), and the `lint/` analyzer; plus
+`relay/`, `fed/`, `ext/throttle`,
+`ext/trusted` and DataLoader tracing. Not built: `ext/authz`, which is now smaller than it
+was scoped as -- `@requiresScopes` is core and any other spelling is one `RequirementDirective`
+call, so what is left of it is `@authenticated` (needs a no-argument shape), `@policy` (a
+second namespace that is not scopes) and a batched `Guard`. Also not built: APQ over
+WebSocket, which belongs in the
 `graphql-transport-ws` state machine. `@defer`/`@stream` is not merely unbuilt — the prelude's
 `@defer` is stripped in `introspection.go` so the validator and introspection agree the
 server says no; adding it reverses a decision rather than filling a gap. Not measured, both
