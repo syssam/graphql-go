@@ -137,6 +137,7 @@ type schemaBuilder struct {
 	introspection bool
 	authCoverage  bool
 	authCapped    map[string]bool
+	reqDirectives []reqDirective
 	errs          []error
 }
 
@@ -165,6 +166,9 @@ func NewSchema(src Source, opts ...SchemaOption) (*Schema, error) {
 		abstracts:     make(map[string]*abstractBinding),
 		directives:    make(map[string]*directiveBinding),
 		introspection: true,
+		// Seeded before options apply, so the Apollo spelling is always present
+		// and a caller redeclaring it collides rather than silently winning.
+		reqDirectives: []reqDirective{{name: authDirective, arg: "scopes", shape: ScopesNested, builtin: true}},
 	}
 	registerBuiltins(b)
 	for _, opt := range opts {
@@ -247,6 +251,7 @@ func (b *schemaBuilder) build() *Schema {
 
 	// Phase 6: coverage.
 	b.validateCoverage(s)
+	b.validateRequirementDirectives()
 	b.validateAuthDirectives()
 	b.validateInputDirectives()
 	b.validateObjectDirectives()
