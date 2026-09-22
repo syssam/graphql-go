@@ -186,7 +186,16 @@ compile — the request path writes JSON straight into a pooled buffer.
 reflect.Type)`: leaf writers, decoders, nil checks, list traversers, `shapeInfo`.
 `schemaBuilder.build()` then runs six ordered phases — object shells → input decoders →
 abstract types → fields → schema directives → coverage validation. Order matters: shells
-must exist before fields reference them, inputs before args are composed. Go-vs-SDL shape
+must exist before fields reference them, inputs before args are composed. **Build errors are ordered by phase, then sorted within it** (`endPhase`): an
+unbound type before the fields that needed it, because the first is usually the
+cause of the second, but alphabetical inside a phase because several checks
+range over `b.ast.Types` and a map gave a different order every run. At forty
+unbound types that is already unreadable; at the thousands this library is for,
+bound a package at a time, it makes two runs impossible to diff.
+`TestBuildErrorsAreOrdered` builds the same schema eight times and requires the
+same text, and reports the first line that differs rather than the whole wall.
+
+Go-vs-SDL shape
 mismatches are reported here as joined errors, never at request time.
 
 **Plan compile (`plan.go`).** A document is parsed and validated once and

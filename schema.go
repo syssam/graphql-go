@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/vektah/gqlparser/v2"
@@ -139,10 +140,29 @@ type schemaBuilder struct {
 	authCapped    map[string]bool
 	reqDirectives []reqDirective
 	errs          []error
+	// phaseStart is where the current build phase began in errs, so endPhase
+	// sorts only what this phase added.
+	phaseStart int
 }
 
 func (b *schemaBuilder) errorf(format string, args ...any) {
 	b.errs = append(b.errs, fmt.Errorf("graphql: "+format, args...))
+}
+
+// endPhase orders the errors this phase produced.
+//
+// Errors stay in phase order across phases, because the earlier one is often
+// the cause of the later: an Object that named a type the schema does not
+// declare, before every field of that type reporting itself unbound. Within a
+// phase there is no such relationship and several of the checks range over
+// b.ast.Types, which is a map -- so a schema with 40 unbound types printed
+// them in a different order on every run, and one with thousands made two runs
+// impossible to diff. Sorting by message also puts a category together, since
+// each begins with its own wording.
+func (b *schemaBuilder) endPhase() {
+	rest := b.errs[b.phaseStart:]
+	slices.SortFunc(rest, func(x, y error) int { return strings.Compare(x.Error(), y.Error()) })
+	b.phaseStart = len(b.errs)
 }
 
 // NewSchema parses the SDL, applies every binding option and validates that
@@ -224,10 +244,14 @@ func (b *schemaBuilder) build() *Schema {
 		}
 	}
 
+	b.endPhase()
+
 	// Phase 2: input decoders, whose setters may reference any input type.
 	for _, ib := range b.inputs {
 		ib.resolve(b)
 	}
+
+	b.endPhase()
 
 	// Phase 3: abstract types, so that fields returning them can be checked.
 	for name, def := range b.ast.Types {
@@ -236,6 +260,8 @@ func (b *schemaBuilder) build() *Schema {
 		}
 		s.abstracts[name] = b.resolveAbstract(s, name, def)
 	}
+
+	b.endPhase()
 
 	// Phase 4: fields.
 	for _, name := range b.objectOrder {
@@ -246,8 +272,12 @@ func (b *schemaBuilder) build() *Schema {
 		b.resolveFields(s, obj, b.objects[name])
 	}
 
+	b.endPhase()
+
 	// Phase 5: schema directives wrap the composed executors.
 	b.applyDirectives(s)
+
+	b.endPhase()
 
 	// Phase 6: coverage.
 	b.validateCoverage(s)
@@ -257,6 +287,7 @@ func (b *schemaBuilder) build() *Schema {
 	b.validateObjectDirectives()
 	b.resolveAuthRequirements(s)
 	b.validateAuthCoverage(s)
+	b.endPhase()
 
 	if b.ast.Query != nil {
 		s.query = s.objects[b.ast.Query.Name]
