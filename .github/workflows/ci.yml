@@ -98,6 +98,28 @@ jobs:
           cd lint && go build -o "$RUNNER_TEMP/gqlvet" ./cmd/gqlvet
           cd "$GITHUB_WORKSPACE" && "$RUNNER_TEMP/gqlvet" ./...
 
+  vuln:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # Built from source with the toolchain go.mod names, not installed from
+      # a release: a govulncheck older than that Go cannot load the packages
+      # and reports nothing useful, the same failure staticcheck has here.
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      # Every module, for the same reason scripts/gate.sh walks every module.
+      - name: Scan
+        run: |
+          for mod in $(find . -name go.mod -not -path "./ref/*" | sed "s|/go.mod$||"); do
+            echo "== $mod"
+            (cd "$mod" && govulncheck ./...)
+          done
+
   fuzz:
     name: fuzz (smoke)
     runs-on: ubuntu-latest

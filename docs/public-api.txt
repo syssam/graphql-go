@@ -1,0 +1,414 @@
+codegen: const FieldMethod
+codegen: const FieldResolver
+codegen: const FieldStruct
+codegen: func Generate(ctx context.Context, cfg Config) error
+codegen: type Config struct { Dir string SchemaGlobs []string Output string Package string GroupFunc func(typeName, sdlFile string) string Models map[string]string Manifest *Manifest AutoBind []string NullableInputOmittable bool }
+codegen: type FieldBinding struct { Kind FieldKind GoName string Context bool Error bool Convert bool }
+codegen: type FieldKind int
+codegen: type GoType struct { PkgPath string Name string }
+codegen: type Manifest struct { Types []TypeBinding }
+codegen: type TypeBinding struct { Name string Go GoType Group string Fields map[string]FieldBinding }
+ext/apq: const CodeNotFound
+ext/apq: const CodeNotInList
+ext/apq: const CodeNotSupported
+ext/apq: func Hash(query string) string
+ext/apq: func NewCache(size int) Cache
+ext/apq: func Resolve(c Cache, req *graphql.Request) *graphql.Response
+ext/apq: type Cache interface { Get(hash string) (query string, ok bool) Set(hash, query string) }
+ext/apq: type TrustedStore interface { Cache TrustedDocuments() }
+ext/otel: const AttrCacheHit
+ext/otel: const AttrComplexity
+ext/otel: const AttrDepth
+ext/otel: const AttrDocument
+ext/otel: const AttrErrorCount
+ext/otel: const AttrFieldObject
+ext/otel: const AttrFieldPath
+ext/otel: const AttrLoaderKeyErrors
+ext/otel: const AttrLoaderKeys
+ext/otel: const AttrOperationName
+ext/otel: const AttrOperationType
+ext/otel: const AttrPlanCacheResult
+ext/otel: const AttrPlanUncacheable
+ext/otel: const ScopeName
+ext/otel: func Batch[K comparable, V any](name string, fn loader.BatchFunc[K, V], opts ...Option) loader.BatchFunc[K, V]
+ext/otel: func MappedBatch[K comparable, V any](name string, fn loader.MappedBatchFunc[K, V], opts ...Option) loader.MappedBatchFunc[K, V]
+ext/otel: func New(opts ...Option) []graphql.ExecutorOption
+ext/otel: func ObserveDrain(d *drain.Drain, opts ...Option) (metric.Registration, error)
+ext/otel: func ObserveExecutor(e *graphql.Executor, opts ...Option) (metric.Registration, error)
+ext/otel: func WithAttributes(attrs ...attribute.KeyValue) Option
+ext/otel: func WithDocument(enabled bool) Option
+ext/otel: func WithFieldSpans(enabled bool) Option
+ext/otel: func WithMeterProvider(mp metric.MeterProvider) Option
+ext/otel: func WithTracerProvider(tp trace.TracerProvider) Option
+ext/otel: type Option func(*config)
+ext/throttle: const CodeThrottled
+ext/throttle: func New(cfg Config) graphql.ExecutorOption
+ext/throttle: type Config struct { MaximumAvailable int RestoreRate float64 Key func(ctx context.Context) string MaxBuckets int Now func() time.Time }
+ext/trusted: func (s *Store) Get(id string) (string, bool)
+ext/trusted: func (s *Store) Len() int
+ext/trusted: func (s *Store) Set(string, string)
+ext/trusted: func (s *Store) TrustedDocuments()
+ext/trusted: func LoadManifest(r io.Reader) (*Store, error)
+ext/trusted: func LoadManifestFile(path string) (*Store, error)
+ext/trusted: func NewStore(docs map[string]string) *Store
+ext/trusted: type Store struct { }
+fed: func (r Representation) Float(key string) (float64, bool)
+fed: func (r Representation) ID(key string) (graphql.ID, bool)
+fed: func (r Representation) Int(key string) (int64, bool)
+fed: func (r Representation) Typename() string
+fed: func Resolver[E any](typename string, fn func(context.Context, Representation) (*E, error)) Entity
+fed: func Subgraph(sdl string, entities ...Entity) (graphql.Source, graphql.SchemaOption, error)
+fed: type Entity struct { }
+fed: type Representation map[string]any
+graphql: const CodeBadUserInput
+graphql: const CodeErrorLimitExceeded
+graphql: const CodeForbidden
+graphql: const CodeInternal
+graphql: const CodeMaxDepth
+graphql: const CodeOperationResolution
+graphql: const CodeOperationTimeout
+graphql: const CodeParseFailed
+graphql: const CodeRequestCancelled
+graphql: const CodeResponseTooLarge
+graphql: const CodeTooComplex
+graphql: const CodeValidationFailed
+graphql: const ScopesAllOf
+graphql: const ScopesAnyOf
+graphql: const ScopesNested
+graphql: const SiteFilterArg
+graphql: const SiteInputWrite
+graphql: const SiteInstance
+graphql: const SiteObject
+graphql: const SiteOutput
+graphql: func (d *Decision) Input(site int) []InputKey
+graphql: func (d *Decision) Outcome(site int) Outcome
+graphql: func (d *Decision) Set(site int, o Outcome) error
+graphql: func (e *Error) Error() string
+graphql: func (e *Error) MarshalJSON() ([]byte, error)
+graphql: func (e *Error) Unwrap() error
+graphql: func (e *Error) WithCode(code string) *Error
+graphql: func (e *Error) WithExtension(key string, v any) *Error
+graphql: func (e *Error) WithPath(p Path) *Error
+graphql: func (e *Executor) Execute(ctx context.Context, req *Request) *Response
+graphql: func (e *Executor) OperationKind(query, operationName string) (ast.Operation, error)
+graphql: func (e *Executor) Schema() *Schema
+graphql: func (e *Executor) Stats() ExecutorStats
+graphql: func (e *Executor) Subscribe(ctx context.Context, req *Request) (<-chan *Response, error)
+graphql: func (e *SubscribeError) Error() string
+graphql: func (e *SubscribeError) Unwrap() []error
+graphql: func (f AuthorizerFunc) Authorize(ctx context.Context, shape *AuthShape, d *Decision) error
+graphql: func (f FieldInfo) Path() Path
+graphql: func (f FieldInterceptorFunc) InterceptField(ctx context.Context, fc *FieldContext, next FieldHandler) (any, error)
+graphql: func (f OperationInterceptorFunc) InterceptOperation(ctx context.Context, oc *OperationContext, next OperationHandler) *Response
+graphql: func (f RequestInterceptorFunc) InterceptRequest(ctx context.Context, req *Request, next RequestHandler) *Response
+graphql: func (f SubscriptionInterceptorFunc) InterceptSubscription(ctx context.Context, oc *OperationContext, next SubscriptionHandler) (<-chan *Response, error)
+graphql: func (fc *FieldContext) Path() Path
+graphql: func (fc *FieldContext) Selection() Selection
+graphql: func (o Omittable[T]) IsSet() bool
+graphql: func (o Omittable[T]) MarshalJSON() ([]byte, error)
+graphql: func (o Omittable[T]) Or(def T) T
+graphql: func (o Omittable[T]) Value() T
+graphql: func (o Omittable[T]) ValueOK() (T, bool)
+graphql: func (oc *OperationContext) ActualCost() (int, bool)
+graphql: func (oc *OperationContext) AuthShape() *AuthShape
+graphql: func (oc *OperationContext) Complexity() int
+graphql: func (oc *OperationContext) Cost() int
+graphql: func (oc *OperationContext) Depth() int
+graphql: func (oc *OperationContext) Get(key any) (any, bool)
+graphql: func (oc *OperationContext) GetOrSet(key, value any) (actual any, loaded bool)
+graphql: func (oc *OperationContext) Set(key, value any)
+graphql: func (oc *OperationContext) SetExtension(key string, value any)
+graphql: func (oc *OperationContext) Waves() *WaveCoordinator
+graphql: func (p Path) MarshalJSON() ([]byte, error)
+graphql: func (p Path) String() string
+graphql: func (r *Response) HasRequestErrors() bool
+graphql: func (r *Response) MarshalJSON() ([]byte, error)
+graphql: func (r *Response) Release()
+graphql: func (r *Response) WriteTo(w io.Writer) (int64, error)
+graphql: func (r Requirement) And(o Requirement) Requirement
+graphql: func (r Requirement) IsZero() bool
+graphql: func (r Requirement) Satisfied(held map[string]bool) bool
+graphql: func (r Requirement) Scopes() []string
+graphql: func (s *AuthShape) IsEmpty() bool
+graphql: func (s *AuthShape) Scopes() []string
+graphql: func (s *AuthShape) Sites() []AuthSite
+graphql: func (s *Schema) AST() *ast.Schema
+graphql: func (s *Schema) IntrospectionEnabled() bool
+graphql: func (s Selection) Collect[T any](fn func(SelectedField) T) []T
+graphql: func (s Selection) Fields() iter.Seq[SelectedField]
+graphql: func (s Selection) Has(name string) bool
+graphql: func (s Selection) IsEmpty() bool
+graphql: func (s Selection) Sub(name string) (Selection, bool)
+graphql: func (w *WaveCoordinator) OnReady(fn func())
+graphql: func (w *WaveCoordinator) Park()
+graphql: func (w *WaveCoordinator) Unpark()
+graphql: func (w *Writer) Bool(v bool)
+graphql: func (w *Writer) Float64(v float64) error
+graphql: func (w *Writer) Int64(v int64)
+graphql: func (w *Writer) Null()
+graphql: func (w *Writer) Raw(b []byte)
+graphql: func (w *Writer) String(s string)
+graphql: func (w *Writer) Uint64(v uint64)
+graphql: func Allow() Outcome
+graphql: func Args[A any](fields ...InputFieldOption) SchemaOption
+graphql: func ChainFieldInterceptors(is ...FieldInterceptor) FieldInterceptor
+graphql: func ChainOperationInterceptors(is ...OperationInterceptor) OperationInterceptor
+graphql: func ChainRequestInterceptors(is ...RequestInterceptor) RequestInterceptor
+graphql: func ChainSubscriptionInterceptors(is ...SubscriptionInterceptor) SubscriptionInterceptor
+graphql: func Concurrent() FieldSchedule
+graphql: func DefaultErrorPresenter(_ context.Context, err error) *Error
+graphql: func Deny(permission, resource string) Outcome
+graphql: func Directive(name string, fn func(next FieldFunc) FieldFunc) SchemaOption
+graphql: func DirectiveArgs[A any](name string, fn func(next FieldFunc, args A) FieldFunc) SchemaOption
+graphql: func DisableIntrospection() SchemaOption
+graphql: func DisableSuggestions() ExecutorOption
+graphql: func Drop() Outcome
+graphql: func Enum[T comparable](name string, values map[T]string) SchemaOption
+graphql: func Errorf(format string, args ...any) *Error
+graphql: func FieldArgs[P, A, R any](name string, fn func(P, A) R, opts ...FieldSchedule) FieldOption
+graphql: func FieldFrom(ctx context.Context) *FieldContext
+graphql: func Field[P, R any](name string, fn func(P) R, opts ...FieldSchedule) FieldOption
+graphql: func Inline() FieldSchedule
+graphql: func InputField[T, V any](name string, set func(*T, V)) InputFieldOption
+graphql: func Input[T any](name string, fields ...InputFieldOption) SchemaOption
+graphql: func Interface[T any](name string, opts ...AbstractOpt) SchemaOption
+graphql: func MarkerDirective(name, scope string) SchemaOption
+graphql: func Mutation(fields ...FieldOption) SchemaOption
+graphql: func NewExecutor(s *Schema, opts ...ExecutorOption) *Executor
+graphql: func NewRequirement(anyOf ...[]string) Requirement
+graphql: func NewSchema(src Source, opts ...SchemaOption) (*Schema, error)
+graphql: func Null() Outcome
+graphql: func Object[E any](name string, fields ...FieldOption) SchemaOption
+graphql: func OmittableField[T, V any](name string, set func(*T, Omittable[V])) InputFieldOption
+graphql: func OmittableOf[T any](v T) Omittable[T]
+graphql: func OperationFrom(ctx context.Context) *OperationContext
+graphql: func Options(opts ...SchemaOption) SchemaOption
+graphql: func PathFrom(ctx context.Context) Path
+graphql: func PrintSDL(s *Schema) string
+graphql: func Query(fields ...FieldOption) SchemaOption
+graphql: func Redact(fn func(any) any) Outcome
+graphql: func RequireAuthCoverage() SchemaOption
+graphql: func RequirementDirective(name, arg string, shape ScopeShape) SchemaOption
+graphql: func ResolveArgs[P, A, R any](name string, fn func(context.Context, P, A) (R, error), opts ...FieldSchedule) FieldOption
+graphql: func Resolve[P, R any](name string, fn func(context.Context, P) (R, error), opts ...FieldSchedule) FieldOption
+graphql: func SDL(s string) Source
+graphql: func SDLBytes(b []byte) Source
+graphql: func SDLFS(fsys fs.FS, patterns ...string) Source
+graphql: func Scalar[T any](name string, marshal func(*Writer, T) error, unmarshal func(any) (T, error)) SchemaOption
+graphql: func ScopeAuthorizer(held func(context.Context) map[string]bool) Authorizer
+graphql: func SelectionFrom(ctx context.Context) Selection
+graphql: func Sources(srcs ...Source) Source
+graphql: func SubscribeArgs[A, R any](name string, fn func(context.Context, A) (<-chan R, error), opts ...FieldSchedule) FieldOption
+graphql: func Subscribe[R any](name string, fn func(context.Context) (<-chan R, error), opts ...FieldSchedule) FieldOption
+graphql: func Subscription(fields ...FieldOption) SchemaOption
+graphql: func TypeResolver[T any](fn func(T) string) AbstractOpt
+graphql: func Union[T any](name string, opts ...AbstractOpt) SchemaOption
+graphql: func Validate(src Source, opts ...SchemaOption) error
+graphql: func WithAuthorizer(a Authorizer) ExecutorOption
+graphql: func WithErrorPresenter(p ErrorPresenter) ExecutorOption
+graphql: func WithFieldInterceptor(is ...FieldInterceptor) ExecutorOption
+graphql: func WithFieldObserver(o ...FieldObserver) ExecutorOption
+graphql: func WithMaxComplexity(n int) ExecutorOption
+graphql: func WithMaxConcurrency(n int) ExecutorOption
+graphql: func WithMaxDepth(n int) ExecutorOption
+graphql: func WithMaxErrors(n int) ExecutorOption
+graphql: func WithMaxResponseBytes(n int64) ExecutorOption
+graphql: func WithObjectAuthBatch(n int) ExecutorOption
+graphql: func WithObjectAuthorizer(a ObjectAuthorizer) ExecutorOption
+graphql: func WithOperationInterceptor(is ...OperationInterceptor) ExecutorOption
+graphql: func WithOperationTimeout(d time.Duration) ExecutorOption
+graphql: func WithPlanCache(size int) ExecutorOption
+graphql: func WithPlanCacheBytes(n int64) ExecutorOption
+graphql: func WithQueryCost(c QueryCost) ExecutorOption
+graphql: func WithRecover(enabled bool) ExecutorOption
+graphql: func WithRequestInterceptor(is ...RequestInterceptor) ExecutorOption
+graphql: func WithSubscriptionInterceptor(is ...SubscriptionInterceptor) ExecutorOption
+graphql: func Zero() Outcome
+graphql: type AbstractOpt interface { applyAbstract(*abstractBinding) }
+graphql: type AuthShape struct { }
+graphql: type AuthSite struct { Coord string Field *ast.FieldDefinition Object *ast.Definition Kind SiteKind Requires Requirement Grants []string Arg string ListElement bool }
+graphql: type Authorizer interface { Authorize(ctx context.Context, shape *AuthShape, d *Decision) error }
+graphql: type AuthorizerFunc func(ctx context.Context, shape *AuthShape, d *Decision) error
+graphql: type Decision struct { }
+graphql: type Error struct { Message string Locations []Location Path Path Extensions map[string]any Err error }
+graphql: type ErrorPresenter func(ctx context.Context, err error) *Error
+graphql: type Executor struct { }
+graphql: type ExecutorOption func(*Executor)
+graphql: type ExecutorStats struct { PlanCacheEntries int PlanCacheBytes int64 PlanCacheHits int64 PlanCacheMisses int64 ConcurrencyInUse int ConcurrencyLimit int }
+graphql: type ExtensionsProvider interface { GraphQLExtensions() map[string]any }
+graphql: type FieldContext struct { Field *ast.FieldDefinition Object *ast.Definition Args any Parent any }
+graphql: type FieldFunc func(ctx context.Context, parent any, args any) (any, error)
+graphql: type FieldHandler func(ctx context.Context) (any, error)
+graphql: type FieldInfo struct { Object string Field string Alias string }
+graphql: type FieldInterceptor interface { InterceptField(ctx context.Context, fc *FieldContext, next FieldHandler) (any, error) }
+graphql: type FieldInterceptorFunc func(ctx context.Context, fc *FieldContext, next FieldHandler) (any, error)
+graphql: type FieldObserver interface { BeginField(ctx context.Context, f FieldInfo) context.Context EndField(ctx context.Context, f FieldInfo, err error) }
+graphql: type FieldOpt = FieldSchedule
+graphql: type FieldOption interface { applyField(*objectBinding) }
+graphql: type FieldSchedule func(*fieldSpec)
+graphql: type ID string
+graphql: type InputFieldOption interface { applyInput(*inputBinding) }
+graphql: type InputKey struct { Path []string Enum string Null bool }
+graphql: type Location struct { Line int `json:"line"` Column int `json:"column"` }
+graphql: type ObjectAuthorizer interface { AuthorizeObjects(ctx context.Context, checks []ObjectCheck) ([]Outcome, error) }
+graphql: type ObjectCheck struct { Site AuthSite Type string Object any }
+graphql: type Omittable[T any] struct { }
+graphql: type OperationContext struct { Operation *ast.OperationDefinition Doc *ast.QueryDocument RawQuery string OperationName string Variables map[string]any Stats OperationStats }
+graphql: type OperationHandler func(ctx context.Context, oc *OperationContext) *Response
+graphql: type OperationInterceptor interface { InterceptOperation(ctx context.Context, oc *OperationContext, next OperationHandler) *Response }
+graphql: type OperationInterceptorFunc func(ctx context.Context, oc *OperationContext, next OperationHandler) *Response
+graphql: type OperationStats struct { Start time.Time CacheHit bool PlanUncacheable bool }
+graphql: type Outcome struct { }
+graphql: type Path []PathElem
+graphql: type PathElem struct { Key string Index int IsIndex bool }
+graphql: type QueryCost struct { Max int DefaultListSize int ListArguments []string FieldWeight map[string]int Report bool Connections bool Actual bool }
+graphql: type Request struct { Query string `json:"query"` OperationName string `json:"operationName,omitempty"` Variables json.RawMessage `json:"variables,omitempty"` Extensions map[string]any `json:"extensions,omitempty"` }
+graphql: type RequestHandler func(ctx context.Context, req *Request) *Response
+graphql: type RequestInterceptor interface { InterceptRequest(ctx context.Context, req *Request, next RequestHandler) *Response }
+graphql: type RequestInterceptorFunc func(ctx context.Context, req *Request, next RequestHandler) *Response
+graphql: type Requirement struct { }
+graphql: type Response struct { Data []byte Errors []*Error Extensions map[string]any }
+graphql: type Root struct { }
+graphql: type Schema struct { }
+graphql: type SchemaOption interface { applySchema(*schemaBuilder) }
+graphql: type ScopeShape uint8
+graphql: type SelectedField struct { Name string Alias string Args any }
+graphql: type Selection struct { }
+graphql: type SiteKind uint8
+graphql: type Source struct { }
+graphql: type SubscribeError struct { Response *Response }
+graphql: type SubscriptionHandler func(ctx context.Context, oc *OperationContext) (<-chan *Response, error)
+graphql: type SubscriptionInterceptor interface { InterceptSubscription(ctx context.Context, oc *OperationContext, next SubscriptionHandler) (<-chan *Response, error) }
+graphql: type SubscriptionInterceptorFunc func(ctx context.Context, oc *OperationContext, next SubscriptionHandler) (<-chan *Response, error)
+graphql: type WaveCoordinator struct { }
+graphql: type Writer jsonw.Writer
+loader: func (l *Loader[K, V]) Clear(ctx context.Context, key K)
+loader: func (l *Loader[K, V]) Load(ctx context.Context, key K) (V, error)
+loader: func (l *Loader[K, V]) LoadMany(ctx context.Context, keys []K) ([]V, error)
+loader: func (l *Loader[K, V]) Prime(ctx context.Context, key K, value V)
+loader: func NewMapped[K comparable, V any](batch MappedBatchFunc[K, V], opts ...Option) *Loader[K, V]
+loader: func New[K comparable, V any](batch BatchFunc[K, V], opts ...Option) *Loader[K, V]
+loader: func WithMaxBatchSize(n int) Option
+loader: func WithoutCache() Option
+loader: type BatchFunc[K comparable, V any] func(ctx context.Context, keys []K) (map[K]V, error)
+loader: type Loader[K comparable, V any] struct { }
+loader: type MappedBatchFunc[K comparable, V any] func(ctx context.Context, keys []K) (map[K]V, map[K]error, error)
+loader: type Option func(*config)
+relay: func Bind[T any](connName, edgeName string) graphql.SchemaOption
+relay: func FromGlobalID(gid graphql.ID) (typeName, id string, err error)
+relay: func FromPage[T any](items []T, cursor func(T) string, hasNext, hasPrev bool) Connection[T]
+relay: func FromSlice[T any](items []T, args Args) (Connection[T], error)
+relay: func IDField[E any](typeName string, local func(*E) string) graphql.FieldOption
+relay: func Node(fn NodeResolver) graphql.SchemaOption
+relay: func OffsetCursor(offset int) string
+relay: func Pagination() graphql.SchemaOption
+relay: func ToGlobalID(typeName, id string) graphql.ID
+relay: type Args struct { First *int Last *int After *string Before *string }
+relay: type Connection[T any] struct { Edges []Edge[T] PageInfo PageInfo }
+relay: type Edge[T any] struct { Node T Cursor string }
+relay: type NodeResolver func(ctx context.Context, typeName, id string) (any, error)
+relay: type PageInfo struct { HasNextPage bool HasPreviousPage bool StartCursor *string EndCursor *string }
+relay: var ErrInvalidGlobalID
+relay: var ErrNegativeCount
+transport/drain: func (d *Drain) Active() int
+transport/drain: func (d *Drain) Closing() <-chan struct{}
+transport/drain: func (d *Drain) Enter(parent context.Context) (ctx context.Context, leave func(), ok bool)
+transport/drain: func (d *Drain) Shutdown(ctx context.Context) error
+transport/drain: func New() *Drain
+transport/drain: type Drain struct { }
+transport/gqlecho: func New(exec *graphql.Executor, opts ...gqlhttp.Option) echo.HandlerFunc
+transport/gqlecho: func SSE(exec *graphql.Executor, opts ...gqlsse.Option) echo.HandlerFunc
+transport/gqlecho: func WS(exec *graphql.Executor, opts ...gqlws.Option) echo.HandlerFunc
+transport/gqlfiber: const MediaTypeEventStream
+transport/gqlfiber: const MediaTypeGraphQLResponse
+transport/gqlfiber: const MediaTypeJSON
+transport/gqlfiber: const StatusBadRequest
+transport/gqlfiber: const StatusForbidden
+transport/gqlfiber: const StatusGoingAway
+transport/gqlfiber: const StatusInitTimeout
+transport/gqlfiber: const StatusNormalClosure
+transport/gqlfiber: const StatusSubprotocolNotAcceptable
+transport/gqlfiber: const StatusSubscriberExists
+transport/gqlfiber: const StatusTooManyInitRequests
+transport/gqlfiber: const StatusUnauthorized
+transport/gqlfiber: const Subprotocol
+transport/gqlfiber: func ConnFrom(ctx context.Context) UpgradeConn
+transport/gqlfiber: func New(exec *graphql.Executor, opts ...Option) fiber.Handler
+transport/gqlfiber: func SSE(exec *graphql.Executor, opts ...Option) fiber.Handler
+transport/gqlfiber: func WS(exec *graphql.Executor, opts ...Option) fiber.Handler
+transport/gqlfiber: func WithBatching(maxEntries int) Option
+transport/gqlfiber: func WithCSRFPrevention(enabled bool, headers ...string) Option
+transport/gqlfiber: func WithDrain(d *drain.Drain) Option
+transport/gqlfiber: func WithInitTimeout(d time.Duration) Option
+transport/gqlfiber: func WithInsecureSkipOriginCheck() Option
+transport/gqlfiber: func WithKeepAlive(d time.Duration) Option
+transport/gqlfiber: func WithLogger(l *slog.Logger) Option
+transport/gqlfiber: func WithMaxBodyBytes(n int64) Option
+transport/gqlfiber: func WithMaxConnectionAge(age, grace time.Duration) Option
+transport/gqlfiber: func WithMaxConnectionIdle(d time.Duration) Option
+transport/gqlfiber: func WithMaxStreamAge(d time.Duration) Option
+transport/gqlfiber: func WithMaxSubscriptions(n int) Option
+transport/gqlfiber: func WithOnConnect(fn ConnectFunc) Option
+transport/gqlfiber: func WithOriginPatterns(patterns ...string) Option
+transport/gqlfiber: func WithPersistedQueries(cache apq.Cache) Option
+transport/gqlfiber: func WithPingInterval(d time.Duration) Option
+transport/gqlfiber: func WithReadLimit(n int64) Option
+transport/gqlfiber: func WithWriteTimeout(d time.Duration) Option
+transport/gqlfiber: type ConnectFunc = gqlwsproto.ConnectFunc
+transport/gqlfiber: type Option func(*config)
+transport/gqlfiber: type UpgradeConn interface { Headers(key string, defaultValue ...string) string Cookies(key string, defaultValue ...string) string Query(key string, defaultValue ...string) string Params(key string, defaultValue ...string) string Locals(key string, value ...any) any IP() string }
+transport/gqlfiber: var DefaultCSRFHeaders
+transport/gqlhttp: const MediaTypeGraphQLResponse
+transport/gqlhttp: const MediaTypeJSON
+transport/gqlhttp: func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request)
+transport/gqlhttp: func New(exec *graphql.Executor, opts ...Option) *Handler
+transport/gqlhttp: func WithBatching(maxEntries int) Option
+transport/gqlhttp: func WithCSRFPrevention(enabled bool, headers ...string) Option
+transport/gqlhttp: func WithLogger(l *slog.Logger) Option
+transport/gqlhttp: func WithMaxBodyBytes(n int64) Option
+transport/gqlhttp: func WithPersistedQueries(cache apq.Cache) Option
+transport/gqlhttp: type Handler struct { }
+transport/gqlhttp: type Option func(*Handler)
+transport/gqlhttp: var DefaultCSRFHeaders
+transport/gqlsse: const MediaTypeEventStream
+transport/gqlsse: const MediaTypeGraphQLResponse
+transport/gqlsse: func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request)
+transport/gqlsse: func New(exec *graphql.Executor, opts ...Option) *Handler
+transport/gqlsse: func WithCSRFPrevention(enabled bool, headers ...string) Option
+transport/gqlsse: func WithDrain(d *drain.Drain) Option
+transport/gqlsse: func WithKeepAlive(d time.Duration) Option
+transport/gqlsse: func WithLogger(l *slog.Logger) Option
+transport/gqlsse: func WithMaxBodyBytes(n int64) Option
+transport/gqlsse: func WithMaxStreamAge(d time.Duration) Option
+transport/gqlsse: func WithPersistedQueries(cache apq.Cache) Option
+transport/gqlsse: type Handler struct { }
+transport/gqlsse: type Option func(*Handler)
+transport/gqlsse: var DefaultCSRFHeaders
+transport/gqlws: const StatusBadRequest
+transport/gqlws: const StatusForbidden
+transport/gqlws: const StatusGoingAway
+transport/gqlws: const StatusInitTimeout
+transport/gqlws: const StatusNormalClosure
+transport/gqlws: const StatusSubprotocolNotAcceptable
+transport/gqlws: const StatusSubscriberExists
+transport/gqlws: const StatusTooManyInitRequests
+transport/gqlws: const StatusUnauthorized
+transport/gqlws: const Subprotocol
+transport/gqlws: func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request)
+transport/gqlws: func New(exec *graphql.Executor, opts ...Option) *Handler
+transport/gqlws: func RequestFrom(ctx context.Context) *http.Request
+transport/gqlws: func WithDrain(d *drain.Drain) Option
+transport/gqlws: func WithInitTimeout(d time.Duration) Option
+transport/gqlws: func WithInsecureSkipOriginCheck() Option
+transport/gqlws: func WithLogger(l *slog.Logger) Option
+transport/gqlws: func WithMaxConnectionAge(age, grace time.Duration) Option
+transport/gqlws: func WithMaxConnectionIdle(d time.Duration) Option
+transport/gqlws: func WithMaxSubscriptions(n int) Option
+transport/gqlws: func WithOnConnect(fn ConnectFunc) Option
+transport/gqlws: func WithOriginPatterns(patterns ...string) Option
+transport/gqlws: func WithPersistedQueries(cache apq.Cache) Option
+transport/gqlws: func WithPingInterval(d time.Duration) Option
+transport/gqlws: func WithReadLimit(n int64) Option
+transport/gqlws: type ConnectFunc = gqlwsproto.ConnectFunc
+transport/gqlws: type Handler struct { }
+transport/gqlws: type Option func(*Handler)
