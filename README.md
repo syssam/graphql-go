@@ -163,8 +163,12 @@ A fuller example with interfaces, unions, enums, custom scalars, input objects,
 and a subscription fed by the `createPost` mutation lives in
 [`examples/blog`](examples/blog).
 [`examples/quickstart`](examples/quickstart) is a much smaller note board —
-hand-written bindings, no codegen; [`examples/README.md`](examples/README.md)
-compares the two.
+hand-written bindings, no codegen.
+[`examples/storefront`](examples/storefront) is the one to read before
+deploying anything: an order API where four principals see different parts of
+the same graph, every position declares what it requires, and the server
+carries the limits, persisted queries, tracing and shutdown drain the other
+examples leave out. [`examples/README.md`](examples/README.md) compares them.
 
 ## Concepts
 
@@ -211,43 +215,78 @@ that struct to fully explicit setters; the two modes do not mix.
 
 ## Status
 
-Phases 1 and 2 of the
-[design](docs/superpowers/specs/2026-09-11-graphql-go-design.md) are complete:
-`cmd/gqlc` emits models, args, a `Resolver` interface and bindings from SDL,
-splitting into per-group packages when more than one group is present, and
+Phases 1-4 of the
+[design](docs/superpowers/specs/2026-09-11-graphql-go-design.md) are complete.
+
+**Engine.** Schema-first with a code-first binding API: SDL is the contract and
+Go bindings are plain function values, checked against it at `NewSchema` rather
+than at request time. A document is parsed and validated once and cached in an
+LRU bounded by entry count and by query text; concurrent misses for one query
+share a single parse. Each `(operation, @skip/@include variant)` compiles to an
+immutable plan with fragments flattened, directives constant-folded, arguments
+pre-decoded and response keys pre-serialized, and abstract types expanded
+through a memo so the plan stays a DAG rather than a tree. The request path
+writes JSON straight into a pooled buffer, with no reflection on it at all.
+
+**Code generation.** `cmd/gqlc` emits models, args structs, a `Resolver`
+interface and bindings from SDL alone -- it never loads Go packages -- splitting
+into per-group packages when more than one group is present.
+`codegen.Config.Manifest` binds GraphQL types and fields to Go types outright
+instead of inferring them, which is the mode an external generator such as an
+ORM wants, and `AutoBind` discovers the same bindings from named packages,
+loading only their export data rather than a whole module.
 [`examples/blog`](examples/blog) uses the generated package.
 
-Phase 3 is under way. Subscriptions execute, and both streaming transports are
-built: `transport/gqlsse` over Server-Sent Events and `transport/gqlws` over
-`graphql-transport-ws`, with `connection_init`/`ack`, `ping`/`pong`, an
-`OnConnect` hook whose context parents every operation on the connection, an
-init timeout and a per-connection operation cap. Both serve queries and
-mutations too -- one `next` then `complete` -- so a client needs only one
-endpoint. Automatic persisted queries are in `ext/apq`, opt-in on either HTTP transport
-with `WithPersistedQueries(apq.NewCache(1000))`. `ext/trusted` turns the
-same wiring into a safelist — the server runs only documents a build step
-registered and refuses query text whatever hash accompanies it, which is what
-Relay's --persist-output and Apollo's manifest are for. OpenTelemetry traces and
-metrics are in `ext/otel`: `graphql.NewExecutor(s, otel.New()...)`, which also wraps a
-DataLoader batch function (`otel.Batch("user", loadUsers)`) so each flush gets a
-span under the request that caused it. Runtime state is exported as asynchronous metrics
-once the executor exists — `otel.ObserveExecutor(exec)` for plan cache size, lookups by hit or miss and
-resolver concurrency, `otel.ObserveDrain(d)` for open WebSocket connections and SSE subscription
-streams, each once per meter and with `otel.WithAttributes` to tell several apart — and
-`graphql.server.active_requests` (queries and mutations; subscriptions are not counted) comes with
-`otel.New`. Cost-based rate
-limiting is in `ext/throttle`: a bucket of points per caller refilled at a fixed
-rate, quoted before the query runs and charged what it really cost afterwards,
-reporting `extensions.cost.throttleStatus` the way Shopify's Admin API does.
+**Transports.** `gqlhttp`, `gqlsse` (Server-Sent Events), `gqlws`
+(`graphql-transport-ws`), and `gqlecho` and `gqlfiber` for Echo v5 and Fiber v3.
+All five serve every operation kind, so a client needs one endpoint, and they
+share one set of CSRF, body-limit and content-negotiation rules that
+`transport/equivalence_test.go` proves by driving real requests through all six
+HTTP-carrying handlers. `transport/drain` winds down what `http.Server.Shutdown`
+cannot: an SSE stream is a request that never ends and a WebSocket is hijacked,
+which `Shutdown` neither closes nor waits for. Connection age and idle limits
+mirror grpc's `keepalive.ServerParameters`, all off by default.
 
-Phase 4 is under way. `QueryCost.Actual` reports `actualQueryCost` alongside
-the requested one, summed from the fields really resolved rather than from
-assumed list sizes. `codegen.Config.Manifest` binds GraphQL types and fields
-to Go types outright instead of inferring them, still without loading any Go
-type information, which is the mode an external generator such as an ORM
-wants, and `AutoBind` discovers the same bindings from named packages,
-loading only their export data rather than a whole module. Still to come: APQ
-over WebSocket.
+**Authorization.** Declared in the SDL and compiled into the plan, not wrapped
+around it: a field that declares nothing costs one integer compare and no
+allocation. `@requiresScopes` is built in, `RequirementDirective` and
+`MarkerDirective` add a schema's own spelling (Apollo's `@policy` and
+`@authenticated` are one call each), `@authorizeInput` makes an argument's
+contents a site of its own, and `@authorizeObject` decides individual rows
+during execution, batched per list. An `Authorizer` receives what the operation
+touches and records an outcome per site -- allow, deny, null, zero, redact or
+drop -- and `RequireAuthCoverage` fails the build for a field that declares
+neither a requirement nor `@public`. [`examples/storefront`](examples/storefront)
+wires all of it.
+
+**Extensions.** `ext/apq` for automatic persisted queries, opt-in on every HTTP
+transport and on `gqlws` and `gqlfiber`; `ext/trusted` turns the same wiring
+into a safelist that runs only documents a build step registered and refuses
+query text whatever hash accompanies it, which is what Relay's
+`--persist-output` and Apollo's manifest are for; `ext/otel` for traces and
+metrics, including DataLoader batch spans (`otel.Batch("user", loadUsers)`) and
+runtime instruments registered after the executor and drain exist
+(`otel.ObserveExecutor`, `otel.ObserveDrain`, each once per meter); and
+`ext/throttle` for cost-based rate limiting, a bucket of points per caller
+quoted before the query runs and charged what it really cost, reported as
+`extensions.cost.throttleStatus` the way Shopify's Admin API does.
+
+**Limits**, all off by default except the last two: query depth, complexity and
+cost (`QueryCost.Actual` reports what really resolved alongside what was assumed
+from list sizes, which is how you tell whether `DefaultListSize` is set near
+reality), an operation timeout that bounds work rather than latency, a response
+size cap (64 MiB), and an error-list cap (1000).
+
+**Also:** `relay/` for global ids, `Node` and cursor connections; `fed/` for
+Apollo Federation subgraphs; and `lint/`, an analyzer for a bug class `-race`
+cannot find -- a check-then-act pair on `OperationContext` that silently
+degrades DataLoader batching to N+1.
+
+Not built: `ext/authz`, and what is left of it is smaller than a package --
+`@requiresScopes` is core, `@policy` is one `RequirementDirective` call and
+`@authenticated` one `MarkerDirective`, leaving only a batched `Guard`.
+`@defer`/`@stream` is not merely unbuilt: the prelude's `@defer` is stripped so
+that the validator and introspection agree the server says no.
 
 ## Development
 
