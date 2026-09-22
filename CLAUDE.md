@@ -18,10 +18,42 @@ go test -run xxx -fuzz FuzzExecute -fuzztime 30s .
 ```sh
 sh scripts/gate.sh            # vet and test every module
 sh scripts/gate.sh -short     # skip the slow subprocess and load tests
+GATE_REQUIRE_ALL=1 sh scripts/gate.sh   # and fail if any module was skipped (CI uses this)
 ```
 
 Use it before claiming a change is clean. During one audit the three outside modules were
 very nearly missed, and they had a root API change in them at the time.
+
+**Four gates do not run under `go test ./...` and are each a separate CI job.**
+They exist because each one guards something a green suite does not:
+
+```sh
+# The public API. 413 exported declarations pinned against docs/public-api.txt;
+# a change is a failing test rather than a review someone has to catch.
+go test -run TestPublicAPISurface .
+go test -run TestPublicAPISurface -update-api .        # after a deliberate change
+
+# Allocations, the half of a benchmark that survives a shared runner. One-sided:
+# more fails, fewer logs. Skips itself under -race, which changes the counts, so
+# the -race gate above never runs it.
+go test -run TestAllocationBaseline .
+go test -run TestAllocationBaseline -update-allocs .   # after a deliberate change
+
+# Vulnerabilities, every module. Build it from source with the toolchain go.mod
+# names: a govulncheck built with an older Go cannot load these packages and
+# reports nothing useful, the same failure staticcheck has here.
+go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...
+
+# Fuzz discovery is go test -list over go list ./..., not a grep of the root
+# package -- that is how internal/jsonw went unfuzzed for months.
+go test -run "^$" -fuzz FuzzString -fuzztime 30s ./internal/jsonw
+```
+
+`docs/api-stability.md` is the companion to the first of those, and the place the
+gqlparser coupling is written down: `*ast.Schema` and four other AST types are in
+the public API, so a gqlparser v3 forces a major version here.
+`docs/operations.md` is the deployment page -- which limits to turn on, what sizes
+a replica, which metric to alarm on, and what has not been measured.
 
 **Watch for measurements that succeed while covering less than they look.** A red build is
 easy; a command that used to be complete, quietly stopped being, and still prints success is
@@ -954,6 +986,18 @@ justifies a package is a question for a consumer that has migrated. `@defer`/`@s
 server says no; adding it reverses a decision rather than filling a gap. Not measured, both
 needing Linux: latency percentiles, which this machine's ~522us clock granularity makes
 impossible, and behaviour under a cgroup memory limit.
+
+Five examples, and what each is the one to read for: `quickstart` the smallest thing that
+runs, `blog` layering and codegen, **`storefront` authorization and the server wiring a
+deployment needs**, **`federation` two subgraphs and the fetch a router performs across
+them**, **`relaynode` global ids and cursor connections**. `echo` and `fiber` serve `blog`.
+`storefront` is also what found `AuthSite.ListElement` missing, which is the argument for an
+example that has to work rather than one that reads well.
+
+Not measured, beyond the two Linux items above: the schema-build curve past ~1600 types (the
+11 MB and 30 ms figures are at 200 entities), and **anything at all in production** — nothing
+here has served a real request outside a benchmark. `docs/operations.md` ends with that list
+so a reader does not have to infer it from silence.
 
 Keep this section honest. It said "subscription load testing not yet built" while the
 architecture section above described `transport/gqlws/load_test.go` in detail, and called
