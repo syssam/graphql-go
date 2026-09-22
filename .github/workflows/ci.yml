@@ -98,6 +98,38 @@ jobs:
           cd lint && go build -o "$RUNNER_TEMP/gqlvet" ./cmd/gqlvet
           cd "$GITHUB_WORKSPACE" && "$RUNNER_TEMP/gqlvet" ./...
 
+  bench:
+    name: allocations (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Without -race, deliberately: the detector changes allocation counts,
+      # and the test skips itself under it. The gate job runs everything else
+      # with -race, so this is the one place these benchmarks execute.
+      #
+      # Allocations are the only figure worth asserting on a shared runner.
+      # Timings there are noise -- this repository has read a single sample
+      # wrong by 20-77% on its own warm machine -- so they are published as an
+      # artifact to look at, never failed on.
+      - name: Allocation baseline
+        run: go test -run TestAllocationBaseline -v .
+
+      - name: Benchmark timings, for the record only
+        run: |
+          go test -run "^$" -bench . -benchmem -count=6 . | tee bench-linux.txt
+        continue-on-error: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-linux
+          path: bench-linux.txt
+        if: always()
+
   vuln:
     name: govulncheck
     runs-on: ubuntu-latest

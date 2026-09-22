@@ -1,0 +1,11 @@
+# Allocations per operation, the figure that is deterministic.
+# Enforced one-sided by TestAllocationBaseline: more fails, fewer does not.
+# Regenerate: go test -run TestAllocationBaseline -update-allocs .
+BenchmarkExecuteUsers 14
+BenchmarkFieldPathBare 14
+BenchmarkExecuteTypenameHeavy 50
+BenchmarkExecuteNoAuthorizer 9
+BenchmarkExecuteWithAuthorizer 11
+BenchmarkListResultsSlice 15
+BenchmarkQueryCostDisabled 16
+BenchmarkResponseLimitOn 87

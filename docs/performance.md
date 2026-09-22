@@ -192,6 +192,26 @@ codebase have been wrong by 20-77% on a warm machine, in both directions.
 Allocation counts and retained heap are deterministic and are the figures to
 trust when timings are noisy.
 
+That asymmetry is now a gate. `TestAllocationBaseline` runs the benchmarks
+whose allocation count is a contract and fails if any of them allocates more
+than [`alloc-baseline.txt`](alloc-baseline.txt) records -- one-sided, so an
+improvement logs rather than fails, and pinning the exact number does not turn
+every win into a red build. Adding one allocation per request to
+`newResponseWriter` fails it on seven benchmarks at once, each reporting
+"a regression of 1".
+
+It runs on Linux in CI, without `-race`, because the detector changes
+allocation counts and the test skips itself under it. **The baseline was
+recorded on Windows**; if Linux disagrees the first CI run says so, and the
+fix is to regenerate it there:
+
+```sh
+go test -run TestAllocationBaseline -update-allocs .
+```
+
+Timings are published from the same job as an artifact and are never asserted
+on. A shared runner cannot produce a number this repository would act on.
+
 ## Profile-guided optimization
 
 PGO cannot be shipped with this library. `go build` selects `default.pgo` from
