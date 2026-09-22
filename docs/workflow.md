@@ -204,6 +204,79 @@ is what an ORM or an in-house generator does, and the reason they exist.
   always be written, where a bad guess is a compile error in code you did not
   write.
 
+## Migrating from gqlgen
+
+Measured against a real 5 503-type ERP schema -- 828 SDL files, a Query root
+4 154 fields wide, an ent-derived ORM underneath -- rather than reasoned about.
+Every number below came from running the generator against it.
+
+The work is one config file. Four settings, in the order they pay:
+
+```yaml
+schema:
+  - schema/*.graphql
+output: graph
+package: example.com/app/graph
+
+# 1. The bindings the SDL already carries. gqlgen writes them as
+#    @goModel(model: "pkg/path.Type"); there were 3 778 of them, and this
+#    reads all of them.
+modelDirective:
+  name: goModel
+  arg: model
+
+# 2. The scalars, which gqlgen keeps in gqlgen.yml rather than in the SDL, so
+#    they have to be moved by hand. There were about 40, and three of them
+#    accounted for 1 400 fields.
+models:
+  ID: int64
+  Time: time.Time
+  Decimal: github.com/shopspring/decimal.Decimal
+  Map: map[string]any
+  JSON: map[string]any
+```
+
+```go
+// 3. AutoBind, in code rather than YAML, pointed at the entity packages.
+cfg.AutoBind = []string{"example.com/app/ent"}
+```
+
+What each one is worth, in fields that bind instead of landing on the Resolver
+interface:
+
+| | non-root resolvers |
+|---|---:|
+| nothing configured | 20 692 |
+| `ID` mapped to the ORM's integer id | 14 434 |
+| `Time` mapped | 12 296 |
+| `Decimal`, `Map`, `JSON` mapped | 9 988 |
+
+**`ID` first.** An ORM that stores ids as `int64` under an `ID` scalar fails
+every id field against the default `graphql.ID`, and ids are the commonest
+field in any schema: mapping one line recovered 6 258 fields.
+
+On the types AutoBind can see, what is left is real work rather than
+configuration: **99% of it is fields the Go type genuinely does not have** --
+`createdByUser`, `updatedByEmployee` and their kind -- which are resolvers in
+any generator. 1% is a type that still does not line up.
+
+**AutoBind is not optional at this scale, and it is not a resolver-count
+optimisation.** Without it the generator infers: a scalar-returning field is
+read straight off the struct. That inference is a guess, and where it is wrong
+-- `time.Time` where the generated model says `model.Time` -- it is a compile
+error in a file marked DO NOT EDIT. With AutoBind only verified matches bind.
+Expect the resolver count to go *up* when you turn it on; that is the guessing
+stopping.
+
+Two things this generator will not do for you:
+
+- **It reads no Go type information without AutoBind.** `models:` says which
+  Go type a GraphQL type *is*, not which of its fields are struct fields.
+- **It does not reach into a nested struct.** ent keeps relations in `Edges`,
+  and binding `Edges.ParentTest` directly would skip the lazy loader that
+  `ParentTest(ctx)` runs -- returning null for data that exists. AutoBind
+  already matches those as methods, which is correct.
+
 ## Editing the schema afterwards
 
 ```sh
