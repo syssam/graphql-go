@@ -20,6 +20,16 @@ type fileConfig struct {
 	Package                string            `yaml:"package"`
 	NullableInputOmittable bool              `yaml:"nullableInputOmittable"`
 	Models                 map[string]string `yaml:"models"`
+	// modelDirective reads type bindings the SDL already carries, for a schema
+	// arriving from another generator:
+	//
+	//	modelDirective:
+	//	  name: goModel
+	//	  arg: model
+	ModelDirective struct {
+		Name string `yaml:"name"`
+		Arg  string `yaml:"arg"`
+	} `yaml:"modelDirective"`
 }
 
 func main() {
@@ -50,6 +60,7 @@ func run(args []string) error {
 		Package:                fc.Package,
 		Models:                 fc.Models,
 		NullableInputOmittable: fc.NullableInputOmittable,
+		ModelDirective:         codegen.ModelDirective{Name: fc.ModelDirective.Name, Arg: fc.ModelDirective.Arg},
 	}
 	return codegen.Generate(context.Background(), cfg)
 }

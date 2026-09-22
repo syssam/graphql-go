@@ -1,12 +1,14 @@
 codegen: const FieldMethod
 codegen: const FieldResolver
 codegen: const FieldStruct
+codegen: func (d ModelDirective) IsZero() bool
 codegen: func Generate(ctx context.Context, cfg Config) error
-codegen: type Config struct { Dir string SchemaGlobs []string Output string Package string GroupFunc func(typeName, sdlFile string) string Models map[string]string Manifest *Manifest AutoBind []string NullableInputOmittable bool }
+codegen: type Config struct { Dir string SchemaGlobs []string Output string Package string GroupFunc func(typeName, sdlFile string) string Models map[string]string ModelDirective ModelDirective Manifest *Manifest AutoBind []string NullableInputOmittable bool }
 codegen: type FieldBinding struct { Kind FieldKind GoName string Context bool Error bool Convert bool }
 codegen: type FieldKind int
 codegen: type GoType struct { PkgPath string Name string }
 codegen: type Manifest struct { Types []TypeBinding }
+codegen: type ModelDirective struct { Name string Arg string }
 codegen: type TypeBinding struct { Name string Go GoType Group string Fields map[string]FieldBinding }
 ext/apq: const CodeNotFound
 ext/apq: const CodeNotInList

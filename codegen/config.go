@@ -31,6 +31,21 @@ type Config struct {
 	// (for example Time → time.Time). Unmapped custom scalars become
 	// named string types in the model package.
 	Models map[string]string
+	// ModelDirective names an SDL directive that already carries a type's Go
+	// binding, and the argument holding it. Empty means none.
+	//
+	// A schema arriving from another generator has those bindings written down
+	// already -- gqlgen spells it @goModel(model: "pkg/path.Type") -- and one
+	// real schema carries 3 778 of them. Restating those in Models is work with
+	// no decision in it, and a translation step that has to be rerun whenever
+	// the SDL changes is a second source of truth.
+	//
+	// The spelling is declared rather than hardcoded, for the reason
+	// RequirementDirective gives in the root package: a generator that only
+	// understands one vendor's directive name is a generator that has to be
+	// forked to understand the next one. Models still wins where both name a
+	// type, so a config can override what the SDL says.
+	ModelDirective ModelDirective
 	// Manifest binds GraphQL types and fields explicitly instead of letting
 	// the generator infer them. It loads no Go type information; see the
 	// Manifest documentation.
@@ -84,3 +99,14 @@ func Generate(ctx context.Context, cfg Config) error {
 	}
 	return nil
 }
+
+// ModelDirective identifies an SDL directive carrying a Go type binding.
+type ModelDirective struct {
+	// Name is the directive, without the @.
+	Name string
+	// Arg is the argument holding the Go type expression.
+	Arg string
+}
+
+// IsZero reports that no directive was named.
+func (d ModelDirective) IsZero() bool { return d.Name == "" || d.Arg == "" }
