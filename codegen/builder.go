@@ -103,7 +103,7 @@ func newBuilder(dir string, cfg Config) (*builder, error) {
 		if aerr != nil {
 			return nil, aerr
 		}
-		explicit = mergeManifests(discovered, explicit)
+		explicit = mergeManifests(yieldToDeclared(discovered, cfg.Models), explicit)
 	}
 
 	// Folding the manifest's type bindings into cfg.Models here means model
@@ -403,6 +403,30 @@ func foldModelDirective(sch *ast.Schema, d ModelDirective, models map[string]str
 		}
 		if expr := strings.TrimSpace(arg.Value.Raw); expr != "" {
 			out[name] = expr
+		}
+	}
+	return out
+}
+
+// yieldToDeclared drops the Go type a discovery found for a type that is
+// already declared in Models, keeping whatever else the discovery learned
+// about it.
+//
+// AutoBind discovers; Models and a binding directive declare. A disagreement
+// between two declarations is a mistake and stays an error, but a discovery
+// that disagrees with a declaration is not one -- it is the declaration doing
+// its job. The two only meet once a schema carries its bindings in the SDL:
+// before ModelDirective, Models was empty on this path and the discovery had
+// nothing to disagree with.
+func yieldToDeclared(discovered *Manifest, models map[string]string) *Manifest {
+	if discovered == nil || len(models) == 0 {
+		return discovered
+	}
+	out := &Manifest{Types: make([]TypeBinding, len(discovered.Types))}
+	copy(out.Types, discovered.Types)
+	for i := range out.Types {
+		if _, declared := models[out.Types[i].Name]; declared {
+			out.Types[i].Go = GoType{}
 		}
 	}
 	return out
