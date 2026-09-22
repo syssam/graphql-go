@@ -243,7 +243,6 @@ graphql: type FieldInfo struct { Object string Field string Alias string }
 graphql: type FieldInterceptor interface { InterceptField(ctx context.Context, fc *FieldContext, next FieldHandler) (any, error) }
 graphql: type FieldInterceptorFunc func(ctx context.Context, fc *FieldContext, next FieldHandler) (any, error)
 graphql: type FieldObserver interface { BeginField(ctx context.Context, f FieldInfo) context.Context EndField(ctx context.Context, f FieldInfo, err error) }
-graphql: type FieldOpt = FieldSchedule
 graphql: type FieldOption interface { applyField(*objectBinding) }
 graphql: type FieldSchedule func(*fieldSpec)
 graphql: type ID string

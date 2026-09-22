@@ -33,22 +33,3 @@ func TestSubscribeErrorUnwrapsItsErrors(t *testing.T) {
 		t.Fatal("errors.As did not return the response's first error")
 	}
 }
-
-// FieldOpt is deprecated but must stay an alias rather than become a defined
-// type: existing code passes a FieldOpt where a FieldSchedule is wanted and
-// vice versa, and only an alias keeps both directions compiling.
-func TestFieldOptRemainsAnAliasOfFieldSchedule(t *testing.T) {
-	// The explicit types are the assertion: a defined type would reject one
-	// of these assignments. Inference would make the test prove nothing.
-	var sched FieldSchedule = Inline() //nolint:staticcheck // QF1011: the explicit type is the point
-	var opt FieldOpt = sched           //nolint:staticcheck // QF1011: the explicit type is the point
-	sched = opt
-	// Assignable in both directions with no conversion, which a defined type
-	// would refuse.
-	if sched == nil {
-		t.Fatal("Inline() returned nil")
-	}
-	// And the constructors accept either spelling.
-	_ = Field("x", func(Root) string { return "" }, opt)
-	_ = Field("y", func(Root) string { return "" }, sched)
-}

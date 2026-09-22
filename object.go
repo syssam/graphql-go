@@ -19,18 +19,6 @@ type FieldOption interface {
 // name follows the gRPC CallOption style: it only affects scheduling.
 type FieldSchedule func(*fieldSpec)
 
-// FieldOpt is an alias for [FieldSchedule], kept so existing code continues to
-// compile.
-//
-// It reads as an abbreviation of [FieldOption], which is a different type
-// entirely: a FieldOption declares a field, a FieldSchedule says whether that
-// field runs inline or concurrently. Two names one letter apart for two
-// unrelated concepts is the kind of thing a reader gets wrong once and then
-// distrusts both, so the constructors now name FieldSchedule.
-//
-// Deprecated: use [FieldSchedule].
-type FieldOpt = FieldSchedule
-
 // Inline forces a Resolve field to run synchronously in the parent's
 // goroutine even when siblings are scheduled concurrently.
 func Inline() FieldSchedule { return func(f *fieldSpec) { f.inline = true } }

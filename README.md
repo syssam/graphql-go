@@ -291,6 +291,16 @@ Not built: `ext/authz`, and what is left of it is smaller than a package --
 `@defer`/`@stream` is not merely unbuilt: the prelude's `@defer` is stripped so
 that the validator and introspection agree the server says no.
 
+## API stability
+
+Nothing is tagged yet. [`docs/api-stability.md`](docs/api-stability.md) records
+what the promise will cover, which parts are still expected to move, and the
+one coupling that decides this library's major version for it: `gqlparser/v2`'s
+AST is part of the public API, so a gqlparser v3 means a major release here.
+`TestPublicAPISurface` pins all 413 exported declarations against
+[`docs/public-api.txt`](docs/public-api.txt), so an API change is a failing
+test rather than a code review someone has to catch.
+
 ## Running it in production
 
 [`docs/operations.md`](docs/operations.md) is the deployment page: which limits
