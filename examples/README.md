@@ -6,6 +6,7 @@
 | [`blog`](blog) | A layered service: generated bindings, a domain isolated from the wire format, a DataLoader, subscriptions. |
 | [`storefront`](storefront) | Authorization: scopes, an argument site, per-row instance checks, and the server wiring a deployment needs. |
 | [`federation`](federation) | Two Apollo Federation subgraphs and the fetch a router performs across them. |
+| [`relaynode`](relaynode) | The Relay contract: global ids, `Query.node` re-fetch, and cursor connections. |
 | [`echo`](echo) | Serving `blog` through Echo v5 — routing and shutdown wiring only. |
 | [`fiber`](fiber) | Serving `blog` through Fiber v3 — routing and shutdown wiring only. |
 
@@ -161,6 +162,43 @@ Both subgraphs run in one process on two paths. That is not how they would be
 deployed -- it is the opposite of the point -- but a router reads each
 endpoint's `_service` and cannot tell.
 
+## Relay in `relaynode`
+
+The `relay` package had no example before this one. Its own tests exercise
+every function, but a test shows one call at a time; what a reader needs is
+the three calls a connection takes sitting beside the SDL they bind to.
+
+    relay.Pagination()                                  // once per schema
+    relay.Bind[*Repository]("RepositoryConnection", "RepositoryEdge")  // once per connection
+    relay.FromSlice(rows, args)                         // in the resolver
+
+`relay.IDField` is the one that is easy to get wrong. It writes
+`base64("Type:id")` for the `id` field -- byte for byte what graphql-relay-js
+and graphql-java produce. Using a plain `Field("id", ...)` that returns the
+local id compiles, validates, and is a perfectly good `ID!`, and then
+`node(id:)` fails for every object. A test pins the encoding for that reason.
+
+`node(id:)` has three ways to find nothing and they are deliberately not the
+same answer: a well-formed id naming a missing row, and one naming a type this
+server does not serve, are both a null `Node` -- the id decoded, it just named
+nothing. Text that is not a global id at all is an error, because the client
+sent something it could not have received from this server.
+
+`examples/blog` also has a `Node` interface, hand-written and without this
+package. Both are worth reading: blog shows that `Query.node` needs no engine
+support at all, since an unbound interface resolves from the dynamic Go type.
+`relaynode` shows what you get for not writing it yourself.
+
+    go run ./examples/relaynode/cmd/server
+
+    GQL='curl -s localhost:8080/graphql -H content-type:application/json'
+
+    # a connection hands back global ids and a cursor
+    $GQL -d '{"query":"{ users(first:1){ edges{ cursor node{ id name } } pageInfo{ hasNextPage endCursor } } }"}'
+
+    # the id from that response, handed straight back
+    $GQL -d '{"query":"query($id:ID!){ node(id:$id){ __typename ... on User { name } } }","variables":{"id":"VXNlcjox"}}'
+
 ## Running
 
     go run ./examples/quickstart            # :8080 /graphql, /graphql/stream
@@ -169,3 +207,4 @@ endpoint's `_service` and cannot tell.
     go run ./examples/echo                  # same schema, Echo v5
     go run ./examples/fiber                 # same schema, Fiber v3
     go run ./examples/federation/cmd/subgraphs # two subgraphs on two paths
+    go run ./examples/relaynode/cmd/server   # global ids and connections

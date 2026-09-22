@@ -1,0 +1,64 @@
+# The Relay server contract, written out in full.
+#
+# Nothing in the relay package emits any of this. The SDL is still the
+# contract: you declare Node, the connection, the edge and PageInfo yourself,
+# and relay binds Go values to them. graphql-relay-js and graphql-java do the
+# same -- neither writes the user's schema for them -- and the reason is that a
+# generated connection type is one you cannot add a field to.
+
+"""An object with a globally unique id."""
+interface Node {
+  id: ID!
+}
+
+"""Relay's pagination envelope. Declared once, shared by every connection."""
+type PageInfo {
+  hasNextPage: Boolean!
+  hasPreviousPage: Boolean!
+  startCursor: String
+  endCursor: String
+}
+
+type User implements Node {
+  """A global id: base64("User:<local id>"), byte for byte what graphql-relay-js produces."""
+  id: ID!
+  name: String!
+
+  """This user's repositories, as a connection."""
+  repositories(first: Int, after: String, last: Int, before: String): RepositoryConnection!
+}
+
+type Repository implements Node {
+  id: ID!
+  name: String!
+  stars: Int!
+  owner: User!
+}
+
+type RepositoryEdge {
+  node: Repository!
+  cursor: String!
+}
+
+type RepositoryConnection {
+  edges: [RepositoryEdge!]!
+  pageInfo: PageInfo!
+}
+
+type UserEdge {
+  node: User!
+  cursor: String!
+}
+
+type UserConnection {
+  edges: [UserEdge!]!
+  pageInfo: PageInfo!
+}
+
+type Query {
+  """Relay's re-fetch entry point: one global id in, the object it names out."""
+  node(id: ID!): Node
+
+  users(first: Int, after: String, last: Int, before: String): UserConnection!
+  repositories(first: Int, after: String, last: Int, before: String): RepositoryConnection!
+}

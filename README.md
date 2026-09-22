@@ -277,7 +277,8 @@ from list sizes, which is how you tell whether `DefaultListSize` is set near
 reality), an operation timeout that bounds work rather than latency, a response
 size cap (64 MiB), and an error-list cap (1000).
 
-**Also:** `relay/` for global ids, `Node` and cursor connections; `fed/` for
+**Also:** `relay/` for global ids, `Node` and cursor connections, shown end to
+end in [`examples/relaynode`](examples/relaynode); `fed/` for
 Apollo Federation subgraphs, with [`examples/federation`](examples/federation)
 showing two of them and the fetch a router performs across them; and `lint/`,
 an analyzer for a bug class `-race`
