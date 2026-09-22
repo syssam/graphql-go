@@ -20,6 +20,31 @@ linters:
     - usestdlibvars
 
   settings:
+    # The rules below are the checkable delta between this repository and the
+    # Google and Uber Go style guides. Every one of them reports nothing
+    # today; they are enabled so that stays true rather than remaining true
+    # by accident. Two rules from the same families are deliberately left off:
+    #
+    #   unused-receiver would have us rename 26 receivers to _, which
+    #   contradicts receiver-naming above it -- Google asks for one receiver
+    #   name applied consistently across a type, not a different one on the
+    #   methods that happen not to touch it.
+    #
+    #   flag-parameter reports 16 boolean parameters, and they are the API:
+    #   WithRecover(enabled bool) and WithFieldSpans(enabled bool) are options
+    #   whose whole job is to carry a flag. Splitting each into two
+    #   constructors to satisfy a linter would double the option surface.
+    revive:
+      rules:
+        - name: receiver-naming
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: early-return
+        - name: indent-error-flow
+        - name: superfluous-else
+        - name: bare-return
+        - name: import-shadowing
+        - name: range-val-address
     staticcheck:
       checks:
         - all
