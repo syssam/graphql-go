@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"go/format"
 	"os"
@@ -18,6 +19,11 @@ func (b *builder) emit() (map[string][]byte, error) {
 		files[filepath.ToSlash(filepath.Join("schema", base))] = []byte(src.Input)
 	}
 	groups := b.uniqueGroups()
+	// Before anything is written: a name collision here would otherwise arrive
+	// as a compile error in a file the author is told not to edit.
+	if err := b.checkNameCollisions(groups); err != nil {
+		return nil, err
+	}
 	// One model package per group keeps a one-group schema edit from
 	// invalidating every other group's package. Input objects are the only
 	// model types that can reference across groups, so a cycle among them
@@ -228,16 +234,15 @@ func (b *builder) importBlock(src, selfPkg string) string {
 	return out.String()
 }
 
-func (b *builder) emitResolver(group string) string {
-	var body strings.Builder
-	body.WriteString("// Resolver holds methods for fields that are not struct data.\n")
-	body.WriteString("type Resolver interface {\n")
+// eachResolverField calls fn for every field of group that becomes a method on
+// its Resolver interface. The collision check and the emitter share it, so the
+// two cannot disagree about what the interface contains.
+func (b *builder) eachResolverField(group string, fn func(typeName string, fd *ast.FieldDefinition)) {
 	for _, name := range b.typeNames(ast.Object) {
 		if !b.inGroup(name, group) {
 			continue
 		}
-		def := b.schema.Types[name]
-		for _, fd := range def.Fields {
+		for _, fd := range b.schema.Types[name].Fields {
 			if strings.HasPrefix(fd.Name, "__") {
 				continue
 			}
@@ -250,6 +255,17 @@ func (b *builder) emitResolver(group string) string {
 			if fb, ok := b.manifest.binding(name, fd.Name); ok && fb.Kind != FieldResolver {
 				continue
 			}
+			fn(name, fd)
+		}
+	}
+}
+
+func (b *builder) emitResolver(group string) string {
+	var body strings.Builder
+	body.WriteString("// Resolver holds methods for fields that are not struct data.\n")
+	body.WriteString("type Resolver interface {\n")
+	b.eachResolverField(group, func(name string, fd *ast.FieldDefinition) {
+		{
 			ret := b.goType(fd.Type, "", false)
 			meth := b.resolverMethod(name, fd.Name)
 			if b.isRoot(name) {
@@ -261,7 +277,7 @@ func (b *builder) emitResolver(group string) string {
 				} else {
 					fmt.Fprintf(&body, "\t%s(ctx context.Context) (%s, error)\n", meth, ret)
 				}
-				continue
+				return
 			}
 			parent := "*" + b.modelRef(name, name)
 			if len(fd.Arguments) > 0 {
@@ -270,9 +286,52 @@ func (b *builder) emitResolver(group string) string {
 				fmt.Fprintf(&body, "\t%s(ctx context.Context, obj %s) (%s, error)\n", meth, parent, ret)
 			}
 		}
-	}
+	})
 	body.WriteString("}\n")
 	return body.String()
+}
+
+// checkNameCollisions refuses a schema whose generated names would collide.
+//
+// A Resolver method is its type name and field name run together, so two
+// different fields can produce one name: FeatureFlag.targetingRules and
+// FeatureFlagTargeting.rules are both FeatureFlagTargetingRules. Without this
+// the generator emitted an interface with the method twice and the failure
+// arrived as a compile error inside a file marked DO NOT EDIT, naming a line
+// the author cannot act on.
+//
+// The interface and the args structs are per group, so a collision is only
+// ever within one, and the cheapest fix is usually to move one of the two
+// types to another SDL file rather than to rename a field.
+func (b *builder) checkNameCollisions(groups []string) error {
+	var errs []error
+	report := func(kind, group, name, a, bcoord string) {
+		errs = append(errs, fmt.Errorf(
+			"codegen: %s in group %q: %s and %s both generate %q; "+
+				"move one type to a different SDL file, or rename one of the fields",
+			kind, group, a, bcoord, name))
+	}
+	for _, g := range groups {
+		methods := map[string]string{}
+		args := map[string]string{}
+		b.eachResolverField(g, func(typeName string, fd *ast.FieldDefinition) {
+			coord := typeName + "." + fd.Name
+			if m := b.resolverMethod(typeName, fd.Name); methods[m] != "" {
+				report("resolver method", g, m, methods[m], coord)
+			} else {
+				methods[m] = coord
+			}
+			if len(fd.Arguments) == 0 {
+				return
+			}
+			if a := b.argsName(typeName, fd.Name); args[a] != "" {
+				report("args struct", g, a, args[a], coord)
+			} else {
+				args[a] = coord
+			}
+		})
+	}
+	return errors.Join(errs...)
 }
 
 func (b *builder) emitBindings(group string, withResolver bool) string {
