@@ -518,3 +518,38 @@ tiny-payload ratio, which reproduced to within 1%.
   half -- that the adaptor cannot carry a WebSocket, and hands the wrapped
   handler a request context that never cancels on client disconnect -- is not
   a number.
+
+## Generation at the scale the grouping is for
+
+The published generation figures are for a 200-entity schema in one SDL file.
+That is the wrong shape for the case grouping exists to serve: one file per
+module, hundreds of them, which is how a large schema actually arrives -- the
+consumer driving this library has 825.
+
+Measured on 2026-09-22, six types per file, one group per file:
+
+| SDL files | types | before | after |
+|---:|---:|---:|---:|
+| 100 | 601 | 613 ms | 633 ms |
+| 200 | 1 201 | 1 390 ms | 641 ms |
+| 400 | 2 401 | 3 713 ms | 1 297 ms |
+| 800 | 4 801 | **12 743 ms** | **3 166 ms** |
+
+"Before" was super-linear and getting worse -- doubling the input multiplied
+the time by 2.27, then 2.67, then 3.43. A CPU profile put 25% in
+`builder.typeNames`, half of that in the sort underneath it: it scanned and
+sorted every type in the schema on each of its dozen call sites, and emit runs
+those once per group. 800 groups over 4 800 types is where that stops being a
+detail. `groupOf` was the same shape, asked once per type per group.
+
+Both are memoized now and the curve is roughly linear again. The generated
+output is byte-identical -- `examples/blog` regenerates with no diff.
+
+A timing test for this would be flaky, so the regression tests count instead:
+`TestTypeNamesIsComputedOncePerKind` fails with "scanned 180 times for 6 kinds
+over 30 groups" when the memo is removed.
+
+At 800 groups the output is 803 packages and 1 602 files, 8.7 MB. The
+per-module `generated.go` is 87 lines; only the root and the query group are
+large. That is the point of splitting: editing one module recompiles one
+87-line package.

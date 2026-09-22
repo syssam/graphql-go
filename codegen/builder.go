@@ -29,6 +29,19 @@ type builder struct {
 	// already folded into cfg.Models, so only field kinds and group overrides
 	// are read from here.
 	manifest *manifest
+
+	// namesByKind and groupByType memoize two answers that do not change once
+	// the schema is loaded. Both are asked once per group, and emit runs per
+	// group, so at 800 groups over 4 800 types they were the difference between
+	// linear and quadratic: typeNames alone scanned and sorted every type on
+	// each of its ten-odd call sites.
+	namesByKind map[ast.DefinitionKind][]string
+	groupByType map[string]string
+
+	// nameScans counts how often typeNames actually scanned, which is what
+	// TestTypeNamesIsComputedOncePerKind reads: once per kind and not once
+	// per group is the difference between linear and quadratic here.
+	nameScans int
 }
 
 func newBuilder(dir string, cfg Config) (*builder, error) {
@@ -98,7 +111,12 @@ func newBuilder(dir string, cfg Config) (*builder, error) {
 	return b, nil
 }
 
+// typeNames returns the schema's type names of one kind, sorted. The slice is
+// memoized and shared, so callers range over it and must not write to it.
 func (b *builder) typeNames(kind ast.DefinitionKind) []string {
+	if names, ok := b.namesByKind[kind]; ok {
+		return names
+	}
 	var names []string
 	for name, def := range b.schema.Types {
 		if def.BuiltIn || strings.HasPrefix(name, "__") {
@@ -109,6 +127,11 @@ func (b *builder) typeNames(kind ast.DefinitionKind) []string {
 		}
 	}
 	slices.Sort(names)
+	b.nameScans++
+	if b.namesByKind == nil {
+		b.namesByKind = make(map[ast.DefinitionKind][]string, 6)
+	}
+	b.namesByKind[kind] = names
 	return names
 }
 

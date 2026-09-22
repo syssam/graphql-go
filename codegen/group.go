@@ -19,6 +19,20 @@ func (b *builder) sdlFile(typeName string) string {
 }
 
 func (b *builder) groupOf(typeName string) string {
+	if g, ok := b.groupByType[typeName]; ok {
+		return g
+	}
+	g := b.groupOfUncached(typeName)
+	if b.groupByType == nil {
+		b.groupByType = make(map[string]string, len(b.schema.Types))
+	}
+	b.groupByType[typeName] = g
+	return g
+}
+
+// groupOfUncached is groupOf before memoization; it is asked once per type per
+// group, which at 800 groups is 3.8 million calls over 4 800 types.
+func (b *builder) groupOfUncached(typeName string) string {
 	if b.manifest != nil {
 		if g, ok := b.manifest.groups[typeName]; ok {
 			return sanitizeGroup(g, b.pkgName)
