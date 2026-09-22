@@ -259,7 +259,26 @@ func (b *builder) modelName(graphqlName, selfPkg string) string {
 	if pkg == selfPkg {
 		return graphqlName
 	}
-	return pkg + "." + graphqlName
+	return b.modelQualifier(pkg) + "." + graphqlName
+}
+
+// modelQualifier is the identifier a generated model package is referred to by.
+//
+// It is the package name, unless a type mapped through Models comes from a Go
+// package with the same base name -- one real schema had a billing group whose
+// models sat in graph/model/billing while its mapped types came from
+// app/billing, and the generated file imported both under the name billing.
+// That is a redeclaration, and every reference after it resolves to the wrong
+// package or to nothing: 410 redeclarations and most of 1 983 undefined
+// symbols across 381 packages, from this one cause.
+//
+// The generated side is the one that yields, because it is the side whose
+// references this generator writes.
+func (b *builder) modelQualifier(pkg string) string {
+	if _, taken := b.modelExprImports()[pkg]; !taken {
+		return pkg
+	}
+	return pkg + "model"
 }
 
 func (b *builder) goType(t *ast.Type, selfPkg string, omitNull bool) string {
@@ -322,7 +341,7 @@ func (b *builder) modelRef(typeName, ident string) string {
 		}
 		return ident
 	}
-	return b.modelPkgOf(typeName) + "." + ident
+	return b.modelQualifier(b.modelPkgOf(typeName)) + "." + ident
 }
 
 // splitModelExpr separates a Config.Models entry into the package it must be

@@ -212,9 +212,18 @@ func (b *builder) importBlock(src, selfPkg string) string {
 		if pkg == selfPkg {
 			continue
 		}
-		if strings.Contains(src, pkg+".") {
-			rest = append(rest, "\t\""+b.modelImportOf(pkg)+"\"")
+		// The qualifier, not the package name: a generated model package whose
+		// name is taken by a mapped type's package is referred to, and so
+		// imported, under an alias. See modelQualifier.
+		q := b.modelQualifier(pkg)
+		if !strings.Contains(src, q+".") {
+			continue
 		}
+		if q == pkg {
+			rest = append(rest, "\t\""+b.modelImportOf(pkg)+"\"")
+			continue
+		}
+		rest = append(rest, "\t"+q+" \""+b.modelImportOf(pkg)+"\"")
 	}
 	if len(std)+len(rest) == 0 {
 		return ""
