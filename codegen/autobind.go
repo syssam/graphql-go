@@ -142,6 +142,10 @@ func discoverFields(def *ast.Definition, named *types.Named, want func(*ast.Type
 					out[fd.Name] = FieldBinding{Kind: FieldStruct, GoName: f.name, Convert: conv}
 					continue
 				}
+				if conv, usable := reconcileValue(f.typ, expected); usable {
+					out[fd.Name] = FieldBinding{Kind: FieldStruct, GoName: f.name, Convert: conv, Value: true}
+					continue
+				}
 			}
 		}
 		if m, ok := matchMethod(methods, fd.Name); ok && m.fits(len(fd.Arguments)) {
@@ -378,6 +382,17 @@ func mergeManifests(discovered, explicit *Manifest) *Manifest {
 // schema through a resolver. A conversion is emitted only when both sides bottom
 // out in the same basic kind, so it can neither lose information nor reinterpret
 // one thing as another. Anything else is left to the resolver.
+// reconcileValue is reconcile for a nullable SDL position: a Go value that is
+// always present satisfies it, so "*float64 expected, float64 found" is a
+// match and the field is emitted returning the value type. Only the pointer
+// is dropped -- the pointee still has to reconcile.
+func reconcileValue(actual types.Type, expected string) (convert, usable bool) {
+	if !strings.HasPrefix(expected, "*") {
+		return false, false
+	}
+	return reconcile(actual, expected[1:])
+}
+
 func reconcile(actual types.Type, expected string) (convert, usable bool) {
 	if actual == nil || expected == "" {
 		return false, false

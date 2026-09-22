@@ -4,7 +4,7 @@ codegen: const FieldStruct
 codegen: func (d ModelDirective) IsZero() bool
 codegen: func Generate(ctx context.Context, cfg Config) error
 codegen: type Config struct { Dir string SchemaGlobs []string Output string Package string GroupFunc func(typeName, sdlFile string) string Models map[string]string ModelDirective ModelDirective Manifest *Manifest AutoBind []string NullableInputOmittable bool }
-codegen: type FieldBinding struct { Kind FieldKind GoName string Context bool Error bool Convert bool }
+codegen: type FieldBinding struct { Kind FieldKind GoName string Context bool Error bool Convert bool Value bool }
 codegen: type FieldKind int
 codegen: type GoType struct { PkgPath string Name string }
 codegen: type Manifest struct { Types []TypeBinding }

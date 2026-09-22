@@ -15,6 +15,11 @@ import (
 // field or method, context or not, error or not, arguments or not.
 func (b *builder) manifestFieldCall(typeName string, fd *ast.FieldDefinition, fb FieldBinding, goRet string) string {
 	recv := "*" + b.modelRef(typeName, typeName)
+	// A value bound at a nullable position is emitted returning the value
+	// type; the engine writes a present value for a field that may be null.
+	if fb.Value && strings.HasPrefix(goRet, "*") {
+		goRet = goRet[1:]
+	}
 	name := fb.goName(fd.Name)
 	// wrap converts the value to the type the field needs, for a binding whose
 	// Go side is a different named type over the same basic kind.
