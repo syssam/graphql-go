@@ -290,6 +290,14 @@ Not built: `ext/authz`, and what is left of it is smaller than a package --
 `@defer`/`@stream` is not merely unbuilt: the prelude's `@defer` is stripped so
 that the validator and introspection agree the server says no.
 
+## Running it in production
+
+[`docs/operations.md`](docs/operations.md) is the deployment page: which limits
+to turn on before the engine faces anything untrusted (four are off by
+default), how to shut down streams the HTTP server cannot, what sizes a
+replica, which metric to alarm on, and the limits to design around -- including
+the ones this engine will not do, and the figures nobody has measured yet.
+
 ## Development
 
 ```sh
