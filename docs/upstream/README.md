@@ -9,6 +9,12 @@ Each patch applies to a clean checkout of the dependency's default branch and
 passes that project's own test suite. Nothing here is applied automatically;
 `go.mod` continues to point at the released version.
 
+**A library cannot ship a patched dependency.** A `replace` directive applies
+only to the main module and is ignored in everything that depends on it, so
+these cannot be wired in here for consumers even temporarily. Upstream is the
+only path that reaches anyone; the `replace` described at the end is for trying
+them in an application you control.
+
 ## 0001-gqlparser-unicode-escapes.patch
 
 Fixes two September 2025 Edition gaps in `lexer.readString` — see gaps 1 and 2
@@ -31,6 +37,35 @@ Independent of 0001 -- they touch different files and apply in either order.
 Fixes gap 4: the draft's `DIRECTIVE_DEFINITION` location, directives applied to
 a directive definition, and `DirectiveExtension`. Also updates gqlparser's
 prelude to match. Independent of 0001 and 0002; all three apply in any order.
+
+## Verification, 2026-09-22
+
+Re-checked against `vektah/gqlparser` at `991cd11` (2026-09-21, the commit
+after `v2.5.37`), because a patch that no longer applies is worse than none:
+it reads as ready and is not.
+
+| | Result |
+|---|---|
+| `git apply --check`, all three | clean |
+| `go test ./...` with all three applied | **7 packages, all pass** |
+
+The behaviour each is for, before and after, read out of the parser rather than
+out of the patch:
+
+| Query fragment | v2.5.37 | patched | September 2025 Edition |
+|---|---|---|---|
+| `"\uD83D\uDE00"` | two U+FFFD | U+1F600 | U+1F600 |
+| `"\uD83D"` alone | one U+FFFD | syntax error | syntax error |
+| `"\u{1F600}"` | rejected | U+1F600 | U+1F600 |
+
+The first row is the one to lead a pull request with. It is not a formatting
+difference: **any client sending an emoji or other astral character as an
+escape has its data silently replaced**, and nothing in the response says so.
+
+The `autocrlf` caveat below was re-confirmed the hard way in the same session.
+A default Windows clone failed three `formatter` baselines; the same checkout
+cloned with `core.autocrlf=false` passed everything. If those three are the
+only failures, the line endings are the cause and not the patch.
 
 ## Trying them before they merge
 

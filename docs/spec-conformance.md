@@ -18,6 +18,15 @@ that project's suite; all three were also verified applied together, in any
 order. They are not applied here — `go.mod` still points at the release — so
 the gaps stay open until they land upstream.
 
+Re-verified on 2026-09-22 against gqlparser `991cd11`, the commit after
+`v2.5.37`: all three still apply cleanly, the seven-package suite passes with
+them, and the fixed behaviour was read out of the parser rather than off the
+patch. [`upstream/README.md`](upstream/README.md) has the before-and-after
+table. **They cannot be applied here at all** — a `replace` directive governs
+only the main module and is ignored in everything that depends on it, so a
+library cannot ship a patched dependency even temporarily. Upstream is the
+only route that reaches a consumer.
+
 ## Known gaps
 
 ### 1. Surrogate escapes are silently corrupted (September 2025)
