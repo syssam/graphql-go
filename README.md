@@ -170,6 +170,23 @@ the same graph, every position declares what it requires, and the server
 carries the limits, persisted queries, tracing and shutdown drain the other
 examples leave out. [`examples/README.md`](examples/README.md) compares them.
 
+## The development loop
+
+If you know gRPC you already know the shape: write the contract, generate from
+it, implement the interface it hands you, wire it to a transport.
+
+| gRPC | graphql-go |
+|---|---|
+| write `service.proto` | write `schema.graphql` |
+| `protoc --go_out=.` | `go tool gqlc -config gqlc.yaml` |
+| implement `XxxServer` | implement the generated `Resolver` |
+| `grpc.NewServer()` | `graph.NewSchema(r)`, then a transport |
+
+[`docs/workflow.md`](docs/workflow.md) walks it through, including what `gqlc`
+does not do -- it never loads Go packages, which is why a 200-entity schema
+generates in under a second -- and the DataLoader step that turns a resolver
+field from an N+1 into one query per wave.
+
 ## Concepts
 
 | Constructor | Purpose |
