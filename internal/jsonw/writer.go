@@ -17,9 +17,28 @@ import (
 // cannot represent.
 var ErrNonFinite = errors.New("jsonw: non-finite float")
 
-// maxPooledCap bounds the capacity of buffers returned to the pool so that a
-// single oversized response does not pin memory forever.
-const maxPooledCap = 4 << 20
+// maxPooledCap bounds the capacity of buffers returned to the pool. Past it a
+// writer is reset and dropped, so the next request rebuilds its buffer from
+// 512 bytes.
+//
+// The number is 8 MiB because append overshoots and the cliff is therefore
+// well below the cap: at 4 MiB a 3.62 MB response reached a 4.12 MB capacity
+// and was dropped, which is where full introspection on a schema past ~4 000
+// types lands -- 38.4 MB/op against 16.6 for a response 17% smaller. That
+// query is usually reachable unauthenticated and is polled by GraphiQL, Apollo
+// Studio and codegen tools, so it is not an exotic path.
+//
+// "Pins memory" reads worse than it is, twice over. sync.Pool is emptied by
+// the collector, so a large buffer survives at most a couple of GC cycles. And
+// the pool can only hold buffers that were actually created: to have one per P
+// at this size a process must have just served that many concurrent responses
+// of that size, which cost the same memory whether or not they are pooled.
+// Raising it defers a release; it does not raise a peak.
+//
+// 8 MiB and not more: it covers introspection to roughly 8 000 types, which is
+// past the largest schema this has been measured against, and every doubling
+// beyond that buys a band nobody has shown traffic in.
+const maxPooledCap = 8 << 20
 
 // Writer appends JSON to an internal buffer.
 //

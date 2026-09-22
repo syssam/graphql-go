@@ -339,8 +339,25 @@ Raising `maxPooledCap` to 64 MiB takes the 4 200-type case from 38.4 MB/op to
 to 20.0, 25.7 to 23.6) -- which is what identifies the cliff as the cause
 rather than the response size itself.
 
-Not changed here. `maxPooledCap` is a memory trade: `sync.Pool` keeps an entry
-per P, so raising it to 8 MiB doubles the worst case a process can hold between
-GC cycles. The measurement is recorded so the decision has a number under it;
-`BenchmarkIntrospectPooled` and `BenchmarkIntrospectOverPool` straddle the
-cliff so it can be re-measured after any change.
+**Changed: `maxPooledCap` is 8 MiB.** Interleaved, n=10:
+
+| | before | after | |
+|---|---:|---:|---|
+| `IntrospectOverPool` B/op | 39.01 MiB | 19.28 MiB | **-50.6%** (p=0.000) |
+| `IntrospectOverPool` sec/op | 27.34 ms | 23.10 ms | **-15.5%** (p=0.000) |
+| `ExecuteUsers`, `FieldPathBare` | | | unchanged, allocations equal sample for sample |
+| `ExecuteConcurrentList` | | | unchanged (p=0.218) |
+| `IntrospectPooled` (below the cliff) | | | unchanged (p=0.247) |
+
+The memory argument against raising it is weaker than it first reads, twice
+over. `sync.Pool` is emptied by the collector, so a large buffer survives at
+most a couple of GC cycles rather than for the life of the process. And the
+pool can only hold buffers that were actually created: to have one per P at
+8 MiB, a process must have just served that many concurrent 8 MB responses,
+which cost the same memory whether or not they are pooled. Raising the cap
+defers a release; it does not raise a peak.
+
+8 MiB and not more: it covers introspection to roughly 8 000 types, past the
+largest schema measured here, and every doubling beyond buys a band nobody has
+shown traffic in. `TestPoolCapCoversALargeSchemasIntrospection` fails if it
+drops back, naming the consequence rather than the constant.
