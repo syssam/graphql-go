@@ -554,6 +554,13 @@ func WithObjectAuthorizer(a ObjectAuthorizer) ExecutorOption {
 // carries; larger waves are split into sequential calls. The default of 50
 // matches OpenFGA's BatchCheck default, which is the shape most remote
 // policy backends are tuned for.
+//
+// Sequential is the word to read twice: the batches are issued one after
+// another, so a remote policy's latency is paid once per batch and not once
+// per list. A thousand rows at the default of 50 is twenty round trips --
+// 100ms of added latency at 5ms each, measured, and halving the batch doubles
+// it (TestObjectAuthBatchesAreSequential). Size this against what one call
+// costs in latency, not against what the backend can accept in one request.
 func WithObjectAuthBatch(n int) ExecutorOption {
 	return func(e *Executor) {
 		if n > 0 {

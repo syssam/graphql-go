@@ -813,7 +813,35 @@ returns `Result<()>` with no per-instance identity to batch, so per-list batchin
 expresses more than the peers can, and no reference implementation reorders traversal for
 this. A batch that fails at all
 fails every outstanding check, so a policy backend that is down cannot be why a row becomes
-visible. Two things that only a deliberate break finds: **`Drop` must be removed before
+visible.
+
+**The batching was designed for a remote policy and, until `authz_scale_test.go`, had only
+ever been tested against a pure function with three rows** — no latency, no failure, and
+batching that costs nothing whether or not it happens. Given a backend shaped like a real one,
+four numbers, all exact rather than approximate:
+
+- 1000 rows at the default batch of 50 is **20 calls carrying 1000 checks**, none wider than
+  the batch, and 1 call at `WithObjectAuthBatch(1000)`.
+- **The batches are sequential, so policy latency multiplies by their number**: 20 × 5ms =
+  **100ms** added to one field, measured under `testing/synctest` so the figure is exact.
+  Halving the batch doubles it. `WithObjectAuthBatch` should therefore be sized against what
+  one call costs in latency, not against what the backend accepts in one request — the godoc
+  now says so, because "split into sequential calls" did not.
+- The nested-single-object N+1 is **2 + 100 calls** for 100 rows each reaching one guarded
+  child, every one of the 100 carrying a single check, so the batch size cannot help there.
+- A failing backend stops the run: **3 calls of a possible 20**, not 20. Making the failure
+  path continue and fill in zero outcomes leaks every row it had not reached, which is what
+  `TestObjectAuthFailsClosedFromTheMiddleOfAList` fails on.
+
+**The `Authorizer` is linear in the sites one query touches, and flat in schema size.**
+`BenchmarkAuthorizerWide1589` reaches the real consumer's site count: 8 allocs/op at 16, 64
+and 256 sites and 9-11 at 1589, because the per-site cost is one `Decision.outcomes` slice —
+84 KB at 1589, about 53 bytes a site. Time is ~2.4µs, 8.4µs, 33µs and 109-213µs, so roughly
+linear, but the last figure moved 2x across three runs on a warm machine and only the
+allocation column should be quoted. Note what the benchmark is: **one query selecting all
+1589 guarded fields**, the pathological shape, not the consumer's ordinary traffic. The
+`Decision` is sized from the plan's shape, so an ordinary query on a 5455-type schema carries
+the sites it selected and not the ones the schema declares. Two things that only a deliberate break finds: **`Drop` must be removed before
 `pushWave`** (announcing a task that never begins strands every parked `Load` and the request
 hangs to its deadline — `TestInstanceDropDoesNotStrandTheWave`, in `loader/`), and
 **`writeListGuarded` must stop at the first fatal failure** the way `writeList` does, or a
