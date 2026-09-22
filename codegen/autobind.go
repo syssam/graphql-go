@@ -107,6 +107,25 @@ func objectNames(schema *ast.Schema) []string {
 // field, then method, then resolver. Anything not confidently matched is left
 // to the resolver, which can always be written; a wrong guess would instead be
 // a compile error in code the user did not write.
+//
+// Only the type's own fields are searched, and embedded ones because Go
+// promotes them. **Do not extend this to named nested structs.** ent and the
+// ORMs derived from it keep relations in an Edges field, and reaching into it
+// looks like an obvious win -- AbTesting.variants is AbTesting.Edges.Variants,
+// and on a real 5 503-type schema that pattern covers thousands of fields.
+// It was built, measured, and reverted:
+//
+//	func (m *AbTesting) ParentTest(ctx) (*AbTesting, error) {
+//	    result, err := m.Edges.ParentTestOrErr()
+//	    if runtime.IsNotLoaded(err) { ... m.QueryParentTest().Only(ctx) ... }
+//	}
+//
+// The method is a lazy loader. Edges.ParentTest is the raw field, nil whenever
+// the edge was not eager-loaded, so binding to it returns null for data that
+// exists -- silently, with no error anywhere. The resolver count does not even
+// improve: AutoBind already matches these as methods, which is the correct
+// binding. Reaching through the container would only demote a correct method
+// call to a wrong field read.
 func discoverFields(def *ast.Definition, named *types.Named, want func(*ast.Type, string, bool) string) map[string]FieldBinding {
 	fields := structFields(named)
 	methods := methodSet(named)

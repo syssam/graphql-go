@@ -419,6 +419,16 @@ struct makes the bound type's package import the generated one, which already im
 the model, and that is an import cycle. A type in the manifest gets no inference at all: an
 unlisted field is a resolver.
 
+**Do not teach `AutoBind` to reach into a nested struct.** ent and the ORMs derived from it
+keep relations in an `Edges` field, so `AbTesting.variants` is `AbTesting.Edges.Variants` in
+Go, and on a real 5 503-type schema that covers thousands of fields. It was built and
+reverted: the ORM also generates `func (m *AbTesting) ParentTest(ctx) (*AbTesting, error)`,
+which calls `QueryParentTest().Only(ctx)` when the edge is not loaded. `Edges.ParentTest` is
+the raw field, nil whenever nothing eager-loaded it, so binding to it returns null for data
+that exists, silently. The resolver count did not improve either — AutoBind already matched
+those as methods, which is the right binding — so the change only demoted a correct method
+call to a wrong field read. The reasoning is on `discoverFields`.
+
 `Config.AutoBind` discovers bindings from named packages instead of being told them, and
 produces a `Manifest` — so discovery is the only new behaviour and everything downstream is
 the manifest path. **Only export data is loaded** (`NeedName | NeedTypes | NeedImports |
