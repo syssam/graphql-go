@@ -302,3 +302,45 @@ It matters because an ORM-generated schema puts one Query field per entity.
 The mitigation is schema design -- namespace the root instead of flattening it
 -- and `BenchmarkSchemaBuildWideRoot` against `BenchmarkSchemaBuildNarrowRoot`
 is there so the claim is re-measurable rather than remembered.
+
+## Introspection, and a pooling cliff at 3.3 MB
+
+A full introspection query is the most expensive thing either engine serves,
+and it is usually reachable without authentication -- GraphiQL, Apollo Studio,
+schema registries and codegen tools all send it on connect. Measured against
+the same synthetic schema as above:
+
+| types | response | time | B/op | allocs/op |
+|---:|---:|---:|---:|---:|
+| 400 | 0.33 MB | 2.15 ms | 1.88 MB | 36 815 |
+| 1 600 | 1.26 MB | 7.86 ms | 7.32 MB | 142 425 |
+| 3 600 | 2.83 MB | 17.7 ms | 16.6 MB | 318 442 |
+| 4 200 | 3.30 MB | 23.9 ms | **38.4 MB** | 371 277 |
+| 4 800 | 3.77 MB | 29.2 ms | **40.9 MB** | 424 084 |
+
+Time is linear in the schema. The bytes are not, and between 2.83 MB and
+3.30 MB of response they more than double for a 17% larger answer. **That is a
+cliff, not a curve**: `jsonw`'s pool drops any buffer whose capacity passes
+`maxPooledCap` (4 MiB), so the next request rebuilds it from 512 bytes.
+
+The threshold is not where it reads. `append` overshoots, so the capacity for
+a given response is:
+
+| response | capacity | pooled |
+|---:|---:|:--|
+| 3.00 MB | 3.29 MB | yes |
+| 3.15 MB | 3.29 MB | yes |
+| **3.62 MB** | **4.12 MB** | **no** |
+| 5.00 MB | 5.15 MB | no |
+
+**A response over roughly 3.3 MB stops being pooled, not one over 4 MiB.**
+Raising `maxPooledCap` to 64 MiB takes the 4 200-type case from 38.4 MB/op to
+19.4 and the 4 800-type case from 40.9 to 21.9, and the time with it (23.9 ms
+to 20.0, 25.7 to 23.6) -- which is what identifies the cliff as the cause
+rather than the response size itself.
+
+Not changed here. `maxPooledCap` is a memory trade: `sync.Pool` keeps an entry
+per P, so raising it to 8 MiB doubles the worst case a process can hold between
+GC cycles. The measurement is recorded so the decision has a number under it;
+`BenchmarkIntrospectPooled` and `BenchmarkIntrospectOverPool` straddle the
+cliff so it can be re-measured after any change.

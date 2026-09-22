@@ -76,6 +76,11 @@ ended for good instead of reconnecting.
 - **Per request** the engine allocates 12 to 14 objects for a small query
   (measured, `docs/performance.md`) and does not grow with schema size — that is the whole point of the compiled
   plan, and it is why request memory is not what you tune.
+- **A response over ~3.3 MB is not pooled.** `jsonw` drops a buffer whose
+  capacity passes 4 MiB, and `append` overshoots, so the next request rebuilds
+  it from scratch: about twice the bytes per request. Full introspection on a
+  schema past ~4 000 types lands here, and that query is usually reachable
+  without authentication. See [`performance.md`](performance.md).
 - **`WithMaxConcurrency`** bounds resolver goroutines across the executor and
   defaults to `GOMAXPROCS * 4`. Requests share it, so one request holding slots
   delays others; in a container, `GOMAXPROCS` is what you are really setting.
