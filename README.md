@@ -278,7 +278,9 @@ reality), an operation timeout that bounds work rather than latency, a response
 size cap (64 MiB), and an error-list cap (1000).
 
 **Also:** `relay/` for global ids, `Node` and cursor connections; `fed/` for
-Apollo Federation subgraphs; and `lint/`, an analyzer for a bug class `-race`
+Apollo Federation subgraphs, with [`examples/federation`](examples/federation)
+showing two of them and the fetch a router performs across them; and `lint/`,
+an analyzer for a bug class `-race`
 cannot find -- a check-then-act pair on `OperationContext` that silently
 degrades DataLoader batching to N+1.
 

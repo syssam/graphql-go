@@ -1,0 +1,15 @@
+# rover supergraph compose --config supergraph.yaml > supergraph.graphql
+#
+# Both subgraphs are served by one process here, on two paths. A router reads
+# each endpoint's _service and composes; it cannot tell, and should not care,
+# that they share an address.
+federation_version: =2.9.0
+subgraphs:
+  products:
+    routing_url: http://localhost:8080/products/graphql
+    schema:
+      subgraph_url: http://localhost:8080/products/graphql
+  reviews:
+    routing_url: http://localhost:8080/reviews/graphql
+    schema:
+      subgraph_url: http://localhost:8080/reviews/graphql

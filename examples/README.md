@@ -5,6 +5,7 @@
 | [`quickstart`](quickstart) | The smallest thing that runs: one SDL file, hand-written bindings, no codegen, no layers. |
 | [`blog`](blog) | A layered service: generated bindings, a domain isolated from the wire format, a DataLoader, subscriptions. |
 | [`storefront`](storefront) | Authorization: scopes, an argument site, per-row instance checks, and the server wiring a deployment needs. |
+| [`federation`](federation) | Two Apollo Federation subgraphs and the fetch a router performs across them. |
 | [`echo`](echo) | Serving `blog` through Echo v5 — routing and shutdown wiring only. |
 | [`fiber`](fiber) | Serving `blog` through Fiber v3 — routing and shutdown wiring only. |
 
@@ -117,6 +118,49 @@ check withholds the payload, not the event. A subscriber who may not see an
 order still receives an event carrying the refusal, so timing leaks even
 though contents do not. Withholding the event itself is the source's job.
 
+## Federation in `federation`
+
+`fed/`'s own tests prove one subgraph answers `_service` and `_entities`
+correctly. They cannot show the thing federation actually is: an entity owned
+by one service and extended by another, joined at request time by a router
+neither service knows about.
+
+`products` owns `Product`. `reviews` owns `Review` and contributes `reviews`
+and `averageRating` to a `Product` it knows nothing about except the key --
+its `ProductRef` is one field wide, which is the point and not an oversight.
+
+`federation_test.go` plays the router for the query neither service can
+answer, `{ topProducts { name reviews { rating } } }`:
+
+1. Ask the owner, adding `__typename` and the key to what the client wanted.
+2. Turn each row into a representation: typename and key, nothing else.
+3. Ask the other subgraph by `_entities`.
+4. Merge by position.
+
+Every step is asserted, because every step is where a subgraph is usually
+wrong: the `__typename` it forgets, the key it returns in the wrong scalar
+type, the row it drops instead of returning null. That last one is the worst
+of the three -- `_entities` answers positionally, so a dropped row shifts
+every row after it onto the wrong product, which is a wrong answer rather than
+a failed one. A test pins it.
+
+**What this does and does not prove.** It proves both subgraphs hold up their
+half of the contract for a real cross-subgraph query, without either tool
+installed. It does not prove composition: that is `rover supergraph compose`'s
+job, and `cmd/subgraphs/supergraph.yaml` is there to run it.
+
+    go run ./examples/federation/cmd/subgraphs
+
+    # what the router reads first
+    curl -s localhost:8080/products/graphql -H content-type:application/json -d '{"query":"{ _service { sdl } }"}'
+
+    # the second hop, by hand
+    curl -s localhost:8080/reviews/graphql -H content-type:application/json -d '{"query":"query($r:[_Any!]!){ _entities(representations:$r){ ... on Product { averageRating } } }","variables":{"r":[{"__typename":"Product","sku":"kb-01"}]}}'
+
+Both subgraphs run in one process on two paths. That is not how they would be
+deployed -- it is the opposite of the point -- but a router reads each
+endpoint's `_service` and cannot tell.
+
 ## Running
 
     go run ./examples/quickstart            # :8080 /graphql, /graphql/stream
@@ -124,3 +168,4 @@ though contents do not. Withholding the event itself is the source's job.
     go run ./examples/storefront/cmd/server # :8080, all three, with limits and a drain
     go run ./examples/echo                  # same schema, Echo v5
     go run ./examples/fiber                 # same schema, Fiber v3
+    go run ./examples/federation/cmd/subgraphs # two subgraphs on two paths
