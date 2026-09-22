@@ -272,3 +272,33 @@ go build                  # -pgo=auto is already the default
   which is enough to find accumulation and small enough to stay clear of
   Windows ephemeral-port exhaustion. Whether behaviour holds at ten thousand
   is untested.
+
+## Schema build past 1 600 types
+
+`docs/operations.md` used to say this curve was unknown. Measured on
+2026-09-22 with a synthetic schema of six-field types, varying the type count
+and the width of the Query root independently:
+
+| types | Query fields | build | retained | allocs |
+|---:|---:|---:|---:|---:|
+| 1 600 | 1 600 | 15.7 ms | 10.8 MB | 202 048 |
+| 4 800 | 4 800 | **77.9 ms** | 33.2 MB | 602 241 |
+| 1 600 | 100 | 10.1 ms | 9.6 MB | 181 021 |
+| 4 800 | 100 | **34.1 ms** | 29.2 MB | 536 373 |
+
+**The variable is the width of the widest type, not the number of types.**
+Three times the types costs 4.96x the time with a Query field per type, and
+3.38x with the root capped at 100 -- and at a fixed 4 800 types, narrowing the
+root alone takes 77.9 ms to 34.1 ms. Allocations are linear throughout
+(202k to 602k for 3x the types), so the extra time is not allocation.
+
+About half of either figure is `gqlparser.LoadSchema`: 34.1 ms of the wide
+77.9, 13.1 ms of the narrow 34.1. Its `FieldList.ForName` is a linear scan, so
+validating a k-field type is O(k^2), which is the shape observed. **GC is not
+involved** -- `GOGC=off` changes the 4 800-type figure by under 1%, which was
+worth testing because "big heap, super-linear time" looks like GC and is not.
+
+It matters because an ORM-generated schema puts one Query field per entity.
+The mitigation is schema design -- namespace the root instead of flattening it
+-- and `BenchmarkSchemaBuildWideRoot` against `BenchmarkSchemaBuildNarrowRoot`
+is there so the claim is re-measurable rather than remembered.

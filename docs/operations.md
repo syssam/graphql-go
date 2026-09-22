@@ -165,8 +165,10 @@ Stated so that nobody reads silence as a result.
 - **Latency percentiles.** The development machine's clock granularity
   (~522 µs) makes them meaningless, so none are published.
 - **Behaviour under a cgroup memory limit.** Not measured; needs Linux.
-- **Schema build cost above ~1 600 types.** The 11 MB and 30 ms figures are at
-  200 entities; the curve beyond that is unknown.
+- ~~Schema build cost above ~1 600 types.~~ Measured; see
+  [`performance.md`](performance.md). 4 800 types build in 78 ms and retain
+  33 MB, and the variable is the width of the widest type rather than the
+  count -- narrowing a 4 800-field Query root to 100 halves it.
 - **No production hours.** This engine has not served a real request outside a
   benchmark. Treat every figure here as a laboratory result until your own
   traffic says otherwise.

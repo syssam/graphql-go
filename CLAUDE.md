@@ -1003,9 +1003,12 @@ them**, **`relaynode` global ids and cursor connections**. `echo` and `fiber` se
 `storefront` is also what found `AuthSite.ListElement` missing, which is the argument for an
 example that has to work rather than one that reads well.
 
-Not measured, beyond the two Linux items above: the schema-build curve past ~1600 types (the
-11 MB and 30 ms figures are at 200 entities), and **anything at all in production** — nothing
-here has served a real request outside a benchmark. `docs/operations.md` ends with that list
+Not measured, beyond the two Linux items above: **anything at all in production** — nothing
+here has served a real request outside a benchmark. The schema-build curve past 1600 types is
+no longer on that list: 4800 types build in 78 ms and retain 33 MB, and **the variable is the
+width of the widest type, not the count** — narrowing a 4800-field Query root to 100 takes it to
+34 ms over the identical type set, because gqlparser validates a k-field type in O(k^2).
+`docs/operations.md` ends with that list
 so a reader does not have to infer it from silence.
 
 Keep this section honest. It said "subscription load testing not yet built" while the
