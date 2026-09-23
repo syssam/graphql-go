@@ -84,6 +84,68 @@ type Query { users(f: Filter): [User!]! }
 			t.Fatalf("models did not reach the generator; generated.go does not mention the bound package:\n%s", src)
 		}
 	})
+
+	t.Run("modelDirective reads a binding off the SDL", func(t *testing.T) {
+		const dsdl = `
+directive @goModel(model: String) on OBJECT
+type User @goModel(model: "example.com/ext.User") { id: ID! }
+type Query { users: [User!]! }
+`
+		dir, cfg := write(t, "schema: [schema.graphql]\noutput: graph\npackage: example/graph\nmodelDirective:\n  name: goModel\n  arg: model\n", dsdl)
+		if err := run([]string{"-config", cfg}); err != nil {
+			t.Fatal(err)
+		}
+		if src := generated(t, dir, "graph/generated.go"); !strings.Contains(src, "example.com/ext") {
+			t.Fatalf("modelDirective did not reach the generator:\n%s", src)
+		}
+	})
+
+	t.Run("zeroForNullInputs", func(t *testing.T) {
+		const zsdl = `
+input Filter { isNil: Boolean }
+type Query { q(f: Filter): String! }
+`
+		yml := "schema: [schema.graphql]\noutput: graph\npackage: example/graph\nzeroForNullInputs: true\n"
+		dir, cfg := write(t, yml, zsdl)
+		if err := run([]string{"-config", cfg}); err != nil {
+			t.Fatal(err)
+		}
+		if src := generated(t, dir, "graph/generated.go"); !strings.Contains(src, "graphql.ZeroForNull()") {
+			t.Fatalf("zeroForNullInputs did not reach the generator:\n%s", src)
+		}
+		// Off without the key, or the assertion above proves nothing.
+		dir2, cfg2 := write(t, "schema: [schema.graphql]\noutput: graph\npackage: example/graph\n", zsdl)
+		if err := run([]string{"-config", cfg2}); err != nil {
+			t.Fatal(err)
+		}
+		if src := generated(t, dir2, "graph/generated.go"); strings.Contains(src, "graphql.ZeroForNull()") {
+			t.Fatalf("ZeroForNull appeared without the key:\n%s", src)
+		}
+	})
+
+	t.Run("fieldDirective forces a resolver", func(t *testing.T) {
+		const fsdl = `
+directive @goField(forceResolver: Boolean) on FIELD_DEFINITION
+type User { id: ID! nickname: String! @goField(forceResolver: true) }
+type Query { users: [User!]! }
+`
+		yml := "schema: [schema.graphql]\noutput: graph\npackage: example/graph\nfieldDirective:\n  name: goField\n  forceResolverArg: forceResolver\n"
+		dir, cfg := write(t, yml, fsdl)
+		if err := run([]string{"-config", cfg}); err != nil {
+			t.Fatal(err)
+		}
+		if src := generated(t, dir, "graph/generated.go"); !strings.Contains(src, `graphql.Resolve("nickname"`) {
+			t.Fatalf("fieldDirective did not reach the generator; nickname is not a resolver:\n%s", src)
+		}
+		// And off without the key, or the assertion above proves nothing.
+		dir2, cfg2 := write(t, "schema: [schema.graphql]\noutput: graph\npackage: example/graph\n", fsdl)
+		if err := run([]string{"-config", cfg2}); err != nil {
+			t.Fatal(err)
+		}
+		if src := generated(t, dir2, "graph/generated.go"); !strings.Contains(src, `graphql.Field("nickname"`) {
+			t.Fatalf("nickname was a resolver without fieldDirective being set:\n%s", src)
+		}
+	})
 }
 
 // A CLI's error messages are its whole interface when something is wrong, so
@@ -114,6 +176,18 @@ func TestRunErrors(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "gqlc.yaml") {
 			t.Fatalf("error does not name the config path: %v", err)
+		}
+	})
+
+	t.Run("misspelled key is refused", func(t *testing.T) {
+		_, cfg := write(t, "schema: [schema.graphql]\noutput: graph\npackage: example/graph\nnullableInputOmitable: true\n",
+			"type Query { a: String }\n")
+		err := run([]string{"-config", cfg})
+		if err == nil {
+			t.Fatal("a misspelled key was silently ignored")
+		}
+		if !strings.Contains(err.Error(), "nullableInputOmitable") {
+			t.Fatalf("error does not name the unknown key: %v", err)
 		}
 	})
 

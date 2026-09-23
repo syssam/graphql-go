@@ -4,7 +4,9 @@ package codegen
 
 import (
 	"fmt"
+	"go/constant"
 	"go/types"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -26,7 +28,8 @@ import (
 const loadMode = packages.NeedName | packages.NeedTypes | packages.NeedImports | packages.NeedDeps
 
 // autoBind loads the given package patterns and infers a manifest from them.
-func autoBind(dir string, patterns []string, schema *ast.Schema, want func(*ast.Type, string, bool) string) (*Manifest, error) {
+func autoBind(dir string, patterns []string, schema *ast.Schema, b *builder) (*Manifest, error) {
+	b.loads++
 	pkgs, err := packages.Load(&packages.Config{Dir: dir, Mode: loadMode}, patterns...)
 	if err != nil {
 		return nil, fmt.Errorf("auto-bind: load: %w", err)
@@ -65,23 +68,479 @@ func autoBind(dir string, patterns []string, schema *ast.Schema, want func(*ast.
 		}
 	}
 
+	// Discovery is two passes, and the order is load-bearing. Whether a Go
+	// field can answer a GraphQL field is decided by comparing it against the
+	// Go type that field needs, and that type is only known once every type
+	// this pass binds is in the model map. Deciding fields as the types are
+	// discovered measures each one against the model the generator would have
+	// written instead: Product.owner is *ent.Owner against *model.Owner, so
+	// every object-valued and every enum-valued field falls through to the
+	// Resolver however plainly it is a struct field.
+	all := slices.Concat(pkgs, modelPkgs(dir, schema, b.cfg.Models, pkgs, &b.loads))
+	idx := namedIndex(all)
+
+	// A declared binding the loaded packages show cannot work is dropped
+	// before anything reads it, so the enum is modelled by the generator and
+	// every field of it agrees.
+	if dropped := unbindableTypes(schema, b.cfg.Models, idx); len(dropped) > 0 {
+		kept := maps.Clone(b.cfg.Models)
+		for _, name := range dropped {
+			delete(kept, name)
+		}
+		b.setModels(kept)
+		// One line, not one per enum: the real schema drops 444 of them, and
+		// 444 lines of stderr is a wall nobody reads to the end of.
+		b.notef("%d bindings dropped: the declared Go type cannot back an enum, or holds one that cannot, so a model is generated instead (%s)",
+			len(dropped), summarize(dropped, 8))
+	}
+
 	man := &Manifest{}
-	for _, name := range objectNames(schema) {
+	man.Types = append(man.Types, enumBindings(schema, b.cfg.Models, found, constIndex(all))...)
+
+	// A second Go type for one SDL enum, found through a bound input struct.
+	// It has to be discovered after the drop pass above, so that an enum whose
+	// declared type was dropped is not compared against a type nothing binds.
+	if alt := altEnumTypes(schema, b.cfg.Models, found, idx); len(alt) > 0 {
+		withAlt := slices.Concat(all, altEnumPkgs(dir, alt, all, &b.loads))
+		man.ExtraEnums = altEnumBindings(schema, alt, constIndex(withAlt), b.notef)
+	}
+	objects := objectNames(schema)
+	for _, name := range objects {
 		named, ok := found[name]
 		if !ok {
 			continue
 		}
-		tb := TypeBinding{
-			Name:   name,
-			Go:     GoType{PkgPath: named.Obj().Pkg().Path(), Name: named.Obj().Name()},
-			Fields: discoverFields(schema.Types[name], named, want),
+		man.Types = append(man.Types, TypeBinding{
+			Name: name,
+			Go:   GoType{PkgPath: named.Obj().Pkg().Path(), Name: named.Obj().Name()},
+		})
+	}
+
+	// A declared binding still wins -- this only fills in what discovery
+	// found and nothing else says.
+	models := maps.Clone(b.cfg.Models)
+	if models == nil {
+		models = map[string]string{}
+	}
+	for _, tb := range man.Types {
+		if _, declared := models[tb.Name]; !declared && !tb.Go.zero() {
+			models[tb.Name] = tb.Go.expr()
 		}
-		man.Types = append(man.Types, tb)
+	}
+	b.setModels(models)
+
+	// Fields are read off the Go type the schema will actually use, which
+	// is the declared one wherever a declaration exists. Reading them off
+	// the type found by name instead binds what that other type has: two
+	// packages each holding a PaymentTerms, one with a
+	// HasEarlyPaymentDiscount method and one without, produced a field
+	// calling a method the declared type does not have. A declared type
+	// this pass did not load yields no fields at all, so its fields are
+	// resolvers -- a method that can always be written, rather than a guess
+	// that is a compile error in code the author did not write.
+	for i := range man.Types {
+		name := man.Types[i].Name
+		if schema.Types[name].Kind != ast.Object {
+			continue
+		}
+		named := found[name]
+		if expr, declared := b.cfg.Models[name]; declared {
+			named = namedByExpr(idx, expr)
+		}
+		if named == nil {
+			continue
+		}
+		man.Types[i].Fields = discoverFields(schema.Types[name], named, b.goType)
 	}
 	if len(man.Types) == 0 {
 		return nil, nil
 	}
 	return man, nil
+}
+
+// constIndex maps "importPath.TypeName" to that type's string constants, keyed
+// by the string each one carries rather than by its identifier.
+//
+// The value is the key because the value is what the SDL says. A Go constant
+// named AccessPolicyExpectVisible carrying "VISIBLE" answers the SDL value
+// VISIBLE exactly; nothing about its identifier says so.
+func constIndex(pkgs []*packages.Package) map[string]*enumConsts {
+	out := map[string]*enumConsts{}
+	for _, p := range pkgs {
+		if p.Types == nil {
+			continue
+		}
+		scope := p.Types.Scope()
+		// scope.Names is sorted, so which constant wins a collision is the
+		// same on every run.
+		for _, name := range scope.Names() {
+			c, ok := scope.Lookup(name).(*types.Const)
+			if !ok || !c.Exported() || c.Val().Kind() != constant.String {
+				continue
+			}
+			named, ok := types.Unalias(c.Type()).(*types.Named)
+			if !ok || named.Obj().Pkg() == nil {
+				continue
+			}
+			v := constant.StringVal(c.Val())
+			if v == "" {
+				continue
+			}
+			key := named.Obj().Pkg().Path() + "." + named.Obj().Name()
+			ec, seen := out[key]
+			if !seen {
+				ec = &enumConsts{exact: map[string]string{}, folded: map[string]string{}}
+				out[key] = ec
+			}
+			ec.add(v, c.Name())
+		}
+	}
+	return out
+}
+
+// enumConsts holds one Go type's string constants by the value each carries,
+// exactly and case-folded.
+//
+// Case folding is not a convenience. ent stores an enum column lower-case and
+// upper-cases it on the way out (MarshalGQL is strconv.Quote(ToUpper(...))),
+// so EventTypeView = "view" is the constant for the SDL value VIEW, and an
+// exact match finds nothing for an entire ORM's worth of enums. A folded key
+// two constants share is ambiguous and yields neither: guessing there would
+// bind the wrong one silently, where binding nothing is the compile error the
+// author already had.
+type enumConsts struct {
+	exact  map[string]string
+	folded map[string]string
+}
+
+func (e *enumConsts) add(value, name string) {
+	if _, taken := e.exact[value]; !taken {
+		e.exact[value] = name
+	}
+	up := strings.ToUpper(value)
+	if prev, taken := e.folded[up]; taken {
+		if prev != name {
+			e.folded[up] = "" // ambiguous
+		}
+		return
+	}
+	e.folded[up] = name
+}
+
+func (e *enumConsts) lookup(sdlValue string) (string, bool) {
+	if e == nil {
+		return "", false
+	}
+	if c, ok := e.exact[sdlValue]; ok {
+		return c, true
+	}
+	c, ok := e.folded[strings.ToUpper(sdlValue)]
+	return c, ok && c != ""
+}
+
+// enumBindings discovers the Go constants behind an enum's SDL values.
+//
+// The generator derives a constant name from the SDL value for an enum whose
+// model it writes itself, which is sound because it wrote both sides. For an
+// enum bound to a hand-written or ORM-generated Go type the same derivation is
+// a guess, and every wrong guess is a compile error in a file marked DO NOT
+// EDIT -- one real schema spells VISIBLE as AccessPolicyExpectVisible where
+// the derivation produces AccessPolicyExpectationVisible, and its ORM spells
+// WORKSPACE_ID as WorkspaceID where the derivation produces Workspace_id.
+func enumBindings(schema *ast.Schema, models map[string]string, found map[string]*types.Named, consts map[string]*enumConsts) []TypeBinding {
+	var out []TypeBinding
+	for _, name := range enumNames(schema) {
+		def := schema.Types[name]
+		var key string
+		declared := false
+		if expr, ok := models[name]; ok {
+			path, _ := splitModelExpr(expr)
+			if path == "" {
+				continue // a predeclared type carries no named constants
+			}
+			key, declared = path+expr[strings.LastIndex(expr, "."):], true
+		} else if named, ok := found[name]; ok && named.Obj().Pkg() != nil {
+			key = named.Obj().Pkg().Path() + "." + named.Obj().Name()
+		} else {
+			continue
+		}
+		vals := consts[key]
+		if vals == nil {
+			continue
+		}
+		values := map[string]string{}
+		for _, ev := range def.EnumValues {
+			if c, ok := vals.lookup(ev.Name); ok {
+				values[ev.Name] = c
+			}
+		}
+		if len(values) == 0 {
+			continue
+		}
+		tb := TypeBinding{Name: name, Values: values}
+		if !declared {
+			// An undiscovered value would fall back to a name derived in
+			// the generated model package, so a partial discovery has to
+			// bind nothing: the generator owns both sides or neither.
+			if len(values) != len(def.EnumValues) {
+				continue
+			}
+			named := found[name]
+			tb.Go = GoType{PkgPath: named.Obj().Pkg().Path(), Name: named.Obj().Name()}
+		}
+		// A declared enum missing a value keeps the derived name for it,
+		// which will not compile -- but it did not compile before either,
+		// and refusing to generate would stop a schema that works today.
+		out = append(out, tb)
+	}
+	return out
+}
+
+// modelPkgs loads the packages the model map names for an enum or an input
+// object and that the auto-bind patterns did not already reach.
+//
+// An ORM declares an enum's Go type beside the entity that uses it, so a
+// schema with five hundred entities names five hundred packages -- and the
+// config already names every one of them, in the Models entry or the @goModel
+// directive that binds the enum. Making the author list them a second time
+// under AutoBind is bookkeeping, and getting it wrong is silent: the constant
+// name is derived instead, which is a compile error in generated code.
+//
+// Nothing here widens discovery. No type found in one of these packages is
+// bound to a schema type -- an author who wanted that would have auto-bound
+// it. They are read for their constants, and for the shape of a type the
+// config already declared, which is what makes it possible to say that a
+// declared binding will not compile.
+//
+// Input objects are here for the second reason and not the first. Their fields
+// are derived by the engine, not emitted, so nothing needs their constants --
+// but a filter struct is where an ORM's second Go type for an enum is found
+// (altEnumTypes), and a declared input type this pass never loaded has no
+// fields to look at.
+func modelPkgs(dir string, schema *ast.Schema, models map[string]string, loaded []*packages.Package, loads *int) []*packages.Package {
+	have := map[string]bool{}
+	for _, p := range loaded {
+		have[p.PkgPath] = true
+	}
+	var want []string
+	seen := map[string]bool{}
+	for _, name := range slices.Concat(enumNames(schema), inputNames(schema)) {
+		path, _ := splitModelExpr(models[name])
+		if path == "" || have[path] || seen[path] {
+			continue
+		}
+		seen[path] = true
+		want = append(want, path)
+	}
+	if len(want) == 0 {
+		return nil
+	}
+	// A path that does not load is not an error: the model map may name a
+	// package outside this module, and the enum then keeps the behaviour it
+	// had before constants were discovered at all.
+	*loads++
+	pkgs, err := packages.Load(&packages.Config{Dir: dir, Mode: loadMode}, want...)
+	if err != nil {
+		return nil
+	}
+	return pkgs
+}
+
+// altEnumTypes finds a second Go type for an SDL enum.
+//
+// The registry is keyed on (GraphQL type, reflect.Type), so one SDL enum can
+// have two Go types, and an ORM produces exactly that: @goModel binds
+// AssetDepreciationMethod to velox/asset.DepreciationMethod, while the filter
+// struct the same ORM generates carries velox/assetdepreciation.Method for the
+// same column. Nothing here is a mistake -- both types exist, both carry the
+// same values -- but only one of them is bound, and every input field using
+// the other is a NewSchema error the author cannot see from the SDL.
+//
+// Only input objects are searched. An object field of the unbound type falls
+// to a resolver, which the author writes and can convert in; an input field
+// has nowhere to put that conversion.
+func altEnumTypes(schema *ast.Schema, models map[string]string, found map[string]*types.Named, idx map[string]*types.Named) map[string]*types.Named {
+	primary := boundEnumTypes(schema, models, found)
+	out := map[string]*types.Named{}
+	// Input names and fields are walked in sorted and SDL order, so a third Go
+	// type for one enum loses to the second every run rather than by map
+	// iteration.
+	for _, name := range inputNames(schema) {
+		named := found[name]
+		if expr, declared := models[name]; declared {
+			named = namedByExpr(idx, expr)
+		}
+		if named == nil {
+			continue
+		}
+		fields := structFields(named)
+		for _, fd := range schema.Types[name].Fields {
+			enum := fd.Type.Name()
+			if _, taken := out[enum]; taken {
+				continue
+			}
+			if alt := altTypeAt(schema, fields, fd, primary[enum]); alt != nil {
+				out[enum] = alt
+			}
+		}
+	}
+	return out
+}
+
+// boundEnumTypes maps each SDL enum to the "importPath.TypeName" of the single
+// Go type it is bound to, declared or discovered.
+func boundEnumTypes(schema *ast.Schema, models map[string]string, found map[string]*types.Named) map[string]string {
+	out := map[string]string{}
+	for _, name := range enumNames(schema) {
+		if expr, ok := models[name]; ok {
+			if path, _ := splitModelExpr(expr); path != "" {
+				out[name] = path + expr[strings.LastIndex(expr, "."):]
+			}
+			continue
+		}
+		if n, ok := found[name]; ok && n.Obj().Pkg() != nil {
+			out[name] = n.Obj().Pkg().Path() + "." + n.Obj().Name()
+		}
+	}
+	return out
+}
+
+// altTypeAt yields the Go type backing one input field when the field is an
+// enum whose bound type is not the one the struct holds. bound is empty for an
+// enum nothing binds, which is a different problem and not this one's to fix.
+func altTypeAt(schema *ast.Schema, fields map[string]goField, fd *ast.FieldDefinition, bound string) *types.Named {
+	if bound == "" {
+		return nil
+	}
+	if def := schema.Types[fd.Type.Name()]; def == nil || def.Kind != ast.Enum {
+		return nil
+	}
+	f, ok := matchField(fields, fd.Name)
+	if !ok {
+		return nil
+	}
+	n := namedLeaf(f.typ)
+	if n == nil || n.Obj().Pkg() == nil {
+		return nil
+	}
+	if n.Obj().Pkg().Path()+"."+n.Obj().Name() == bound {
+		return nil
+	}
+	return n
+}
+
+// namedLeaf unwraps pointers, slices and arrays down to the named type a leaf
+// binding would need, and yields nothing for anything else.
+func namedLeaf(t types.Type) *types.Named {
+	for range 4 {
+		switch u := types.Unalias(t).(type) {
+		case *types.Named:
+			if _, ok := u.Underlying().(*types.Basic); ok {
+				return u
+			}
+			return nil
+		case *types.Pointer:
+			t = u.Elem()
+		case *types.Slice:
+			t = u.Elem()
+		case *types.Array:
+			t = u.Elem()
+		default:
+			return nil
+		}
+	}
+	return nil
+}
+
+// altEnumPkgs loads the packages holding the alternate types, which no
+// AutoBind pattern and no @goModel named -- they are reachable only through a
+// bound struct's field, and export data for a dependency does not come back
+// from packages.Load as a package of its own.
+func altEnumPkgs(dir string, alt map[string]*types.Named, loaded []*packages.Package, loads *int) []*packages.Package {
+	have := map[string]bool{}
+	for _, p := range loaded {
+		have[p.PkgPath] = true
+	}
+	var want []string
+	for _, name := range slices.Sorted(maps.Keys(alt)) {
+		path := alt[name].Obj().Pkg().Path()
+		if have[path] {
+			continue
+		}
+		have[path] = true
+		want = append(want, path)
+	}
+	if len(want) == 0 {
+		return nil
+	}
+	*loads++
+	pkgs, err := packages.Load(&packages.Config{Dir: dir, Mode: loadMode}, want...)
+	if err != nil {
+		return nil
+	}
+	return pkgs
+}
+
+// altEnumBindings turns the alternate types into bindings, and only when every
+// SDL value of the enum is accounted for. A partial map would bind some values
+// and leave the rest unrepresentable at that position, which is worse than the
+// error it replaces: the first is silent at run time, the second stops the
+// build. What it cannot bind it reports, because the author can write the map
+// by hand and cannot be expected to guess that they need to.
+func altEnumBindings(schema *ast.Schema, alt map[string]*types.Named, consts map[string]*enumConsts, notef func(string, ...any)) []TypeBinding {
+	var out []TypeBinding
+	var unbound []string
+	for _, name := range slices.Sorted(maps.Keys(alt)) {
+		named := alt[name]
+		key := named.Obj().Pkg().Path() + "." + named.Obj().Name()
+		def := schema.Types[name]
+		values := map[string]string{}
+		if vals := consts[key]; vals != nil {
+			for _, ev := range def.EnumValues {
+				if c, ok := vals.lookup(ev.Name); ok {
+					values[ev.Name] = c
+				}
+			}
+		}
+		if len(values) != len(def.EnumValues) {
+			unbound = append(unbound, name+" as "+key)
+			continue
+		}
+		out = append(out, TypeBinding{
+			Name:   name,
+			Go:     GoType{PkgPath: named.Obj().Pkg().Path(), Name: named.Obj().Name()},
+			Values: values,
+		})
+	}
+	if len(unbound) > 0 {
+		notef("%d enums are used at a second Go type whose constants could not all be found, so every input field using that type will fail at NewSchema; bind each with graphql.Enum (%s)",
+			len(unbound), summarize(unbound, 8))
+	}
+	return out
+}
+
+// inputNames lists the schema's input object types, sorted.
+func inputNames(schema *ast.Schema) []string {
+	var out []string
+	for name, def := range schema.Types {
+		if def.Kind == ast.InputObject && !def.BuiltIn && !strings.HasPrefix(name, "__") {
+			out = append(out, name)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// enumNames lists the schema's enum types, sorted.
+func enumNames(schema *ast.Schema) []string {
+	var out []string
+	for name, def := range schema.Types {
+		if def.Kind == ast.Enum && !def.BuiltIn && !strings.HasPrefix(name, "__") {
+			out = append(out, name)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // objectNames lists the schema's object types, roots excluded: a root has no
@@ -148,7 +607,7 @@ func discoverFields(def *ast.Definition, named *types.Named, want func(*ast.Type
 				}
 			}
 		}
-		if m, ok := matchMethod(methods, fd.Name); ok && m.fits(len(fd.Arguments)) {
+		if m, ok := matchMethod(methods, fd.Name); ok && m.fits(fd.Arguments, want) {
 			if conv, usable := reconcile(m.result, expected); usable {
 				out[fd.Name] = FieldBinding{
 					Kind:    FieldMethod,
@@ -241,16 +700,30 @@ func matchField(fields map[string]goField, sdlName string) (goField, bool) {
 // goMethod is a method with the shape a binding needs to declare.
 type goMethod struct {
 	name    string
-	params  int // parameters after an optional leading context
+	params  []types.Type // parameters after an optional leading context
 	result  types.Type
 	context bool
 	errors  bool
 	usable  bool
 }
 
-// fits reports whether the method can answer a field with n arguments. The
-// generator spreads arguments into the call, so the counts must agree.
-func (m goMethod) fits(n int) bool { return m.usable && m.params == n }
+// fits reports whether the method can answer the field's arguments. The
+// generator spreads them into the call as a.Name, with no conversion, so the
+// count must agree and every parameter must be exactly the Go type that
+// argument's field on the generated struct holds. Checking only the count
+// bound an ORM edge method taking its own *ent.XOrder to an argument the
+// generator models itself, which is a compile error in generated code.
+func (m goMethod) fits(args ast.ArgumentDefinitionList, want func(*ast.Type, string, bool) string) bool {
+	if !m.usable || len(m.params) != len(args) {
+		return false
+	}
+	for i, arg := range args {
+		if types.TypeString(m.params[i], packageNameQualifier) != want(arg.Type, "", false) {
+			return false
+		}
+	}
+	return true
+}
 
 // methodSet collects the methods of *T, which includes those promoted from
 // embedded types.
@@ -287,11 +760,11 @@ func describe(name string, sig *types.Signature) goMethod {
 	if sig.Variadic() {
 		return m
 	}
-	m.params = params.Len() - start
 	for i := start; i < params.Len(); i++ {
 		if isContext(params.At(i).Type()) {
 			return m // a context anywhere but first is not a shape we emit
 		}
+		m.params = append(m.params, params.At(i).Type())
 	}
 
 	results := sig.Results()
@@ -370,6 +843,10 @@ func mergeManifests(discovered, explicit *Manifest) *Manifest {
 		}
 		out.Types[i] = merged
 	}
+	// Discovery is the only producer of these, and an explicit manifest may
+	// add its own: an author who knows about a second Go type says so here
+	// rather than editing generated code.
+	out.ExtraEnums = slices.Concat(discovered.ExtraEnums, explicit.ExtraEnums)
 	return out
 }
 
@@ -431,3 +908,181 @@ func basicClassOf(expr string) (types.BasicInfo, bool) {
 // packageNameQualifier renders types the way generated code spells them, by
 // package name rather than by import path.
 func packageNameQualifier(p *types.Package) string { return p.Name() }
+
+// namedIndex maps "importPath.TypeName" to the named type, over every package
+// that was loaded.
+func namedIndex(pkgs []*packages.Package) map[string]*types.Named {
+	out := map[string]*types.Named{}
+	for _, p := range pkgs {
+		if p.Types == nil {
+			continue
+		}
+		scope := p.Types.Scope()
+		for _, name := range scope.Names() {
+			obj, ok := scope.Lookup(name).(*types.TypeName)
+			if !ok {
+				continue
+			}
+			if named, ok := types.Unalias(obj.Type()).(*types.Named); ok && named.Obj().Pkg() != nil {
+				out[named.Obj().Pkg().Path()+"."+named.Obj().Name()] = named
+			}
+		}
+	}
+	return out
+}
+
+// unbindableTypes lists the schema types whose declared Go type the loaded
+// packages show cannot be bound, sorted: an enum that cannot back an enum,
+// and then anything holding one of those, transitively.
+//
+// graphql.Enum takes a map from Go value to SDL name, so an enum's Go type has
+// to be a comparable type whose values generated code can name. An ORM breaks
+// both halves at once: entgql binds an SDL enum to a struct holding a func,
+// which is not comparable, and its values are unexported package vars, which
+// nothing outside that package can name. One real schema does this 444 times,
+// and the binding is written by the ORM into the SDL -- not by hand, so there
+// is nothing for the author to correct.
+//
+// Refusing to generate would block the schema entirely; emitting the binding
+// anyway is 12 959 compile errors in files marked DO NOT EDIT. Dropping the
+// binding leaves a generated string enum that every field, argument and
+// resolver signature agrees on, and the resolver translates it -- which it had
+// to do regardless, since only that package can turn the SDL value back into
+// its own value. The drop is reported, never silent.
+//
+// The test is narrow on purpose: only a Go type whose underlying type is not
+// basic is refused. A named string type with no constants found is left alone,
+// because the constants may simply be somewhere this pass did not load.
+func unbindableTypes(schema *ast.Schema, models map[string]string, named map[string]*types.Named) []string {
+	bad := map[string]bool{} // Go types nothing can bind, by "path.Name"
+	out := map[string]bool{} // SDL types to drop
+	for _, name := range enumNames(schema) {
+		n := declaredNamed(models, named, name)
+		if n == nil {
+			continue // not declared, or not loaded, so nothing is known about it
+		}
+		if _, basic := n.Underlying().(*types.Basic); !basic {
+			out[name] = true
+			bad[goKey(n)] = true
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+
+	// A dropped Go type takes its holders with it. entgql puts the
+	// unbindable OrderField inside an Order input that is itself bound to the
+	// ORM struct, so dropping only the enum leaves that struct with a field of
+	// a type nothing registers -- 452 errors on the real schema, every one an
+	// XOrder. A fixpoint rather than one pass, because a holder of a holder is
+	// the same problem; the schema's type count bounds the iterations.
+	names := declaredNames(schema, models)
+	for {
+		grew := false
+		for _, name := range names {
+			if out[name] {
+				continue
+			}
+			n := declaredNamed(models, named, name)
+			if n == nil || !referencesAny(n, bad) {
+				continue
+			}
+			out[name] = true
+			bad[goKey(n)] = true
+			grew = true
+		}
+		if !grew {
+			break
+		}
+	}
+	return sortedKeys(out)
+}
+
+// declaredNames lists every schema type Models binds, sorted, so the fixpoint
+// above runs in the same order on every build.
+func declaredNames(schema *ast.Schema, models map[string]string) []string {
+	var out []string
+	for name, def := range schema.Types {
+		if def.BuiltIn || strings.HasPrefix(name, "__") {
+			continue
+		}
+		if _, ok := models[name]; ok {
+			out = append(out, name)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// declaredNamed resolves a schema type to the loaded Go type Models declares
+// for it, or nil when it is undeclared, predeclared, or not loaded.
+func declaredNamed(models map[string]string, named map[string]*types.Named, name string) *types.Named {
+	expr, ok := models[name]
+	if !ok {
+		return nil
+	}
+	return namedByExpr(named, expr)
+}
+
+func goKey(n *types.Named) string {
+	if n.Obj().Pkg() == nil {
+		return n.Obj().Name()
+	}
+	return n.Obj().Pkg().Path() + "." + n.Obj().Name()
+}
+
+// referencesAny reports whether any field of the struct behind n has one of
+// the given Go types, through any number of pointers, slices, arrays or maps.
+// Only the type's own fields are read: a field whose own type is bindable is
+// not this type's problem, and following it would drop the world.
+func referencesAny(n *types.Named, bad map[string]bool) bool {
+	st, ok := n.Underlying().(*types.Struct)
+	if !ok {
+		return false
+	}
+	for i := range st.NumFields() {
+		if elem := namedElem(st.Field(i).Type()); elem != nil && bad[goKey(elem)] {
+			return true
+		}
+	}
+	return false
+}
+
+// namedElem unwraps a type to the named type it ultimately holds, or nil.
+func namedElem(t types.Type) *types.Named {
+	for range 8 {
+		switch u := types.Unalias(t).(type) {
+		case *types.Named:
+			return u
+		case *types.Pointer:
+			t = u.Elem()
+		case *types.Slice:
+			t = u.Elem()
+		case *types.Array:
+			t = u.Elem()
+		case *types.Map:
+			t = u.Elem()
+		default:
+			return nil
+		}
+	}
+	return nil
+}
+
+// namedByExpr resolves a Config.Models entry to the loaded named type it
+// spells, or nil when that package was not loaded.
+func namedByExpr(idx map[string]*types.Named, expr string) *types.Named {
+	path, _ := splitModelExpr(expr)
+	if path == "" {
+		return nil
+	}
+	return idx[path+expr[strings.LastIndex(expr, "."):]]
+}
+
+// summarize renders at most n of the names, with a count of the rest.
+func summarize(names []string, n int) string {
+	if len(names) <= n {
+		return strings.Join(names, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(names[:n], ", "), len(names)-n)
+}

@@ -19,6 +19,14 @@ import (
 // a method takes a context or returns an error, so the manifest says.
 type Manifest struct {
 	Types []TypeBinding
+
+	// ExtraEnums binds an SDL enum to a *second* Go type, in addition to the
+	// one in Types. The registry is keyed on (GraphQL type, reflect.Type), so
+	// both bindings coexist and each position decodes into the type it holds.
+	// An ORM that generates one enum type per entity package and another per
+	// column produces this; a Values map is required, because there is no
+	// generated model to derive constant names from.
+	ExtraEnums []TypeBinding
 }
 
 // TypeBinding binds one GraphQL type to a Go type.
@@ -28,6 +36,17 @@ type TypeBinding struct {
 	// Go is the Go type backing it. A zero GoType leaves the generated
 	// model in place and binds only the fields.
 	Go GoType
+	// Values binds an enum's SDL values to the Go constants that carry them,
+	// keyed by SDL value name. Empty means the generator derives the constant
+	// names, which it can only do for an enum whose Go type it also generated.
+	//
+	// A mapped enum is the case this exists for: the author named the constants
+	// and the generator cannot guess. One real schema has
+	// AccessPolicyExpectVisible where the derived name would be
+	// AccessPolicyExpectationVisible, and every such guess is a compile error in
+	// a file marked DO NOT EDIT.
+	Values map[string]string
+
 	// Group overrides GroupFunc for this type. Empty means the default.
 	Group string
 	// Fields binds individual fields by their SDL name. A field left out is
@@ -226,4 +245,19 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	slices.Sort(out)
 	return out
+}
+
+// enumConstant returns the Go constant bound to one SDL enum value, and
+// whether the manifest declares one. Without it the generator derives a name
+// from the SDL, which is only sound for an enum whose Go type it generated.
+func (m *manifest) enumConstant(typeName, value string) (string, bool) {
+	if m == nil {
+		return "", false
+	}
+	tb, ok := m.types[typeName]
+	if !ok || tb.Values == nil {
+		return "", false
+	}
+	c, ok := tb.Values[value]
+	return c, ok && c != ""
 }

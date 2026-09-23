@@ -95,3 +95,68 @@ func TestGroupOfIsMemoized(t *testing.T) {
 		t.Errorf("groupByType holds %d entries after asking about one type", len(b.groupByType))
 	}
 }
+
+// modelQualifier asks for modelExprImports once per type reference, and that
+// scans every Models entry. With AutoBind, Models holds one entry per
+// discovered type, so recomputing it is references times types: the real
+// 5 503-type schema took 4m58s to generate and 16s once this was memoized.
+func TestModelExprImportsIsComputedOnce(t *testing.T) {
+	const groups = 30
+	dir := manyGroupSchema(t, groups)
+
+	b, err := newBuilder(dir, Config{
+		Dir:         dir,
+		SchemaGlobs: []string{"schema/*.graphql"},
+		Output:      "graph",
+		Package:     "example.com/s/graph",
+		Models:      map[string]string{"Time": "time.Time"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range b.typeNames(ast.Object) {
+		b.modelName(name, "graph")
+	}
+	if b.exprScans > 1 {
+		t.Errorf("modelExprImports was computed %d times; it must be computed once per model map", b.exprScans)
+	}
+
+	// And recomputed when the map it reads is replaced, or a type discovered
+	// after the first call would be qualified against a stale map.
+	b.setModels(map[string]string{"Time": "time.Time", "Extra": "example.com/x/other.Extra"})
+	if _, ok := b.modelExprImports()["other"]; !ok {
+		t.Error("setModels did not drop the memoized import map")
+	}
+}
+
+// "gqlc never loads Go packages" is the claim the whole design rests on, and
+// only the `len(cfg.AutoBind) > 0` guard keeps it. A regression there costs
+// what gqlgen costs -- 31 s and 4.6 GB on a 200-entity schema against under a
+// second and 44 MB -- and nothing else in the suite would notice, because
+// loading packages makes no output wrong.
+func TestNoPackagesAreLoadedWithoutAutoBind(t *testing.T) {
+	const groups = 3
+	dir := manyGroupSchema(t, groups)
+	// A real module with a loadable package in it, so that a load would
+	// succeed: the counter is then what fails, and it says what broke, where
+	// a load error from an empty directory would send a reader elsewhere.
+	writeTempModule(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "doc.go"), []byte("package hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	b, err := newBuilder(dir, Config{
+		Dir:         dir,
+		SchemaGlobs: []string{"schema/*.graphql"},
+		Output:      "graph",
+		Package:     "example.com/s/graph",
+		// Named but unloadable: a Models entry is not permission to load.
+		Models: map[string]string{"Time": "does.not/exist.Time"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.loads != 0 {
+		t.Errorf("packages.Load was called %d times with no AutoBind", b.loads)
+	}
+}

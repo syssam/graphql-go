@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -43,6 +44,120 @@ type builder struct {
 	// TestTypeNamesIsComputedOncePerKind reads: once per kind and not once
 	// per group is the difference between linear and quadratic here.
 	nameScans int
+
+	// exprImports memoizes modelExprImports, which modelQualifier asks for
+	// once per type reference while itself scanning every Models entry. With
+	// AutoBind that map holds an entry per discovered type, so recomputing it
+	// was references times types. setModels clears it; nothing else may write
+	// cfg.Models.
+	exprImports map[string]string
+	exprScans   int
+
+	// loads counts calls to packages.Load. "It reads no Go type information
+	// without AutoBind" is a promise the documentation makes and only the
+	// `len(cfg.AutoBind) > 0` guard keeps; loading a module is the cost this
+	// generator exists to avoid, so a regression here is the whole design
+	// going quietly. TestNoPackagesAreLoadedWithoutAutoBind reads it.
+	loads int
+
+	// markers memoizes hasMarker. setModels clears it, because whether a
+	// member is mapped is what decides it.
+	markers map[string]bool
+
+	// extraEnums holds the second Go type some SDL enums have, rendered as
+	// the references generated code will use, keyed by SDL enum name. See
+	// Manifest.ExtraEnums. extraImports carries the packages they need, which
+	// neither Config.Models nor the generated model packages name.
+	extraEnums   map[string][]extraEnum
+	extraImports map[string]string
+}
+
+// extraEnum is one second binding for an SDL enum, already qualified: ref is
+// the Go type as generated code writes it, and consts maps each SDL value to
+// the constant reference that carries it.
+type extraEnum struct {
+	ref    string
+	consts map[string]string
+}
+
+// notef reports a decision through Config.Notef, if there is one.
+func (b *builder) notef(format string, args ...any) {
+	if b.cfg.Notef != nil {
+		b.cfg.Notef(format, args...)
+	}
+}
+
+// setModels replaces the model map and drops what was memoized from it.
+func (b *builder) setModels(models map[string]string) {
+	b.cfg.Models = models
+	b.exprImports = nil
+	b.markers = nil
+}
+
+// hasMarker reports whether the interface or union named gets a generated Go
+// marker interface -- `type Node interface{ IsNode() }`, with the method on
+// every member -- instead of being any.
+//
+// The method has to be declared on each member, and Go allows that only in
+// the member's own package, so every member must be a model this generator
+// writes: one mapped through Models, a directive or AutoBind is someone else's
+// type. An abstract type that is mapped itself already has a Go type. A member
+// with a field whose Go name is the method's would not compile, so that falls
+// back to any too.
+func (b *builder) hasMarker(name string) bool {
+	if v, ok := b.markers[name]; ok {
+		return v
+	}
+	if b.markers == nil {
+		b.markers = map[string]bool{}
+	}
+	ok := b.computeMarker(name)
+	b.markers[name] = ok
+	return ok
+}
+
+func (b *builder) computeMarker(name string) bool {
+	def := b.schema.Types[name]
+	if def == nil || (def.Kind != ast.Interface && def.Kind != ast.Union) || b.mapped(name) {
+		return false
+	}
+	if r, _ := utf8.DecodeRuneInString(name); !unicode.IsUpper(r) {
+		return false
+	}
+	method := b.markerMethod(name)
+	for _, member := range b.schema.PossibleTypes[name] {
+		// An interface implementing this one carries its method in its own
+		// marker (markerMethods); only objects have methods declared on them.
+		if member.Kind == ast.Interface {
+			continue
+		}
+		if member.Kind != ast.Object || b.mapped(member.Name) || b.isRoot(member.Name) {
+			return false
+		}
+		for _, fd := range member.Fields {
+			if b.fieldKind(member.Name, fd) == fieldPure && goIdent(fd.Name) == method {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (b *builder) markerMethod(name string) string { return "Is" + name }
+
+// markerMethods is the method set of name's marker: its own method, then those
+// of every interface it implements that has a marker too, so a value of it can
+// be returned where one of those is asked for.
+func (b *builder) markerMethods(name string) []string {
+	var out []string
+	if def := b.schema.Types[name]; def != nil {
+		for _, parent := range def.Interfaces {
+			if b.hasMarker(parent) {
+				out = append(out, b.markerMethod(parent))
+			}
+		}
+	}
+	return append(out, b.markerMethod(name))
 }
 
 func newBuilder(dir string, cfg Config) (*builder, error) {
@@ -89,6 +204,11 @@ func newBuilder(dir string, cfg Config) (*builder, error) {
 	// explicit Models entry still wins over what a directive says.
 	if !cfg.ModelDirective.IsZero() {
 		cfg.Models = foldModelDirective(sch, cfg.ModelDirective, cfg.Models)
+		// foldModelDirective returns a new map, and discovery below reads
+		// the builder's copy rather than this one. Without this line every
+		// field whose type the SDL binds is measured against the model the
+		// generator would have written instead, and none of them match.
+		b.setModels(cfg.Models)
 	}
 
 	// Discovery produces a manifest and then stops, so everything downstream
@@ -99,11 +219,15 @@ func newBuilder(dir string, cfg Config) (*builder, error) {
 	// already settled.
 	explicit := cfg.Manifest
 	if len(cfg.AutoBind) > 0 {
-		discovered, aerr := autoBind(dir, cfg.AutoBind, sch, b.goType)
+		discovered, aerr := autoBind(dir, cfg.AutoBind, sch, b)
 		if aerr != nil {
 			return nil, aerr
 		}
-		explicit = mergeManifests(yieldToDeclared(discovered, cfg.Models), explicit)
+		// The builder's map, not the local one: discovery drops a declared
+		// binding it can see would not compile, and the local copy still
+		// carries it.
+		explicit = mergeManifests(yieldToDeclared(discovered, b.cfg.Models), explicit)
+		cfg.Models = b.cfg.Models
 	}
 
 	// Folding the manifest's type bindings into cfg.Models here means model
@@ -113,9 +237,79 @@ func newBuilder(dir string, cfg Config) (*builder, error) {
 	if err != nil {
 		return nil, fmt.Errorf("codegen: %w", err)
 	}
-	b.cfg.Models = models
+	b.setModels(models)
 	b.manifest = man
+	b.setExtraEnums(explicit)
 	return b, nil
+}
+
+// setExtraEnums renders Manifest.ExtraEnums into the references generated code
+// will carry, and reserves an import qualifier for each package they come
+// from. The qualifier is settled here, once, because the emitter writes the
+// reference and the import block from the same two maps -- deciding it twice
+// is how a reference and its import disagree.
+func (b *builder) setExtraEnums(man *Manifest) {
+	if man == nil || len(man.ExtraEnums) == 0 {
+		return
+	}
+	b.extraEnums = map[string][]extraEnum{}
+	b.extraImports = map[string]string{}
+	for _, tb := range man.ExtraEnums {
+		if tb.Go.zero() || len(tb.Values) == 0 {
+			continue
+		}
+		q := b.extraQualifier(tb.Go.PkgPath)
+		e := extraEnum{ref: q + "." + tb.Go.Name, consts: map[string]string{}}
+		for value, ident := range tb.Values {
+			e.consts[value] = q + "." + ident
+		}
+		b.extraEnums[tb.Name] = append(b.extraEnums[tb.Name], e)
+	}
+}
+
+// extraQualifier picks the name an extra enum's package is imported under, and
+// registers the import unless one already covers it.
+//
+// A package Config.Models already names is imported by that path, under that
+// qualifier, so registering it again emits the import twice -- which is a
+// redeclaration, not a warning, in a file marked DO NOT EDIT. A name spoken
+// for by a *different* package gets a suffix instead of losing, because both
+// have to be referable at once.
+func (b *builder) extraQualifier(path string) string {
+	base := path
+	if i := strings.LastIndex(base, "/"); i >= 0 {
+		base = base[i+1:]
+	}
+	base = strings.ReplaceAll(base, "-", "")
+	if base == "" {
+		base = "enum"
+	}
+	for q, have := range b.extraImports {
+		if have == path {
+			return q
+		}
+	}
+	for q, have := range b.modelExprImports() {
+		if have == path {
+			return q
+		}
+	}
+	taken := func(q string) bool {
+		if p, ok := b.modelExprImports()[q]; ok && p != path {
+			return true
+		}
+		_, ok := b.extraImports[q]
+		return ok
+	}
+	q := base
+	for i := 2; taken(q); i++ {
+		q = base + "enum"
+		if i > 2 {
+			q = base + "enum" + strconv.Itoa(i)
+		}
+	}
+	b.extraImports[q] = path
+	return q
 }
 
 // typeNames returns the schema's type names of one kind, sorted. The slice is
@@ -170,6 +364,11 @@ func (b *builder) fieldKind(typeName string, fd *ast.FieldDefinition) fieldKind 
 	if b.isRoot(typeName) {
 		return fieldResolve
 	}
+	// The author saying a field is computed outranks the generator seeing
+	// that it could be read.
+	if b.forcedResolver(fd) {
+		return fieldResolve
+	}
 	// An explicit binding wins, and a type in the manifest gets no inference
 	// at all: its unlisted fields are resolvers, so an incomplete manifest
 	// surfaces as a missing resolver method rather than as generated access
@@ -204,10 +403,30 @@ func goIdent(name string) string {
 	if name == "id" {
 		return "ID"
 	}
-	r, w := utf8.DecodeRuneInString(name)
-	s := string(unicode.ToUpper(r)) + name[w:]
+	// A leading underscore has no upper case, so upper-casing the first rune
+	// left `_lastUpdatedAt` unexported -- and Input[T] skips unexported
+	// fields, so the input could never bind and NewSchema refused the whole
+	// schema. The generated Go compiled perfectly; only building the schema
+	// found it, 342 times on one real schema. A leading underscore is legal
+	// in SDL and conventional for a meta field, so it has to produce an
+	// exported name rather than be rejected.
+	//
+	// The X stays rather than being dropped, so that `_x` and `x` on one type
+	// do not both become X and collide -- the `graphql` tag pins the SDL name,
+	// so a collision would be a compile error in generated code.
+	trimmed := strings.TrimLeft(name, "_")
+	if trimmed == "" {
+		return "X"
+	}
+	r, w := utf8.DecodeRuneInString(trimmed)
+	s := string(unicode.ToUpper(r)) + trimmed[w:]
 	if strings.HasSuffix(s, "Id") {
 		s = s[:len(s)-2] + "ID"
+	}
+	// Prefix when the name was underscored, or when upper-casing cannot
+	// export it at all -- a digit or a symbol first.
+	if trimmed != name || !unicode.IsUpper(unicode.ToUpper(r)) {
+		s = "X" + s
 	}
 	return s
 }
@@ -252,7 +471,7 @@ func (b *builder) modelName(graphqlName, selfPkg string) string {
 		return "graphql.ID"
 	}
 	def := b.schema.Types[graphqlName]
-	if def != nil && (def.Kind == ast.Interface || def.Kind == ast.Union) {
+	if def != nil && (def.Kind == ast.Interface || def.Kind == ast.Union) && !b.hasMarker(graphqlName) {
 		return "any"
 	}
 	pkg := b.modelPkgOf(graphqlName)
@@ -275,10 +494,18 @@ func (b *builder) modelName(graphqlName, selfPkg string) string {
 // The generated side is the one that yields, because it is the side whose
 // references this generator writes.
 func (b *builder) modelQualifier(pkg string) string {
-	if _, taken := b.modelExprImports()[pkg]; !taken {
-		return pkg
+	if _, taken := b.modelExprImports()[pkg]; taken {
+		return pkg + "model"
 	}
-	return pkg + "model"
+	// And to an extra enum's package, for the same reason: it is the author's
+	// package, reached through their own struct, where this one is a name the
+	// generator chose. A group called "method" beside a second enum type in
+	// .../method put two imports under one qualifier, which is a redeclaration
+	// rather than a warning (TestSecondEnumPackageDoesNotCollideWithAGeneratedModelPackage).
+	if _, taken := b.extraImports[pkg]; taken {
+		return pkg + "model"
+	}
+	return pkg
 }
 
 func (b *builder) goType(t *ast.Type, selfPkg string, omitNull bool) string {
@@ -292,7 +519,12 @@ func (b *builder) goType(t *ast.Type, selfPkg string, omitNull bool) string {
 	base := b.modelName(t.NamedType, selfPkg)
 	def := b.schema.Types[t.NamedType]
 	if def != nil && (def.Kind == ast.Object || def.Kind == ast.Interface || def.Kind == ast.Union) {
-		if base != "any" && !strings.HasPrefix(base, "*") {
+		// An object's Go side is a struct, so it takes a pointer. An abstract
+		// type's is itself an interface, and *Noder satisfies nothing -- the
+		// executor resolves the concrete type from the dynamic one. An
+		// unmapped abstract type is `any` and never reached this, which is
+		// why the pointer went unnoticed until a schema mapped one.
+		if def.Kind == ast.Object && base != "any" && !strings.HasPrefix(base, "*") {
 			base = "*" + base
 		}
 		return base
@@ -368,6 +600,10 @@ func splitModelExpr(expr string) (importPath, ref string) {
 // modelExprImports maps the package qualifier used in generated code to the
 // path it comes from, for every Config.Models entry that needs an import.
 func (b *builder) modelExprImports() map[string]string {
+	if b.exprImports != nil {
+		return b.exprImports
+	}
+	b.exprScans++
 	out := map[string]string{}
 	for _, expr := range b.cfg.Models {
 		path, ref := splitModelExpr(expr)
@@ -378,6 +614,7 @@ func (b *builder) modelExprImports() map[string]string {
 			out[strings.TrimLeft(ref[:i], "*[]")] = path
 		}
 	}
+	b.exprImports = out
 	return out
 }
 
@@ -441,7 +678,7 @@ func yieldToDeclared(discovered *Manifest, models map[string]string) *Manifest {
 	if discovered == nil || len(models) == 0 {
 		return discovered
 	}
-	out := &Manifest{Types: make([]TypeBinding, len(discovered.Types))}
+	out := &Manifest{Types: make([]TypeBinding, len(discovered.Types)), ExtraEnums: discovered.ExtraEnums}
 	copy(out.Types, discovered.Types)
 	for i := range out.Types {
 		if _, declared := models[out.Types[i].Name]; declared {
@@ -449,4 +686,31 @@ func yieldToDeclared(discovered *Manifest, models map[string]string) *Manifest {
 		}
 	}
 	return out
+}
+
+// modelAnswers reports whether the model itself answers this field, and
+// with what binding. Three places ask -- the field kind, the emitted call
+// and the Resolver interface -- and they must agree: honouring a forced
+// resolver in the call alone emits a Resolve for a method the interface
+// never declares, which does not compile.
+func (b *builder) modelAnswers(typeName string, fd *ast.FieldDefinition) (FieldBinding, bool) {
+	fb, ok := b.manifest.binding(typeName, fd.Name)
+	if !ok || fb.Kind == FieldResolver || b.forcedResolver(fd) {
+		return FieldBinding{}, false
+	}
+	return fb, true
+}
+
+// forcedResolver reports whether the field carries Config.FieldDirective
+// with its argument true.
+func (b *builder) forcedResolver(fd *ast.FieldDefinition) bool {
+	if b.cfg.FieldDirective.IsZero() || fd == nil {
+		return false
+	}
+	d := fd.Directives.ForName(b.cfg.FieldDirective.Name)
+	if d == nil {
+		return false
+	}
+	arg := d.Arguments.ForName(b.cfg.FieldDirective.ForceResolverArg)
+	return arg != nil && arg.Value != nil && arg.Value.Kind == ast.BooleanValue && arg.Value.Raw == "true"
 }

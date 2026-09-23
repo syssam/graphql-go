@@ -4,15 +4,23 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	goast "go/ast"
 	"go/format"
+	"go/parser"
+	"go/token"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/vektah/gqlparser/v2/ast"
 )
 
 func (b *builder) emit() (map[string][]byte, error) {
+	b.reportUnboundScalars()
 	files := map[string][]byte{}
 	for _, src := range b.sources {
 		base := filepath.Base(src.Name)
@@ -21,7 +29,7 @@ func (b *builder) emit() (map[string][]byte, error) {
 	groups := b.uniqueGroups()
 	// Before anything is written: a name collision here would otherwise arrive
 	// as a compile error in a file the author is told not to edit.
-	if err := b.checkNameCollisions(groups); err != nil {
+	if err := errors.Join(b.checkNameCollisions(groups), b.checkIdentifiers()); err != nil {
 		return nil, err
 	}
 	// One model package per group keeps a one-group schema edit from
@@ -128,6 +136,18 @@ func (b *builder) emitModel(group string) string {
 		body.WriteString("// " + name + " is a custom scalar; bind it with graphql.Scalar in NewSchema options.\n")
 		body.WriteString("type " + name + " string\n\n")
 	}
+	for _, kind := range []ast.DefinitionKind{ast.Interface, ast.Union} {
+		for _, name := range b.typeNames(kind) {
+			if !b.inGroup(name, group) || !b.hasMarker(name) {
+				continue
+			}
+			body.WriteString("type " + name + " interface {\n")
+			for _, m := range b.markerMethods(name) {
+				body.WriteString("\t" + m + "()\n")
+			}
+			body.WriteString("}\n\n")
+		}
+	}
 	for _, name := range b.typeNames(ast.Object) {
 		if b.isRoot(name) || !b.inGroup(name, group) || b.mapped(name) {
 			continue
@@ -144,6 +164,9 @@ func (b *builder) emitModel(group string) string {
 			body.WriteString("\t" + goIdent(fd.Name) + " " + b.goType(fd.Type, selfPkg, false) + "\n")
 		}
 		body.WriteString("}\n\n")
+		for _, abstract := range b.markersOf(name) {
+			body.WriteString("func (*" + name + ") " + b.markerMethod(abstract) + "() {}\n\n")
+		}
 	}
 	for _, name := range b.typeNames(ast.InputObject) {
 		if !b.inGroup(name, group) || b.mapped(name) {
@@ -181,7 +204,14 @@ func (b *builder) emitArgs(group string) string {
 			}
 			body.WriteString("type " + b.argsName(name, fd.Name) + " struct {\n")
 			for _, arg := range fd.Arguments {
-				body.WriteString("\t" + goIdent(arg.Name) + " " + b.goType(arg.Type, "", false) + "\n")
+				// The tag pins the SDL name, for the reason the input-object
+				// emitter above gives: deriving it back from the Go name is
+				// lossy. Args structs went without one until an SDL argument
+				// arrived that does not survive the round trip -- ownerID
+				// derives to ownerId, and _lastUpdatedAt to xLastUpdatedAt.
+				body.WriteString("\t" + goIdent(arg.Name) + " " +
+					b.goType(arg.Type, "", false) +
+					" `graphql:\"" + arg.Name + "\"`\n")
 			}
 			body.WriteString("}\n\n")
 		}
@@ -190,15 +220,16 @@ func (b *builder) emitArgs(group string) string {
 }
 
 func (b *builder) importBlock(src, selfPkg string) string {
+	used := usedQualifiers(src)
 	var std, rest []string
-	if strings.Contains(src, "context.") {
+	if used("context") {
 		std = append(std, "\t\"context\"")
 	}
-	if strings.Contains(src, "graphql.") {
+	if used("graphql") {
 		rest = append(rest, "\t\"github.com/syssam/graphql-go\"")
 	}
 	for qualifier, path := range b.modelExprImports() {
-		if !strings.Contains(src, qualifier+".") {
+		if !used(qualifier) {
 			continue
 		}
 		line := "\t\"" + path + "\""
@@ -208,6 +239,21 @@ func (b *builder) importBlock(src, selfPkg string) string {
 			std = append(std, line)
 		}
 	}
+	// An extra enum's package is named by neither Config.Models nor the
+	// generated models, and its qualifier was settled in setExtraEnums, so
+	// the import is written under that name whenever it differs from the
+	// package's own.
+	for _, qualifier := range slices.Sorted(maps.Keys(b.extraImports)) {
+		if !used(qualifier) {
+			continue
+		}
+		path := b.extraImports[qualifier]
+		if base := path[strings.LastIndex(path, "/")+1:]; base == qualifier {
+			rest = append(rest, "\t\""+path+"\"")
+			continue
+		}
+		rest = append(rest, "\t"+qualifier+" \""+path+"\"")
+	}
 	for _, pkg := range b.modelPkgNames() {
 		if pkg == selfPkg {
 			continue
@@ -216,7 +262,7 @@ func (b *builder) importBlock(src, selfPkg string) string {
 		// name is taken by a mapped type's package is referred to, and so
 		// imported, under an alias. See modelQualifier.
 		q := b.modelQualifier(pkg)
-		if !strings.Contains(src, q+".") {
+		if !used(q) {
 			continue
 		}
 		if q == pkg {
@@ -261,7 +307,7 @@ func (b *builder) eachResolverField(group string, fn func(typeName string, fd *a
 			// A method binding that can fail is still scheduled like a
 			// resolver, but it is answered by the model, so asking the
 			// Resolver interface for it would demand a method nothing calls.
-			if fb, ok := b.manifest.binding(name, fd.Name); ok && fb.Kind != FieldResolver {
+			if _, ok := b.modelAnswers(name, fd); ok {
 				continue
 			}
 			fn(name, fd)
@@ -343,6 +389,115 @@ func (b *builder) checkNameCollisions(groups []string) error {
 	return errors.Join(errs...)
 }
 
+// abstractRef is the Go type an interface or union is bound to: its marker
+// when it has one. A mapped abstract type stays bound to any, as it always
+// was: the executor resolves it from the dynamic type either way.
+func (b *builder) abstractRef(name string) string {
+	if b.hasMarker(name) {
+		return b.modelRef(name, name)
+	}
+	return "any"
+}
+
+// markersOf lists the abstract types with a marker that object belongs to, in
+// name order so the output is stable.
+func (b *builder) markersOf(object string) []string {
+	var out []string
+	for _, kind := range []ast.DefinitionKind{ast.Interface, ast.Union} {
+		for _, name := range b.typeNames(kind) {
+			if !b.hasMarker(name) {
+				continue
+			}
+			for _, member := range b.schema.PossibleTypes[name] {
+				if member.Name == object {
+					out = append(out, name)
+					break
+				}
+			}
+		}
+	}
+	return out
+}
+
+// checkIdentifiers refuses legal SDL whose generated Go would not compile.
+// GraphQL names are case-sensitive and Go identifiers are derived from them
+// by goIdent, which folds: id and ID are both ID, userId and userID both
+// UserID, and the enum values Low and LOW both end in Low. A type is emitted
+// under its SDL name, so a type named in lower case is unexported and the
+// bindings cannot name it. Each of these used to be written out and fail as a
+// compile error in a DO NOT EDIT file; renaming them silently instead would
+// make the Go name unguessable from the schema.
+func (b *builder) checkIdentifiers() error {
+	var errs []error
+	fold := func(kind string) func(ident, coord string) {
+		seen := map[string]string{}
+		return func(ident, coord string) {
+			if prev, ok := seen[ident]; ok {
+				errs = append(errs, fmt.Errorf(
+					"codegen: %s %s and %s both generate the Go name %q; rename one of them in the schema",
+					kind, prev, coord, ident))
+				return
+			}
+			seen[ident] = coord
+		}
+	}
+	exported := func(name string) {
+		if r, _ := utf8.DecodeRuneInString(name); !unicode.IsUpper(r) {
+			errs = append(errs, fmt.Errorf(
+				"codegen: type %q would generate an unexported Go type; rename it, or bind it to an existing Go type with Config.Models",
+				name))
+		}
+	}
+
+	for _, name := range b.typeNames(ast.Enum) {
+		if b.mapped(name) {
+			continue
+		}
+		exported(name)
+		add := fold("enum values")
+		for _, ev := range b.schema.Types[name].EnumValues {
+			add(name+goIdent(strings.ToLower(ev.Name)), name+"."+ev.Name)
+		}
+	}
+	for _, name := range b.typeNames(ast.Scalar) {
+		if !b.mapped(name) {
+			exported(name)
+		}
+	}
+	for _, name := range b.typeNames(ast.Object) {
+		def := b.schema.Types[name]
+		if !b.isRoot(name) && !b.mapped(name) {
+			exported(name)
+			add := fold("fields")
+			for _, fd := range def.Fields {
+				if !strings.HasPrefix(fd.Name, "__") && b.fieldKind(name, fd) == fieldPure {
+					add(goIdent(fd.Name), name+"."+fd.Name)
+				}
+			}
+		}
+		for _, fd := range def.Fields {
+			if strings.HasPrefix(fd.Name, "__") || len(fd.Arguments) == 0 {
+				continue
+			}
+			add := fold("arguments")
+			for _, arg := range fd.Arguments {
+				add(goIdent(arg.Name), name+"."+fd.Name+"("+arg.Name+":)")
+			}
+		}
+	}
+	for _, name := range b.typeNames(ast.InputObject) {
+		if b.mapped(name) {
+			continue
+		}
+		exported(name)
+		add := fold("input fields")
+		for _, fd := range b.schema.Types[name].Fields {
+			add(goIdent(fd.Name), name+"."+fd.Name)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 func (b *builder) emitBindings(group string, withResolver bool) string {
 	var w strings.Builder
 	if withResolver {
@@ -358,28 +513,45 @@ func (b *builder) emitBindings(group string, withResolver bool) string {
 		def := b.schema.Types[name]
 		w.WriteString("\t\tgraphql.Enum[" + b.modelRef(name, name) + "](\"" + name + "\", map[" + b.modelRef(name, name) + "]string{\n")
 		for _, ev := range def.EnumValues {
-			c := name + goIdent(strings.ToLower(ev.Name))
+			c, declared := b.manifest.enumConstant(name, ev.Name)
+			if !declared {
+				c = name + goIdent(strings.ToLower(ev.Name))
+			}
 			w.WriteString("\t\t\t" + b.modelRef(name, c) + ": \"" + ev.Name + "\",\n")
 		}
 		w.WriteString("\t\t}),\n")
+		// A second Go type for the same enum. The registry is keyed on
+		// (GraphQL type, reflect.Type), so both bindings live at once and each
+		// position decodes into the type it actually holds.
+		for _, e := range b.extraEnums[name] {
+			w.WriteString("\t\tgraphql.Enum[" + e.ref + "](\"" + name + "\", map[" + e.ref + "]string{\n")
+			for _, ev := range def.EnumValues {
+				w.WriteString("\t\t\t" + e.consts[ev.Name] + ": \"" + ev.Name + "\",\n")
+			}
+			w.WriteString("\t\t}),\n")
+		}
 	}
 	for _, name := range b.typeNames(ast.InputObject) {
 		if !b.inGroup(name, group) {
 			continue
 		}
-		w.WriteString("\t\tgraphql.Input[" + b.modelRef(name, name) + "](\"" + name + "\"),\n")
+		opt := ""
+		if b.cfg.ZeroForNullInputs {
+			opt = ", graphql.ZeroForNull()"
+		}
+		w.WriteString("\t\tgraphql.Input[" + b.modelRef(name, name) + "](\"" + name + "\"" + opt + "),\n")
 	}
 	for _, name := range b.typeNames(ast.Interface) {
 		if !b.inGroup(name, group) {
 			continue
 		}
-		w.WriteString("\t\tgraphql.Interface[any](\"" + name + "\"),\n")
+		w.WriteString("\t\tgraphql.Interface[" + b.abstractRef(name) + "](\"" + name + "\"),\n")
 	}
 	for _, name := range b.typeNames(ast.Union) {
 		if !b.inGroup(name, group) {
 			continue
 		}
-		w.WriteString("\t\tgraphql.Union[any](\"" + name + "\"),\n")
+		w.WriteString("\t\tgraphql.Union[" + b.abstractRef(name) + "](\"" + name + "\"),\n")
 	}
 
 	var rootFields = map[string][]string{}
@@ -457,7 +629,7 @@ func (b *builder) emitBindings(group string, withResolver bool) string {
 
 func (b *builder) fieldCall(typeName string, fd *ast.FieldDefinition, root bool) string {
 	goRet := b.goType(fd.Type, "", false)
-	if fb, ok := b.manifest.binding(typeName, fd.Name); ok && fb.Kind != FieldResolver {
+	if fb, ok := b.modelAnswers(typeName, fd); ok {
 		return b.manifestFieldCall(typeName, fd, fb, goRet)
 	}
 	switch {
@@ -505,6 +677,15 @@ func NewSchema(r Resolver, opts ...graphql.SchemaOption) (*graphql.Schema, error
 	all := append([]graphql.SchemaOption{Bindings(r)}, opts...)
 	return graphql.NewSchema(graphql.SDLFS(sdl, "schema/*.graphql"), all...)
 }
+
+// ValidateSchema builds the schema with no resolver behind it, so every
+// binding error surfaces before a resolver is written. Building never calls a
+// resolver -- Resolve captures it in a closure -- so the zero value is enough.
+func ValidateSchema(opts ...graphql.SchemaOption) error {
+	var r Resolver
+	_, err := NewSchema(r, opts...)
+	return err
+}
 `)
 	return w.String()
 }
@@ -537,6 +718,15 @@ func (b *builder) emitSchemaGrouped(groups []string) string {
 	w.WriteString("\t}\n")
 	w.WriteString("\tall = append(all, opts...)\n")
 	w.WriteString("\treturn graphql.NewSchema(graphql.SDLFS(sdl, \"schema/*.graphql\"), all...)\n}\n")
+	w.WriteString(`
+// ValidateSchema builds the schema with no resolver behind it, so every
+// binding error surfaces before a resolver is written. Building never calls a
+// resolver -- Resolve captures it in a closure -- so the zero value is enough.
+func ValidateSchema(opts ...graphql.SchemaOption) error {
+	_, err := NewSchema(Resolvers{}, opts...)
+	return err
+}
+`)
 	return w.String()
 }
 
@@ -570,4 +760,64 @@ func (b *builder) emitGroup(pkg, group string, withResolver bool) string {
 		doc = "holds the generated GraphQL bindings for the " + group + " group."
 	}
 	return b.header(pkg, doc) + b.importBlock(s, "") + s
+}
+
+// usedQualifiers reports which package qualifiers a generated body really
+// refers to, by parsing it rather than by searching its text.
+//
+// A substring search cannot tell code from a comment, and the model file
+// carries "bind it with graphql.Scalar in NewSchema options" above every
+// custom scalar: on one real schema that alone imported the engine into a
+// thousand packages that never used it, each one a compile error in a file
+// marked DO NOT EDIT. A parse also ignores a qualifier inside a string
+// literal, which a search does not.
+//
+// The body is Go with its imports not yet prepended, so it parses. If it ever
+// does not, the search stays as the fallback: an import that is present and
+// unused is a better failure than one that is missing.
+func usedQualifiers(src string) func(string) bool {
+	body := src
+	if !strings.HasPrefix(strings.TrimLeft(body, " \t\r\n"), "package ") {
+		body = "package p\n" + body
+	}
+	f, err := parser.ParseFile(token.NewFileSet(), "", body, parser.SkipObjectResolution)
+	if err != nil {
+		return func(q string) bool { return strings.Contains(src, q+".") }
+	}
+	seen := map[string]bool{}
+	goast.Inspect(f, func(n goast.Node) bool {
+		if sel, ok := n.(*goast.SelectorExpr); ok {
+			if id, ok := sel.X.(*goast.Ident); ok {
+				seen[id.Name] = true
+			}
+		}
+		return true
+	})
+	return func(q string) bool { return seen[q] }
+}
+
+// reportUnboundScalars names every custom scalar the author still has to bind.
+//
+// A Models entry chooses the Go type; it does not register a marshaller, so a
+// mapped scalar needs graphql.Scalar exactly as an unmapped one does. Believing
+// otherwise is what made 21 641 of one real schema's build errors a surprise:
+// Time was mapped to time.Time and still had no binding. The generator knows
+// the whole list while it is generating, so it says so then rather than letting
+// NewSchema say it later, once per use.
+func (b *builder) reportUnboundScalars() {
+	names := b.typeNames(ast.Scalar)
+	if len(names) == 0 {
+		return
+	}
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		goType := "model." + name
+		if expr, ok := b.cfg.Models[name]; ok {
+			_, ref := splitModelExpr(expr)
+			goType = ref
+		}
+		parts = append(parts, fmt.Sprintf("%s (%s)", name, goType))
+	}
+	b.notef("%d custom scalar(s) need a binding at NewSchema, or the schema will not build: %s. Add graphql.Scalar[GoType](%q, marshal, unmarshal) for each; a Models entry chooses the Go type but does not bind it.",
+		len(parts), strings.Join(parts, ", "), names[0])
 }

@@ -4,9 +4,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -15,11 +18,14 @@ import (
 )
 
 type fileConfig struct {
-	Schema                 []string          `yaml:"schema"`
-	Output                 string            `yaml:"output"`
-	Package                string            `yaml:"package"`
-	NullableInputOmittable bool              `yaml:"nullableInputOmittable"`
-	Models                 map[string]string `yaml:"models"`
+	Schema                 []string `yaml:"schema"`
+	Output                 string   `yaml:"output"`
+	Package                string   `yaml:"package"`
+	NullableInputOmittable bool     `yaml:"nullableInputOmittable"`
+	// zeroForNullInputs lets a Go field that cannot be null back a nullable
+	// input position; read the graphql.ZeroForNull godoc before setting it.
+	ZeroForNullInputs bool              `yaml:"zeroForNullInputs"`
+	Models            map[string]string `yaml:"models"`
 	// modelDirective reads type bindings the SDL already carries, for a schema
 	// arriving from another generator:
 	//
@@ -30,6 +36,16 @@ type fileConfig struct {
 		Name string `yaml:"name"`
 		Arg  string `yaml:"arg"`
 	} `yaml:"modelDirective"`
+	// fieldDirective forces a field to the Resolver interface, for the same
+	// reason: gqlgen spells it @goField(forceResolver: true).
+	//
+	//	fieldDirective:
+	//	  name: goField
+	//	  forceResolverArg: forceResolver
+	FieldDirective struct {
+		Name             string `yaml:"name"`
+		ForceResolverArg string `yaml:"forceResolverArg"`
+	} `yaml:"fieldDirective"`
 }
 
 func main() {
@@ -49,8 +65,13 @@ func run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("gqlc: read %s: %w", *configPath, err)
 	}
+	// KnownFields, because a misspelled key is otherwise ignored and the
+	// generator quietly does the default thing: nullableInputOmitable with one
+	// t produces models with no Omittable and no hint why.
 	var fc fileConfig
-	if err := yaml.Unmarshal(raw, &fc); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	dec.KnownFields(true)
+	if err := dec.Decode(&fc); err != nil && !errors.Is(err, io.EOF) {
 		return fmt.Errorf("gqlc: parse %s: %w", *configPath, err)
 	}
 	cfg := codegen.Config{
@@ -60,7 +81,12 @@ func run(args []string) error {
 		Package:                fc.Package,
 		Models:                 fc.Models,
 		NullableInputOmittable: fc.NullableInputOmittable,
+		ZeroForNullInputs:      fc.ZeroForNullInputs,
 		ModelDirective:         codegen.ModelDirective{Name: fc.ModelDirective.Name, Arg: fc.ModelDirective.Arg},
+		FieldDirective:         codegen.FieldDirective{Name: fc.FieldDirective.Name, ForceResolverArg: fc.FieldDirective.ForceResolverArg},
+		Notef: func(format string, args ...any) {
+			fmt.Fprintf(os.Stderr, "gqlc: "+format+"\n", args...)
+		},
 	}
 	return codegen.Generate(context.Background(), cfg)
 }

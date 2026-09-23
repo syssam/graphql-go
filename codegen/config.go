@@ -46,6 +46,27 @@ type Config struct {
 	// forked to understand the next one. Models still wins where both name a
 	// type, so a config can override what the SDL says.
 	ModelDirective ModelDirective
+	// FieldDirective names an SDL directive that forces a field to the
+	// Resolver interface, and the boolean argument that turns it on. Empty
+	// means none.
+	//
+	// gqlgen spells it @goField(forceResolver: true), and one real schema
+	// carries 4 567 of them. It is not redundant with AutoBind refusing a
+	// guess: AutoBind verifies that a struct field exists, and the author is
+	// saying the value must be computed rather than read -- permission
+	// filtering, a currency conversion, a field that is a column today and
+	// will not be tomorrow. Binding it to the column anyway compiles and
+	// answers the wrong thing, which is worse than not compiling.
+	//
+	// Other arguments gqlgen's directive takes (name:, omittable:) are not
+	// read.
+	//
+	// Measured: on the 5 503-type schema it was built for it moved the resolver
+	// count by exactly zero, because every field it forces was a computed field
+	// the Go type does not have. It earns its place on the field that is a
+	// column and that the author wants computed anyway; do not quote it as a
+	// migration win.
+	FieldDirective FieldDirective
 	// Manifest binds GraphQL types and fields explicitly instead of letting
 	// the generator infer them. It loads no Go type information; see the
 	// Manifest documentation.
@@ -54,6 +75,32 @@ type Config struct {
 	// packages are loaded, and only their export data: no syntax trees and no
 	// function bodies. A Manifest entry overrides discovery field by field.
 	AutoBind []string
+	// Notef receives a line whenever the generator resolves a disagreement it
+	// could have resolved another way -- today, a declared enum binding that
+	// AutoBind can see would not compile, which is dropped so the enum is
+	// modelled instead. A nil func discards them.
+	//
+	// It is not a log. Every line is a decision the author would want to know
+	// about and can act on, which is why there is no level and no filtering:
+	// anything that does not meet that bar belongs in an error or nowhere.
+	Notef func(format string, args ...any)
+	// ZeroForNullInputs emits graphql.ZeroForNull() on every generated Input
+	// binding, so a Go field that cannot be null may back a nullable input
+	// position and absent, null and the zero value all mean the same thing.
+	//
+	// It is one setting rather than a list because the schemas that need it
+	// need it everywhere: an ORM emits filter inputs by the hundred with
+	// `IsNil bool` under `Boolean`, and 11 035 such fields on one real schema
+	// are not a list anyone maintains by hand. Read the ZeroForNull godoc
+	// before setting it -- for a PATCH-style input, absent and null are
+	// different requests and NullableInputOmittable is the option you want.
+	//
+	// **This is a migration aid, not a design.** The right long-term fix is in
+	// the generator that emits the Go type: a nullable SDL field should be
+	// backed by a pointer. Setting this teaches an engine invariant to tolerate
+	// a generator's convention, and every schema that keeps it set keeps a
+	// distinction the GraphQL specification makes and the Go type cannot.
+	ZeroForNullInputs bool
 	// NullableInputOmittable uses graphql.Omittable[*T] for nullable
 	// input-object fields so PATCH-style inputs distinguish absent from
 	// null. Field arguments stay pointers.
@@ -61,7 +108,8 @@ type Config struct {
 }
 
 // Generate writes bindings, models, argument structs and a Resolver
-// interface from SDL. It never loads Go packages.
+// interface from SDL. It loads no Go packages unless AutoBind names some, and
+// then only their export data.
 func Generate(ctx context.Context, cfg Config) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -110,3 +158,15 @@ type ModelDirective struct {
 
 // IsZero reports that no directive was named.
 func (d ModelDirective) IsZero() bool { return d.Name == "" || d.Arg == "" }
+
+// FieldDirective names an SDL directive that forces a field to the Resolver
+// interface.
+type FieldDirective struct {
+	// Name is the directive, without the @.
+	Name string
+	// ForceResolverArg is the boolean argument that forces the resolver.
+	ForceResolverArg string
+}
+
+// IsZero reports that no directive was named.
+func (d FieldDirective) IsZero() bool { return d.Name == "" || d.ForceResolverArg == "" }
