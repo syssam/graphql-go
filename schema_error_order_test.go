@@ -1,6 +1,7 @@
 package graphql
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -54,13 +55,22 @@ func TestBuildErrorsAreOrdered(t *testing.T) {
 
 	// And the order is one a reader can navigate: sorted within the phase, so
 	// a category is contiguous and a name is findable.
-	lines := strings.Split(first, "\n")
-	if len(lines) != 41 {
-		t.Fatalf("got %d errors, want one per unbound type: the 40 plus Query (41)", len(lines))
+	//
+	// Walk the errors rather than the rendered text: the message is capped at
+	// the first few, so splitting it would check the sample instead of the
+	// list, and the claim is about every error the build produced.
+	_, err := NewSchema(SDL(sdl))
+	var joined interface{ Unwrap() []error }
+	if !errors.As(err, &joined) {
+		t.Fatal("the build error does not unwrap to its parts")
 	}
-	for i := 1; i < len(lines); i++ {
-		if lines[i-1] > lines[i] {
-			t.Fatalf("line %d is out of order:\n  %s\n  %s", i, lines[i-1], lines[i])
+	errs := joined.Unwrap()
+	if len(errs) != 41 {
+		t.Fatalf("got %d errors, want one per unbound type: the 40 plus Query (41)", len(errs))
+	}
+	for i := 1; i < len(errs); i++ {
+		if errs[i-1].Error() > errs[i].Error() {
+			t.Fatalf("error %d is out of order:\n  %s\n  %s", i, errs[i-1], errs[i])
 		}
 	}
 }

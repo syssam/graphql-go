@@ -17,11 +17,11 @@ func Validate(src Source, opts ...SchemaOption) error {
 
 // checkOutputLeafShape verifies that a registered leaf shape exists for key
 // and that its list depth matches the SDL type.
-func checkOutputLeafShape(r *registry, key typeKey, sdl *ast.Type) error {
+func checkOutputLeafShape(r *registry, key typeKey, sdl *ast.Type, kind ast.DefinitionKind) error {
 	info, ok := r.shapes[key]
 	if !ok {
 		if _, known := r.leafKinds[key.name]; !known {
-			return fmt.Errorf("%s %s has no Scalar or Enum binding", leafKindName(r, key.name), key.name)
+			return missingLeafBinding(kind, key)
 		}
 		return fmt.Errorf("Go type %s is not registered for %s; expected E, *E or up to two list levels of them where E is a bound Go type", key.typ, key.name)
 	}
@@ -32,8 +32,9 @@ func checkOutputLeafShape(r *registry, key typeKey, sdl *ast.Type) error {
 }
 
 // checkInputShape verifies depth and nullability compatibility of an input
-// shape: every nullable SDL level must be representable as null in Go.
-func checkInputShape(r *registry, key typeKey, sdl *ast.Type) error {
+// shape: every nullable SDL level must be representable as null in Go,
+// unless the binding set ZeroForNull and accepts the zero value there.
+func checkInputShape(r *registry, key typeKey, sdl *ast.Type, zeroForNull bool) error {
 	info, ok := r.shapes[key]
 	if !ok {
 		if _, isInput := r.inputsByName[key.name]; !isInput {
@@ -48,7 +49,7 @@ func checkInputShape(r *registry, key typeKey, sdl *ast.Type) error {
 	}
 	t := sdl
 	for level := 0; t != nil; level++ {
-		if !t.NonNull && !info.nullable[level] {
+		if !t.NonNull && !info.nullable[level] && !zeroForNull {
 			return fmt.Errorf("Go type %s cannot represent null at level %d of nullable type %s; use a pointer or slice there", key.typ, level, sdl.String())
 		}
 		t = t.Elem
@@ -122,9 +123,19 @@ func checkOutputCompositeShape(s *Schema, goType reflect.Type, sdl *ast.Type) (*
 	return nil, fmt.Errorf("type %s is %s and cannot be a composite field type", def.Name, def.Kind)
 }
 
-func leafKindName(r *registry, name string) string {
-	if r.leafKinds[name] == ast.Enum {
-		return "enum"
+// missingLeafBinding names the option that would bind key, with the Go type
+// the field already uses, so the fix can be pasted rather than worked out.
+// gqlc emits a Go type for every unmapped custom scalar but cannot know its
+// wire format, so this is the error a generated schema meets first.
+func missingLeafBinding(kind ast.DefinitionKind, key typeKey) error {
+	elem := key.typ
+	for elem != nil && (elem.Kind() == reflect.Pointer || elem.Kind() == reflect.Slice) {
+		elem = elem.Elem()
 	}
-	return "scalar"
+	if kind == ast.Enum {
+		return fmt.Errorf("enum %s has no binding; add graphql.Enum[%s](%q, map[%s]string{...}) to the NewSchema options",
+			key.name, elem, key.name, elem)
+	}
+	return fmt.Errorf("scalar %s has no binding; add graphql.Scalar[%s](%q, marshal, unmarshal) to the NewSchema options",
+		key.name, elem, key.name)
 }

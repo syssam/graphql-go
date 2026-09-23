@@ -1,7 +1,6 @@
 package graphql
 
 import (
-	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -202,7 +201,7 @@ func NewSchema(src Source, opts ...SchemaOption) (*Schema, error) {
 
 	s := b.build()
 	if len(b.errs) > 0 {
-		return nil, errors.Join(b.errs...)
+		return nil, &buildError{errs: b.errs}
 	}
 	return s, nil
 }

@@ -22,6 +22,19 @@ type inputBinding struct {
 	goType reflect.Type
 	fields []*inputFieldSpec
 	dec    *inputDecoder // shared decoder for Input; nil for Args
+	// zeroForNull lets a Go type that cannot be null back a nullable input
+	// position, decoding absent and null alike to the zero value.
+	zeroForNull bool
+}
+
+// inputFlag is an Input option that configures the binding rather than
+// declaring a field, so it must not suppress field derivation.
+type inputFlag struct{ zeroForNull bool }
+
+func (f inputFlag) applyInput(ib *inputBinding) {
+	if f.zeroForNull {
+		ib.zeroForNull = true
+	}
 }
 
 // inputFieldSpec is an input field binding before it is resolved against the
@@ -112,16 +125,30 @@ func Input[T any](name string, fields ...InputFieldOption) SchemaOption {
 		}
 		dec := &inputDecoder{name: name, goType: tT, newValue: func() any { return new(T) }}
 		ib := &inputBinding{name: name, goType: tT, dec: dec}
-		if len(fields) == 0 {
-			fields = autoInputFields(tT)
-		}
+		// Options first: ZeroForNull declares nothing, so deriving on
+		// "no options given" would make it suppress the derivation it is
+		// meant to configure.
 		for _, f := range fields {
 			f.applyInput(ib)
+		}
+		if len(ib.fields) == 0 {
+			for _, f := range autoInputFields(tT, ib.zeroForNull, declaredInputFields(def)) {
+				f.applyInput(ib)
+			}
 		}
 		b.inputs = append(b.inputs, ib)
 		b.reg.inputsByName[name] = dec
 		registerInputShapes[T](b.reg, name, dec)
 	})
+}
+
+// declaredInputFields is the set of field names the schema declares on def.
+func declaredInputFields(def *ast.Definition) map[string]bool {
+	m := make(map[string]bool, len(def.Fields))
+	for _, f := range def.Fields {
+		m[f.Name] = true
+	}
+	return m
 }
 
 // registerInputShapes registers decoders for T, *T, []T and []*T that all
@@ -257,11 +284,13 @@ func Args[A any](fields ...InputFieldOption) SchemaOption {
 			return
 		}
 		ib := &inputBinding{goType: tA}
-		if len(fields) == 0 {
-			fields = autoInputFields(tA)
-		}
 		for _, f := range fields {
 			f.applyInput(ib)
+		}
+		if len(ib.fields) == 0 {
+			for _, f := range autoInputFields(tA, ib.zeroForNull, nil) {
+				f.applyInput(ib)
+			}
 		}
 		b.reg.argsDecoders[tA] = &inputDecoder{goType: tA, newValue: func() any { return new(A) }, argsBinding: ib}
 	})
@@ -299,6 +328,26 @@ func (d *inputDecoder) build(b *schemaBuilder, args ast.ArgumentDefinitionList, 
 	}
 	return out, nil
 }
+
+// ZeroForNull lets a Go type that cannot represent null back a nullable
+// input position on this binding: absent, explicit null and the zero value
+// all decode to the zero value.
+//
+// The rule it relaxes is there for a reason -- a bool field cannot tell an
+// omitted flag from a false one, and for a PATCH-style input those are
+// different requests, which is what Omittable exists for. It is opt-in per
+// binding so that the author states where the two genuinely mean the same
+// thing, rather than the engine assuming it everywhere.
+//
+// The case it was added for is an ORM filter. entgql emits
+// VariantIDIsNil bool under variantIdIsNil: Boolean and reads false as
+// "apply no predicate", so absent and false really are one value; one real
+// schema has 11 035 such fields, in SDL its author does not hand-write.
+//
+// It applies to the fields this binding derives from the struct. A field
+// declared explicitly with InputField carries its own setter, so its Go type
+// is already the author's choice.
+func ZeroForNull() InputFieldOption { return inputFlag{zeroForNull: true} }
 
 // InputField binds the input field or argument name to a setter on *T. V
 // must be registered for the field's GraphQL type through a scalar, enum or
@@ -352,7 +401,7 @@ func OmittableField[T, V any](name string, set func(*T, Omittable[V])) InputFiel
 // typ and validates the shape.
 func inputDecoderFor[V any](r *registry, typ *ast.Type, coord string) (func(any, *ast.Type) (V, error), error) {
 	key := typeKey{typ.Name(), reflect.TypeFor[V]()}
-	if err := checkInputShape(r, key, typ); err != nil {
+	if err := checkInputShape(r, key, typ, false); err != nil {
 		return nil, fmt.Errorf("input %s: %w", coord, err)
 	}
 	return r.decoders[key].(func(any, *ast.Type) (V, error)), nil
@@ -363,35 +412,79 @@ var omittablePkg = reflect.TypeFor[Omittable[int]]().PkgPath()
 // autoInputFields derives InputField / OmittableField bindings from exported
 // struct fields. Names come from a `graphql` tag, else a `json` tag, else
 // a GraphQL-style lowerCamel conversion (AuthorID → authorId).
-func autoInputFields(t reflect.Type) []InputFieldOption {
-	var out []InputFieldOption
+//
+// declared is the input object's field names, and is nil for Args, whose
+// arguments are only known per field (inputDecoder.build). When it is present
+// a serialization tag that names nothing in the schema falls back to the Go
+// field name: an ORM writes `json:"role_id"` on RoleID under a schema that
+// declares roleId, and the tag is describing its wire format, not this one.
+// The fallback can only turn a build error into a binding -- a tag naming a
+// field the schema does not declare is rejected -- and it never takes a name
+// another field's tag already claimed.
+func autoInputFields(t reflect.Type, zeroForNull bool, declared map[string]bool) []InputFieldOption {
+	type derived struct {
+		index   []int
+		sf      reflect.StructField
+		name    string
+		fromTag bool
+	}
+	var fields []derived
+	claimed := make(map[string]bool)
 	walkStructFields(t, nil, func(index []int, sf reflect.StructField) {
-		name, skip := graphqlNameOf(sf)
+		name, fromTag, skip := graphqlNameOf(sf)
 		if skip || name == "" {
 			return
 		}
-		idx := append([]int(nil), index...)
-		elem, omittable := unwrapOmittable(sf.Type)
+		fields = append(fields, derived{append([]int(nil), index...), sf, name, fromTag})
+		if declared[name] {
+			claimed[name] = true
+		}
+	})
+	out := make([]InputFieldOption, 0, len(fields))
+	for _, f := range fields {
+		name := f.name
+		if f.fromTag && declared != nil && !declared[name] {
+			if alt := exportedToGraphQL(f.sf.Name); declared[alt] && !claimed[alt] {
+				name, claimed[alt] = alt, true
+			}
+		}
+		elem, omittable := unwrapOmittable(f.sf.Type)
 		out = append(out, &inputFieldSpec{
 			name:      name,
 			valueType: elem,
-			resolve:   autoSetter(idx, elem, omittable),
+			resolve:   autoSetter(f.index, elem, omittable, zeroForNull),
 		})
-	})
+	}
 	return out
 }
 
-func autoSetter(index []int, valueType reflect.Type, omittable bool) func(*schemaBuilder, *ast.Type, string) (func(target, raw any) error, error) {
+func autoSetter(index []int, valueType reflect.Type, omittable bool, zeroForNull bool) func(*schemaBuilder, *ast.Type, string) (func(target, raw any) error, error) {
 	return func(b *schemaBuilder, typ *ast.Type, coord string) (func(target, raw any) error, error) {
 		key := typeKey{typ.Name(), valueType}
-		if err := checkInputShape(b.reg, key, typ); err != nil {
+		if err := checkInputShape(b.reg, key, typ, zeroForNull); err != nil {
 			return nil, fmt.Errorf("input %s: %w", coord, err)
 		}
 		dec := b.reg.decodersAny[key]
 		if dec == nil {
 			return nil, fmt.Errorf("input %s: no decoder for %s as %s", coord, valueType, typ.Name())
 		}
+		// A relaxed shape check is only half of it: the decoder for a Go type
+		// that cannot be null still refuses one, so an explicit null has to be
+		// answered here, before it reaches the decoder, with the same zero value
+		// an absent field leaves behind.
+		nullIsZero := zeroForNull && !typ.NonNull
 		return func(target, raw any) error {
+			if raw == nil && nullIsZero {
+				fv := reflect.ValueOf(target).Elem().FieldByIndex(index)
+				if omittable {
+					slot := reflect.New(fv.Type())
+					slot.Interface().(omittableAssigner).assign(nil, true)
+					fv.Set(slot.Elem())
+					return nil
+				}
+				fv.SetZero()
+				return nil
+			}
 			v, err := dec(raw, typ)
 			if err != nil {
 				return err
@@ -430,21 +523,32 @@ func walkStructFields(t reflect.Type, prefix []int, yield func([]int, reflect.St
 	}
 }
 
-func graphqlNameOf(sf reflect.StructField) (name string, skip bool) {
+func graphqlNameOf(sf reflect.StructField) (name string, fromTag, skip bool) {
 	if tag, ok := sf.Tag.Lookup("graphql"); ok {
 		if tag == "-" {
-			return "", true
+			return "", false, true
 		}
 		name, _, _ = strings.Cut(tag, ",")
-		return name, name == ""
+		return name, true, name == ""
 	}
-	if tag, ok := sf.Tag.Lookup("json"); ok && tag != "-" {
+	if tag, ok := sf.Tag.Lookup("json"); ok {
+		// json:"-" means the field is not on the wire, and it has to mean the
+		// same here or the name is derived from the Go field instead and the
+		// input fails against a schema that never declared it. An ORM marks
+		// its internal fields this way: one real WhereInput carries
+		// Predicates []predicate.X `json:"-"`, and deriving "predicates" from
+		// it was 447 build errors on a schema whose author had said, in the
+		// one way Go has of saying it, that the field is not input.
+		// json:"-," is encoding/json's escape for a field really named "-".
+		if tag == "-" {
+			return "", false, true
+		}
 		name, opt, _ := strings.Cut(tag, ",")
-		if name != "" && name != "-" && !strings.Contains(opt, "inline") {
-			return name, false
+		if name != "" && !strings.Contains(opt, "inline") {
+			return name, true, false
 		}
 	}
-	return exportedToGraphQL(sf.Name), false
+	return exportedToGraphQL(sf.Name), false, false
 }
 
 // exportedToGraphQL maps AuthorID → authorId and URL → url.

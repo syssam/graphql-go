@@ -369,7 +369,7 @@ func TestAutoFieldCount(t *testing.T) {
 		//lint:ignore U1000 the point of this field is that nothing uses it
 		skip string
 	}
-	fields := autoInputFields(reflect.TypeFor[wrapped]())
+	fields := autoInputFields(reflect.TypeFor[wrapped](), false, nil)
 	if len(fields) != 2 {
 		t.Fatalf("auto fields = %d, want 2 (embed.Tag + Name)", len(fields))
 	}
