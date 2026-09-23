@@ -44,7 +44,14 @@ func (r Representation) Int(key string) (int64, bool) {
 	case int64:
 		return v, true
 	case float64:
-		return int64(v), v == float64(int64(v))
+		// Zero rather than the truncation, so that the n, _ := r.Int(k) every
+		// resolver writes cannot turn a 2.5 into a lookup for entity 2. ID
+		// and Float already answer with their zero value; this is the same
+		// contract, not a special case.
+		if v != float64(int64(v)) {
+			return 0, false
+		}
+		return int64(v), true
 	}
 	return 0, false
 }

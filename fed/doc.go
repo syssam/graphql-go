@@ -25,6 +25,9 @@
 //	}
 //	s, err := graphql.NewSchema(src, bindings, graphql.Object[User]("User", ...))
 //
+// A datastore lookup belongs in fed.BatchResolver, which receives every
+// representation of its type at once; fed.Resolver resolves them one by one.
+//
 // Building the router that composes subgraphs is not in scope and is a much
 // larger problem than serving one.
 package fed

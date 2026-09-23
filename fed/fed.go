@@ -13,10 +13,12 @@ import (
 	graphql "github.com/syssam/graphql-go"
 )
 
-// Entity binds one entity type's resolver. Build one with Resolver.
+// Entity binds one entity type's resolver. Build one with Resolver or
+// BatchResolver.
 type Entity struct {
 	typename string
 	resolve  func(context.Context, Representation) (any, error)
+	batch    func(context.Context, []Representation) ([]any, error)
 }
 
 // Resolver binds the resolver for the entity type named, the function the
@@ -33,6 +35,34 @@ func Resolver[E any](typename string, fn func(context.Context, Representation) (
 			return nil, err
 		}
 		return v, nil
+	}}
+}
+
+// BatchResolver binds a resolver that receives every representation of the
+// entity type named in one _entities call, in request order, and returns one
+// result for each, at the same index. It is the one to use for a datastore:
+// a router sends all the representations it needs in a single call, so
+// Resolver makes one lookup per representation, and a DataLoader inside it
+// cannot coalesce them because they are resolved one after another.
+//
+// A nil element is "no such entity", reported as null. A result of the wrong
+// length, or an error, fails the whole _entities field.
+func BatchResolver[E any](typename string, fn func(context.Context, []Representation) ([]*E, error)) Entity {
+	return Entity{typename: typename, batch: func(ctx context.Context, reps []Representation) ([]any, error) {
+		vs, err := fn(ctx, reps)
+		if err != nil {
+			return nil, err
+		}
+		if len(vs) != len(reps) {
+			return nil, fmt.Errorf("fed: %s batch resolver returned %d results for %d representations", typename, len(vs), len(reps))
+		}
+		out := make([]any, len(vs))
+		for i, v := range vs {
+			if v != nil {
+				out[i] = v
+			}
+		}
+		return out, nil
 	}}
 }
 
@@ -152,24 +182,58 @@ func bindings(sdl string, names []string, byName map[string]Entity) graphql.Sche
 		opts = append(opts, graphql.Union[any]("_Entity"), graphql.Args[entitiesArgs]())
 		root = append(root, graphql.ResolveArgs("_entities",
 			func(ctx context.Context, _ graphql.Root, a entitiesArgs) ([]any, error) {
-				out := make([]any, 0, len(a.Representations))
-				for _, r := range a.Representations {
-					e, ok := byName[r.Typename()]
-					if !ok {
-						// Another subgraph owns it. Null is the answer, not an
-						// error: the router asked every subgraph it might be in.
-						out = append(out, nil)
-						continue
-					}
-					v, err := e.resolve(ctx, r)
-					if err != nil {
-						return nil, err
-					}
-					out = append(out, v)
-				}
-				return out, nil
+				return resolveEntities(ctx, byName, a.Representations)
 			}))
 	}
 	opts = append(opts, graphql.Query(root...))
 	return graphql.Options(opts...)
+}
+
+// resolveEntities answers each representation at its own index. A type bound
+// with BatchResolver is gathered and called once; the rest are resolved one
+// at a time.
+func resolveEntities(ctx context.Context, byName map[string]Entity, reps []Representation) ([]any, error) {
+	out := make([]any, len(reps))
+	// order keeps the batch calls in first-appearance order, so which error a
+	// failing request reports does not depend on map iteration.
+	var batches map[string][]int
+	var order []string
+	for i, r := range reps {
+		e, ok := byName[r.Typename()]
+		if !ok {
+			// Another subgraph owns it. Null is the answer, not an error: the
+			// router asked every subgraph it might be in.
+			continue
+		}
+		if e.batch != nil {
+			if batches == nil {
+				batches = map[string][]int{}
+			}
+			if _, seen := batches[e.typename]; !seen {
+				order = append(order, e.typename)
+			}
+			batches[e.typename] = append(batches[e.typename], i)
+			continue
+		}
+		v, err := e.resolve(ctx, r)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = v
+	}
+	for _, name := range order {
+		at := batches[name]
+		group := make([]Representation, len(at))
+		for j, i := range at {
+			group[j] = reps[i]
+		}
+		vs, err := byName[name].batch(ctx, group)
+		if err != nil {
+			return nil, err
+		}
+		for j, i := range at {
+			out[i] = vs[j]
+		}
+	}
+	return out, nil
 }

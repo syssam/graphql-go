@@ -1,6 +1,7 @@
 package relay_test
 
 import (
+	"encoding/base64"
 	"testing"
 
 	"github.com/syssam/graphql-go/relay"
@@ -118,5 +119,42 @@ func TestFromPageUsesTheCallersCursors(t *testing.T) {
 	}
 	if *c.PageInfo.StartCursor != "cur-c" || *c.PageInfo.EndCursor != "cur-d" {
 		t.Fatalf("bounds = %v %v", c.PageInfo.StartCursor, c.PageInfo.EndCursor)
+	}
+}
+
+// A cursor a client sends back is not necessarily one this package issued: it
+// can come from a different connection, a truncated URL, an older encoding, or
+// a client that made one up. The specification's ApplyCursorsToEdges ignores a
+// cursor naming no edge, so every unreadable form has to fall back to the
+// default rather than error or, worse, decode to some other page. Every other
+// test in this file round-trips a cursor OffsetCursor produced, so none of the
+// three ways decoding can fail was ever driven.
+func TestAnUnreadableCursorIsIgnoredRatherThanMisread(t *testing.T) {
+	letters := []string{"a", "b", "c", "d", "e"}
+	full, err := relay.FromSlice(letters, relay.Args{First: ptr(2)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{
+		"not base64 at all!!",                                               // base64 decode fails
+		base64.StdEncoding.EncodeToString([]byte("x:1")),                    // decodes, wrong prefix
+		base64.StdEncoding.EncodeToString([]byte("arrayconnection:eleven")), // right prefix, not a number
+		"",
+	} {
+		c, err := relay.FromSlice(letters, relay.Args{After: ptr(bad), First: ptr(2)})
+		if err != nil {
+			t.Errorf("after=%q returned an error: %v", bad, err)
+			continue
+		}
+		if len(c.Edges) != len(full.Edges) {
+			t.Errorf("after=%q returned %d edges, want the unpaged %d", bad, len(c.Edges), len(full.Edges))
+			continue
+		}
+		for i := range c.Edges {
+			if c.Edges[i].Node != full.Edges[i].Node || c.Edges[i].Cursor != full.Edges[i].Cursor {
+				t.Errorf("after=%q edge %d = %v/%s, want %v/%s; an unreadable cursor moved the window",
+					bad, i, c.Edges[i].Node, c.Edges[i].Cursor, full.Edges[i].Node, full.Edges[i].Cursor)
+			}
+		}
 	}
 }
