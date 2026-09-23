@@ -147,7 +147,8 @@ func WithKeepAlive(d time.Duration) Option { return func(c *config) { c.keepAliv
 func WithMaxStreamAge(d time.Duration) Option { return func(c *config) { c.maxStreamAge = d } }
 
 // WithInitTimeout bounds how long a WebSocket client may take to send
-// connection_init before the connection is closed. The default is 10s.
+// connection_init before the connection is closed. The default is 10s; zero
+// disables it.
 func WithInitTimeout(d time.Duration) Option { return func(c *config) { c.initTimeout = d } }
 
 // WithPingInterval sets how often the server sends a protocol ping on an idle
@@ -165,11 +166,11 @@ func WithMaxSubscriptions(n int) Option { return func(c *config) { c.maxSubs = n
 func WithReadLimit(n int64) Option { return func(c *config) { c.readLimit = n } }
 
 // WithWriteTimeout bounds how long one WebSocket write may take before the
-// connection is torn down. The default is 10s.
+// connection is torn down. The default is 10s; zero disables it.
 //
-// It exists because fasthttp/websocket accepts no context per message, so a
-// deadline is the only bound available; coder/websocket, under the net/http
-// transports, takes a context instead. It is deliberately not derived from
+// fasthttp/websocket accepts no context per message, so a deadline is the
+// only bound available; gqlws.WithWriteTimeout is the same bound expressed
+// as a context. It is deliberately not derived from
 // WithPingInterval: a ping asks whether the peer is alive, a write deadline
 // whether it is accepting bytes, and a peer can answer pings while its
 // receive window stays full. Because gqlwsproto serializes writes, one peer

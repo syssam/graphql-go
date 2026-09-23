@@ -103,8 +103,6 @@ func Resolve(c Cache, req *graphql.Request) *graphql.Response {
 
 	// A safelist bounds what the server runs, so text is refused however it
 	// hashes: verifying it would only prove the client can hash.
-	// A safelist bounds what the server runs, so text is refused however it
-	// hashes: verifying it would only prove the client can hash.
 	if trusted {
 		return errorResponse(CodeNotInList, "PersistedQueryNotInList")
 	}
@@ -123,11 +121,34 @@ func errorResponse(code, message string) *graphql.Response {
 	return &graphql.Response{Errors: []*graphql.Error{err}}
 }
 
-// NewCache returns an in-memory LRU holding at most size queries. A zero or
-// negative size makes it unbounded, which is only safe when a trusted build
-// step registers every hash: otherwise any client can grow it without limit.
-func NewCache(size int) Cache {
-	return &lru{size: size, index: make(map[string]*list.Element)}
+// NewCache returns an in-memory LRU holding at most size queries and, by
+// default, at most 16 MiB of query text. A zero or negative size removes the
+// entry limit; WithMaxBytes(0) removes the byte limit. Removing both is only
+// safe when a trusted build step registers every hash: otherwise any client
+// can grow the cache without limit.
+//
+// The byte limit is the one that matters against a hostile client. Anyone can
+// register any query they can hash, and with a 1 MiB request body an entry
+// count of 1000 alone would let them park a gigabyte of text here.
+func NewCache(size int, opts ...CacheOption) Cache {
+	c := &lru{size: size, maxBytes: defaultMaxBytes, index: make(map[string]*list.Element)}
+	for _, o := range opts {
+		o(c)
+	}
+	return c
+}
+
+const defaultMaxBytes = 16 << 20
+
+// CacheOption configures NewCache.
+type CacheOption func(*lru)
+
+// WithMaxBytes bounds the query text the cache holds, evicting the least
+// recently used queries to stay within it. A query larger than the whole
+// budget is not stored; the request still runs. Zero or negative means no
+// byte limit. The default is 16 MiB.
+func WithMaxBytes(n int64) CacheOption {
+	return func(c *lru) { c.maxBytes = n }
 }
 
 type entry struct {
@@ -136,10 +157,12 @@ type entry struct {
 }
 
 type lru struct {
-	mu    sync.Mutex
-	size  int
-	order list.List
-	index map[string]*list.Element
+	mu       sync.Mutex
+	size     int
+	maxBytes int64
+	bytes    int64
+	order    list.List
+	index    map[string]*list.Element
 }
 
 func (c *lru) Get(hash string) (string, bool) {
@@ -160,12 +183,17 @@ func (c *lru) Set(hash, query string) {
 		c.order.MoveToFront(el)
 		return
 	}
+	n := int64(len(query))
+	if c.maxBytes > 0 && n > c.maxBytes {
+		return
+	}
 	c.index[hash] = c.order.PushFront(&entry{hash: hash, query: query})
-	if c.size > 0 {
-		for c.order.Len() > c.size {
-			oldest := c.order.Back()
-			c.order.Remove(oldest)
-			delete(c.index, oldest.Value.(*entry).hash)
-		}
+	c.bytes += n
+	for (c.size > 0 && c.order.Len() > c.size) || (c.maxBytes > 0 && c.bytes > c.maxBytes) {
+		oldest := c.order.Back()
+		e := oldest.Value.(*entry)
+		c.order.Remove(oldest)
+		delete(c.index, e.hash)
+		c.bytes -= int64(len(e.query))
 	}
 }

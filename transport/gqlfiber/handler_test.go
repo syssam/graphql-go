@@ -90,7 +90,7 @@ func TestForgeableRequestIs403(t *testing.T) {
 		t.Fatalf("status = %d, want 403: %s", status, body)
 	}
 	const want = `{"errors":[{"message":"This request could be forged cross-site. ` +
-		`Send a non-simple Content-Type or one of the headers GraphQL-Require-Preflight, X-Requested-With."}]}`
+		`Send a non-simple Content-Type or one of the headers GraphQL-Require-Preflight, Apollo-Require-Preflight, X-Requested-With."}]}`
 	if body != want {
 		t.Errorf("body = %s, want %s", body, want)
 	}

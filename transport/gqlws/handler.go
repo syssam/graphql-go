@@ -26,6 +26,7 @@ type Handler struct {
 
 	initTimeout  time.Duration
 	pingInterval time.Duration
+	writeTimeout time.Duration
 	maxSubs      int
 	readLimit    int64
 	onConnect    ConnectFunc
@@ -44,13 +45,24 @@ type Handler struct {
 type Option func(*Handler)
 
 // WithInitTimeout bounds how long a client may take to send connection_init
-// before the connection is closed with StatusInitTimeout. The default is 10s.
+// before the connection is closed with StatusInitTimeout. The default is 10s;
+// zero disables it.
 func WithInitTimeout(d time.Duration) Option { return func(h *Handler) { h.initTimeout = d } }
 
 // WithPingInterval sets how often the server sends a protocol ping on an idle
 // connection, so that a subscription producing nothing is distinguishable
 // from a dead peer. The default is 20s; zero disables it.
 func WithPingInterval(d time.Duration) Option { return func(h *Handler) { h.pingInterval = d } }
+
+// WithWriteTimeout bounds how long one message may take to write before the
+// connection is torn down. The default is 10s; zero disables it.
+//
+// It is what ends a peer that stays connected but stops reading. The protocol
+// serializes writes, so one write stalled on a full receive window holds every
+// subscription on the connection behind it, and pings do not help: a peer can
+// answer them while its receive window stays full. It is deliberately not
+// derived from WithPingInterval for that reason.
+func WithWriteTimeout(d time.Duration) Option { return func(h *Handler) { h.writeTimeout = d } }
 
 // WithMaxSubscriptions caps the operations one connection may run at once.
 // Beyond the cap a subscribe is answered with an error message and the
@@ -129,6 +141,7 @@ func New(exec *graphql.Executor, opts ...Option) *Handler {
 		exec:         exec,
 		initTimeout:  10 * time.Second,
 		pingInterval: 20 * time.Second,
+		writeTimeout: 10 * time.Second,
 		maxSubs:      100,
 		readLimit:    1 << 20,
 	}
@@ -170,7 +183,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// coder/websocket documents the request context as unsafe to use past
 	// Accept, so the connection gets a context of its own -- from the drain,
 	// not the request.
-	gqlwsproto.Serve(ctx, coderSocket{ws: ws}, gqlwsproto.Config{
+	gqlwsproto.Serve(ctx, coderSocket{ws: ws, writeTimeout: h.writeTimeout}, gqlwsproto.Config{
 		Exec:                  h.exec,
 		InitTimeout:           h.initTimeout,
 		PingInterval:          h.pingInterval,

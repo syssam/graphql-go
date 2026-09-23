@@ -100,10 +100,20 @@ func (s *fastSocket) Read(_ context.Context) ([]byte, error) {
 	return data, nil
 }
 
+// deadline is the write deadline for a write starting now. Zero disables
+// the timeout: time.Now().Add(0) is a deadline already passed, which failed
+// every write.
+func (s *fastSocket) deadline() time.Time {
+	if s.writeTimeout <= 0 {
+		return time.Time{}
+	}
+	return time.Now().Add(s.writeTimeout)
+}
+
 func (s *fastSocket) Write(_ context.Context, data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.conn.SetWriteDeadline(time.Now().Add(s.writeTimeout)); err != nil {
+	if err := s.conn.SetWriteDeadline(s.deadline()); err != nil {
 		return err
 	}
 	if err := s.conn.WriteMessage(websocket.TextMessage, data); err != nil {
@@ -129,7 +139,7 @@ func (s *fastSocket) Close(code int, reason string) error {
 		return nil
 	}
 	s.closed = true
-	_ = s.conn.SetWriteDeadline(time.Now().Add(s.writeTimeout))
+	_ = s.conn.SetWriteDeadline(s.deadline())
 	err := s.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(code, reason))
 	if cerr := s.conn.Close(); err == nil {
 		err = cerr

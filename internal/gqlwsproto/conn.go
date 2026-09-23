@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/vektah/gqlparser/v2/ast"
 
@@ -222,10 +223,15 @@ func (c *conn) handshake() bool {
 	// The timeout closes the connection rather than bounding the read: a read
 	// aborted by its own context leaves coder/websocket no way to send a close
 	// frame, so the client would see an abnormal closure instead of 4408.
-	timer := time.AfterFunc(c.cfg.InitTimeout, func() {
-		c.close(StatusInitTimeout, "Connection initialisation timeout")
-	})
-	defer timer.Stop()
+	//
+	// Zero disables it, as zero does for every other limit here:
+	// time.AfterFunc(0, ...) would fire at once and close every connection.
+	if c.cfg.InitTimeout > 0 {
+		timer := time.AfterFunc(c.cfg.InitTimeout, func() {
+			c.close(StatusInitTimeout, "Connection initialisation timeout")
+		})
+		defer timer.Stop()
+	}
 
 	ctx := c.ctx
 	for {
@@ -370,9 +376,15 @@ func (c *conn) subscribe(msg InMessage) bool {
 	// Redundant with closeIfIdle's own re-check under mu, on purpose: Stop is
 	// too late for a timer that fired while this subscribe waited for the
 	// lock, and the re-check is what catches that. Either alone keeps a busy
-	// connection open, so breaking just one leaves every test green (only
-	// breaking both fails TestMaxConnectionIdleWaitsForOperations); a green
-	// suite is not evidence that either is dead.
+	// connection open, so breaking just this Stop leaves every test green;
+	// breaking both fails TestMaxConnectionIdleWaitsForOperations.
+	//
+	// The re-check half is tested directly now (see closeIfIdle). This half
+	// is not, and cannot be through behaviour: without it the timer fires, the
+	// re-check sees a live subscription and returns, and nothing a client or
+	// this package can observe differs. That is the reason it has no test, not
+	// an oversight -- do not add one asserting on the timer's internal state,
+	// which would pin the implementation without guarding anything.
 	if c.idle != nil && len(c.subs) == 1 {
 		c.idle.Stop()
 	}
@@ -560,9 +572,15 @@ func (c *conn) resetIdleLocked() {
 // The deadline check covers an operation that started and also ended while
 // this callback waited for the lock: its forget re-armed the timer, so the
 // connection is no longer idle for the full period, and closing here could
-// cut off the query's complete. That interleaving needs the callback parked
-// on mu across a whole operation, which no test drives deterministically;
-// keep it on this reasoning.
+// cut off the query's complete.
+//
+// That reads like an interleaving only real timing can produce, and it is not:
+// what the callback sees once it holds mu is the whole of it, so a test that
+// takes mu itself, starts this function, re-arms the deadline the way forget
+// does and then unlocks drives exactly this case with no timer and nothing to
+// flake. All three conditions are covered that way
+// (TestCloseIfIdleDoesNotCutOffAnOperationThatReArmedTheDeadline and its
+// neighbours); removing any one of them fails a test.
 func (c *conn) closeIfIdle() {
 	c.mu.Lock()
 	if len(c.subs) > 0 || c.draining || time.Now().Before(c.idleDeadline) {
@@ -579,11 +597,17 @@ func (c *conn) closeIfIdle() {
 // context is already derived from c.ctx (see subscribe), so cancelling the
 // connection alone frees them all. This loop cancels each one explicitly too,
 // so that either mechanism failing on its own still leaves the other to
-// release every subscription. That redundancy is invisible to the test
-// suite: breaking just this loop, or just the context derivation, still
-// passes every existing test, because the other half compensates. Only
-// breaking both leaks. Do not remove this loop on the grounds that c.cancel()
-// already covers it -- that grounds is exactly what makes the removal unsafe.
+// release every subscription. Do not remove this loop on the grounds that
+// c.cancel() already covers it -- that grounds is exactly what makes the
+// removal unsafe.
+//
+// Breaking just this loop passes every *end-to-end* test, because the context
+// tree compensates. The loop has a contract of its own that does not, though:
+// every cancel registered in c.subs is called and c.subs is emptied, whether
+// or not those contexts descend from c.ctx.
+// TestCancelAllCallsEveryRegisteredCancel asserts that by registering cancels
+// the connection context cannot reach, so this half is no longer carried on
+// the reasoning above.
 func (c *conn) cancelAll() {
 	c.mu.Lock()
 	cancels := make([]context.CancelFunc, 0, len(c.subs))
@@ -669,11 +693,22 @@ func (c *conn) write(ctx context.Context, msg OutMessage) error {
 }
 
 func (c *conn) close(code int, reason string) {
-	// Close reasons are capped at 123 bytes by RFC 6455.
-	if len(reason) > 123 {
-		reason = reason[:123]
-	}
-	if err := c.sock.Close(code, reason); err != nil {
+	if err := c.sock.Close(code, closeReason(reason)); err != nil {
 		c.cfg.Logger.Debug("gqlwsproto: closing connection", "code", code, "error", err)
 	}
+}
+
+// closeReason fits reason into the 123 bytes RFC 6455 allows, cutting on a
+// rune boundary: the reason must be UTF-8, and a peer receiving an invalid one
+// fails the connection instead of reading why it closed.
+func closeReason(reason string) string {
+	const limit = 123
+	if len(reason) <= limit {
+		return reason
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(reason[cut]) {
+		cut--
+	}
+	return reason[:cut]
 }

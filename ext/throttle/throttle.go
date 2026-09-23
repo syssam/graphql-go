@@ -81,7 +81,9 @@ func (t *limiter) intercept(ctx context.Context, oc *graphql.OperationContext, n
 	if t.cfg.Key != nil {
 		key = t.cfg.Key(ctx)
 	}
-	quoted := oc.Cost()
+	// A negative FieldWeight can make a negative quote, and charging one
+	// would add points to the bucket.
+	quoted := max(oc.Cost(), 0)
 
 	if quoted > t.cfg.MaximumAvailable {
 		// Refilling will never help, so say so rather than inviting a retry

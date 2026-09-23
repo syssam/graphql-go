@@ -2,6 +2,7 @@ package gqlws
 
 import (
 	"context"
+	"time"
 
 	"github.com/coder/websocket"
 
@@ -9,7 +10,10 @@ import (
 )
 
 // coderSocket drives the protocol over coder/websocket.
-type coderSocket struct{ ws *websocket.Conn }
+type coderSocket struct {
+	ws           *websocket.Conn
+	writeTimeout time.Duration
+}
 
 func (s coderSocket) Read(ctx context.Context) ([]byte, error) {
 	typ, data, err := s.ws.Read(ctx)
@@ -22,7 +26,15 @@ func (s coderSocket) Read(ctx context.Context) ([]byte, error) {
 	return data, nil
 }
 
+// Write bounds each write with its own deadline: the connection context has
+// none. coder/websocket closes the connection when a write's context ends,
+// which is what releases the read loop and every operation on it.
 func (s coderSocket) Write(ctx context.Context, data []byte) error {
+	if s.writeTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.writeTimeout)
+		defer cancel()
+	}
 	return s.ws.Write(ctx, websocket.MessageText, data)
 }
 

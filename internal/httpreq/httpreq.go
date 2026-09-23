@@ -28,7 +28,25 @@ var (
 
 // DefaultCSRFHeaders are the headers whose presence marks a request as one
 // that required a CORS preflight. Any of them satisfies the CSRF check.
-var DefaultCSRFHeaders = []string{"GraphQL-Require-Preflight", "X-Requested-With"}
+//
+// The security property each one has to have is the same: it must be outside
+// the CORS safelist, so a browser cannot put it on a cross-origin request
+// without a preflight the target origin has to answer. Accept,
+// Accept-Language, Content-Language, Content-Type and Range are the safelist;
+// everything below is not on it, so every name here costs nothing and each one
+// admits a client that would otherwise be refused.
+//
+// Apollo-Require-Preflight is Apollo Server's own name for this header and is
+// what Apollo Client sends, so leaving it out rejected the most widely
+// deployed GraphQL client from a GET -- which is the request shape automatic
+// persisted queries depend on. WithCSRFPrevention's variadic headers replace
+// this list rather than extend it, so an operator who narrows it is opting
+// out deliberately.
+var DefaultCSRFHeaders = []string{
+	"GraphQL-Require-Preflight", // the GraphQL over HTTP specification's name
+	"Apollo-Require-Preflight",  // Apollo Server's, sent by Apollo Client
+	"X-Requested-With",          // the pre-CORS convention, still sent by many clients
+}
 
 // Forgeable reports whether a browser could have sent the request
 // cross-origin without a preflight: no Content-Type or one of the CORS

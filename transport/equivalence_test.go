@@ -23,6 +23,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -220,7 +221,7 @@ func TestEquivalence(t *testing.T) {
 	t.Run("forgeable request", func(t *testing.T) {
 		servers := newEquivServers(t, nil, nil, nil)
 		const want = `{"errors":[{"message":"This request could be forged cross-site. ` +
-			`Send a non-simple Content-Type or one of the headers GraphQL-Require-Preflight, X-Requested-With."}]}`
+			`Send a non-simple Content-Type or one of the headers GraphQL-Require-Preflight, Apollo-Require-Preflight, X-Requested-With."}]}`
 		assertAllEqual(t, servers, http.MethodPost, "/graphql",
 			map[string]string{"Content-Type": "text/plain"}, `{"query":"{hello}"}`, http.StatusForbidden, want)
 	})
@@ -321,5 +322,59 @@ func TestEquivalence(t *testing.T) {
 		const want = `{"errors":[{"message":"request is missing the \"query\" member."}]}`
 		assertAllEqual(t, servers, http.MethodPost, "/graphql",
 			map[string]string{"Content-Type": "application/json"}, `{}`, http.StatusBadRequest, want)
+	})
+
+	// Every header in DefaultCSRFHeaders has to actually satisfy the check, in
+	// every handler. The list is the interop surface: a client that sends the
+	// header its own server documents and gets a 403 anyway has no way to tell
+	// that from the server being down. Apollo-Require-Preflight was missing,
+	// which refused Apollo Client from a GET -- the request shape automatic
+	// persisted queries are built on.
+	t.Run("every default CSRF header is accepted", func(t *testing.T) {
+		servers := newEquivServers(t, nil, nil, nil)
+		const want = `{"data":{"hello":"world"}}`
+		for _, h := range gqlhttp.DefaultCSRFHeaders {
+			t.Run(h, func(t *testing.T) {
+				assertEqualAcross(t, servers, httpFamily, http.MethodGet,
+					"/graphql?query="+url.QueryEscape("{ hello }"),
+					map[string]string{"Accept": "application/json", h: "1"},
+					"", http.StatusOK, want)
+			})
+		}
+	})
+
+	// The first request an Apollo client ever sends: a hash over GET against a
+	// cold cache. It must come back PersistedQueryNotFound with **200** for
+	// application/json, because that is the answer the client retries after --
+	// a 4xx or 5xx here and APQ never gets off the ground. Every existing APQ
+	// test registers the query first, so the miss over GET was the one path
+	// nothing drove, in any handler.
+	t.Run("APQ miss over GET is 200 for application/json", func(t *testing.T) {
+		servers := newEquivServers(t,
+			[]gqlhttp.Option{gqlhttp.WithPersistedQueries(apq.NewCache(10))},
+			[]gqlsse.Option{gqlsse.WithPersistedQueries(apq.NewCache(10))},
+			[]gqlfiber.Option{gqlfiber.WithPersistedQueries(apq.NewCache(10))},
+		)
+		ext := url.QueryEscape(`{"persistedQuery":{"version":1,"sha256Hash":"` +
+			apq.Hash(`{ hello }`) + `"}}`)
+		const want = `{"errors":[{"message":"PersistedQueryNotFound","extensions":{"code":"PERSISTED_QUERY_NOT_FOUND"}}]}`
+		assertEqualAcross(t, servers, httpFamily, http.MethodGet, "/graphql?extensions="+ext,
+			map[string]string{"Accept": "application/json", "GraphQL-Require-Preflight": "1"}, "", http.StatusOK, want)
+	})
+
+	// The other half of the same rule: a client that asked for the
+	// specification media type gets the status the specification calls for.
+	t.Run("APQ miss over GET is 400 for the spec media type", func(t *testing.T) {
+		servers := newEquivServers(t,
+			[]gqlhttp.Option{gqlhttp.WithPersistedQueries(apq.NewCache(10))},
+			[]gqlsse.Option{gqlsse.WithPersistedQueries(apq.NewCache(10))},
+			[]gqlfiber.Option{gqlfiber.WithPersistedQueries(apq.NewCache(10))},
+		)
+		ext := url.QueryEscape(`{"persistedQuery":{"version":1,"sha256Hash":"` +
+			apq.Hash(`{ hello }`) + `"}}`)
+		const want = `{"errors":[{"message":"PersistedQueryNotFound","extensions":{"code":"PERSISTED_QUERY_NOT_FOUND"}}]}`
+		assertEqualAcross(t, servers, httpFamily, http.MethodGet, "/graphql?extensions="+ext,
+			map[string]string{"Accept": "application/graphql-response+json", "GraphQL-Require-Preflight": "1"}, "",
+			http.StatusBadRequest, want)
 	})
 }

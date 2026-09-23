@@ -1,6 +1,7 @@
 package apq_test
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -171,5 +172,53 @@ func TestHashIsHexSHA256(t *testing.T) {
 	}
 	if apq.Hash("a") == apq.Hash("b") {
 		t.Fatal("different queries hashed the same")
+	}
+}
+
+// Any client can register any query it can hash, so an entry count alone lets
+// 1000 entries of 1 MiB each hold a gigabyte of attacker-chosen text. The
+// cache is bounded by the text it holds as well.
+func TestCacheIsBoundedByBytes(t *testing.T) {
+	c := apq.NewCache(1000, apq.WithMaxBytes(10))
+	c.Set("a", "12345")
+	c.Set("b", "12345")
+	c.Set("c", "12345") // 15 bytes: a must go
+	if _, ok := c.Get("a"); ok {
+		t.Fatal("the least recently used entry survived going over the byte budget")
+	}
+	for _, h := range []string{"b", "c"} {
+		if _, ok := c.Get(h); !ok {
+			t.Fatalf("%s was evicted, but b and c fit in the budget", h)
+		}
+	}
+
+	c.Set("huge", "12345678901")
+	if _, ok := c.Get("huge"); ok {
+		t.Fatal("a query larger than the whole budget was stored")
+	}
+	if _, ok := c.Get("c"); !ok {
+		t.Fatal("storing nothing still evicted what was there")
+	}
+}
+
+func TestCacheHasADefaultByteBudget(t *testing.T) {
+	c := apq.NewCache(0)
+	big := strings.Repeat("x", 1<<20)
+	for i := range 64 {
+		c.Set(strconv.Itoa(i), big)
+	}
+	if _, ok := c.Get("0"); ok {
+		t.Fatal("64 MiB of query text was held by a cache with no explicit byte limit")
+	}
+	if _, ok := c.Get("63"); !ok {
+		t.Fatal("the newest entry was evicted")
+	}
+
+	unbounded := apq.NewCache(0, apq.WithMaxBytes(0))
+	for i := range 64 {
+		unbounded.Set(strconv.Itoa(i), big)
+	}
+	if _, ok := unbounded.Get("0"); !ok {
+		t.Fatal("WithMaxBytes(0) still evicted")
 	}
 }

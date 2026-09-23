@@ -189,3 +189,33 @@ func TestLoadManifestFileReportsAMissingFile(t *testing.T) {
 		t.Fatal("a missing manifest was accepted")
 	}
 }
+
+// The safelist is guarded twice on purpose, and only one half was tested.
+// apq.Resolve refuses query text against a TrustedStore before it would ever
+// call Set, and Store.Set is a no-op even if something did. Break either one
+// alone and every other test in this repository stays green, so a green suite
+// says nothing about whether the second half is still there.
+//
+// The half this covers is the one that holds if the first is ever refactored:
+// a client that reaches Set must not be able to add to the safelist, which
+// would let it register and then run any document it likes.
+func TestStoreSetCannotAddToTheSafelist(t *testing.T) {
+	s, err := trusted.LoadManifest(strings.NewReader(`{"abc":"{ __typename }"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := s.Len()
+
+	s.Set("evil", "{ secrets }")
+	s.Set("abc", "{ somethingElse }")
+
+	if s.Len() != before {
+		t.Errorf("Len = %d, was %d: Set added to the safelist", s.Len(), before)
+	}
+	if _, ok := s.Get("evil"); ok {
+		t.Error("a document registered through Set is now in the safelist")
+	}
+	if q, _ := s.Get("abc"); q != "{ __typename }" {
+		t.Errorf("Set replaced a safelisted document with %q", q)
+	}
+}

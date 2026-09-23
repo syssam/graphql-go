@@ -285,3 +285,24 @@ func TestSubscriptionEventsAreChargedIndividually(t *testing.T) {
 		}
 	}
 }
+
+// A negative FieldWeight makes a negative quote. Charging it subtracted a
+// negative number, which added points past MaximumAvailable.
+func TestNegativeQuoteIsNotCredited(t *testing.T) {
+	now := time.Unix(0, 0)
+	e := newExec(t,
+		graphql.WithQueryCost(graphql.QueryCost{FieldWeight: map[string]int{"Query.items": -50}}),
+		throttle.New(throttle.Config{
+			MaximumAvailable: 100, RestoreRate: 1, Key: keyFunc, Now: fixedClock(&now),
+		}))
+
+	for range 3 {
+		resp := e.Execute(shopCtx("shop-1"), &graphql.Request{Query: `{ items(first: 4) { id } }`})
+		if len(resp.Errors) > 0 {
+			t.Fatalf("errors: %v", resp.Errors)
+		}
+		if st := status(t, resp); st["currentlyAvailable"] != 100 {
+			t.Fatalf("currentlyAvailable = %v, want 100: a negative quote must not add points", st["currentlyAvailable"])
+		}
+	}
+}
