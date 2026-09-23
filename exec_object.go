@@ -95,7 +95,11 @@ func (st *execState) writeFieldValue(ctx context.Context, w *jsonw.Writer, obj *
 	fd := f.def
 	args := f.args
 	if f.dynamicArgs {
-		v, err := fd.args.decode(fieldArguments(f.ast, st.vars))
+		raw, aerr := fieldArguments(f.ast, st.vars)
+		v, err := fd.args.decode(raw)
+		if err == nil {
+			err = aerr
+		}
 		if err != nil {
 			st.fieldError(ctx, Errorf("Invalid argument for field %s: %v", coordinate(obj.name, fd.name), err).WithCode(CodeBadUserInput), path, f)
 			return false

@@ -234,41 +234,58 @@ func astJSON(v *ast.Value, vars map[string]any) (any, error) {
 	}
 }
 
-// asJSON rewrites numbers produced by gqlparser's Value/ArgumentMap into
-// json.Number so they match decodeVariables.
-func asJSON(v any) any {
-	switch x := v.(type) {
-	case int:
-		return json.Number(strconv.Itoa(x))
-	case int32:
-		return json.Number(strconv.FormatInt(int64(x), 10))
-	case int64:
-		return json.Number(strconv.FormatInt(x, 10))
-	case float32:
-		return json.Number(strconv.FormatFloat(float64(x), 'g', -1, 32))
-	case float64:
-		return json.Number(strconv.FormatFloat(x, 'g', -1, 64))
-	case []any:
-		for i, e := range x {
-			x[i] = asJSON(e)
-		}
-		return x
-	case map[string]any:
-		for k, e := range x {
-			x[k] = asJSON(e)
-		}
-		return x
-	default:
-		return v
-	}
-}
-
 // fieldArguments returns the field's arguments with defaults applied and
 // numbers normalised to json.Number.
-func fieldArguments(f *ast.Field, vars map[string]any) map[string]any {
-	raw := f.ArgumentMap(vars)
-	if raw == nil {
-		return nil
+//
+// It walks the AST itself rather than calling ast.Field.ArgumentMap, which
+// evaluates every literal through gqlparser's Value. That does two things this
+// cannot have. It **panics** on an integer literal wider than int64 --
+// strconv.ParseInt out of range -- and validation cannot save us there: Int
+// and Float reject an oversized literal, but a custom scalar accepts anything
+// by definition, so `{ f(v: 123456789012345678901234567890) }` against any
+// schema declaring a custom scalar argument is a client-supplied panic on the
+// request path, reachable at plan compile as well as at execution. And it
+// rounds a float literal through float64, so 9007199254740993.0 reaches a
+// custom scalar as 9.007199254740992e+15 inlined and exactly as written when
+// sent as a variable -- the same value decoding differently depending on
+// whether the client parameterised it, which is precisely what astJSON exists
+// to prevent for a Decimal or a big-integer scalar.
+//
+// The walk below is arg2map's own logic with astJSON in place of Value: an
+// argument the query supplies wins, a variable that is absent from vars leaves
+// the argument unset so its default applies, and everything else falls back to
+// the definition's default. astJSON keeps an integer or float literal as
+// json.Number carrying its original text, so neither failure is reachable.
+func fieldArguments(f *ast.Field, vars map[string]any) (map[string]any, error) {
+	defs := f.Definition.Arguments
+	if len(defs) == 0 {
+		return nil, nil
 	}
-	return asJSON(raw).(map[string]any)
+	out := make(map[string]any, len(defs))
+	for _, def := range defs {
+		var val any
+		var has bool
+		if supplied := f.Arguments.ForName(def.Name); supplied != nil {
+			if supplied.Value.Kind == ast.Variable {
+				val, has = vars[supplied.Value.Raw]
+			} else {
+				v, err := astJSON(supplied.Value, vars)
+				if err != nil {
+					return nil, fmt.Errorf("argument %q: %w", def.Name, err)
+				}
+				val, has = v, true
+			}
+		}
+		if !has && def.DefaultValue != nil {
+			v, err := astJSON(def.DefaultValue, vars)
+			if err != nil {
+				return nil, fmt.Errorf("argument %q default: %w", def.Name, err)
+			}
+			val, has = v, true
+		}
+		if has {
+			out[def.Name] = val
+		}
+	}
+	return out, nil
 }

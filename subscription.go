@@ -201,7 +201,11 @@ func (e *Executor) Subscribe(ctx context.Context, req *Request) (<-chan *Respons
 
 	args := f.args
 	if f.dynamicArgs {
-		v, derr := f.def.args.decode(fieldArguments(f.ast, vars))
+		raw, aerr := fieldArguments(f.ast, vars)
+		v, derr := f.def.args.decode(raw)
+		if derr == nil {
+			derr = aerr
+		}
 		if derr != nil {
 			return nil, e.subscribeError(ctx, Errorf("Invalid argument for field %s: %v", coordinate(p.root.name, f.def.name), derr).WithCode(CodeBadUserInput))
 		}
@@ -247,7 +251,11 @@ func (e *Executor) Subscribe(ctx context.Context, req *Request) (<-chan *Respons
 		// interceptor runs.
 		args := args
 		if f.dynamicArgs {
-			v, derr := f.def.args.decode(fieldArguments(f.ast, oc.Variables))
+			raw, aerr := fieldArguments(f.ast, oc.Variables)
+			v, derr := f.def.args.decode(raw)
+			if derr == nil {
+				derr = aerr
+			}
 			if derr != nil {
 				return nil, e.subscribeError(ctx, Errorf("Invalid argument for field %s: %v", coordinate(p.root.name, f.def.name), derr).WithCode(CodeBadUserInput))
 			}

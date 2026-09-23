@@ -416,7 +416,11 @@ func (c *compiler) buildField(obj *objectType, g *fieldGroup) *planField {
 		if argsHaveVariables(first.Arguments) {
 			pf.dynamicArgs = true
 		} else {
-			v, err := fd.args.decode(fieldArguments(first, nil))
+			raw, aerr := fieldArguments(first, nil)
+			v, err := fd.args.decode(raw)
+			if err == nil {
+				err = aerr
+			}
 			if err != nil {
 				c.errorf(first.Position, "Invalid argument for field %s: %v", coordinate(obj.name, fd.name), err)
 				return nil

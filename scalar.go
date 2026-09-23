@@ -16,6 +16,17 @@ import (
 // string, bool, json.Number, int64, float64, []any or map[string]any.
 // Registering a Go type for a built-in scalar (for example ID as uuid.UUID)
 // adds to the built-in mappings rather than replacing them.
+//
+// unmarshal receives the same representation whether the value arrived as a
+// literal in the query or as a variable -- a number is a json.Number carrying
+// its original text either way, so a decimal or an id keeps the digits the
+// client sent.
+//
+// **Write it pure and cheap.** It runs twice for a value supplied as a
+// variable: once from coerceVariables, which decodes to find out whether the
+// value is acceptable and discards the result so a variable error is reported
+// before execution starts, and once when the argument is decoded for real. A
+// literal runs it once.
 func Scalar[T any](name string, marshal func(*Writer, T) error, unmarshal func(any) (T, error)) SchemaOption {
 	return schemaOptionFunc(func(b *schemaBuilder) {
 		def := b.ast.Types[name]

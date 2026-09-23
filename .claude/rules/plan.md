@@ -88,3 +88,43 @@ page sizes, and three nested `first: 2147483647` lists wrapped to a negative cos
 any `Max` and credited `ext/throttle`. The walk carries its state on `costWalk`, and **a memo over it must key on
 `paid` as well as the selection set** — the same `*selectionSet` costs differently paid and
 unpaid.
+
+## Field arguments are read off the AST, never through `ArgumentMap`
+
+`fieldArguments` walks `f.Definition.Arguments` itself and evaluates each one with `astJSON`.
+It used to call `ast.Field.ArgumentMap(vars)` and normalise the result with `asJSON`, which
+routes every literal through gqlparser's `Value`, and that has two properties a request path
+cannot have.
+
+**It panics on an integer literal wider than int64** -- `strconv.ParseInt: value out of
+range`, raised inside `arg2map`. Validation does not save you: `Int` and `Float` reject an
+oversized literal, but **a custom scalar accepts anything by definition**, so
+`{ f(v: 123456789012345678901234567890) }` against any schema declaring a custom scalar
+argument is a client-supplied panic. It escapes `Execute` -- `WithRecover` guards resolvers,
+not argument coercion -- and it is reachable from plan compile (`plan.go`) as well as from
+execution and both subscription paths. Any schema with a `Decimal`, `JSON`, `Any` or `Cursor`
+scalar taking an argument had it; the real consumer schema declares ten.
+
+**And it rounds a float literal through float64**, so `9007199254740993.0` reached a custom
+scalar as `9.007199254740992e+15` when inlined and exactly as written when sent as a variable,
+as did `1e3` (`"1000"` against `"1e3"`) and `1.0` (`"1"` against `"1.0"`). `astJSON`'s own doc
+says literals and variables must produce the same representation so custom scalars see one
+form; they did not, and a `Decimal` decoded a different number depending on whether the client
+parameterised the query. `astJSON` keeps `json.Number(v.Raw)`, so the text survives and both
+failures are unreachable.
+
+The replacement is `arg2map`'s logic verbatim except for that substitution and returning the
+error instead of panicking: a supplied argument wins, a variable absent from `vars` leaves the
+argument unset so its default applies, everything else falls back to the definition's default.
+All four call sites already handled a decode error, so the error joins that path.
+
+It costs nothing. Interleaved n=12 over `ExecuteConstantArgs`, `ExecuteVariableArgs` and
+`PlanCompileWithConstantArgs` -- benchmarks added with this change, because **every engine
+benchmark uses argument-free fields, so measuring one against them measures nothing**:
+allocations identical sample for sample on all three, constant-argument and plan-compile time
+not distinguishable, and the variable path **-5.11% (p=0.003)**, since it no longer builds a
+Go value only for `asJSON` to rewrite it.
+
+`TestACustomScalarSeesLiteralsAndVariablesAlike` drives both failures across eleven shapes.
+Reverting `fieldArguments` to `ArgumentMap` fails it on the exponent, trailing-zero and
+precision cases and panics the binary on the wide-integer one.
