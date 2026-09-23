@@ -64,16 +64,20 @@ func benchIntrospect(b *testing.B, n int) {
 //
 // Execution is linear in the schema -- 3.7x the time for 3x the types -- but
 // the bytes are not, and the reason is a cliff rather than a curve. A buffer
-// whose capacity passes maxPooledCap (4 MiB) is never returned to the pool, so
-// the next request rebuilds it from 512 bytes. append overshoots, so a 3.3 MB
-// response already reaches a 4.12 MB capacity:
+// whose capacity passes maxPooledCap is never returned to the pool, so the
+// next request rebuilds it from 512 bytes. append overshoots, so a response
+// well under the cap already reaches a capacity above it:
 //
 //	3 600 types   2.83 MB response   16.6 MB/op   pooled
-//	4 200 types   3.30 MB response   38.4 MB/op   not pooled
-//	4 800 types   3.77 MB response   40.9 MB/op   not pooled
+//	4 200 types   3.30 MB response   38.4 MB/op   not pooled at a 4 MiB cap
+//	4 800 types   3.77 MB response   40.9 MB/op   not pooled at a 4 MiB cap
+//	8 400 types   6.58 MB response                not pooled at an 8 MiB cap
 //
-// Raising maxPooledCap to 64 MiB takes those to 19.4 and 21.9 MB/op, which is
-// what says the cliff is the cause and not the response size itself. The two
-// benchmarks straddle it deliberately; see docs/performance.md.
-func BenchmarkIntrospectPooled(b *testing.B)   { benchIntrospect(b, 3600) }
-func BenchmarkIntrospectOverPool(b *testing.B) { benchIntrospect(b, 4800) }
+// The three benchmarks straddle both caps deliberately: Pooled is below, the
+// first OverPool is what moved the cap from 4 MiB to 8, and OverPool8 is the
+// size the real consumer schema introspects to -- 5 516 types, 6.56 MB,
+// because its types are twice as wide as these. Predicting the response from
+// the type count is what put the cap one step too low; see docs/performance.md.
+func BenchmarkIntrospectPooled(b *testing.B)    { benchIntrospect(b, 3600) }
+func BenchmarkIntrospectOverPool(b *testing.B)  { benchIntrospect(b, 4800) }
+func BenchmarkIntrospectOverPool8(b *testing.B) { benchIntrospect(b, 8400) }

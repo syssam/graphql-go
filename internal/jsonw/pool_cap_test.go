@@ -34,22 +34,21 @@ func TestBufferCapacityOvershootsTheResponse(t *testing.T) {
 // or that query -- usually unauthenticated, and polled by GraphiQL, Apollo
 // Studio and codegen tools -- pays twice the bytes on every request.
 //
-// 4 800 types introspect to 3.77 MB, which reaches about 4.2 MB of capacity.
-// The consumer driving this library has 5 455 types, so roughly 5 MB. Six is
-// the floor with a little room; the shipped value is 8 MiB.
+// The length here is measured, not extrapolated. The previous version of this
+// test used 4.3 MB, derived from "5 455 types at the 0.79 KB/type the
+// synthetic schema showed". The real schema is 5 516 types and introspects to
+// 6.56 MB, because its types are about twice as wide; that response reaches a
+// capacity of 8.05 MiB and the 8 MiB cap dropped it on every request. Type
+// count does not predict the response, so this test pins the response.
 func TestPoolCapCoversALargeSchemasIntrospection(t *testing.T) {
-	const needed = 6 << 20
-	if maxPooledCap < needed {
-		t.Errorf("maxPooledCap is %d, below the %d a large schema's introspection reaches; "+
-			"that response stops being pooled and costs about twice the bytes per request",
-			maxPooledCap, needed)
-	}
+	// nextapp-graphql, 5 516 types: len(resp.Data) == 6.56 MiB.
+	const realIntrospection = 6_878_658
 
-	// And the writer that held such a response is in fact poolable.
 	w := New()
-	grow(w, 4_300_000)
+	grow(w, realIntrospection)
 	if cap(w.buf) > maxPooledCap {
-		t.Errorf("a %d-byte response reached capacity %d, above maxPooledCap %d",
+		t.Errorf("a %d-byte response reached capacity %d, above maxPooledCap %d; "+
+			"that response stops being pooled and costs about twice the bytes per request",
 			len(w.buf), cap(w.buf), maxPooledCap)
 	}
 }

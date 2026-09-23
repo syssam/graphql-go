@@ -21,10 +21,9 @@ var ErrNonFinite = errors.New("jsonw: non-finite float")
 // writer is reset and dropped, so the next request rebuilds its buffer from
 // 512 bytes.
 //
-// The number is 8 MiB because append overshoots and the cliff is therefore
+// The number is 16 MiB because append overshoots and the cliff is therefore
 // well below the cap: at 4 MiB a 3.62 MB response reached a 4.12 MB capacity
-// and was dropped, which is where full introspection on a schema past ~4 000
-// types lands -- 38.4 MB/op against 16.6 for a response 17% smaller. That
+// and was dropped -- 38.4 MB/op against 16.6 for a response 17% smaller. That
 // query is usually reachable unauthenticated and is polled by GraphiQL, Apollo
 // Studio and codegen tools, so it is not an exotic path.
 //
@@ -35,10 +34,16 @@ var ErrNonFinite = errors.New("jsonw: non-finite float")
 // of that size, which cost the same memory whether or not they are pooled.
 // Raising it defers a release; it does not raise a peak.
 //
-// 8 MiB and not more: it covers introspection to roughly 8 000 types, which is
-// past the largest schema this has been measured against, and every doubling
-// beyond that buys a band nobody has shown traffic in.
-const maxPooledCap = 8 << 20
+// It was 8 MiB, chosen as "introspection to roughly 8 000 types". That
+// estimate came from type count, and type count does not predict the response:
+// a real 5 516-type schema introspects to 6.56 MB, because its types are twice
+// as wide as the synthetic ones the estimate was read off. 6.56 MB reaches a
+// capacity of 8.05 MiB -- one growth step over the cap -- and measured on that
+// schema the query cost 71.3 MB/op with no reuse at all between requests,
+// against 31.5 MB/op once it fits. An 8 MiB cap pools a response up to
+// 6.4 MB; 16 MiB pools one up to 15.7 MB, because the growth steps get closer
+// to exact as they get larger.
+const maxPooledCap = 16 << 20
 
 // Writer appends JSON to an internal buffer.
 //

@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"encoding/json"
+	"math"
 	"time"
 )
 
@@ -281,7 +282,7 @@ func queryCostMemo(sel *selectionSet, w costWalk) int {
 	sum := func(fields []*planField) int {
 		n := 0
 		for _, f := range fields {
-			n += fieldCost(f, w)
+			n = costAdd(n, fieldCost(f, w))
 		}
 		return n
 	}
@@ -327,7 +328,31 @@ func fieldCost(f *planField, w costWalk) int {
 	}
 
 	// f.sub is non-nil: a leaf returned above.
-	return weight + queryCostMemo(f.sub, w.withPaid(childPaid))*mult
+	return costAdd(weight, costMul(queryCostMemo(f.sub, w.withPaid(childPaid)), mult))
+}
+
+// costAdd and costMul saturate rather than wrap. A client picks the page
+// sizes, so three nested first: 2147483647 lists are one request away, and a
+// wrapped product is negative: under any Max, and a credit to ext/throttle.
+func costAdd(a, b int) int {
+	switch {
+	case b > 0 && a > math.MaxInt-b:
+		return math.MaxInt
+	case b < 0 && a < math.MinInt-b:
+		return math.MinInt
+	}
+	return a + b
+}
+
+// costMul expects m >= 1, which every page size and DefaultListSize is.
+func costMul(a, m int) int {
+	switch {
+	case a > 0 && a > math.MaxInt/m:
+		return math.MaxInt
+	case a < 0 && a < math.MinInt/m:
+		return math.MinInt
+	}
+	return a * m
 }
 
 func listMultiplier(f *planField, w costWalk) int {
@@ -372,6 +397,11 @@ func asCostInt(v any) (int, bool) {
 		i, err := n.Int64()
 		return int(i), err == nil
 	case float64:
+		// Converting a float64 beyond the range of int is implementation
+		// defined in Go, so clamp first.
+		if n >= math.MaxInt {
+			return math.MaxInt, true
+		}
 		return int(n), true
 	default:
 		return 0, false
