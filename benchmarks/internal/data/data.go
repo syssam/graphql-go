@@ -1,3 +1,5 @@
+// Package data builds the fixture both engines execute against, so a
+// difference between them is the engine and not the input.
 package data
 
 import "strconv"

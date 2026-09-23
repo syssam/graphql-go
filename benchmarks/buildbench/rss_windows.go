@@ -77,18 +77,18 @@ func watchPeakRSS(c *exec.Cmd) func() uint64 {
 		processSetQuota|processTerminate|processQueryInformation,
 		false, uint32(c.Process.Pid))
 	if err != nil {
-		syscall.CloseHandle(syscall.Handle(job))
+		_ = syscall.CloseHandle(syscall.Handle(job))
 		return func() uint64 { return 0 }
 	}
 	ok, _, _ := procAssignProcessToJobObject.Call(job, uintptr(h))
-	syscall.CloseHandle(h)
+	_ = syscall.CloseHandle(h)
 	if ok == 0 {
-		syscall.CloseHandle(syscall.Handle(job))
+		_ = syscall.CloseHandle(syscall.Handle(job))
 		return func() uint64 { return 0 }
 	}
 
 	return func() uint64 {
-		defer syscall.CloseHandle(syscall.Handle(job))
+		defer func() { _ = syscall.CloseHandle(syscall.Handle(job)) }()
 		var info jobExtendedLimitInformation
 		r, _, _ := procQueryInformationJobObj.Call(
 			job,

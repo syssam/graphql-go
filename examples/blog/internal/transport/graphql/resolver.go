@@ -87,7 +87,7 @@ func optional(o graphql.Omittable[*string]) domain.Optional[string] {
 	return domain.Present(v)
 }
 
-func (r *Resolver) Node(_ context.Context, a graph.NodeArgs) (any, error) {
+func (r *Resolver) Node(_ context.Context, a graph.NodeArgs) (model.Node, error) {
 	if u := r.svc.User(string(a.ID)); u != nil {
 		return toUser(u), nil
 	}
@@ -122,9 +122,9 @@ func (r *Resolver) Posts(_ context.Context, a graph.PostsArgs) ([]*model.Post, e
 	return toPosts(r.svc.Posts(authorID, a.Filter.Tag.Or(nil), 0)), nil
 }
 
-func (r *Resolver) Search(_ context.Context, a graph.SearchArgs) ([]any, error) {
+func (r *Resolver) Search(_ context.Context, a graph.SearchArgs) ([]model.SearchResult, error) {
 	users, posts := r.svc.Search(a.Term)
-	out := make([]any, 0, len(users)+len(posts))
+	out := make([]model.SearchResult, 0, len(users)+len(posts))
 	for _, u := range users {
 		out = append(out, toUser(u))
 	}

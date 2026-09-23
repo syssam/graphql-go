@@ -9,6 +9,7 @@ package compare
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -35,7 +36,7 @@ func NewGraphQLGo() (*graphql.Executor, error) {
 			func(raw any) (time.Time, error) {
 				s, ok := raw.(string)
 				if !ok {
-					return time.Time{}, fmt.Errorf("Time must be a string")
+					return time.Time{}, errors.New("Time must be a string")
 				}
 				return time.Parse(time.RFC3339Nano, s)
 			},
@@ -76,15 +77,15 @@ func GqlgenJSON(ex *executor.Executor, query string) ([]byte, error) {
 	ctx := gqlgengraphql.StartOperationTrace(context.Background())
 	opCtx, errs := ex.CreateOperationContext(ctx, &gqlgengraphql.RawParams{Query: query})
 	if len(errs) > 0 {
-		return nil, fmt.Errorf("gqlgen: %v", errs)
+		return nil, fmt.Errorf("gqlgen: %w", errs)
 	}
 	h, ctx := ex.DispatchOperation(ctx, opCtx)
 	resp := h(ctx)
 	if resp == nil {
-		return nil, fmt.Errorf("gqlgen: nil response")
+		return nil, errors.New("gqlgen: nil response")
 	}
 	if len(resp.Errors) > 0 {
-		return nil, fmt.Errorf("gqlgen: %v", resp.Errors)
+		return nil, fmt.Errorf("gqlgen: %w", resp.Errors)
 	}
 	return resp.Data, nil
 }

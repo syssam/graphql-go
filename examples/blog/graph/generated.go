@@ -11,39 +11,39 @@ import (
 )
 
 type CreatePostArgs struct {
-	AuthorID graphql.ID
-	Title    string
-	Body     string
-	Tags     []string
+	AuthorID graphql.ID `graphql:"authorId"`
+	Title    string     `graphql:"title"`
+	Body     string     `graphql:"body"`
+	Tags     []string   `graphql:"tags"`
 }
 
 type UpdatePostArgs struct {
-	ID    graphql.ID
-	Input model.UpdatePostInput
+	ID    graphql.ID            `graphql:"id"`
+	Input model.UpdatePostInput `graphql:"input"`
 }
 
 type NodeArgs struct {
-	ID graphql.ID
+	ID graphql.ID `graphql:"id"`
 }
 
 type UserArgs struct {
-	ID graphql.ID
+	ID graphql.ID `graphql:"id"`
 }
 
 type PostsArgs struct {
-	Filter *model.PostFilter
+	Filter *model.PostFilter `graphql:"filter"`
 }
 
 type SearchArgs struct {
-	Term string
+	Term string `graphql:"term"`
 }
 
 type PostCreatedWithTagArgs struct {
-	Tag string
+	Tag string `graphql:"tag"`
 }
 
 type UserPostsArgs struct {
-	First *int
+	First *int `graphql:"first"`
 }
 
 // Resolver holds methods for fields that are not struct data.
@@ -51,11 +51,11 @@ type Resolver interface {
 	CreatePost(ctx context.Context, args CreatePostArgs) (*model.Post, error)
 	UpdatePost(ctx context.Context, args UpdatePostArgs) (*model.Post, error)
 	PostAuthor(ctx context.Context, obj *model.Post) (*model.User, error)
-	Node(ctx context.Context, args NodeArgs) (any, error)
+	Node(ctx context.Context, args NodeArgs) (model.Node, error)
 	User(ctx context.Context, args UserArgs) (*model.User, error)
 	Users(ctx context.Context) ([]*model.User, error)
 	Posts(ctx context.Context, args PostsArgs) ([]*model.Post, error)
-	Search(ctx context.Context, args SearchArgs) ([]any, error)
+	Search(ctx context.Context, args SearchArgs) ([]model.SearchResult, error)
 	PostCreated(ctx context.Context) (<-chan *model.Post, error)
 	PostCreatedWithTag(ctx context.Context, args PostCreatedWithTagArgs) (<-chan *model.Post, error)
 	UserPosts(ctx context.Context, obj *model.User, args UserPostsArgs) ([]*model.Post, error)
@@ -69,8 +69,8 @@ func Bindings(r Resolver) graphql.SchemaOption {
 		}),
 		graphql.Input[model.PostFilter]("PostFilter"),
 		graphql.Input[model.UpdatePostInput]("UpdatePostInput"),
-		graphql.Interface[any]("Node"),
-		graphql.Union[any]("SearchResult"),
+		graphql.Interface[model.Node]("Node"),
+		graphql.Union[model.SearchResult]("SearchResult"),
 		graphql.Object[model.Post]("Post",
 			graphql.Field("id", func(v *model.Post) graphql.ID { return v.ID }),
 			graphql.Field("title", func(v *model.Post) string { return v.Title }),
@@ -90,11 +90,13 @@ func Bindings(r Resolver) graphql.SchemaOption {
 			graphql.Field("createdAt", func(v *model.User) time.Time { return v.CreatedAt }),
 		),
 		graphql.Query(
-			graphql.ResolveArgs("node", func(ctx context.Context, _ graphql.Root, a NodeArgs) (any, error) { return r.Node(ctx, a) }),
+			graphql.ResolveArgs("node", func(ctx context.Context, _ graphql.Root, a NodeArgs) (model.Node, error) { return r.Node(ctx, a) }),
 			graphql.ResolveArgs("user", func(ctx context.Context, _ graphql.Root, a UserArgs) (*model.User, error) { return r.User(ctx, a) }),
 			graphql.Resolve("users", func(ctx context.Context, _ graphql.Root) ([]*model.User, error) { return r.Users(ctx) }),
 			graphql.ResolveArgs("posts", func(ctx context.Context, _ graphql.Root, a PostsArgs) ([]*model.Post, error) { return r.Posts(ctx, a) }),
-			graphql.ResolveArgs("search", func(ctx context.Context, _ graphql.Root, a SearchArgs) ([]any, error) { return r.Search(ctx, a) }),
+			graphql.ResolveArgs("search", func(ctx context.Context, _ graphql.Root, a SearchArgs) ([]model.SearchResult, error) {
+				return r.Search(ctx, a)
+			}),
 		),
 		graphql.Mutation(
 			graphql.ResolveArgs("createPost", func(ctx context.Context, _ graphql.Root, a CreatePostArgs) (*model.Post, error) {

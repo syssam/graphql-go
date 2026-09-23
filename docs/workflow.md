@@ -12,7 +12,9 @@ generate from it, implement the interface it gives you, wire it to a transport.
 | re-run `protoc` after editing the proto | re-run `go generate` after editing the SDL |
 
 One difference worth knowing before you start: **`gqlc` never loads Go
-packages.** It reads SDL and writes Go, and that is all. A 200-entity schema
+packages.** It reads SDL and writes Go, and that is all. (`AutoBind`, below,
+is the one thing that loads anything, it loads export data rather than a
+module, and it is not reachable from the CLI at all.) A 200-entity schema
 generates in under a second using 44 MB; gqlgen needs 31 s and 4.6 GB for the
 same schema because it type-checks its own output. The cost of that choice is
 that `gqlc` cannot guess at your Go types — you tell it, in `models:`, or you
@@ -187,8 +189,9 @@ readable in one file.
 
 ## Two richer binding modes, and where they are not
 
-`gqlc.yaml` takes exactly five keys: `schema`, `output`, `package`,
-`nullableInputOmittable` and `models`. The two modes below are **not** YAML
+`gqlc.yaml` takes seven keys: `schema`, `output`, `package`,
+`nullableInputOmittable`, `zeroForNullInputs`, `models` and the two directive
+blocks (`modelDirective`, `fieldDirective`). The two modes below are **not** YAML
 keys and cannot be reached from the CLI at all. They are fields on
 `codegen.Config`, for a program that calls `codegen.Generate` itself -- which
 is what an ORM or an in-house generator does, and the reason they exist.
@@ -208,9 +211,11 @@ is what an ORM or an in-house generator does, and the reason they exist.
 
 Measured against a real 5 503-type ERP schema -- 828 SDL files, a Query root
 4 154 fields wide, an ent-derived ORM underneath -- rather than reasoned about.
-Every number below came from running the generator against it.
+Every number below came from running the generator against it and compiling
+what came out. The whole schema now generates in about 9 s and its 804
+generated packages build and vet clean.
 
-The work is one config file. Four settings, in the order they pay:
+The work is one config file:
 
 ```yaml
 schema:
@@ -219,13 +224,30 @@ output: graph
 package: example.com/app/graph
 
 # 1. The bindings the SDL already carries. gqlgen writes them as
-#    @goModel(model: "pkg/path.Type"); there were 3 778 of them, and this
-#    reads all of them.
+#    @goModel(model: "pkg/path.Type"); there were 3 778 of them.
 modelDirective:
   name: goModel
   arg: model
 
-# 2. The scalars, which gqlgen keeps in gqlgen.yml rather than in the SDL, so
+# 2. The fields gqlgen was told to route through a resolver, which it spells
+#    @goField(forceResolver: true). There were 4 567. This is not redundant
+#    with the generator refusing a guess: it verifies a struct field exists,
+#    where the author is saying the value must be computed. Binding it to the
+#    column anyway compiles and answers the wrong thing.
+fieldDirective:
+  name: goField
+  forceResolverArg: forceResolver
+
+# 3. An ORM filter says `isNil: Boolean` in SDL and backs it with a plain
+#    `bool`, reading false as "apply no predicate" -- so absent, null and
+#    false are one value on purpose. The engine refuses that by default,
+#    because in general a bool cannot tell absent from false. This says the
+#    schema means it. 11 035 fields, and without it the schema does not build.
+#    Read the graphql.ZeroForNull godoc first: for a PATCH-style input the
+#    distinction is real and nullableInputOmittable is what you want instead.
+zeroForNullInputs: true
+
+# 4. The scalars, which gqlgen keeps in gqlgen.yml rather than in the SDL, so
 #    they have to be moved by hand. There were about 40, and three of them
 #    accounted for 1 400 fields.
 models:
@@ -237,45 +259,77 @@ models:
 ```
 
 ```go
-// 3. AutoBind, in code rather than YAML, pointed at the entity packages.
-cfg.AutoBind = []string{"example.com/app/ent"}
+// 5. AutoBind, in code rather than YAML, pointed at the packages holding the
+//    entities and the enum types.
+cfg.AutoBind = []string{"example.com/app/ent", "example.com/app/schema/schematype"}
 ```
 
-What each one is worth, in fields that bind instead of landing on the Resolver
-interface:
+What each one is worth, counted as methods on the generated `Resolver`
+interfaces:
 
-| | non-root resolvers |
+| | resolver methods |
 |---|---:|
-| nothing configured | 20 692 |
-| `ID` mapped to the ORM's integer id | 14 434 |
-| `Time` mapped | 12 296 |
-| `Decimal`, `Map`, `JSON` mapped | 9 988 |
+| `modelDirective` only, no AutoBind | 10 716 |
+| AutoBind on, nothing mapped | 18 581 |
+| `ID` mapped to the ORM's integer id | 12 284 |
+| `Time` mapped | 10 138 |
+| `Decimal`, `Map`, `JSON` mapped | 8 724 |
+| `fieldDirective` and `zeroForNullInputs` as well | 8 724 |
+
+Four things that table says, in the order they matter:
+
+**AutoBind makes the number go up before it goes down, and that is the point.**
+Without it the generator infers: a scalar-returning field is read straight off
+the struct. That inference is a guess, and where it is wrong -- `time.Time`
+where the generated model says `model.Time` -- it is a compile error in a file
+marked DO NOT EDIT. 10 716 against 18 581 is not 7 865 fields lost; it is
+7 865 guesses stopped. Everything below buys them back with a verified binding
+instead.
 
 **`ID` first.** An ORM that stores ids as `int64` under an `ID` scalar fails
 every id field against the default `graphql.ID`, and ids are the commonest
-field in any schema: mapping one line recovered 6 258 fields.
+field in any schema: one line recovered 6 297.
 
-On the types AutoBind can see, what is left is real work rather than
-configuration: **99% of it is fields the Go type genuinely does not have** --
-`createdByUser`, `updatedByEmployee` and their kind -- which are resolvers in
-any generator. 1% is a type that still does not line up.
+**The last row moves nothing, and both settings are still required.** All 4 567
+fields `fieldDirective` forces were computed fields the ORM type does not have,
+so they were resolvers already; it earns its place on the field that *is* a
+column and that the author wants computed anyway, where the generator would
+otherwise bind the column, compile, and answer the wrong thing.
+`zeroForNullInputs` does not touch resolvers at all -- it decides whether an
+input *decodes*. Without it this schema does not build: `NewSchema` reports
+11 035 errors and stops. A resolver count is the wrong instrument for it, which
+is why it reads as a no-op here.
 
-**AutoBind is not optional at this scale, and it is not a resolver-count
-optimisation.** Without it the generator infers: a scalar-returning field is
-read straight off the struct. That inference is a guess, and where it is wrong
--- `time.Time` where the generated model says `model.Time` -- it is a compile
-error in a file marked DO NOT EDIT. With AutoBind only verified matches bind.
-Expect the resolver count to go *up* when you turn it on; that is the guessing
-stopping.
+**8 724 is the floor for this configuration, not a backlog to configure
+away.** What remains is dominated by fields the Go type genuinely does not
+have -- `createdByUser`, `updatedByEmployee` and their kind -- which are
+resolvers in any generator. The split was not counted, so take the shape and
+not a percentage. Every AutoBind row above rose by exactly 398 when the
+generator started checking a method's *parameter* types and not just their
+count: those 398 are ORM edge methods taking their own `*ent.XOrder` against an
+argument the generator models itself. They were bound before and did not
+compile; they are resolvers now.
 
-Two things this generator will not do for you:
+Three things worth knowing before the first run:
 
-- **It reads no Go type information without AutoBind.** `models:` says which
-  Go type a GraphQL type *is*, not which of its fields are struct fields.
+- **Name the packages holding your enum types too.** Their constants are found
+  by the string each one carries, not by its identifier, and case does not have
+  to match: ent stores a column lower-case and upper-cases it on the way out,
+  so `EventTypeView = "view"` is the constant for the SDL value `VIEW`. Once
+  `AutoBind` is set at all, a package the config already names in `models:`
+  is loaded for its constants too, so you do not have to list five hundred
+  of them twice. With `AutoBind` empty nothing is loaded, as before.
 - **It does not reach into a nested struct.** ent keeps relations in `Edges`,
   and binding `Edges.ParentTest` directly would skip the lazy loader that
   `ParentTest(ctx)` runs -- returning null for data that exists. AutoBind
   already matches those as methods, which is correct.
+- **An enum your ORM cannot express as constants is modelled rather than
+  bound, and the generator says so.** entgql binds an SDL enum to a struct
+  holding a func, whose values are unexported package vars: not comparable, and
+  nothing outside that package can name a single value. There were 444 of them.
+  The generated string enum is what every field, argument and resolver
+  signature then agrees on, and the resolver translates it -- which it had to
+  do regardless.
 
 ## Editing the schema afterwards
 

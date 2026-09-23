@@ -1,22 +1,26 @@
 codegen: const FieldMethod
 codegen: const FieldResolver
 codegen: const FieldStruct
+codegen: func (d FieldDirective) IsZero() bool
 codegen: func (d ModelDirective) IsZero() bool
 codegen: func Generate(ctx context.Context, cfg Config) error
-codegen: type Config struct { Dir string SchemaGlobs []string Output string Package string GroupFunc func(typeName, sdlFile string) string Models map[string]string ModelDirective ModelDirective Manifest *Manifest AutoBind []string NullableInputOmittable bool }
+codegen: type Config struct { Dir string SchemaGlobs []string Output string Package string GroupFunc func(typeName, sdlFile string) string Models map[string]string ModelDirective ModelDirective FieldDirective FieldDirective Manifest *Manifest AutoBind []string Notef func(format string, args ...any) ZeroForNullInputs bool NullableInputOmittable bool }
 codegen: type FieldBinding struct { Kind FieldKind GoName string Context bool Error bool Convert bool Value bool }
+codegen: type FieldDirective struct { Name string ForceResolverArg string }
 codegen: type FieldKind int
 codegen: type GoType struct { PkgPath string Name string }
-codegen: type Manifest struct { Types []TypeBinding }
+codegen: type Manifest struct { Types []TypeBinding ExtraEnums []TypeBinding }
 codegen: type ModelDirective struct { Name string Arg string }
-codegen: type TypeBinding struct { Name string Go GoType Group string Fields map[string]FieldBinding }
+codegen: type TypeBinding struct { Name string Go GoType Values map[string]string Group string Fields map[string]FieldBinding }
 ext/apq: const CodeNotFound
 ext/apq: const CodeNotInList
 ext/apq: const CodeNotSupported
 ext/apq: func Hash(query string) string
-ext/apq: func NewCache(size int) Cache
+ext/apq: func NewCache(size int, opts ...CacheOption) Cache
 ext/apq: func Resolve(c Cache, req *graphql.Request) *graphql.Response
+ext/apq: func WithMaxBytes(n int64) CacheOption
 ext/apq: type Cache interface { Get(hash string) (query string, ok bool) Set(hash, query string) }
+ext/apq: type CacheOption func(*lru)
 ext/apq: type TrustedStore interface { Cache TrustedDocuments() }
 ext/otel: const AttrCacheHit
 ext/otel: const AttrComplexity
@@ -58,6 +62,7 @@ fed: func (r Representation) Float(key string) (float64, bool)
 fed: func (r Representation) ID(key string) (graphql.ID, bool)
 fed: func (r Representation) Int(key string) (int64, bool)
 fed: func (r Representation) Typename() string
+fed: func BatchResolver[E any](typename string, fn func(context.Context, []Representation) ([]*E, error)) Entity
 fed: func Resolver[E any](typename string, fn func(context.Context, Representation) (*E, error)) Entity
 fed: func Subgraph(sdl string, entities ...Entity) (graphql.Source, graphql.SchemaOption, error)
 fed: type Entity struct { }
@@ -226,6 +231,7 @@ graphql: func WithRecover(enabled bool) ExecutorOption
 graphql: func WithRequestInterceptor(is ...RequestInterceptor) ExecutorOption
 graphql: func WithSubscriptionInterceptor(is ...SubscriptionInterceptor) ExecutorOption
 graphql: func Zero() Outcome
+graphql: func ZeroForNull() InputFieldOption
 graphql: type AbstractOpt interface { applyAbstract(*abstractBinding) }
 graphql: type AuthShape struct { }
 graphql: type AuthSite struct { Coord string Field *ast.FieldDefinition Object *ast.Definition Kind SiteKind Requires Requirement Grants []string Arg string ListElement bool }
@@ -410,6 +416,7 @@ transport/gqlws: func WithOriginPatterns(patterns ...string) Option
 transport/gqlws: func WithPersistedQueries(cache apq.Cache) Option
 transport/gqlws: func WithPingInterval(d time.Duration) Option
 transport/gqlws: func WithReadLimit(n int64) Option
+transport/gqlws: func WithWriteTimeout(d time.Duration) Option
 transport/gqlws: type ConnectFunc = gqlwsproto.ConnectFunc
 transport/gqlws: type Handler struct { }
 transport/gqlws: type Option func(*Handler)

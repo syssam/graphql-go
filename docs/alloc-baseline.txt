@@ -3,9 +3,9 @@
 # Regenerate: go test -run TestAllocationBaseline -update-allocs .
 BenchmarkExecuteUsers 14
 BenchmarkFieldPathBare 14
-BenchmarkExecuteTypenameHeavy 50
+BenchmarkExecuteTypenameHeavy 48
 BenchmarkExecuteNoAuthorizer 9
 BenchmarkExecuteWithAuthorizer 11
 BenchmarkListResultsSlice 15
 BenchmarkQueryCostDisabled 16
-BenchmarkResponseLimitOn 87
+BenchmarkResponseLimitOn 83

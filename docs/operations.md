@@ -21,6 +21,8 @@ the right numbers depend on the schema.
 | `WithMaxResponseBytes` | **64 MiB** | On already. Lower it if your largest legitimate response is far smaller. |
 | `WithMaxErrors` | **1000** | On already. |
 | `WithPlanCacheBytes` | **16 MiB**, with `WithPlanCache` at **1024** entries | On already, and it is what stops distinct large queries from retaining gigabytes: a parsed document retains roughly 26x its query text. |
+| `apq.WithMaxBytes` | **16 MiB** | On already. Any client can register any query it can hash, so an entry count alone lets 1000 entries of 1 MiB park a gigabyte. |
+| `gqlws.WithWriteTimeout` / `gqlfiber.WithWriteTimeout` | **10 s** | On already. It is what ends a WebSocket peer that stays connected but stops reading; pings do not. |
 
 Two more that are not limits but belong in the same review:
 
@@ -30,7 +32,10 @@ Two more that are not limits but belong in the same review:
   get noticed — but a type nobody noticed arriving.
 - **`WithRecover`** is on by default. A panicking resolver becomes
   `internal system error` with code `INTERNAL_SERVER_ERROR`; the panic value
-  and stack go to `slog` and never to the client.
+  and stack go to `slog` and never to the client. A panicking DataLoader
+  batch function fails every `Load` waiting on it the same way, and a panic
+  in a subscription event's interceptors or presenter becomes one error event
+  rather than ending the process.
 
 ## Shutdown
 
@@ -76,16 +81,24 @@ ended for good instead of reconnecting.
 - **Per request** the engine allocates 12 to 14 objects for a small query
   (measured, `docs/performance.md`) and does not grow with schema size — that is the whole point of the compiled
   plan, and it is why request memory is not what you tune.
-- **A response over ~7 MB is not pooled.** `jsonw` drops a buffer whose
-  capacity passes 8 MiB, and `append` overshoots, so the next request rebuilds
-  it from scratch at about twice the bytes. The cap was 4 MiB until full
-  introspection on a 4 800-type schema was measured against it -- a 3.30 MB
-  response cost 38.4 MB/op where a 2.83 MB one cost 16.6. If your responses
-  routinely pass 7 MB, [`performance.md`](performance.md) has the numbers to
-  raise it against.
-- **`WithMaxConcurrency`** bounds resolver goroutines across the executor and
-  defaults to `GOMAXPROCS * 4`. Requests share it, so one request holding slots
-  delays others; in a container, `GOMAXPROCS` is what you are really setting.
+- **A response over ~15.7 MB is not pooled.** `jsonw` drops a buffer whose
+  capacity passes 16 MiB, and `append` overshoots, so the next request rebuilds
+  it from scratch at about twice the bytes. The cap was 4 MiB, then 8, and each
+  raise came from measuring full introspection rather than reasoning about it:
+  at 4 MiB a 3.30 MB response cost 38.4 MB/op where a 2.83 MB one cost 16.6, and
+  at 8 MiB a real 5 516-type schema's 6.56 MB introspection cost 71.3 MB/op on
+  every request where it costs 31.5 once it fits. **Size your headroom against
+  your own introspection response, not against your type count** -- that schema
+  is 1.25 KB per type where the synthetic one used to set the cap was 0.79. If
+  your responses routinely pass 15 MB, [`performance.md`](performance.md) has
+  the numbers to raise it against.
+- **Goroutines grow with the request, not with `WithMaxConcurrency`.** Every
+  concurrently scheduled field and list element runs on its own goroutine, so
+  a resolver returning 10 000 elements with resolver fields starts 10 000. The
+  option is a slot budget that `Stats` reports, and a task never waits for a
+  slot: one that did would hold back the DataLoader wave its siblings are
+  parked in. Bound the size of a request instead, with `WithQueryCost`,
+  `WithMaxComplexity` and `WithMaxResponseBytes`.
 
 ## What to watch
 

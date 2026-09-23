@@ -32,8 +32,9 @@ straight into a pooled JSON buffer.
   deprecation) and the GraphQL over HTTP protocol. The gaps that remain are all
   in the parser rather than the engine; each is tracked with a reproduction and
   an upstream patch in [`docs/spec-conformance.md`](docs/spec-conformance.md).
-- **Production behaviour by default.** Bounded resolver concurrency, panic
-  recovery, error masking, gRPC-style interceptors, schema directives, CSRF
+- **Production behaviour by default.** Saturating query cost, response
+  size and error-count limits, panic recovery (DataLoader batches and
+  subscription events included), error masking, gRPC-style interceptors, schema directives, CSRF
   prevention, DataLoader batching, and GitHub/Shopify-style complexity, depth
   and query-cost limits.
 
@@ -98,6 +99,14 @@ curl -s localhost:8080/graphql -H 'content-type: application/json' \
   -d '{"query":"{ user(id: \"1\") { id name } }"}'
 # {"data":{"user":{"id":"1","name":"Ada"}}}
 ```
+
+CSRF prevention is on by default, so a plain GET such as
+`curl 'localhost:8080/graphql?query={...}'` is refused with 403: a browser can
+send a GET cross-site without a preflight. Send `GraphQL-Require-Preflight: 1`,
+`Apollo-Require-Preflight: 1` (what Apollo Client sends) or `X-Requested-With`, or a
+`Content-Type` a form cannot send (the POST above uses `application/json`), to show the
+request is not forgeable. A browser `EventSource` cannot set headers, so subscribe over
+SSE with `fetch` and a POST instead.
 
 ## Subscriptions
 
@@ -193,7 +202,7 @@ field from an N+1 into one query per wave.
 |---|---|
 | `Object[E](name, fields...)` | Bind a GraphQL object type to Go struct `E`. Field functions receive `*E`. |
 | `Field` / `FieldArgs` | Pure data access; runs inline, never on its own goroutine. |
-| `Resolve` / `ResolveArgs` | May perform I/O; scheduled concurrently under a bounded semaphore. |
+| `Resolve` / `ResolveArgs` | May perform I/O; scheduled concurrently, one goroutine each. Bound the work of a request with the cost, complexity and response-size limits. |
 | `Args[A]()` / `Input[T](name)` | Decoder from struct fields (`graphql` / `json` tags, or `AuthorID` → `authorId`). Explicit `InputField` stays the zero-reflect path. |
 | `InputField`, `OmittableField` | Hand-written setters when a name or type needs an override. |
 | `Enum`, `Scalar` | Leaf types; several Go types may back one GraphQL type. |

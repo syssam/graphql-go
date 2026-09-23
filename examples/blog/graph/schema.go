@@ -16,3 +16,12 @@ func NewSchema(r Resolver, opts ...graphql.SchemaOption) (*graphql.Schema, error
 	all := append([]graphql.SchemaOption{Bindings(r)}, opts...)
 	return graphql.NewSchema(graphql.SDLFS(sdl, "schema/*.graphql"), all...)
 }
+
+// ValidateSchema builds the schema with no resolver behind it, so every
+// binding error surfaces before a resolver is written. Building never calls a
+// resolver -- Resolve captures it in a closure -- so the zero value is enough.
+func ValidateSchema(opts ...graphql.SchemaOption) error {
+	var r Resolver
+	_, err := NewSchema(r, opts...)
+	return err
+}

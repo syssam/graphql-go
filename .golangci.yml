@@ -88,6 +88,13 @@ linters:
       - path: ^examples/
         linters: [revive]
         text: "exported:"
+      # buildbench shells out to `go build` and `go test` to measure what a
+      # generator costs. noctx wants exec.CommandContext, which exists so a
+      # request can cancel a subprocess -- there is no request here, and a
+      # context.Background() threaded through to satisfy the linter would
+      # cancel nothing while reading as though it could.
+      - path: benchmarks/buildbench/
+        linters: [noctx]
       # revive's error-strings is ST1005 under another name, disabled above for
       # the same reason: GraphQL error messages are specified as sentences and
       # go to clients verbatim.

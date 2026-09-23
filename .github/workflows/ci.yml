@@ -89,6 +89,19 @@ jobs:
       - uses: golangci/golangci-lint-action@v6
         with:
           version: latest
+      # The action lints the directory it runs in, and this repository has four
+      # modules. Without this it linted the root and reported success, the same
+      # shape as `go test ./...` reaching one module of four: benchmarks/ was
+      # carrying 18 findings under this very config and compare/ 4, neither ever
+      # asked. The root .golangci.yml is found by searching upward, so the
+      # policy is the same in each.
+      - name: Lint every other module
+        shell: bash
+        run: |
+          for mod in benchmarks compare lint; do
+            echo "== $mod"
+            (cd "$mod" && golangci-lint run ./...)
+          done
 
       # The repository ships its own analyzer for a bug class -race cannot
       # find: a check-then-act pair on OperationContext that silently degrades

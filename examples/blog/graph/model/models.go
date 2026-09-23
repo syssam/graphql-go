@@ -16,6 +16,14 @@ const (
 	RoleUser  Role = "USER"
 )
 
+type Node interface {
+	IsNode()
+}
+
+type SearchResult interface {
+	IsSearchResult()
+}
+
 type Post struct {
 	ID          graphql.ID
 	Title       string
@@ -24,6 +32,10 @@ type Post struct {
 	PublishedAt *time.Time
 }
 
+func (*Post) IsNode() {}
+
+func (*Post) IsSearchResult() {}
+
 type User struct {
 	ID        graphql.ID
 	Name      string
@@ -31,6 +43,10 @@ type User struct {
 	Role      Role
 	CreatedAt time.Time
 }
+
+func (*User) IsNode() {}
+
+func (*User) IsSearchResult() {}
 
 type PostFilter struct {
 	AuthorID graphql.Omittable[*graphql.ID] `graphql:"authorId"`

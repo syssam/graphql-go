@@ -41,7 +41,7 @@ func Run(engine string, n int, repoRoot string, split, keep bool) Result {
 	if keep {
 		fmt.Fprintf(os.Stderr, "keeping %s\n", dir)
 	} else {
-		defer os.RemoveAll(dir)
+		defer func() { _ = os.RemoveAll(dir) }()
 	}
 
 	cache := filepath.Join(dir, ".gocache")

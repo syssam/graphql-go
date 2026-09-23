@@ -357,7 +357,33 @@ pool can only hold buffers that were actually created: to have one per P at
 which cost the same memory whether or not they are pooled. Raising the cap
 defers a release; it does not raise a peak.
 
-8 MiB and not more: it covers introspection to roughly 8 000 types, past the
-largest schema measured here, and every doubling beyond buys a band nobody has
-shown traffic in. `TestPoolCapCoversALargeSchemasIntrospection` fails if it
-drops back, naming the consequence rather than the constant.
+**Changed again: `maxPooledCap` is 16 MiB**, because the reasoning above was
+wrong in a way the numbers above could not show. 8 MiB was chosen as
+"introspection to roughly 8 000 types", extrapolated from 0.79 KB per type on
+the synthetic schema. Type count does not predict the response. The real
+consumer schema is 5 516 types and introspects to **6.56 MB** -- 1.25 KB per
+type, because its types are about twice as wide -- and 6.56 MB reaches a
+capacity of 8.05 MiB, one growth step over the cap. Measured on that schema,
+the same query repeated six times:
+
+| | 8 MiB cap | 16 MiB cap |
+|---|---:|---:|
+| first request | 71.4 MB allocated | 71.4 MB |
+| every request after | **71.3 MB** | **31.5 MB** |
+
+Flat at 71.3 MB is the signature: the buffer was never reused. `IntrospectOverPool8`
+(8 400 synthetic types, 6.58 MB response) reproduces it in-repo. Interleaved, n=12:
+
+| | before | after | |
+|---|---:|---:|---|
+| `IntrospectOverPool8` B/op | 72.75 MiB | 34.57 MiB | **-52.5%** (p=0.000) |
+| `IntrospectOverPool8` sec/op | 79.62 ms | 61.56 ms | **-22.7%** (p=0.000) |
+| `IntrospectOverPool8` allocs/op | 740.9k | 740.9k | equal |
+| `IntrospectPooled` (below both caps) | | | not distinguishable (p=0.551) |
+| `IntrospectOverPool` (below 8 MiB) | | | not distinguishable (p=0.478) |
+
+An 8 MiB cap pools a response up to about 6.4 MB; 16 MiB pools one up to
+15.7 MB, because the runtime's growth steps get closer to exact as they get
+larger. `TestPoolCapCoversALargeSchemasIntrospection` now pins the **measured**
+6.56 MB rather than a figure derived from type count, which is what let the cap
+sit one step too low.

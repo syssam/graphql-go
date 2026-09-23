@@ -24,3 +24,9 @@ coverage.*
 /compare/shared/
 /compare/gqlgen/gen/
 /compare/graphqlgo/gen/
+
+# Claude Code: personal settings and session worktrees stay local;
+# .claude/settings.json, rules/, skills/ and hooks/ are shared.
+.claude/settings.local.json
+.claude/worktrees/
+CLAUDE.local.md
