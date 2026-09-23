@@ -167,9 +167,13 @@ func (b *shapeBuilder) field(obj *objectType, f *planField) {
 			b.hasArgSites = true
 		}
 		// Set once from the pre-pass rather than incremented per append, so a
-		// later append landing inside this loop cannot raise the count --
-		// which would shift instanceIdx past the instance site while
-		// hasInstanceSite still reported true.
+		// later append landing inside this loop cannot raise the count.
+		// enforceAuth walks sites authIdx+1 .. authIdx+argSiteCount() as this
+		// field's arguments, so a count one too high reads the next site --
+		// the instance site, or another field's output site -- and refuses
+		// this field on a deny that was never about it
+		// (TestInstanceSitesAtPlanCompile,
+		// TestInstanceSiteAlongsideAnArgumentSite).
 		f.argSites = int32(nArgSites)
 	}
 

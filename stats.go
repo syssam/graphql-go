@@ -23,7 +23,7 @@ type ExecutorStats struct {
 	PlanCacheMisses int64
 
 	// ConcurrencyInUse and ConcurrencyLimit are the resolver slots held right
-	// now and the WithMaxConcurrency bound; both are zero when concurrency is
+	// now and the WithMaxConcurrency budget; both are zero when concurrency is
 	// disabled.
 	ConcurrencyInUse int
 	ConcurrencyLimit int

@@ -33,3 +33,28 @@ func TestSubscribeErrorUnwrapsItsErrors(t *testing.T) {
 		t.Fatal("errors.As did not return the response's first error")
 	}
 }
+
+// Error() is what every %v, every log line and every caller that does not
+// unwrap will see, and it is the only part of this type nothing exercised.
+// Its two branches disagree about what it means to have no errors, and the
+// zero-Response one is reachable: a transport constructing a SubscribeError
+// to report its own refusal has no Response to put in it.
+func TestSubscribeErrorStringifies(t *testing.T) {
+	_, e := newFixtureExecutor(t)
+	_, err := e.Subscribe(context.Background(), &Request{Query: `subscription { nope }`})
+	var se *SubscribeError
+	if !errors.As(err, &se) {
+		t.Fatalf("error = %v, want a *SubscribeError", err)
+	}
+	if got := se.Error(); got == "" || got == "graphql: " {
+		t.Errorf("Error() = %q, which says nothing about the refusal", got)
+	}
+	if got, want := se.Error(), "graphql: "+se.Response.Errors[0].Message; got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+	for _, empty := range []*SubscribeError{{}, {Response: &Response{}}} {
+		if got := empty.Error(); got == "" {
+			t.Errorf("%#v stringifies to the empty string", empty)
+		}
+	}
+}

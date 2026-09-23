@@ -11,7 +11,9 @@ package loader
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"runtime"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 
@@ -23,6 +25,8 @@ import (
 // error fails every waiter in that batch and is not cached.
 //
 // Keys are unique. The function is called from a single goroutine per batch.
+// A panic is recovered, logged, and fails every waiter in the batch with an
+// INTERNAL_SERVER_ERROR that does not carry the panic value.
 //
 // ctx is the request's, not a fresh background one: it carries the request's
 // cancellation, deadline and values, so a batch stops when the client goes
@@ -331,10 +335,24 @@ func (s *requestScope[K, V]) flush(ctx context.Context) {
 	}
 }
 
-func (s *requestScope[K, V]) invoke(ctx context.Context, keys []K) (map[K]V, map[K]error, error) {
+// invoke recovers because nothing above it can. The keys it was called for
+// have already left s.waiters, so a panic that escaped would strand every
+// sibling Load until its deadline, and on the scheduler's own goroutine it
+// would end the process.
+func (s *requestScope[K, V]) invoke(ctx context.Context, keys []K) (got map[K]V, keyErrs map[K]error, err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	defer func() {
+		if r := recover(); r != nil {
+			slog.ErrorContext(ctx, "loader: batch function panic",
+				"panic", r,
+				"stack", string(debug.Stack()),
+			)
+			got, keyErrs = nil, nil
+			err = graphql.Errorf("internal system error").WithCode(graphql.CodeInternal)
+		}
+	}()
 	switch {
 	case s.loader.mapped != nil:
 		return s.loader.mapped(ctx, keys)

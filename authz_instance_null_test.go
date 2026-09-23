@@ -193,10 +193,10 @@ func TestCheckObjectsValidatesEachOutcomeAgainstItsOwnSite(t *testing.T) {
 //
 // It is not fixed by parking the check on the wave the way loader.Load does.
 // A nested single-object check runs where writeFieldsConcurrent writes the
-// fields that are not schedulable -- after g.wait(), with the wave spent --
-// and what coalesces there is whatever happens to be queued when the fallback
-// tick fires, which is a timing-dependent amount of batching and not a
-// property a test can hold. Fixing it needs breadth-first writing, not a
+// fields that are not schedulable -- after g.wait() -- and what coalesces
+// there is whatever other subtrees happen to have queued when nothing is left
+// running, which is a timing-dependent amount of batching and not a property
+// a test can hold. Fixing it needs breadth-first writing, not a
 // different park.
 func TestNestedSingleObjectIsOneCallEach(t *testing.T) {
 	var mu sync.Mutex

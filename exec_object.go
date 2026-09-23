@@ -548,59 +548,61 @@ type taskResult struct {
 	ok  bool
 }
 
-// taskGroup runs closures on the executor's bounded worker budget, falling
-// back to inline execution when no slot is free. Panics escaping a
-// goroutine (only possible with recovery disabled) are re-raised in the
-// waiting goroutine.
+// taskGroup runs each closure on its own goroutine. A free slot in the
+// executor's budget is taken when there is one, but a task never waits for
+// one: a task waiting for a slot has not begun, and a DataLoader wave cannot
+// dispatch until every announced task has, so tasks parked on a batch while
+// holding every slot would wait forever for the ones queued behind them.
+// Panics escaping a goroutine (only possible with recovery disabled) are
+// re-raised in the waiting goroutine.
+//
+// The group announces its tasks to the operation's WaveCoordinator when it is
+// made, before any is launched, and reports each task's begin and end and its
+// own wait, so a DataLoader dispatches once nothing is left to queue a key.
 type taskGroup struct {
 	st       *execState
-	async    bool
+	waves    *WaveCoordinator
 	wg       sync.WaitGroup
 	panicked atomic.Bool
 	panicVal any
 }
 
+// newTaskGroup must be called before any of the n tasks is launched.
+func (st *execState) newTaskGroup(ctx context.Context, n int) *taskGroup {
+	g := &taskGroup{st: st}
+	if oc := OperationFrom(ctx); oc != nil && oc.hub != nil && n > 0 {
+		g.waves = oc.hub
+		g.waves.announce(n)
+	}
+	return g
+}
+
 func (g *taskGroup) run(task func()) {
-	if g.async {
-		g.wg.Add(1)
-		go func() {
-			defer g.wg.Done()
-			if g.st.e.sem != nil {
-				select {
-				case g.st.e.sem <- struct{}{}:
-					defer func() { <-g.st.e.sem }()
-				default:
-				}
+	g.wg.Add(1)
+	go func() {
+		defer g.wg.Done()
+		g.waves.taskBegin()
+		defer g.waves.taskEnd()
+		if g.st.e.sem != nil {
+			select {
+			case g.st.e.sem <- struct{}{}:
+				defer func() { <-g.st.e.sem }()
+			default:
 			}
-			defer func() {
-				if r := recover(); r != nil && g.panicked.CompareAndSwap(false, true) {
-					g.panicVal = r
-				}
-			}()
-			task()
+		}
+		defer func() {
+			if r := recover(); r != nil && g.panicked.CompareAndSwap(false, true) {
+				g.panicVal = r
+			}
 		}()
-		return
-	}
-	select {
-	case g.st.e.sem <- struct{}{}:
-		g.wg.Add(1)
-		go func() {
-			defer g.wg.Done()
-			defer func() { <-g.st.e.sem }()
-			defer func() {
-				if r := recover(); r != nil && g.panicked.CompareAndSwap(false, true) {
-					g.panicVal = r
-				}
-			}()
-			task()
-		}()
-	default:
 		task()
-	}
+	}()
 }
 
 func (g *taskGroup) wait() {
+	g.waves.block()
 	g.wg.Wait()
+	g.waves.resume()
 	if g.panicked.Load() {
 		panic(g.panicVal)
 	}
@@ -626,17 +628,12 @@ func (st *execState) writeFieldsConcurrent(ctx context.Context, w *jsonw.Writer,
 			n++
 		}
 	}
-	endWave := st.pushWave(ctx, n)
-	defer endWave()
-
-	g := taskGroup{st: st, async: true}
+	g := st.newTaskGroup(ctx, n)
 	for i, f := range fields {
 		if !f.schedulable {
 			continue
 		}
 		g.run(func() {
-			st.waveTaskBegin(ctx)
-			defer st.waveTaskEnd(ctx)
 			sub := jsonw.Get()
 			sub.ShareLimit(w)
 			ok := st.writeFieldValue(ctx, sub, obj, f, parent, path)
@@ -703,18 +700,13 @@ func (st *execState) writeListConcurrentPlain(ctx context.Context, w *jsonw.Writ
 		}
 	}()
 
-	endWave := st.pushWave(ctx, len(elems))
-	defer endWave()
-
-	g := taskGroup{st: st, async: true}
+	g := st.newTaskGroup(ctx, len(elems))
 	// Every element is spawned even after a trip: the wave announced all of
 	// them, and a loader flushes only once every announced task has begun, so
 	// skipping one would strand each Load already parked. A task started after
 	// the trip fails at its first checkpoint.
 	for i, e := range elems {
 		g.run(func() {
-			st.waveTaskBegin(ctx)
-			defer st.waveTaskEnd(ctx)
 			sub := jsonw.Get()
 			sub.ShareLimit(w)
 			okElem := st.writeValue(ctx, sub, e, t.Elem, shape.elem, f, &pathNode{parent: path, index: i, isIndex: true})
@@ -748,7 +740,7 @@ func (st *execState) writeListConcurrentPlain(ctx context.Context, w *jsonw.Writ
 // least two after drops. See writeListConcurrentPlain for why the two are
 // kept apart, and what must stay in step between them. handled is false when the list is too short; the
 // caller writes the remaining elements without traversing the value again.
-// Drop is removed before pushWave so a loader is not left waiting for a task
+// Drop is removed before the group is made so a loader is not left waiting for a task
 // that will never begin; Deny and Null still occupy a written position.
 func (st *execState) writeListConcurrent(ctx context.Context, w *jsonw.Writer, t *ast.Type, shape *valueShape, f *planField, path *pathNode, elems []any, outs []Outcome) (ok, handled bool) {
 	// keep[j] is the index in elems of the j-th element actually written, so j
@@ -776,18 +768,13 @@ func (st *execState) writeListConcurrent(ctx context.Context, w *jsonw.Writer, t
 		}
 	}()
 
-	endWave := st.pushWave(ctx, n)
-	defer endWave()
-
-	g := taskGroup{st: st, async: true}
+	g := st.newTaskGroup(ctx, n)
 	// Every remaining element is spawned even after a trip: the wave announced
 	// all of them, and a loader flushes only once every announced task has
 	// begun, so skipping one would strand each Load already parked. A task
 	// started after the trip fails at its first checkpoint.
 	for j := range n {
 		g.run(func() {
-			st.waveTaskBegin(ctx)
-			defer st.waveTaskEnd(ctx)
 			sub := jsonw.Get()
 			sub.ShareLimit(w)
 			i := int(keep[j])
@@ -831,30 +818,6 @@ func (st *execState) writeListConcurrent(ctx context.Context, w *jsonw.Writer, t
 	}
 	w.EndArray()
 	return true, true
-}
-
-func (st *execState) pushWave(ctx context.Context, n int) func() {
-	if n <= 0 {
-		return func() {}
-	}
-	oc := OperationFrom(ctx)
-	if oc == nil || oc.hub == nil {
-		return func() {}
-	}
-	oc.hub.push(n)
-	return oc.hub.pop
-}
-
-func (st *execState) waveTaskBegin(ctx context.Context) {
-	if oc := OperationFrom(ctx); oc != nil && oc.hub != nil {
-		oc.hub.taskBegin()
-	}
-}
-
-func (st *execState) waveTaskEnd(ctx context.Context) {
-	if oc := OperationFrom(ctx); oc != nil && oc.hub != nil {
-		oc.hub.taskEnd()
-	}
 }
 
 // recordCancellation adds a single error describing why execution stopped.

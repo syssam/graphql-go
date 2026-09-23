@@ -1,10 +1,6 @@
 package graphql
 
-import (
-	"runtime"
-	"sync"
-	"sync/atomic"
-)
+import "sync"
 
 // WaveCoordinator lets request-scoped batching extensions take part in the
 // executor's dispatch of concurrent waves. A wave is announced before
@@ -19,27 +15,30 @@ import (
 //	w.Park()          // before blocking on batched work
 //	defer w.Unpark()
 //
-// When every in-flight task in the current wave is parked, the registered
-// callbacks run so the keys queued by all of them dispatch together. The
+// When nothing in the operation is left running -- every task begun, and each
+// either parked or waiting for tasks of its own -- the registered callbacks
+// run so the keys queued by all of them dispatch together. The
 // loader package is built on this; most applications use that instead.
 //
 // A nil *WaveCoordinator is valid and does nothing, which is what Waves
 // returns outside an Execute call.
 type WaveCoordinator struct {
-	mu        sync.Mutex
-	stack     []waveState
-	flushes   []func()
-	scheduled atomic.Bool
-}
-
-// waveState tracks one level of announced sibling tasks. A wave is ready to
-// dispatch once every announced task has begun and every task still in
-// flight is parked.
-type waveState struct {
-	announced int
-	begun     int
-	ended     int
-	waiting   int
+	mu sync.Mutex
+	// The counts are for the whole operation, not per wave. A stack of waves
+	// was tried first and was wrong: sibling subtrees push and pop their waves
+	// concurrently, so a park, a task or a pop landed on whichever wave
+	// happened to be on top, and a Load could wait for its deadline
+	// (TestLoadIsFlushedWhenWavesPopOutOfOrder).
+	//
+	// pending is announced tasks not yet begun. running is goroutines doing
+	// the operation's work: the one that started it, and every task that has
+	// begun, less those parked on batched work or waiting for their own tasks.
+	// A park by a goroutine the executor did not start can take it below
+	// zero, which reads the same as zero.
+	pending int32
+	running int32
+	waiting int32
+	flushes []func()
 }
 
 // Waves returns the coordinator for this operation. It is nil when the
@@ -50,6 +49,13 @@ func (oc *OperationContext) Waves() *WaveCoordinator {
 		return nil
 	}
 	return oc.hub
+}
+
+// startWaves gives oc its coordinator, counting the calling goroutine as the
+// one running the operation.
+func (oc *OperationContext) startWaves() {
+	oc.wave.running = 1
+	oc.hub = &oc.wave
 }
 
 // OnReady registers a callback to run when a wave is ready to dispatch.
@@ -64,41 +70,18 @@ func (w *WaveCoordinator) OnReady(fn func()) {
 	w.mu.Unlock()
 }
 
-// Park reports that the caller is about to block on batched work. It runs
-// the ready callbacks when parking completes the current wave, and falls back
-// to the next scheduler tick both outside any wave and inside one that is
-// spent -- every announced task begun and ended -- since such a wave can
-// never complete again and the caller would otherwise wait for its deadline.
+// Park reports that the caller is about to block on batched work. When that
+// leaves nothing running and no announced task still to begin, every key the
+// operation can queue before it blocks has been queued, so the ready
+// callbacks run.
 func (w *WaveCoordinator) Park() {
 	if w == nil {
 		return
 	}
 	w.mu.Lock()
-	if n := len(w.stack); n > 0 {
-		st := &w.stack[n-1]
-		st.waiting++
-		if w.ready(st) {
-			fns := append([]func(){}, w.flushes...)
-			w.mu.Unlock()
-			w.runFlushes(fns)
-			return
-		}
-		// ready needs a task in flight. A wave whose announced tasks have all
-		// begun and all ended has none and will never have another, so a
-		// caller parking into it waits for its deadline: that is where
-		// writeFieldsConcurrent writes a field that is not schedulable, after
-		// g.wait() and before the deferred pop, which is exactly where an
-		// Inline() resolver's Load runs. Fall back to the tick there, the same
-		// as parking outside any wave.
-		dead := st.begun >= st.announced && st.begun == st.ended
-		w.mu.Unlock()
-		if dead {
-			w.schedule()
-		}
-		return
-	}
-	w.mu.Unlock()
-	w.schedule()
+	w.running--
+	w.waiting++
+	w.unlockAndFlushIfReady()
 }
 
 // Unpark reports that the caller is no longer blocked.
@@ -107,73 +90,72 @@ func (w *WaveCoordinator) Unpark() {
 		return
 	}
 	w.mu.Lock()
-	if n := len(w.stack); n > 0 && w.stack[n-1].waiting > 0 {
-		w.stack[n-1].waiting--
+	if w.waiting > 0 {
+		w.waiting--
 	}
+	w.running++
 	w.mu.Unlock()
 }
 
-// push announces n sibling tasks about to be launched.
-func (w *WaveCoordinator) push(n int) {
-	w.mu.Lock()
-	w.stack = append(w.stack, waveState{announced: n})
-	w.mu.Unlock()
-}
-
-func (w *WaveCoordinator) pop() {
-	w.mu.Lock()
-	if n := len(w.stack); n > 0 {
-		w.stack = w.stack[:n-1]
+// announce reports n sibling tasks about to be launched. It must precede
+// their launch: until they begin, they hold back dispatch.
+func (w *WaveCoordinator) announce(n int) {
+	if w == nil {
+		return
 	}
+	w.mu.Lock()
+	w.pending += int32(n)
 	w.mu.Unlock()
 }
 
 func (w *WaveCoordinator) taskBegin() {
-	w.mu.Lock()
-	if n := len(w.stack); n > 0 {
-		w.stack[n-1].begun++
+	if w == nil {
+		return
 	}
+	w.mu.Lock()
+	w.pending--
+	w.running++
 	w.mu.Unlock()
 }
 
 func (w *WaveCoordinator) taskEnd() {
-	w.mu.Lock()
-	var fns []func()
-	if n := len(w.stack); n > 0 {
-		w.stack[n-1].ended++
-		if w.ready(&w.stack[n-1]) {
-			fns = append(fns, w.flushes...)
-		}
-	}
-	w.mu.Unlock()
-	w.runFlushes(fns)
-}
-
-func (w *WaveCoordinator) ready(s *waveState) bool {
-	if s.waiting == 0 || s.begun < s.announced {
-		return false
-	}
-	inFlight := s.begun - s.ended
-	return inFlight > 0 && s.waiting >= inFlight
-}
-
-// schedule dispatches on the next scheduler tick. It is the fallback for
-// Park outside any announced wave, such as a sequential Load.
-func (w *WaveCoordinator) schedule() {
-	if !w.scheduled.CompareAndSwap(false, true) {
+	if w == nil {
 		return
 	}
-	go func() {
-		runtime.Gosched()
-		w.scheduled.Store(false)
-		w.mu.Lock()
-		fns := append([]func(){}, w.flushes...)
-		w.mu.Unlock()
-		w.runFlushes(fns)
-	}()
+	w.mu.Lock()
+	w.running--
+	w.unlockAndFlushIfReady()
 }
 
-func (w *WaveCoordinator) runFlushes(fns []func()) {
+// block and resume bracket a goroutine waiting for the tasks it launched,
+// which is not running any more than a parked one is.
+func (w *WaveCoordinator) block() {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	w.running--
+	w.unlockAndFlushIfReady()
+}
+
+func (w *WaveCoordinator) resume() {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	w.running++
+	w.mu.Unlock()
+}
+
+// unlockAndFlushIfReady releases w.mu, running the callbacks outside it when
+// the operation is ready to dispatch.
+func (w *WaveCoordinator) unlockAndFlushIfReady() {
+	if w.waiting == 0 || w.pending > 0 || w.running > 0 {
+		w.mu.Unlock()
+		return
+	}
+	fns := append([]func(){}, w.flushes...)
+	w.mu.Unlock()
 	for _, fn := range fns {
 		fn()
 	}

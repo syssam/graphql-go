@@ -371,6 +371,26 @@ type Query { secret(w: Where): String! }
 	}
 }
 
+// A marker naming a directive the SDL never declares guards nothing: no
+// coordinate can carry it, so every field the author believed was marked is
+// open. It is the misconfiguration a typo produces, it is silent by nature --
+// the schema builds and serves, just unguarded -- and it was the one branch of
+// the marker checks nothing reached.
+func TestMarkerNamingAnUndeclaredDirectiveIsRejected(t *testing.T) {
+	const sdl = `
+directive @authenticated on FIELD_DEFINITION
+type Query { secret: String! @authenticated }
+`
+	_, err := NewSchema(SDL(sdl), MarkerDirective("authenticaded", "authn"))
+	if err == nil {
+		t.Fatal("a marker naming a directive the SDL does not declare was accepted; " +
+			"every field the author marked is unguarded and nothing says so")
+	}
+	if !strings.Contains(err.Error(), "authenticaded") {
+		t.Fatalf("error does not name the directive that is missing: %v", err)
+	}
+}
+
 // A marker must declare the scope it stands for; an empty one would make
 // every marked field carry a requirement nothing can hold.
 func TestMarkerRequiresAScope(t *testing.T) {

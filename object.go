@@ -211,7 +211,7 @@ func newFieldSpec[P, R any](name string, argsType reflect.Type, pure bool, opts 
 		if isLeaf(b.ast, def.Type) {
 			fd.leaf = true
 			key := typeKey{def.Type.Name(), spec.result}
-			if err := checkOutputLeafShape(b.reg, key, def.Type); err != nil {
+			if err := checkOutputLeafShape(b.reg, key, def.Type, b.ast.Types[def.Type.Name()].Kind); err != nil {
 				return fmt.Errorf("field %s: %w", coord, err)
 			}
 			lw := b.reg.leafWriters[key].(func(*jsonw.Writer, R, *ast.Type) error)

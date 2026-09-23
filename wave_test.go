@@ -1,9 +1,7 @@
 package graphql
 
 import (
-	"sync/atomic"
 	"testing"
-	"testing/synctest"
 )
 
 // TestWaveCoordinatorNilIsInert pins the documented contract that a nil
@@ -14,6 +12,11 @@ func TestWaveCoordinatorNilIsInert(t *testing.T) {
 	w.OnReady(func() { t.Fatal("a nil coordinator must not run callbacks") })
 	w.Park()
 	w.Unpark()
+	w.announce(2)
+	w.taskBegin()
+	w.taskEnd()
+	w.block()
+	w.resume()
 
 	var oc *OperationContext
 	if got := oc.Waves(); got != nil {
@@ -24,17 +27,26 @@ func TestWaveCoordinatorNilIsInert(t *testing.T) {
 	}
 }
 
-// TestWaveCoordinatorDispatchesWhenWaveParks walks the protocol the executor
-// drives: a wave is announced, its tasks begin, and dispatch happens only
-// once every in-flight task is parked -- not before.
-func TestWaveCoordinatorDispatchesWhenWaveParks(t *testing.T) {
-	w := &WaveCoordinator{}
-	flushes := 0
-	w.OnReady(func() { flushes++ })
+// newWaves is a coordinator as an executor starts one: the calling goroutine
+// is running the operation.
+func newWaves(flushes *int) *WaveCoordinator {
+	oc := &OperationContext{}
+	oc.startWaves()
+	oc.hub.OnReady(func() { *flushes++ })
+	return oc.hub
+}
 
-	w.push(2)
+// TestWaveCoordinatorDispatchesWhenWaveParks walks the protocol the executor
+// drives: tasks are announced, begin, and dispatch happens only once every
+// one of them is parked -- not before.
+func TestWaveCoordinatorDispatchesWhenWaveParks(t *testing.T) {
+	flushes := 0
+	w := newWaves(&flushes)
+
+	w.announce(2)
 	w.taskBegin()
 	w.taskBegin()
+	w.block()
 
 	w.Park()
 	if flushes != 0 {
@@ -42,31 +54,28 @@ func TestWaveCoordinatorDispatchesWhenWaveParks(t *testing.T) {
 	}
 	w.Park()
 	if flushes != 1 {
-		t.Fatalf("flushes = %d, want 1 once every in-flight task is parked", flushes)
+		t.Fatalf("flushes = %d, want 1 once every task is parked", flushes)
 	}
-
 	w.Unpark()
 	w.Unpark()
 	w.taskEnd()
 	w.taskEnd()
-	w.pop()
+	w.resume()
 }
 
-// TestWaveCoordinatorWaitsForLateTask covers the case the wave bookkeeping
-// exists for: a task that has not begun yet must hold back dispatch, or its
-// keys are loaded in a second batch.
+// A task that has not begun yet must hold back dispatch, or its keys are
+// loaded in a second batch.
 func TestWaveCoordinatorWaitsForLateTask(t *testing.T) {
-	w := &WaveCoordinator{}
 	flushes := 0
-	w.OnReady(func() { flushes++ })
+	w := newWaves(&flushes)
 
-	w.push(2)
+	w.announce(2)
 	w.taskBegin()
+	w.block()
 	w.Park()
 	if flushes != 0 {
 		t.Fatal("dispatched before the second task began")
 	}
-
 	w.taskBegin()
 	w.Park()
 	if flushes != 1 {
@@ -74,76 +83,75 @@ func TestWaveCoordinatorWaitsForLateTask(t *testing.T) {
 	}
 }
 
-// TestWaveCoordinatorScheduleFallback covers Park outside any announced wave,
-// such as a sequential Load: there is no wave to complete, so dispatch has to
-// happen on the next scheduler tick instead.
-//
-// synctest runs the dispatch goroutine in a bubble, so Wait returns once it
-// has finished rather than after a real timeout.
-func TestWaveCoordinatorScheduleFallback(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		w := &WaveCoordinator{}
-		var flushes atomic.Int32
-		w.OnReady(func() { flushes.Add(1) })
+// The goroutine that launched the tasks holds back dispatch until it waits
+// for them: until then it can still start more work that queues keys.
+func TestWaveCoordinatorWaitsForTheLauncher(t *testing.T) {
+	flushes := 0
+	w := newWaves(&flushes)
 
-		w.Park()
-		synctest.Wait()
-
-		if got := flushes.Load(); got != 1 {
-			t.Fatalf("flushes = %d, want 1 after the fallback tick", got)
-		}
-	})
+	w.announce(1)
+	w.taskBegin()
+	w.Park()
+	if flushes != 0 {
+		t.Fatal("dispatched while the launching goroutine was still running")
+	}
+	w.block()
+	if flushes != 1 {
+		t.Fatalf("flushes = %d, want 1 once the launcher waits", flushes)
+	}
 }
 
-// A wave whose announced tasks have all begun and all ended has nothing in
-// flight, so ready can never be true for it again. writeFieldsConcurrent
-// leaves exactly that state on the stack while it writes the fields that are
-// not schedulable, which is where an Inline() resolver's Load parks. Without
-// the fallback the caller waits for its deadline.
-func TestWaveCoordinatorFallsBackWhenTheWaveIsDead(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		w := &WaveCoordinator{}
-		var flushes atomic.Int32
-		w.OnReady(func() { flushes.Add(1) })
+// A Load on the goroutine running the operation, with nothing else in flight
+// -- a serial mutation field, or an Inline() resolver written after its
+// siblings -- has nothing to wait for and dispatches at once.
+func TestWaveCoordinatorDispatchesALoneLoad(t *testing.T) {
+	flushes := 0
+	w := newWaves(&flushes)
 
-		w.push(2)
-		for range 2 {
-			w.taskBegin()
-			w.taskEnd()
-		}
-		// Inline, after g.wait(), with the wave still pushed.
-		w.Park()
-		synctest.Wait()
+	w.Park()
+	if flushes != 1 {
+		t.Fatalf("flushes = %d, want 1 for a Load with nothing else running", flushes)
+	}
+	w.Unpark()
 
-		if got := flushes.Load(); got != 1 {
-			t.Fatalf("flushes = %d, want 1: a park into a spent wave was never dispatched", got)
-		}
-		w.Unpark()
-	})
+	// And after a group of tasks has finished, from the launcher.
+	w.announce(2)
+	w.taskBegin()
+	w.taskBegin()
+	w.block()
+	w.taskEnd()
+	w.taskEnd()
+	w.resume()
+	w.Park()
+	if flushes != 2 {
+		t.Fatalf("flushes = %d, want 2: a Load after the group finished was not dispatched", flushes)
+	}
 }
 
-// The fallback must not fire while the wave can still become ready, or a
-// batch dispatches before its siblings have queued their keys and batching
-// degrades towards N+1.
-func TestWaveCoordinatorDoesNotFallBackWhileATaskIsInFlight(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		w := &WaveCoordinator{}
-		var flushes atomic.Int32
-		w.OnReady(func() { flushes.Add(1) })
+// Dispatch must not happen while any task can still queue a key, wherever in
+// the operation that task is. A per-wave count saw only its own wave, so a
+// sibling subtree still running did not hold it back.
+func TestWaveCoordinatorWaitsForEveryRunningSubtree(t *testing.T) {
+	flushes := 0
+	w := newWaves(&flushes)
 
-		w.push(2)
-		w.taskBegin()
-		w.taskBegin()
-		// One of the two parks; the other is still working.
-		w.Park()
-		synctest.Wait()
-		if got := flushes.Load(); got != 0 {
-			t.Fatalf("flushes = %d, want 0 while a sibling is still in flight", got)
-		}
-		// When it parks too, the wave is ready and they dispatch together.
-		w.Park()
-		if got := flushes.Load(); got != 1 {
-			t.Fatalf("flushes = %d, want 1 once every in-flight task has parked", got)
-		}
-	})
+	w.announce(2) // a and c
+	w.taskBegin()
+	w.taskBegin()
+	w.block()
+
+	w.announce(2) // a's children
+	w.taskBegin()
+	w.taskBegin()
+	w.block() // a waits for them
+
+	w.Park() // both of a's children park
+	w.Park()
+	if flushes != 0 {
+		t.Fatal("dispatched while c was still running")
+	}
+	w.Park() // c parks
+	if flushes != 1 {
+		t.Fatalf("flushes = %d, want 1 once nothing is left running", flushes)
+	}
 }

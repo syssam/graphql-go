@@ -6,25 +6,36 @@ import (
 	"unsafe"
 )
 
-// execState and OperationContext sit on size-class boundaries; CLAUDE.md
-// records an atomic.Int64 on execState costing +3.2% B/op with its feature
-// disabled. These are not assertions about a good number, they are a record
-// of the number, so a later change that crosses a boundary is visible.
+// The three hot-path structs sit on size-class boundaries; CLAUDE.md records
+// an atomic.Int64 on execState costing +3.2% B/op with its feature disabled.
+// All three are asserted rather than logged. execState was logged only, which
+// meant the struct CLAUDE.md names first -- "check unsafe.Sizeof before adding
+// a field" -- was the one nothing checked: a field pushing it from 64 to 72
+// printed the new number and passed.
+//
+// Crossing a boundary here is allowed, but it is a decision to be taken with
+// an interleaved benchstat and written down, not one to be discovered later
+// in a log line nobody reads.
 func TestStructSizes(t *testing.T) {
-	t.Logf("execState        = %d bytes", unsafe.Sizeof(execState{}))
-	t.Logf("planField        = %d bytes", unsafe.Sizeof(planField{}))
-
-	// OperationContext holds its WaveCoordinator by value, which only pays
-	// for itself because 160 + 64 lands exactly on the 224 size class: the
-	// separate coordinator cost the same bytes in a second allocation. One
-	// more word here crosses to 256 and the embedding starts costing 32
-	// bytes a request instead of saving an allocation, so re-measure that
-	// trade rather than just updating the number.
-	if got := unsafe.Sizeof(OperationContext{}); got != 224 {
-		t.Errorf("OperationContext = %d bytes, want 224 (see the comment: the embedded WaveCoordinator depends on it)", got)
+	// execState is allocated per request and per concurrent field group. 64
+	// is the 64 class exactly; one more word is 80, a quarter more memory on
+	// the single hottest allocation in the engine.
+	if got := unsafe.Sizeof(execState{}); got != 64 {
+		t.Errorf("execState = %d bytes, want 64; crossing the size class is a benchstat decision", got)
 	}
 
-	// Unlike the two logged above, this one is asserted: runSubscriptionEvent
+	// OperationContext holds its WaveCoordinator by value, which only pays
+	// for itself because the two land on one size class: 160 + 64 was exactly
+	// 224, and the separate coordinator cost the same bytes in a second
+	// allocation. The coordinator is 48 bytes since it keeps three counts for
+	// the operation instead of a stack of waves, so 208 is the 208 class. One
+	// more word crosses to 224 and costs 16 bytes a request, so re-measure that
+	// trade rather than just updating the number.
+	if got := unsafe.Sizeof(OperationContext{}); got != 208 {
+		t.Errorf("OperationContext = %d bytes, want 208 (see the comment: the embedded WaveCoordinator depends on it)", got)
+	}
+
+	// runSubscriptionEvent
 	// copies a planField by value once per event (`f := *src`), and a slice
 	// field here (argSites was briefly []int32) pushed the struct from 176 to
 	// 200 bytes -- a whole extra size class paid on every event. argSites is

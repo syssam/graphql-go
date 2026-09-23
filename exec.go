@@ -72,9 +72,15 @@ type Executor struct {
 // ExecutorOption configures an Executor.
 type ExecutorOption func(*Executor)
 
-// WithMaxConcurrency bounds the number of resolver goroutines running at
-// once across all requests. Fields that cannot obtain a slot run inline.
-// The default is 4 × GOMAXPROCS; zero disables concurrency.
+// WithMaxConcurrency sets the slot budget shared by every request's
+// concurrently scheduled fields, which Stats reports as ConcurrencyInUse and
+// ConcurrencyLimit. It does not cap goroutines: each concurrently scheduled
+// field or list element runs on its own goroutine and takes a slot only if
+// one is free, because a field waiting for a slot would hold back the
+// DataLoader wave its siblings are parked in. What bounds the work of one
+// request is its size, so bound that with WithMaxComplexity, WithQueryCost
+// and WithMaxResponseBytes. Zero disables concurrent resolution: every field
+// runs inline, in order. The default is 4 × GOMAXPROCS.
 func WithMaxConcurrency(n int) ExecutorOption {
 	return func(e *Executor) { e.maxConcurrency = n }
 }
@@ -131,8 +137,11 @@ func DisableSuggestions() ExecutorOption {
 
 // WithRecover controls whether resolver panics are converted into
 // INTERNAL_SERVER_ERROR field errors, and Authorizer panics into the same
-// error for the whole operation or event. It is enabled by default; disable it
-// only in tests that want panics to surface.
+// error for the whole operation or event. A subscription event's interceptors
+// and presenter run on the executor's own goroutine rather than the caller's,
+// so a panic there becomes an error event instead of reaching no recover at
+// all. It is enabled by default; disable it only in tests that want panics to
+// surface.
 func WithRecover(enabled bool) ExecutorOption {
 	return func(e *Executor) { e.recover = enabled }
 }
@@ -410,7 +419,7 @@ func (e *Executor) execute(ctx context.Context, req *Request) *Response {
 		plan:          p,
 		entry:         entry,
 	}
-	oc.hub = &oc.wave
+	oc.startWaves()
 	// The cost is computed here rather than at the limit check because a
 	// rate limiter is an operation interceptor, and those wrap that check
 	// rather than following it. Without this oc.Cost() hands every

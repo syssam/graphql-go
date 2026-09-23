@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
+	"runtime/debug"
 	"time"
 
 	"github.com/syssam/graphql-go/internal/jsonw"
@@ -185,7 +187,7 @@ func (e *Executor) Subscribe(ctx context.Context, req *Request) (<-chan *Respons
 		plan:          p,
 		entry:         entry,
 	}
-	base.hub = &base.wave
+	base.startWaves()
 	// The cost is computed here rather than at the limit check because a
 	// rate limiter is an operation interceptor, and those wrap that check
 	// rather than following it. Without this base.Cost() hands every
@@ -289,7 +291,7 @@ func (e *Executor) pump(ctx context.Context, base *OperationContext, f *planFiel
 		if e.timeoutCause != nil {
 			evCtx, cancel = context.WithTimeoutCause(ctx, e.operationTimeout, e.timeoutCause)
 		}
-		resp := e.opChain(withOperation(evCtx, oc), oc)
+		resp := e.runEvent(evCtx, oc)
 		if cancel != nil {
 			cancel()
 		}
@@ -300,6 +302,26 @@ func (e *Executor) pump(ctx context.Context, base *OperationContext, f *planFiel
 			return
 		}
 	}
+}
+
+// runEvent recovers where Execute does not need to. Execute runs on the
+// caller's goroutine, so a panic in an interceptor or presenter reaches the
+// transport's recover; pump's goroutine has none above it, and the panic
+// would end the process. The error is built unpresented because the
+// presenter may be what panicked.
+func (e *Executor) runEvent(ctx context.Context, oc *OperationContext) (resp *Response) {
+	if e.recover {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.ErrorContext(ctx, "graphql: subscription event panic",
+					"panic", r,
+					"stack", string(debug.Stack()),
+				)
+				resp = &Response{Errors: []*Error{Errorf("internal system error").WithCode(CodeInternal)}}
+			}
+		}()
+	}
+	return e.opChain(withOperation(ctx, oc), oc)
 }
 
 // eventContext builds the operation context for one event. Each event gets a
@@ -318,7 +340,7 @@ func (e *Executor) eventContext(base *OperationContext, f *planField, event any)
 		entry:         base.entry,
 		event:         &subEvent{field: f, value: event},
 	}
-	oc.hub = &oc.wave
+	oc.startWaves()
 	return oc
 }
 

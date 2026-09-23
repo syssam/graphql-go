@@ -106,7 +106,8 @@ func newLoaderSeqSchema(t *testing.T, ld *loader.Loader[graphql.ID, *loadOwner],
 // A seq list whose element has a resolver must still batch. The concurrent
 // path drains the seq before announcing the wave, and that drain is what
 // keeps batching intact. Two batches here means something began streaming
-// into pushWave, which is the N+1 regression this engine exists to avoid.
+// into the concurrent writer, which is the N+1 regression this engine exists
+// to avoid.
 func TestLoaderBatchesSeqList(t *testing.T) {
 	var mu sync.Mutex
 	var batches [][]graphql.ID
@@ -557,5 +558,43 @@ func TestLoaderResponseLimitDoesNotStrandWave(t *testing.T) {
 	}
 	if len(resp.Errors) != 1 || resp.Errors[0].Extensions["code"] != graphql.CodeResponseTooLarge {
 		t.Fatalf("want one %s error, got %v", graphql.CodeResponseTooLarge, resp.Errors)
+	}
+}
+
+// A panicking batch function ran unrecovered. In a wave it took the waiters
+// it had already dequeued with it, so every sibling Load hung until the
+// request's deadline; standalone it ran on a bare goroutine and ended the
+// process.
+func TestLoaderBatchPanicFailsEveryWaiter(t *testing.T) {
+	ld := loader.New(func(context.Context, []graphql.ID) (map[graphql.ID]*loadOwner, error) {
+		panic("boom")
+	})
+	e := newNullableOwnerSchema(t, ld, []*loadItem{{"1"}, {"2"}, {"3"}})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	resp := e.Execute(ctx, &graphql.Request{Query: `{ items { owner { name } } }`})
+	if ctx.Err() != nil {
+		t.Fatal("the siblings of a panicking batch were stranded until the deadline")
+	}
+	if got := string(resp.Data); got != `{"items":[{"owner":null},{"owner":null},{"owner":null}]}` {
+		t.Fatalf("data = %s", got)
+	}
+	if len(resp.Errors) != 3 {
+		t.Fatalf("errors = %d, want 3 (one per waiter)", len(resp.Errors))
+	}
+	for _, err := range resp.Errors {
+		if err.Extensions["code"] != graphql.CodeInternal || strings.Contains(err.Message, "boom") {
+			t.Fatalf("error = %q %v: want an internal error that does not leak the panic value", err.Message, err.Extensions)
+		}
+	}
+}
+
+func TestLoaderStandaloneBatchPanicIsAnError(t *testing.T) {
+	ld := loader.New(func(context.Context, []int) (map[int]int, error) {
+		panic("boom")
+	})
+	if _, err := ld.Load(context.Background(), 7); err == nil {
+		t.Fatal("a panicking batch returned no error")
 	}
 }

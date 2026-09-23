@@ -544,6 +544,69 @@ func TestInstanceOutcomesOnASingleObject(t *testing.T) {
 	}
 }
 
+// An ObjectAuthorizer is a call to something else -- a policy service, a
+// database -- so it fails, and the interesting question is which way. Failing
+// open would hand out every instance-guarded object in the schema the moment
+// that backend is unreachable, and it is the one failure in this system that
+// nobody would notice until it was audited.
+//
+// checkObjects' own redaction and panic recovery were tested by calling it
+// directly. What was not tested is what execution does with the error it
+// returns: the branches in writeComposite that turn it into a field error and
+// a null are the largest uncovered region of exec_object.go.
+func TestObjectAuthorizerFailureFailsClosed(t *testing.T) {
+	fail := objectAuthorizerFunc(func(context.Context, []ObjectCheck) ([]Outcome, error) {
+		return nil, errors.New("dial tcp 10.0.3.7:8181: connection refused")
+	})
+	for _, c := range []struct {
+		name     string
+		query    string
+		wantData string
+	}{
+		// Nullable: the field nulls and carries the error.
+		{"nullable position", `{ maybe { id } }`, `{"maybe":null}`},
+		// Non-null: nothing can be written, so it bubbles to the root.
+		{"non-null position", `{ required { id } }`, `null`},
+		// A list of guarded objects is the batched path, and it fails the
+		// same way rather than writing the rows the policy never cleared.
+		{"list position", `{ customers { id } }`, `null`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			resp := run(t, newInstanceExecutorWith(t, fail), c.query, "")
+			assertJSON(t, resp.Data, c.wantData)
+			if len(resp.Errors) == 0 {
+				t.Fatalf("the backend failed and the request succeeded: %s", resp.Data)
+			}
+			body := errorsJSON(resp.Errors)
+			if strings.Contains(body, "10.0.3.7") {
+				t.Errorf("the policy backend's address reached the client: %s", body)
+			}
+			// Nothing guarded may appear: no id of a Customer the policy
+			// never cleared.
+			if strings.Contains(string(resp.Data), `"c1"`) {
+				t.Errorf("a guarded object was written although the policy could not be "+
+					"reached -- this fails open: %s", resp.Data)
+			}
+		})
+	}
+}
+
+// The same for a panic, which is the other way a policy call ends badly and
+// reaches the same branches through checkObjects' recover.
+func TestObjectAuthorizerPanicFailsClosed(t *testing.T) {
+	boom := objectAuthorizerFunc(func(context.Context, []ObjectCheck) ([]Outcome, error) {
+		panic("policy exploded")
+	})
+	resp := run(t, newInstanceExecutorWith(t, boom), `{ maybe { id } }`, "")
+	assertJSON(t, resp.Data, `{"maybe":null}`)
+	if len(resp.Errors) == 0 {
+		t.Fatal("a panicking ObjectAuthorizer let the request succeed")
+	}
+	if strings.Contains(errorsJSON(resp.Errors), "policy exploded") {
+		t.Errorf("the panic value reached the client: %s", errorsJSON(resp.Errors))
+	}
+}
+
 func TestInstanceDropOmitsListElements(t *testing.T) {
 	// customers resolves c1, c2, c3; the policy drops c2.
 	e := newInstanceExecutorWith(t, objectAuthorizerFunc(func(_ context.Context, checks []ObjectCheck) ([]Outcome, error) {

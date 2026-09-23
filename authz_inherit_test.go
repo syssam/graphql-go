@@ -442,6 +442,51 @@ type Query { pet: Pet! }
 // allocation first; see the task-2 fix-round-2 report for the measured
 // before/after cost of that allocation. This pins the correctness outcome
 // permanently; andCapped inside requirementOf is what makes it cheap.
+// The same explosion, but on the *interface* an implementer inherits from.
+// combineWithInterfaces has a branch of its own for it: requirementOf reports
+// the interface's own occurrences as already capped, so the value it returns
+// is not the interface's real requirement and there is nothing valid left to
+// AND into the implementer. Combining it anyway would give the implementer a
+// requirement weaker than the interface declares -- a silently widened door --
+// which is why the branch returns rather than falling through.
+//
+// It was the only path in combineWithInterfaces nothing reached: every other
+// cap test explodes on the object or the field, not on what it inherits.
+func TestInterfaceWhoseOwnRequirementIsCappedFailsItsImplementer(t *testing.T) {
+	manyGroups := func(prefix string, n int) string {
+		var b strings.Builder
+		b.WriteString("[")
+		for i := 0; i < n; i++ {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(`["` + prefix + strconv.Itoa(i) + `"]`)
+		}
+		b.WriteString("]")
+		return b.String()
+	}
+	sdl := `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT | INTERFACE
+interface Pet @requiresScopes(scopes: ` + manyGroups("a", 30) + `) { name: String! }
+extend interface Pet @requiresScopes(scopes: ` + manyGroups("b", 30) + `)
+extend interface Pet @requiresScopes(scopes: ` + manyGroups("c", 30) + `)
+type Dog implements Pet { name: String! }
+type Query { pet: Pet! }
+`
+	_, err := NewSchema(SDL(sdl),
+		Query(Field("pet", func(Root) authzPet { return &authzDog{} })),
+		Interface[authzPet]("Pet"),
+		Object[authzDog]("Dog", Field("name", func(*authzDog) string { return "" })),
+	)
+	if err == nil {
+		t.Fatal("NewSchema accepted an implementer of an interface whose own requirement " +
+			"is over the cap; Dog would carry a requirement weaker than Pet declares")
+	}
+	if !strings.Contains(err.Error(), "Dog") && !strings.Contains(err.Error(), "Pet") {
+		t.Errorf("error names neither the interface nor its implementer: %v", err)
+	}
+}
+
 func TestExtendOccurrencesOverTheCapFailBuildWithOneError(t *testing.T) {
 	manyGroups := func(prefix string, n int) string {
 		var b strings.Builder
@@ -699,6 +744,75 @@ func TestTypenameOfAnUnguardedTypeHasNoSite(t *testing.T) {
 		if s.Kind == SiteObject {
 			t.Errorf("unguarded type User produced an object site %q", s.Coord)
 		}
+	}
+}
+
+// objectSiteFor memoizes per *objectType "so every __typename on a type shares
+// a decision". Nothing checked that: making it append a fresh site each time
+// leaves every test in this repository green, because one decision per site
+// still reaches the right field.
+//
+// What it changes is what the Authorizer is asked. With sharing, a type is one
+// question and one answer. Without it, the same type is asked once per
+// __typename in the document, and an Authorizer that answers per index -- which
+// is the only way Decision.Set can be used -- can allow one and deny another,
+// so one response shows __typename in one place and refuses it in another for
+// the same type. It also lets a document grow the Decision by repeating
+// __typename, which is free for the client to do.
+func TestEveryTypenameOfOneTypeSharesOneObjectSite(t *testing.T) {
+	const query = `{
+		a: pet { __typename }
+		b: pet { __typename }
+		c: pet { alias: __typename __typename }
+	}`
+
+	// decide answers every object site with o and reports how many it was
+	// asked about, plus the response.
+	decide := func(o Outcome) (int, *Response) {
+		t.Helper()
+		asked := 0
+		e := NewExecutor(inheritSchema(t), WithAuthorizer(AuthorizerFunc(
+			func(_ context.Context, shape *AuthShape, dec *Decision) error {
+				for i, s := range shape.Sites() {
+					if s.Kind == SiteObject {
+						asked++
+						if err := dec.Set(i, o); err != nil {
+							t.Errorf("Set: %v", err)
+						}
+						continue
+					}
+					// Everything else allowed, so the object site is the only
+					// thing deciding the outcome below.
+					if err := dec.Set(i, Allow()); err != nil {
+						t.Errorf("Set: %v", err)
+					}
+				}
+				return nil
+			})))
+		return asked, run(t, e, query, "")
+	}
+
+	asked, allowed := decide(Allow())
+	if asked != 1 {
+		t.Errorf("the authorizer was asked about %d object sites; one type is one "+
+			"question, and repeating __typename must not grow the Decision", asked)
+	}
+	if n := strings.Count(string(allowed.Data), `"Dog"`); n != 4 {
+		t.Fatalf("one Allow produced %d of 4 __typename values, so the sites are not "+
+			"shared: %s (errors %s)", n, allowed.Data, errorsJSON(allowed.Errors))
+	}
+
+	askedAgain, denied := decide(Deny("dog:read or pet:read", "Dog"))
+	if askedAgain != 1 {
+		t.Errorf("object sites asked = %d, want 1", askedAgain)
+	}
+	if n := strings.Count(string(denied.Data), `"Dog"`); n != 0 {
+		t.Errorf("one Deny left %d __typename values in the response, so some "+
+			"__typename of the same type was governed by a different site: %s",
+			n, denied.Data)
+	}
+	if len(denied.Errors) == 0 {
+		t.Error("the deny produced no error")
 	}
 }
 
@@ -972,6 +1086,59 @@ type Query @requiresScopes(scopes: [["root:read"]]) { ok: String! }
 	}
 }
 
+// The other half of "@public on the field or on its own object type": the
+// object-type form exempts every field of that type in one line, and it was
+// the only branch of validateAuthCoverage nothing reached. It is the blunt
+// instrument of the coverage mode -- one directive silences a whole type --
+// so it has to be exactly as wide as documented and no wider.
+func TestRequireAuthCoverageObjectPublicExemptsItsOwnFields(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT | INTERFACE
+directive @public on FIELD_DEFINITION | OBJECT | INTERFACE
+interface Pet { name: String! }
+type Dog implements Pet @public { name: String! age: Int! }
+type Query { pet: Pet! @public }
+`
+	if _, err := NewSchema(SDL(sdl),
+		Query(Field("pet", func(Root) authzPet { return &authzDog{} })),
+		Interface[authzPet]("Pet"),
+		Object[authzDog]("Dog",
+			Field("name", func(*authzDog) string { return "" }),
+			Field("age", func(*authzDog) int { return 0 }),
+		),
+		RequireAuthCoverage(),
+	); err != nil {
+		t.Fatalf("@public on the object type did not exempt its own fields: %v", err)
+	}
+}
+
+type authzOwner struct{}
+
+// And no wider: it exempts the type it is written on, not the types that type
+// refers to. A @public that leaked through a field reference would silence
+// most of a schema from one line.
+func TestRequireAuthCoverageObjectPublicDoesNotReachReferencedTypes(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+directive @public on FIELD_DEFINITION | OBJECT
+type Owner @public { name: String! dog: Dog! }
+type Dog { name: String! }
+type Query { owner: Owner! @public }
+`
+	_, err := NewSchema(SDL(sdl),
+		Query(Field("owner", func(Root) *authzOwner { return &authzOwner{} })),
+		Object[authzOwner]("Owner",
+			Field("name", func(*authzOwner) string { return "" }),
+			Field("dog", func(*authzOwner) *authzDog { return &authzDog{} }),
+		),
+		Object[authzDog]("Dog", Field("name", func(*authzDog) string { return "" })),
+		RequireAuthCoverage(),
+	)
+	if err == nil || !strings.Contains(err.Error(), "Dog.name") {
+		t.Fatalf("@public on Owner exempted Dog.name, which it does not own; err = %v", err)
+	}
+}
+
 // Exemption stays explicit per type: an interface's @public must not quietly
 // exempt every implementer.
 func TestRequireAuthCoverageInterfacePublicDoesNotExempt(t *testing.T) {
@@ -1144,6 +1311,46 @@ func TestAuthorizerWrappedCauseStillMatchesErrorsIs(t *testing.T) {
 	var ge *Error
 	if !errors.As(presented, &ge) || !errors.Is(ge.Err, errPolicyDown) {
 		t.Errorf("errors.Is could not find the cause through the wrapper; got %v", presented)
+	}
+}
+
+// The wrapper's own Error() is the last thing between a policy backend's
+// failure text and the client. *Error.Err is exported and *Error unwraps to
+// it, so an interceptor, a logger or anything formatting the chain with %v
+// reaches this method -- and the cause it holds is typically a transport
+// error naming an internal host. Returning the cause's text here compiles,
+// passes every other test in this package, and discloses the address.
+func TestAuthorizerCauseDoesNotStringifyTheCause(t *testing.T) {
+	const secret = "dial tcp 10.4.2.7:8443: connect: connection refused"
+	var presented error
+	e := NewExecutor(shapeSchema(t),
+		WithAuthorizer(AuthorizerFunc(func(context.Context, *AuthShape, *Decision) error {
+			return errors.New(secret)
+		})),
+		WithErrorPresenter(func(ctx context.Context, err error) *Error {
+			presented = err
+			return DefaultErrorPresenter(ctx, err)
+		}),
+	)
+	resp := run(t, e, `{ me { salary } }`, "")
+	if len(resp.Errors) == 0 {
+		t.Fatal("operation was not rejected")
+	}
+	if strings.Contains(errorsJSON(resp.Errors), "10.4.2.7") {
+		t.Errorf("the backend address reached the response: %s", errorsJSON(resp.Errors))
+	}
+	var ge *Error
+	if !errors.As(presented, &ge) {
+		t.Fatalf("presented is not an *Error: %v", presented)
+	}
+	if got := ge.Err.Error(); strings.Contains(got, "10.4.2.7") {
+		t.Errorf("Err.Error() = %q, which discloses the backend address", got)
+	}
+	// Unwrap is the other route to the same string, and the wrapper
+	// deliberately has none -- so the chain stops here rather than handing a
+	// caller the cause itself.
+	if inner := errors.Unwrap(ge.Err); inner != nil {
+		t.Errorf("the wrapper unwrapped to %v; errors.As can now reach the cause", inner)
 	}
 }
 
