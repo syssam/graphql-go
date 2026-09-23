@@ -38,6 +38,13 @@ func (r *Response) HasRequestErrors() bool {
 // WriteTo writes the JSON response envelope to w with errors, data and
 // extensions in that order, omitting members that are empty. Data is written
 // straight from the execution buffer without an intermediate copy.
+//
+// It returns an error, and writes nothing, when an extension value on the
+// response or on any error does not marshal. Nothing is written rather than a
+// truncated envelope, so a caller that checks the error can still send
+// something of its own -- but the HTTP transports discover it after the status
+// header is on the wire and can only log, which leaves the client an empty
+// body. See Error.WithExtension.
 func (r *Response) WriteTo(w io.Writer) (int64, error) {
 	head, tail, err := r.envelope()
 	if err != nil {

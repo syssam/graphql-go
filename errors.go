@@ -134,6 +134,14 @@ func (e *Error) WithCode(code string) *Error {
 }
 
 // WithExtension sets one extension entry and returns e.
+//
+// v must marshal with encoding/json. It is not checked here, and the failure
+// surfaces late and badly: Response.WriteTo and MarshalJSON return an error
+// for the whole envelope, and a transport has already written its status
+// header by then, so the client receives an empty body with no explanation
+// while the server logs a warning. One decorative extension can therefore
+// cost the error it was decorating. Marshal it yourself if the value is
+// anything but a string, number, bool, slice or map of those.
 func (e *Error) WithExtension(key string, v any) *Error {
 	if e.Extensions == nil {
 		e.Extensions = make(map[string]any, 1)
