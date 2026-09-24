@@ -129,6 +129,47 @@ files named above close them: with any of those four mutations in place, a
 formatter baseline now fails. A test that cannot fail is not evidence, and
 these were headed for another project's repository.
 
+## Measured against other implementations
+
+Two differentials, both run on 2026-09-24. Neither is a guess about what other servers do.
+
+**Execution, against graphql-js 17.0.2.** 41 cases covering null bubbling, error paths,
+argument and variable coercion, fragments and operation selection: response shape,
+nullability, error count and every error path agree on all 41, in order.
+`TestGraphQLJSDifferential` keeps it true from a checked-in recording, so it needs no Node.
+[`testdata/gqljs/README.md`](../testdata/gqljs/README.md) has the eight message-wording
+differences, seven of which are gqlparser still carrying graphql-js 16's phrasing.
+
+**HTTP, against Apollo Server 5.5.1, graphql-yoga 5.24.1 and graphql-http 1.23.0** — the last
+being this specification's own reference implementation. Request-error status, by the
+negotiated media type:
+
+| | `application/json` | `application/graphql-response+json` |
+| --- | --- | --- |
+| graphql-http 1.23.0 (reference) | 200 | 400 |
+| graphql-yoga 5.24.1 | 200 | 400 |
+| **this engine** | **200** | **400** |
+| Apollo Server 5.5.1 | 400 | 400 |
+| gqlgen (read from source) | 422 | 400 |
+
+**The 200 is not a legacy accommodation to be tidied away later.** It is what the reference
+implementation does, and the rule is the one in `internal/httpreq.Negotiate`: the media type
+decides the status. Apollo answers 400 under both and gqlgen 422 under one, so there are three
+answers in the field and this engine holds the reference one. A review that finds only Apollo
+will conclude this engine is wrong; measure `graphql-http` before changing it.
+
+Two differences that measurement did find were real, and both are fixed: an automatic
+persisted-query miss answered 400 to every client that accepts
+`application/graphql-response+json` (`apq.IsRetryHandshake`; APQ is Apollo's protocol, not
+this specification, and Apollo answers 200 under every media type), and errors came back in
+resolver-completion order where all three JS implementations report in document order
+(`sortErrorsByDocumentOrder`).
+
+Not adopted: `extensions.code` on errors that carry none. graphql-http and gqlgen add none
+either; Apollo and Yoga do, and both leak alongside it — Apollo a full stack trace in the
+response body, Yoga the original error under `originalError`. `Error.WithCode` is there for
+authors who want one.
+
 ## Deliberate deviations
 
 **The prelude's `@defer` is removed.** gqlparser declares it, but incremental
