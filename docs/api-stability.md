@@ -58,7 +58,7 @@ closed sets that only this package can produce.
 
 | Type | Form | Can a consumer write one? |
 |---|---|---|
-| `SchemaOption`, `FieldOption`, `InputFieldOption`, `AbstractOpt` | interface with an unexported method | No. The unexported method closes them. |
+| `SchemaOption`, `FieldOption`, `InputFieldOption`, `AbstractOption` | interface with an unexported method | No. The unexported method closes them. |
 | `FieldSchedule` | `func(*fieldSpec)` over an unexported type | No. `fieldSpec` cannot be named outside the package, so only `Inline()` and `Concurrent()` produce one. |
 | `ExecutorOption` | `func(*Executor)` | Syntactically yes; usefully no. Every field of `Executor` is unexported, so an option written elsewhere can read and write nothing. |
 

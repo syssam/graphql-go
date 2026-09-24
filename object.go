@@ -111,19 +111,19 @@ func (fd *fieldDef) wrap(wrapper func(FieldFunc) FieldFunc) {
 	}
 }
 
-// Object binds the GraphQL object type name to the Go type E. Field
-// functions receive *E (or E, which costs a copy). E must not itself be a
+// Object binds the GraphQL object type name to the Go type T. Field
+// functions receive *T (or T, which costs a copy). T must not itself be a
 // pointer type. Several Object calls for the same name are merged.
-func Object[E any](name string, fields ...FieldOption) SchemaOption {
+func Object[T any](name string, fields ...FieldOption) SchemaOption {
 	return schemaOptionFunc(func(b *schemaBuilder) {
-		tE := reflect.TypeFor[E]()
+		tE := reflect.TypeFor[T]()
 		if tE.Kind() == reflect.Pointer {
 			b.errorf("Object %q: bind the element type %s, not the pointer type %s", name, tE.Elem(), tE)
 			return
 		}
 		ob := b.objects[name]
 		if ob == nil {
-			ob = &objectBinding{name: name, shapes: registerObjectShapes[E](b.reg), attempted: make(map[string]bool)}
+			ob = &objectBinding{name: name, shapes: registerObjectShapes[T](b.reg), attempted: make(map[string]bool)}
 			b.objects[name] = ob
 			b.objectOrder = append(b.objectOrder, name)
 		} else if ob.shapes.elem != tE {
@@ -241,7 +241,7 @@ func newFieldSpec[P, R any](name string, argsType reflect.Type, pure bool, opts 
 }
 
 // parentGetter returns a typed accessor converting the executor's canonical
-// *E parent value into P, which must be *E or E.
+// *T parent value into P, which must be *T or T.
 func parentGetter[P any](obj *objectType) (func(any) P, error) {
 	tP := reflect.TypeFor[P]()
 	switch tP {

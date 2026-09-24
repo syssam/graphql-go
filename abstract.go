@@ -8,8 +8,8 @@ import (
 	"github.com/vektah/gqlparser/v2/ast"
 )
 
-// AbstractOpt tunes an Interface or Union binding.
-type AbstractOpt interface {
+// AbstractOption tunes an Interface or Union binding.
+type AbstractOption interface {
 	applyAbstract(*abstractBinding)
 }
 
@@ -19,7 +19,7 @@ func (f abstractOptFunc) applyAbstract(ab *abstractBinding) { f(ab) }
 
 // TypeResolver overrides dynamic Go type lookup with an explicit function
 // returning the concrete GraphQL object type name for a value.
-func TypeResolver[T any](fn func(T) string) AbstractOpt {
+func TypeResolver[T any](fn func(T) string) AbstractOption {
 	return abstractOptFunc(func(ab *abstractBinding) {
 		ab.resolveType = func(v any) string { return fn(v.(T)) }
 	})
@@ -34,16 +34,16 @@ type abstractBinding struct {
 // Interface binds the GraphQL interface name to the Go type T, typically a
 // Go interface. Binding is optional: unbound abstract types resolve their
 // concrete type from the dynamic Go type of the value.
-func Interface[T any](name string, opts ...AbstractOpt) SchemaOption {
+func Interface[T any](name string, opts ...AbstractOption) SchemaOption {
 	return bindAbstract[T](name, ast.Interface, opts)
 }
 
 // Union binds the GraphQL union name to the Go type T.
-func Union[T any](name string, opts ...AbstractOpt) SchemaOption {
+func Union[T any](name string, opts ...AbstractOption) SchemaOption {
 	return bindAbstract[T](name, ast.Union, opts)
 }
 
-func bindAbstract[T any](name string, kind ast.DefinitionKind, opts []AbstractOpt) SchemaOption {
+func bindAbstract[T any](name string, kind ast.DefinitionKind, opts []AbstractOption) SchemaOption {
 	return schemaOptionFunc(func(b *schemaBuilder) {
 		def := b.ast.Types[name]
 		if def == nil || def.Kind != kind {

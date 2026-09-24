@@ -179,14 +179,14 @@ graphql: func Field[P, R any](name string, fn func(P) R, opts ...FieldSchedule) 
 graphql: func Inline() FieldSchedule
 graphql: func InputField[T, V any](name string, set func(*T, V)) InputFieldOption
 graphql: func Input[T any](name string, fields ...InputFieldOption) SchemaOption
-graphql: func Interface[T any](name string, opts ...AbstractOpt) SchemaOption
+graphql: func Interface[T any](name string, opts ...AbstractOption) SchemaOption
 graphql: func MarkerDirective(name, scope string) SchemaOption
 graphql: func Mutation(fields ...FieldOption) SchemaOption
 graphql: func NewExecutor(s *Schema, opts ...ExecutorOption) *Executor
 graphql: func NewRequirement(anyOf ...[]string) Requirement
 graphql: func NewSchema(src Source, opts ...SchemaOption) (*Schema, error)
 graphql: func Null() Outcome
-graphql: func Object[E any](name string, fields ...FieldOption) SchemaOption
+graphql: func Object[T any](name string, fields ...FieldOption) SchemaOption
 graphql: func OmittableField[T, V any](name string, set func(*T, Omittable[V])) InputFieldOption
 graphql: func OmittableOf[T any](v T) Omittable[T]
 graphql: func OperationFrom(ctx context.Context) *OperationContext
@@ -209,8 +209,8 @@ graphql: func Sources(srcs ...Source) Source
 graphql: func SubscribeArgs[A, R any](name string, fn func(context.Context, A) (<-chan R, error), opts ...FieldSchedule) FieldOption
 graphql: func Subscribe[R any](name string, fn func(context.Context) (<-chan R, error), opts ...FieldSchedule) FieldOption
 graphql: func Subscription(fields ...FieldOption) SchemaOption
-graphql: func TypeResolver[T any](fn func(T) string) AbstractOpt
-graphql: func Union[T any](name string, opts ...AbstractOpt) SchemaOption
+graphql: func TypeResolver[T any](fn func(T) string) AbstractOption
+graphql: func Union[T any](name string, opts ...AbstractOption) SchemaOption
 graphql: func Validate(src Source, opts ...SchemaOption) error
 graphql: func WithAuthorizer(a Authorizer) ExecutorOption
 graphql: func WithErrorPresenter(p ErrorPresenter) ExecutorOption
@@ -233,7 +233,7 @@ graphql: func WithRequestInterceptor(is ...RequestInterceptor) ExecutorOption
 graphql: func WithSubscriptionInterceptor(is ...SubscriptionInterceptor) ExecutorOption
 graphql: func Zero() Outcome
 graphql: func ZeroForNull() InputFieldOption
-graphql: type AbstractOpt interface { applyAbstract(*abstractBinding) }
+graphql: type AbstractOption interface { applyAbstract(*abstractBinding) }
 graphql: type AuthShape struct { }
 graphql: type AuthSite struct { Coord string Field *ast.FieldDefinition Object *ast.Definition Kind SiteKind Requires Requirement Grants []string Arg string ListElement bool }
 graphql: type Authorizer interface { Authorize(ctx context.Context, shape *AuthShape, d *Decision) error }
