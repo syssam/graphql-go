@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"strings"
@@ -46,6 +47,42 @@ var DefaultCSRFHeaders = []string{
 	"GraphQL-Require-Preflight", // the GraphQL over HTTP specification's name
 	"Apollo-Require-Preflight",  // Apollo Server's, sent by Apollo Client
 	"X-Requested-With",          // the pre-CORS convention, still sent by many clients
+}
+
+// FallbackBody is the envelope a transport sends when serializing the real one
+// failed before any byte reached the client. It is valid GraphQL: the
+// specification allows a 200 carrying only errors, and a parseable error is
+// the one thing better than nothing.
+const FallbackBody = `{"errors":[{"message":"internal system error"}]}`
+
+// WriteBody runs write against w and reports whether a fallback envelope is
+// needed: true when write failed *and* wrote nothing.
+//
+// The distinction is the whole point. Response.WriteTo composes the envelope
+// before it writes any of it, so a serialization failure -- an extension value
+// encoding/json cannot handle -- leaves the body empty and the transport free
+// to send something else. A failure *after* bytes have gone out is the client
+// disconnecting or the socket erroring, and appending to that would corrupt a
+// partly-written response.
+//
+// Without this a transport that has already sent its status header answers an
+// unserializable extension with 200 and an empty body, which a client cannot
+// distinguish from success.
+func WriteBody(w io.Writer, write func(io.Writer) error) (err error, wroteNothing bool) {
+	cw := &countingWriter{w: w}
+	err = write(cw)
+	return err, err != nil && cw.n == 0
+}
+
+type countingWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
 }
 
 // Forgeable reports whether a browser could have sent the request

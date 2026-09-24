@@ -264,8 +264,15 @@ func (h *Handler) parsePOST(src httpreq.Source) (reqs []*graphql.Request, batch 
 func (h *Handler) writeResponse(w http.ResponseWriter, mediaType string, status int, write func(io.Writer) error) {
 	w.Header().Set("Content-Type", mediaType+"; charset=utf-8")
 	w.WriteHeader(status)
-	if err := write(w); err != nil {
-		h.logger.Warn("gqlhttp: writing response", "error", err)
+	err, wroteNothing := httpreq.WriteBody(w, write)
+	if err == nil {
+		return
+	}
+	h.logger.Warn("gqlhttp: writing response", "error", err)
+	if wroteNothing {
+		// The status is already on the wire and cannot be taken back, but the
+		// body is still empty: an empty 200 is indistinguishable from success.
+		_, _ = io.WriteString(w, httpreq.FallbackBody)
 	}
 }
 

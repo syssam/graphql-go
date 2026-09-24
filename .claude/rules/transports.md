@@ -25,6 +25,21 @@ over GET" is composed independently per transport, not through `httpreq`, and th
 it, as they do for the unacceptable-`Accept` message — a real split along transport kind, not
 drift to fix. A row that splits still asserts every handler on both sides of it.
 
+**A response that fails to serialize still gets a body.** The status header is already on the
+wire when `WriteTo` fails -- the only thing that can fail is an extension value
+`encoding/json` will not take -- so the status cannot be corrected, but an empty 200 is
+indistinguishable from success to any client and the operator sees only a warning.
+`httpreq.WriteBody` counts what was written and the handler appends
+`{"errors":[{"message":"internal system error"}]}` **only when nothing was**, which is what
+keeps a failure *after* bytes went out -- a client disconnecting mid-write -- from corrupting a
+partly-written response. It is safe because `Response.WriteTo` composes the whole envelope
+before writing any of it.
+
+Losing the envelope is the reference behaviour, not a shortcoming: graphql-js, run for
+comparison, is `JSON.stringify` semantics -- a function or `undefined` is silently dropped, a
+BigInt or a cycle throws and the whole response is lost. Go has no drop tier, so every one of
+those is an error here. Answering with *nothing at all* is the part that had no precedent.
+
 **`DefaultCSRFHeaders` is an interop surface, and its bar is one property.** A header belongs
 on it when a browser cannot put it on a cross-origin request without a preflight -- that is,
 when it is outside the CORS safelist (`Accept`, `Accept-Language`, `Content-Language`,

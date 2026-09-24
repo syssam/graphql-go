@@ -19,6 +19,7 @@
 package transport_test
 
 import (
+	"context"
 	"io"
 	"net"
 	"net/http"
@@ -53,6 +54,70 @@ type Mutation { bump: String! }
 		t.Fatalf("NewSchema: %v", err)
 	}
 	return graphql.NewExecutor(s)
+}
+
+// badExtensionExecutor answers every request with an extension encoding/json
+// cannot serialize, so the envelope fails to compose after the status header
+// has gone out.
+func badExtensionExecutor(t *testing.T) func(*testing.T) *graphql.Executor {
+	t.Helper()
+	return func(t *testing.T) *graphql.Executor {
+		t.Helper()
+		s, err := graphql.NewSchema(graphql.SDL(`
+type Query { hello: String! }
+type Mutation { bump: String! }
+`),
+			graphql.Query(graphql.Field("hello", func(graphql.Root) string { return "world" })),
+			graphql.Mutation(graphql.Field("bump", func(graphql.Root) string { return "bumped" })),
+		)
+		if err != nil {
+			t.Fatalf("NewSchema: %v", err)
+		}
+		return graphql.NewExecutor(s, graphql.WithOperationInterceptor(
+			graphql.OperationInterceptorFunc(func(ctx context.Context, oc *graphql.OperationContext, next graphql.OperationHandler) *graphql.Response {
+				oc.SetExtension("bad", func() {})
+				return next(ctx, oc)
+			})))
+	}
+}
+
+// newEquivServersWithExecutor is newEquivServers with the executor swapped, so
+// a case can drive every handler against a schema of its own.
+func newEquivServersWithExecutor(t *testing.T, mk func(*testing.T) *graphql.Executor) map[string]string {
+	t.Helper()
+
+	httpSrv := httptest.NewServer(gqlhttp.New(mk(t)))
+	t.Cleanup(httpSrv.Close)
+
+	sseSrv := httptest.NewServer(gqlsse.New(mk(t)))
+	t.Cleanup(sseSrv.Close)
+
+	e := echo.New()
+	e.Any("/graphql", gqlecho.New(mk(t)))
+	echoSrv := httptest.NewServer(e)
+	t.Cleanup(echoSrv.Close)
+
+	eSSE := echo.New()
+	eSSE.Any("/graphql", gqlecho.SSE(mk(t)))
+	echoSSESrv := httptest.NewServer(eSSE)
+	t.Cleanup(echoSSESrv.Close)
+
+	app := fiber.New()
+	app.All("/graphql", gqlfiber.New(mk(t)))
+	fiberURL := startFiberEquiv(t, app)
+
+	appSSE := fiber.New()
+	appSSE.All("/graphql", gqlfiber.SSE(mk(t)))
+	fiberSSEURL := startFiberEquiv(t, appSSE)
+
+	return map[string]string{
+		"gqlhttp":      httpSrv.URL,
+		"gqlsse":       sseSrv.URL,
+		"gqlecho":      echoSrv.URL,
+		"gqlecho.SSE":  echoSSESrv.URL,
+		"gqlfiber":     fiberURL,
+		"gqlfiber.SSE": fiberSSEURL,
+	}
 }
 
 // startFiberEquiv serves app on a loopback port and returns its base URL,
@@ -322,6 +387,27 @@ func TestEquivalence(t *testing.T) {
 		const want = `{"errors":[{"message":"request is missing the \"query\" member."}]}`
 		assertAllEqual(t, servers, http.MethodPost, "/graphql",
 			map[string]string{"Content-Type": "application/json"}, `{}`, http.StatusBadRequest, want)
+	})
+
+	// A response whose extensions cannot be serialized fails after the status
+	// header is on the wire, so the transport cannot change the status -- but it
+	// can still send a body, and an empty 200 is indistinguishable from success
+	// to any client. graphql-js, run for comparison, has the same shape: what
+	// JSON.stringify can drop it drops, what it cannot it throws on, and the
+	// whole envelope is lost. Losing the envelope is the reference behaviour;
+	// answering with nothing at all is not.
+	//
+	// The fallback is only safe because Response.WriteTo composes the envelope
+	// before writing any of it, so a serialization failure leaves the body
+	// empty. httpreq.WriteBody counts what was written and appends only when
+	// nothing was, which keeps a failure *after* bytes went out -- a client
+	// disconnecting -- from corrupting a partly-written response.
+	t.Run("an unserializable extension still produces a parseable body", func(t *testing.T) {
+		servers := newEquivServersWithExecutor(t, badExtensionExecutor(t))
+		assertEqualAcross(t, servers, httpFamily, http.MethodPost, "/graphql",
+			map[string]string{"Content-Type": "application/json"},
+			`{"query":"{ hello }"}`, http.StatusOK,
+			`{"errors":[{"message":"internal system error"}]}`)
 	})
 
 	// Every header in DefaultCSRFHeaders has to actually satisfy the check, in

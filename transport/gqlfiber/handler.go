@@ -220,8 +220,14 @@ func (h *handler) parsePOST(src httpreq.Source) (reqs []*graphql.Request, batch 
 func (h *handler) writeResponse(c fiber.Ctx, mediaType string, status int, write func(io.Writer) error) {
 	c.Set("Content-Type", mediaType+"; charset=utf-8")
 	c.Status(status)
-	if err := write(c); err != nil {
-		h.logger.Warn("gqlfiber: writing response", "error", err)
+	err, wroteNothing := httpreq.WriteBody(c, write)
+	if err == nil {
+		return
+	}
+	h.logger.Warn("gqlfiber: writing response", "error", err)
+	if wroteNothing {
+		// See gqlhttp.writeResponse: an empty 200 reads as success.
+		_, _ = io.WriteString(c, httpreq.FallbackBody)
 	}
 }
 
