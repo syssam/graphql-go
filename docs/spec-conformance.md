@@ -140,6 +140,13 @@ nullability, error count and every error path agree on all 41, in order.
 [`testdata/gqljs/README.md`](../testdata/gqljs/README.md) has the eight message-wording
 differences, seven of which are gqlparser still carrying graphql-js 16's phrasing.
 
+**HTTP, against the specification's own audit suite** (`graphql-http` 1.23.0 ships it).
+`gqlhttp` takes **61 of 61** with CSRF prevention off, and **58** with it on, where all three
+it does not take are `MAY` rows that send a GET with no preflight header — the request shape
+the CSRF check exists to refuse. **Every MUST and every SHOULD passes in both
+configurations.** [`testdata/httpaudit/README.md`](../testdata/httpaudit/README.md) has the
+harness and the breakdown; the suite found two SHOULDs, both since fixed.
+
 **HTTP, against Apollo Server 5.5.1, graphql-yoga 5.24.1 and graphql-http 1.23.0** — the last
 being this specification's own reference implementation. Request-error status, by the
 negotiated media type:
@@ -151,6 +158,14 @@ negotiated media type:
 | **this engine** | **200** | **400** |
 | Apollo Server 5.5.1 | 400 | 400 |
 | gqlgen (read from source) | 422 | 400 |
+
+A client that sends `*/*`, or no `Accept` at all, is answered `application/json` and therefore
+falls in the first column. It named neither type, so it never opted into the newer one, and the
+audit requires both halves of that. **A missing `query` member is not in this table**: a body
+that carried no query never became an operation, so it is 400 under every media type, which is
+what graphql-http does and what `TestEquivalence/missing_query` asserts across three `Accept`
+headers. Only a GraphQL request error -- a parse or validation failure -- follows the media
+type.
 
 **The 200 is not a legacy accommodation to be tidied away later.** It is what the reference
 implementation does, and the rule is the one in `internal/httpreq.Negotiate`: the media type

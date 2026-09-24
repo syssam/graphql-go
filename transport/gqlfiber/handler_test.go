@@ -190,7 +190,7 @@ func TestResponseContentType(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if got, want := resp.Header.Get("Content-Type"), "application/graphql-response+json; charset=utf-8"; got != want {
+	if got, want := resp.Header.Get("Content-Type"), "application/json; charset=utf-8"; got != want {
 		t.Errorf("Content-Type = %q, want %q", got, want)
 	}
 }

@@ -369,25 +369,41 @@ func TestEquivalence(t *testing.T) {
 		assertEqualAcross(t, servers, sseFamily, http.MethodGet, path, headers, "", http.StatusMethodNotAllowed, wantSSE)
 	})
 
-	t.Run("missing query, APQ off", func(t *testing.T) {
-		servers := newEquivServers(t, nil, nil, nil)
+	// A body carrying no query never became an operation, so it is 400 under
+	// every Accept -- it is a malformed request, not a GraphQL request error,
+	// and only the latter follows the media type. graphql-http answers 400
+	// here under both media types while answering a validation error 200 under
+	// application/json, which is the same split. Asserted under three Accept
+	// headers because the negotiated type used to decide this: with persisted
+	// queries on, an application/json client got 200.
+	assertMissingQuery := func(t *testing.T, servers map[string]string) {
+		t.Helper()
 		const want = `{"errors":[{"message":"request is missing the \"query\" member."}]}`
-		assertAllEqual(t, servers, http.MethodPost, "/graphql",
-			map[string]string{"Content-Type": "application/json"}, `{}`, http.StatusBadRequest, want)
+		json := map[string]string{"Content-Type": "application/json"}
+		assertAllEqual(t, servers, http.MethodPost, "/graphql", json, `{}`, http.StatusBadRequest, want)
+
+		// Naming a JSON type only makes sense to the plain-HTTP family; the
+		// SSE handlers answer 406 to anything but text/event-stream.
+		for _, accept := range []string{"application/json", "application/graphql-response+json"} {
+			assertEqualAcross(t, servers, httpFamily, http.MethodPost, "/graphql",
+				map[string]string{"Content-Type": "application/json", "Accept": accept},
+				`{}`, http.StatusBadRequest, want)
+		}
+	}
+
+	t.Run("missing query, APQ off", func(t *testing.T) {
+		assertMissingQuery(t, newEquivServers(t, nil, nil, nil))
 	})
 
 	// Resolution of the persistedQuery extension happens before this check,
 	// but {} carries no such extension, so this must behave exactly as APQ
 	// off: the missing-query error is the same error either way.
 	t.Run("missing query, APQ on", func(t *testing.T) {
-		servers := newEquivServers(t,
+		assertMissingQuery(t, newEquivServers(t,
 			[]gqlhttp.Option{gqlhttp.WithPersistedQueries(apq.NewCache(10))},
 			[]gqlsse.Option{gqlsse.WithPersistedQueries(apq.NewCache(10))},
 			[]gqlfiber.Option{gqlfiber.WithPersistedQueries(apq.NewCache(10))},
-		)
-		const want = `{"errors":[{"message":"request is missing the \"query\" member."}]}`
-		assertAllEqual(t, servers, http.MethodPost, "/graphql",
-			map[string]string{"Content-Type": "application/json"}, `{}`, http.StatusBadRequest, want)
+		))
 	})
 
 	// A response whose extensions cannot be serialized fails after the status

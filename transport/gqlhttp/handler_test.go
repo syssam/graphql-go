@@ -101,14 +101,14 @@ const plainJSON = "application/json; charset=utf-8"
 
 func TestPostQuery(t *testing.T) {
 	h, _ := newHandler(t)
-	expect(t, do(h, post(`{"query":"{ hello }"}`)), 200, gqlJSON, `{"data":{"hello":"hello, world"}}`)
-	expect(t, do(h, post(`{"query":"query A($n: String) { hello(name: $n) }","variables":{"n":"go"},"operationName":"A"}`)), 200, gqlJSON, `{"data":{"hello":"hello, go"}}`)
+	expect(t, do(h, post(`{"query":"{ hello }"}`)), 200, plainJSON, `{"data":{"hello":"hello, world"}}`)
+	expect(t, do(h, post(`{"query":"query A($n: String) { hello(name: $n) }","variables":{"n":"go"},"operationName":"A"}`)), 200, plainJSON, `{"data":{"hello":"hello, go"}}`)
 }
 
 func TestPostFieldErrorsAre200(t *testing.T) {
 	h, _ := newHandler(t)
 	got := do(h, post(`{"query":"{ fail }"}`))
-	expect(t, got, 200, gqlJSON, "")
+	expect(t, got, 200, plainJSON, "")
 	if !strings.Contains(got.body, `"errors":[{"message":"boom"`) || !strings.Contains(got.body, `"data":null`) {
 		t.Fatalf("body = %s", got.body)
 	}
@@ -121,14 +121,23 @@ func TestRequestErrorStatusDependsOnAccept(t *testing.T) {
 		status int
 		ct     string
 	}{
-		{"", 400, gqlJSON},
-		{"*/*", 400, gqlJSON},
+		// A client that named neither type gets application/json, and with it
+		// the 200: it never opted into the newer type, and the GraphQL over
+		// HTTP audit requires both ("SHOULD assume application/json
+		// content-type when accept is missing", "SHOULD accept */* and use
+		// application/json for the content-type"). graphql-http, graphql-yoga
+		// and Apollo Server all answer application/json to a wildcard.
+		{"", 200, plainJSON},
+		{"*/*", 200, plainJSON},
+		{"text/html, application/*", 200, plainJSON},
+		// An explicit type still outranks a wildcard, in either order.
+		{"*/*, application/graphql-response+json", 400, gqlJSON},
+		{"application/graphql-response+json, */*", 400, gqlJSON},
 		{"application/graphql-response+json", 400, gqlJSON},
 		{"application/json", 200, plainJSON},
 		{"application/json, application/graphql-response+json", 400, gqlJSON},
 		{"application/graphql-response+json;q=0.5, application/json", 200, plainJSON},
 		{"application/json;q=0.5, application/graphql-response+json;q=0.9", 400, gqlJSON},
-		{"text/html, application/*", 400, gqlJSON},
 		{"application/*;q=0.8, application/json;q=0.9", 200, plainJSON},
 	}
 	for _, c := range cases {
@@ -151,7 +160,7 @@ func TestMethodNotAllowed(t *testing.T) {
 	for _, m := range []string{http.MethodPut, http.MethodDelete, http.MethodPatch} {
 		req := httptest.NewRequest(m, "/graphql", nil)
 		got := do(h, req)
-		expect(t, got, 405, gqlJSON, "")
+		expect(t, got, 405, plainJSON, "")
 		if got.header.Get("Allow") != "GET, POST" {
 			t.Errorf("%s: Allow = %q", m, got.header.Get("Allow"))
 		}
@@ -165,45 +174,45 @@ func TestGetQuery(t *testing.T) {
 		"variables":     `{"n":"get & go"}`,
 		"operationName": "A",
 	}, "GraphQL-Require-Preflight", "1"))
-	expect(t, got, 200, gqlJSON, `{"data":{"hello":"hello, get & go"}}`)
+	expect(t, got, 200, plainJSON, `{"data":{"hello":"hello, get & go"}}`)
 
 	got = do(h, get(map[string]string{"query": `{ hello }`}, "X-Requested-With", "XMLHttpRequest"))
-	expect(t, got, 200, gqlJSON, `{"data":{"hello":"hello, world"}}`)
+	expect(t, got, 200, plainJSON, `{"data":{"hello":"hello, world"}}`)
 
 	got = do(h, get(map[string]string{"query": `{ hello }`}, "Content-Type", "application/json"))
-	expect(t, got, 200, gqlJSON, `{"data":{"hello":"hello, world"}}`)
+	expect(t, got, 200, plainJSON, `{"data":{"hello":"hello, world"}}`)
 }
 
 func TestCSRFPrevention(t *testing.T) {
 	h, _ := newHandler(t)
 	got := do(h, get(map[string]string{"query": `{ hello }`}))
-	expect(t, got, 403, gqlJSON, "")
+	expect(t, got, 403, plainJSON, "")
 	if !strings.Contains(got.body, "GraphQL-Require-Preflight") {
 		t.Fatalf("body = %s", got.body)
 	}
 	// POST with a simple content type is equally forgeable.
 	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ hello }"}`))
 	req.Header.Set("Content-Type", "text/plain")
-	expect(t, do(h, req), 403, gqlJSON, "")
+	expect(t, do(h, req), 403, plainJSON, "")
 
 	open, _ := newHandler(t, gqlhttp.WithCSRFPrevention(false))
-	expect(t, do(open, get(map[string]string{"query": `{ hello }`})), 200, gqlJSON, `{"data":{"hello":"hello, world"}}`)
+	expect(t, do(open, get(map[string]string{"query": `{ hello }`})), 200, plainJSON, `{"data":{"hello":"hello, world"}}`)
 
 	custom, _ := newHandler(t, gqlhttp.WithCSRFPrevention(true, "X-Custom"))
-	expect(t, do(custom, get(map[string]string{"query": `{ hello }`}, "GraphQL-Require-Preflight", "1")), 403, gqlJSON, "")
-	expect(t, do(custom, get(map[string]string{"query": `{ hello }`}, "X-Custom", "y")), 200, gqlJSON, "")
+	expect(t, do(custom, get(map[string]string{"query": `{ hello }`}, "GraphQL-Require-Preflight", "1")), 403, plainJSON, "")
+	expect(t, do(custom, get(map[string]string{"query": `{ hello }`}, "X-Custom", "y")), 200, plainJSON, "")
 }
 
 func TestMutationOverGET(t *testing.T) {
 	h, counter := newHandler(t)
 	got := do(h, get(map[string]string{"query": `mutation { inc }`}, "GraphQL-Require-Preflight", "1"))
-	expect(t, got, 405, gqlJSON, "")
+	expect(t, got, 405, plainJSON, "")
 	if !strings.Contains(got.body, "mutations are not allowed over GET") || counter.Load() != 0 {
 		t.Fatalf("body = %s, counter = %d", got.body, counter.Load())
 	}
 	got = do(h, get(map[string]string{"query": `query Q { hello } mutation M { inc }`, "operationName": "M"}, "GraphQL-Require-Preflight", "1"))
-	expect(t, got, 405, gqlJSON, "")
-	expect(t, do(h, post(`{"query":"mutation { inc }"}`)), 200, gqlJSON, `{"data":{"inc":1}}`)
+	expect(t, got, 405, plainJSON, "")
+	expect(t, do(h, post(`{"query":"mutation { inc }"}`)), 200, plainJSON, `{"data":{"inc":1}}`)
 }
 
 func TestUnsupportedMediaType(t *testing.T) {
@@ -211,54 +220,54 @@ func TestUnsupportedMediaType(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`query=%7Bhello%7D`))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("GraphQL-Require-Preflight", "1")
-	expect(t, do(h, req), 415, gqlJSON, "")
+	expect(t, do(h, req), 415, plainJSON, "")
 
 	req = httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ hello }"}`))
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	expect(t, do(h, req), 200, gqlJSON, `{"data":{"hello":"hello, world"}}`)
+	expect(t, do(h, req), 200, plainJSON, `{"data":{"hello":"hello, world"}}`)
 }
 
 func TestBodyTooLarge(t *testing.T) {
 	h, _ := newHandler(t, gqlhttp.WithMaxBodyBytes(64))
-	expect(t, do(h, post(`{"query":"{ hello }"}`)), 200, gqlJSON, "")
-	expect(t, do(h, post(`{"query":"{ hello }","variables":{"pad":"`+strings.Repeat("x", 100)+`"}}`)), 413, gqlJSON, "")
+	expect(t, do(h, post(`{"query":"{ hello }"}`)), 200, plainJSON, "")
+	expect(t, do(h, post(`{"query":"{ hello }","variables":{"pad":"`+strings.Repeat("x", 100)+`"}}`)), 413, plainJSON, "")
 }
 
 func TestMalformedRequests(t *testing.T) {
 	h, _ := newHandler(t)
 	for _, body := range []string{`{"query":`, `[]`, `{"variables":{}}`, `{"query":""}`, `{"query":42}`, `"str"`} {
 		got := do(h, post(body))
-		expect(t, got, 400, gqlJSON, "")
+		expect(t, got, 400, plainJSON, "")
 		if !strings.HasPrefix(got.body, `{"errors":[{"message":`) {
 			t.Errorf("body %s: got %s", body, got.body)
 		}
 	}
 	got := do(h, get(map[string]string{"query": `{ hello }`, "variables": `not json`}, "GraphQL-Require-Preflight", "1"))
-	expect(t, got, 400, gqlJSON, "")
+	expect(t, got, 400, plainJSON, "")
 }
 
 func TestBatching(t *testing.T) {
 	h, _ := newHandler(t)
 	got := do(h, post(`[{"query":"{ hello }"}]`))
-	expect(t, got, 400, gqlJSON, "")
+	expect(t, got, 400, plainJSON, "")
 	if !strings.Contains(got.body, "batching is not enabled") {
 		t.Fatalf("body = %s", got.body)
 	}
 
 	b, counter := newHandler(t, gqlhttp.WithBatching(2))
 	got = do(b, post(`[{"query":"mutation { inc }"},{"query":"{ hello }"},{"query":"{ hello }"}]`))
-	expect(t, got, 400, gqlJSON, "")
+	expect(t, got, 400, plainJSON, "")
 	if !strings.Contains(got.body, "batch of 3 exceeds the limit of 2") || counter.Load() != 0 {
 		t.Fatalf("body = %s", got.body)
 	}
 
 	got = do(b, post(`[{"query":"mutation { inc }"},{"query":"{ nope }"}]`))
-	expect(t, got, 200, gqlJSON, "")
+	expect(t, got, 200, plainJSON, "")
 	if !strings.HasPrefix(got.body, `[{"data":{"inc":1}},{"errors":[{"message":`) || !strings.HasSuffix(got.body, `]`) {
 		t.Fatalf("body = %s", got.body)
 	}
-	expect(t, do(b, post(`[]`)), 200, gqlJSON, `[]`)
-	expect(t, do(b, post(`{"query":"{ hello }"}`)), 200, gqlJSON, `{"data":{"hello":"hello, world"}}`)
+	expect(t, do(b, post(`[]`)), 200, plainJSON, `[]`)
+	expect(t, do(b, post(`{"query":"{ hello }"}`)), 200, plainJSON, `{"data":{"hello":"hello, world"}}`)
 }
 
 func TestContextCancellationPropagates(t *testing.T) {

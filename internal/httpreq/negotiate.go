@@ -17,8 +17,15 @@ const MediaTypeGraphQLResponse = "application/graphql-response+json"
 // client-visible twice over: it names the response Content-Type, and it
 // decides whether a request error is answered with 400 or with 200.
 func Negotiate(accept string) (string, bool) {
+	// A client that named no type is not asking for the newer one, and the
+	// media type decides the status of a request error as well as the header,
+	// so answering graphql-response+json here would also turn a 200 into a
+	// 400 for a client that never opted in. graphql-http (the specification's
+	// reference implementation), graphql-yoga and Apollo Server all answer
+	// application/json, and the specification's own audit suite requires it:
+	// "SHOULD assume application/json content-type when accept is missing".
 	if strings.TrimSpace(accept) == "" {
-		return MediaTypeGraphQLResponse, true
+		return MediaTypeJSON, true
 	}
 	best, bestQ := "", -1.0
 	consider := func(mt string, q float64) {
@@ -45,10 +52,14 @@ func Negotiate(accept string) (string, bool) {
 		case MediaTypeGraphQLResponse, MediaTypeJSON:
 			consider(mt, q)
 		case "*/*", "application/*":
-			// Wildcards match both; the preferred type wins the tie, but an
-			// explicit application/json still outranks a wildcard at equal q.
+			// A wildcard names neither type, so it is answered like a missing
+			// Accept: application/json, which the audit requires ("SHOULD
+			// accept */* and use application/json for the content-type"). An
+			// explicit type still outranks a wildcard at equal q, in either
+			// direction -- consider's tie-break picks graphql-response+json
+			// over the json a wildcard already put there.
 			if q > bestQ {
-				best, bestQ = MediaTypeGraphQLResponse, q
+				best, bestQ = MediaTypeJSON, q
 			}
 		}
 	}

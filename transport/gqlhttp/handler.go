@@ -150,9 +150,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	if !batch {
-		resp := h.execute(ctx, reqs[0])
+		resp, malformed := h.execute(ctx, reqs[0])
 		status := http.StatusOK
-		if mediaType == MediaTypeGraphQLResponse && resp.HasRequestErrors() && !apq.IsRetryHandshake(resp) {
+		switch {
+		case malformed:
+			status = http.StatusBadRequest
+		case mediaType == MediaTypeGraphQLResponse && resp.HasRequestErrors() && !apq.IsRetryHandshake(resp):
 			status = http.StatusBadRequest
 		}
 		h.writeResponse(w, mediaType, status, func(out io.Writer) error {
@@ -174,7 +177,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					return err
 				}
 			}
-			resp := h.execute(ctx, req)
+			resp, _ := h.execute(ctx, req)
 			_, err := resp.WriteTo(out)
 			resp.Release()
 			if err != nil {
@@ -186,15 +189,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// execute resolves a persisted query, if enabled, and runs the request.
-func (h *Handler) execute(ctx context.Context, req *graphql.Request) *graphql.Response {
+// execute resolves a persisted query, if enabled, and runs the request. The
+// second result marks a malformed request rather than a GraphQL request error:
+// a body carrying no query never became an operation, so it is 400 whatever
+// media type was negotiated, the same answer graphql-http gives and the same
+// one httpreq composes when persisted queries are off and the missing query is
+// caught while parsing.
+func (h *Handler) execute(ctx context.Context, req *graphql.Request) (*graphql.Response, bool) {
 	if resp := h.resolvePersisted(req); resp != nil {
-		return resp
+		return resp, false
 	}
 	if req.Query == "" {
-		return &graphql.Response{Errors: []*graphql.Error{graphql.Errorf("%v", httpreq.ErrMissingQuery)}}
+		return &graphql.Response{Errors: []*graphql.Error{graphql.Errorf("%v", httpreq.ErrMissingQuery)}}, true
 	}
-	return h.exec.Execute(ctx, req)
+	return h.exec.Execute(ctx, req), false
 }
 
 func (h *Handler) resolvePersisted(req *graphql.Request) *graphql.Response {

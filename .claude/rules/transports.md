@@ -25,6 +25,26 @@ over GET" is composed independently per transport, not through `httpreq`, and th
 it, as they do for the unacceptable-`Accept` message — a real split along transport kind, not
 drift to fix. A row that splits still asserts every handler on both sides of it.
 
+**A client that names neither JSON type gets `application/json`.** An empty `Accept` and a
+wildcard both answer `MediaTypeJSON`, and with it the 200 that media type carries for a
+request error: the client never opted into `application/graphql-response+json`, so it should
+not be handed the status that goes with it. The specification's audit suite requires both
+rows ("SHOULD accept */* and use application/json for the content-type", "SHOULD assume
+application/json content-type when accept is missing") and graphql-http, graphql-yoga and
+Apollo Server all answer `application/json` to a wildcard. An explicit type still outranks a
+wildcard in either order; `internal/httpreq.TestNegotiate` is the whole table, which
+`Negotiate` had no direct test for until this changed. **`gqlhttp` takes 61 of 61 on that
+audit** with CSRF prevention off, 58 with it on, where the three are `MAY` rows sending a GET
+with no preflight header. See `testdata/httpaudit/`.
+
+**A missing `query` member is 400 whatever was negotiated**, because a body that carried no
+query never became an operation -- it is a malformed request, not a GraphQL request error, and
+only the latter follows the media type. `execute` returns that as a second result rather than
+letting the status rule see it. With persisted queries on the check happens after APQ
+resolution, and until this was fixed it went through the media-type rule there: an
+`application/json` client got 200 for a request `httpreq` answers 400 when APQ is off, so the
+same request had two answers depending on an unrelated option.
+
 **A response that fails to serialize still gets a body.** The status header is already on the
 wire when `WriteTo` fails -- the only thing that can fail is an extension value
 `encoding/json` will not take -- so the status cannot be corrected, but an empty 200 is
