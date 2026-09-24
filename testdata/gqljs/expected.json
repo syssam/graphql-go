@@ -1,0 +1,516 @@
+[
+ {
+  "name": "scalar and alias",
+  "hasData": true,
+  "data": {
+   "a": "ok",
+   "str": "ok"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "nullable field error",
+  "hasData": true,
+  "data": {
+   "failNullable": null
+  },
+  "errorCount": 1,
+  "errorPaths": [
+   [
+    "failNullable"
+   ]
+  ],
+  "messages": [
+   "boom"
+  ]
+ },
+ {
+  "name": "non-null field error bubbles to root",
+  "hasData": true,
+  "data": null,
+  "errorCount": 1,
+  "errorPaths": [
+   [
+    "failNonNull"
+   ]
+  ],
+  "messages": [
+   "boom"
+  ]
+ },
+ {
+  "name": "non-null error under nullable parent",
+  "hasData": true,
+  "data": {
+   "nullableObj": null
+  },
+  "errorCount": 1,
+  "errorPaths": [
+   [
+    "nullableObj",
+    "failNonNull"
+   ]
+  ],
+  "messages": [
+   "boom"
+  ]
+ },
+ {
+  "name": "sibling survives a nullable error",
+  "hasData": true,
+  "data": {
+   "failNullable": null,
+   "str": "ok"
+  },
+  "errorCount": 1,
+  "errorPaths": [
+   [
+    "failNullable"
+   ]
+  ],
+  "messages": [
+   "boom"
+  ]
+ },
+ {
+  "name": "list with a nullable element error",
+  "hasData": true,
+  "data": {
+   "listNullableElems": null
+  },
+  "errorCount": 1,
+  "errorPaths": [
+   [
+    "listNullableElems"
+   ]
+  ],
+  "messages": [
+   "boom"
+  ]
+ },
+ {
+  "name": "list with a non-null element error",
+  "hasData": true,
+  "data": {
+   "listNonNullElems": null
+  },
+  "errorCount": 1,
+  "errorPaths": [
+   [
+    "listNonNullElems",
+    1
+   ]
+  ],
+  "messages": [
+   "Cannot return null for non-nullable field Query.listNonNullElems."
+  ]
+ },
+ {
+  "name": "nested list error path",
+  "hasData": true,
+  "data": {
+   "grid": [
+    [
+     "a"
+    ],
+    null,
+    [
+     "c"
+    ]
+   ]
+  },
+  "errorCount": 1,
+  "errorPaths": [
+   [
+    "grid",
+    1,
+    0
+   ]
+  ],
+  "messages": [
+   "Cannot return null for non-nullable field Query.grid."
+  ]
+ },
+ {
+  "name": "null from a non-null resolver",
+  "hasData": true,
+  "data": null,
+  "errorCount": 1,
+  "errorPaths": [
+   [
+    "nullFromNonNull"
+   ]
+  ],
+  "messages": [
+   "Cannot return null for non-nullable field Query.nullFromNonNull."
+  ]
+ },
+ {
+  "name": "typename on an object",
+  "hasData": true,
+  "data": {
+   "__typename": "Query"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "typename on an interface",
+  "hasData": true,
+  "data": {
+   "node": {
+    "__typename": "Thing",
+    "id": "1"
+   }
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "inline fragment on the wrong type",
+  "hasData": true,
+  "data": {
+   "node": {
+    "id": "1"
+   }
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "skip true",
+  "hasData": true,
+  "data": {
+   "other": "ok"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "include false",
+  "hasData": true,
+  "data": {
+   "other": "ok"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "skip via variable",
+  "hasData": true,
+  "data": {
+   "other": "ok"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "argument default applies",
+  "hasData": true,
+  "data": {
+   "withDefault": "D"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "argument explicit null",
+  "hasData": true,
+  "data": {
+   "withDefault": "NULL"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "variable omitted, argument default applies",
+  "hasData": true,
+  "data": {
+   "withDefault": "D"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "variable explicitly null",
+  "hasData": true,
+  "data": {
+   "withDefault": "NULL"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "unknown field",
+  "hasData": false,
+  "data": null,
+  "errorCount": 1,
+  "errorPaths": [
+   null
+  ],
+  "messages": [
+   "Cannot query field \"nope\" on type \"Query\". Did you mean \"node\"?"
+  ]
+ },
+ {
+  "name": "unknown argument",
+  "hasData": false,
+  "data": null,
+  "errorCount": 1,
+  "errorPaths": [
+   null
+  ],
+  "messages": [
+   "Unknown argument \"nope\" on field \"Query.str\"."
+  ]
+ },
+ {
+  "name": "wrong variable type",
+  "hasData": false,
+  "data": null,
+  "errorCount": 1,
+  "errorPaths": [
+   null
+  ],
+  "messages": [
+   "Variable \"$n\" has invalid value: Int cannot represent non-integer value: \"no\""
+  ]
+ },
+ {
+  "name": "missing required variable",
+  "hasData": false,
+  "data": null,
+  "errorCount": 1,
+  "errorPaths": [
+   null
+  ],
+  "messages": [
+   "Variable \"$n\" has invalid value: Expected a value of non-null type \"Int!\" to be provided."
+  ]
+ },
+ {
+  "name": "null for a non-null variable",
+  "hasData": false,
+  "data": null,
+  "errorCount": 1,
+  "errorPaths": [
+   null
+  ],
+  "messages": [
+   "Variable \"$n\" has invalid value: Expected value of non-null type \"Int!\" not to be null."
+  ]
+ },
+ {
+  "name": "unused variable",
+  "hasData": false,
+  "data": null,
+  "errorCount": 1,
+  "errorPaths": [
+   null
+  ],
+  "messages": [
+   "Variable \"$n\" is never used."
+  ]
+ },
+ {
+  "name": "Int out of 32-bit range",
+  "hasData": false,
+  "data": null,
+  "errorCount": 1,
+  "errorPaths": [
+   null
+  ],
+  "messages": [
+   "Int cannot represent non 32-bit signed integer value: 2147483648"
+  ]
+ },
+ {
+  "name": "Float given an Int",
+  "hasData": true,
+  "data": {
+   "floatArg": "5"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "ID given an Int",
+  "hasData": true,
+  "data": {
+   "idArg": "5"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "ID given a Float",
+  "hasData": false,
+  "data": null,
+  "errorCount": 1,
+  "errorPaths": [
+   null
+  ],
+  "messages": [
+   "ID cannot represent a non-string and non-integer value: 1.5"
+  ]
+ },
+ {
+  "name": "enum value unknown",
+  "hasData": false,
+  "data": null,
+  "errorCount": 1,
+  "errorPaths": [
+   null
+  ],
+  "messages": [
+   "Value \"NOPE\" does not exist in \"Color\" enum."
+  ]
+ },
+ {
+  "name": "enum given a string literal",
+  "hasData": false,
+  "data": null,
+  "errorCount": 1,
+  "errorPaths": [
+   null
+  ],
+  "messages": [
+   "Enum \"Color\" cannot represent non-enum value: \"RED\". Did you mean the enum value \"RED\" or \"GREEN\"?"
+  ]
+ },
+ {
+  "name": "input object missing a required field",
+  "hasData": false,
+  "data": null,
+  "errorCount": 1,
+  "errorPaths": [
+   null
+  ],
+  "messages": [
+   "Expected value of type \"Inp\" to include required field \"n\", found: {  }."
+  ]
+ },
+ {
+  "name": "input object unknown field",
+  "hasData": false,
+  "data": null,
+  "errorCount": 1,
+  "errorPaths": [
+   null
+  ],
+  "messages": [
+   "Expected value of type \"Inp\" not to include unknown field \"nope\", found: { n: 1, nope: 2 }."
+  ]
+ },
+ {
+  "name": "list coercion from a single value",
+  "hasData": true,
+  "data": {
+   "listArg": "[5]"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "two errors in one request",
+  "hasData": true,
+  "data": {
+   "failNullable": null,
+   "other": null
+  },
+  "errorCount": 2,
+  "errorPaths": [
+   [
+    "failNullable"
+   ],
+   [
+    "other"
+   ]
+  ],
+  "messages": [
+   "boom",
+   "boom"
+  ]
+ },
+ {
+  "name": "duplicate field merging",
+  "hasData": true,
+  "data": {
+   "str": "ok"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "fragment merging",
+  "hasData": true,
+  "data": {
+   "str": "ok"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "empty selection on an object",
+  "hasData": true,
+  "data": {
+   "nullableObj": {
+    "__typename": "Obj"
+   }
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "mutation runs",
+  "hasData": true,
+  "data": {
+   "bump": "bumped"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "parse failure",
+  "hasData": false,
+  "data": null,
+  "errorCount": 1,
+  "errorPaths": [
+   null
+  ],
+  "messages": [
+   "Syntax Error: Expected Name, found <EOF>."
+  ]
+ },
+ {
+  "name": "anonymous plus named operation",
+  "hasData": false,
+  "data": null,
+  "errorCount": 1,
+  "errorPaths": [
+   null
+  ],
+  "messages": [
+   "This anonymous operation must be the only defined operation."
+  ]
+ }
+]
