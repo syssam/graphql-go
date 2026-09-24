@@ -38,6 +38,25 @@ Fixes gap 4: the draft's `DIRECTIVE_DEFINITION` location, directives applied to
 a directive definition, and `DirectiveExtension`. Also updates gqlparser's
 prelude to match. Independent of 0001 and 0002; all three apply in any order.
 
+## 0004-gqlparser-formatter-descriptions.patch
+
+`formatter.FormatSchema` output does not always reload as the same schema. It
+drops the schema description. It writes a description holding `"""`
+unescaped, so the output does not parse. It writes every description as a
+block string, which strips leading and trailing blank lines and common
+indentation. This is not a specification gap, and this repository no longer
+needs the patch: `PrintSDL` prints through `internal/sdlprint`, which
+carries the same fixes. It is kept for everyone else on the formatter.
+gqlgen is one of them: its `@inlineArguments` path re-serializes the schema
+through `FormatSchema` and embeds the result. Run against gqlgen v0.17.95, a
+`"""` description there panics the generated package's `init`, and the schema
+description and description whitespace are lost from introspection. It is
+independent of 0001–0003.
+
+Re-checked on 2026-09-24 against `dc52fbe`: each of the four applies cleanly on
+its own, and with all four applied `go test -race ./...` passes in every
+package.
+
 ## Verification, 2026-09-22
 
 Re-checked against `vektah/gqlparser` at `991cd11` (2026-09-21, the commit
