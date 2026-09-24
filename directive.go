@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"strings"
 
 	"github.com/vektah/gqlparser/v2/ast"
 )
@@ -87,6 +88,15 @@ func DirectiveArgs[A any](name string, fn func(next FieldFunc, args A) FieldFunc
 // executors.
 var builtinDirectives = map[string]bool{"deprecated": true, "specifiedBy": true, "skip": true, "include": true, "oneOf": true}
 
+// locationList renders a directive's declared locations for an error message.
+func locationList(locs []ast.DirectiveLocation) string {
+	out := make([]string, 0, len(locs))
+	for _, l := range locs {
+		out = append(out, string(l))
+	}
+	return strings.Join(out, " | ")
+}
+
 func supportedDirectiveLocation(locs []ast.DirectiveLocation) bool {
 	for _, loc := range locs {
 		if loc == ast.LocationFieldDefinition || loc == ast.LocationObject {
@@ -116,10 +126,19 @@ func (b *schemaBuilder) wrapWithDirective(_ *Schema, fd *fieldDef, d *ast.Direct
 // present on its definition and on its object type. Field directives are
 // inner; object directives are outer, so @auth on a type wraps field logic.
 func (b *schemaBuilder) applyDirectives(s *Schema) {
+	// A binding whose directive can be applied nowhere this engine wraps is a
+	// build error, not a debug line. FIELD_DEFINITION and OBJECT are the only
+	// locations DirectiveArgs applies, so a directive declared on neither can
+	// never run: the author has written a wrapper, the schema builds, and
+	// nothing tells them it is dead. That is the fail-open the requirement
+	// directives already reject misplacement to prevent, and the adjacent
+	// case -- a binding for a directive the SDL does not declare at all -- is
+	// already an error two functions up.
 	for _, db := range b.directives {
 		def := b.ast.Directives[db.name]
 		if def != nil && !supportedDirectiveLocation(def.Locations) {
-			slog.Debug("graphql: directive binding is ignored for unsupported locations", "directive", db.name)
+			b.errorf("Directive %q: declared on %s, so it can never wrap a field; DirectiveArgs applies FIELD_DEFINITION and OBJECT",
+				db.name, locationList(def.Locations))
 		}
 	}
 	for _, obj := range s.objects {
