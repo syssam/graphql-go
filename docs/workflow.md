@@ -45,6 +45,22 @@ type Query {
 
 ## 2. Configure and generate
 
+For the common case there is nothing to configure. The output package is read
+from the nearest `go.mod`, so the only two facts `gqlc` cannot work out are the
+schema and where to put the result:
+
+```sh
+go tool gqlc -schema schema.graphql -out graph
+```
+
+`-schema` and `-model` may be repeated or comma-separated, and
+`-nullable-input-omittable`, `-zero-for-null-inputs` and `-pkg` cover the rest of
+what a small project needs. A config file is for the two options a flag would
+make unreadable, `modelDirective` and `fieldDirective`, which take a name and an
+argument each -- and for keeping the settings under review rather than in a
+`//go:generate` line. The two forms do not mix: `-schema` means the flags are the
+configuration.
+
 `gqlc.yaml` beside it:
 
 ```yaml

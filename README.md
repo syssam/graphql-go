@@ -192,7 +192,7 @@ it, implement the interface it hands you, wire it to a transport.
 | gRPC | graphql-go |
 |---|---|
 | write `service.proto` | write `schema.graphql` |
-| `protoc --go_out=.` | `go tool gqlc -config gqlc.yaml` |
+| `protoc --go_out=.` | `go tool gqlc -schema schema.graphql -out graph` |
 | implement `XxxServer` | implement the generated `Resolver` |
 | `grpc.NewServer()` | `graph.NewSchema(r)`, then a transport |
 
