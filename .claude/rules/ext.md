@@ -76,6 +76,11 @@ it does not go through `runOnce`, which routes a response carrying request error
 `finishWithErrors`. `internal/gqlwsproto` takes it as `Config.ResolvePersisted`, a func rather
 than an `apq.Cache`, so the protocol core keeps depending on nothing but the root package
 while the transports — which already import `ext/apq` for their HTTP handlers — supply it.
+**`apq.IsRetryHandshake` is the HTTP side of the same rule**, and the HTTP side had it wrong
+until a differential against Apollo Server 5.5.1: the miss followed the negotiated media type
+like any other request error, so a client accepting `application/graphql-response+json` — which
+is every Apollo Client — got a 400 it reports as a failed request rather than retrying. The
+WebSocket carrier never made that mistake. See `transports.md`.
 On both carriers **resolution happens while the request is still being read, not at
 execution** — on a WebSocket before the id is registered or a subscription slot is taken, and
 over HTTP during parsing. The HTTP ordering is load-bearing: a request carrying

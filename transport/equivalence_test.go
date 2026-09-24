@@ -34,6 +34,7 @@ import (
 
 	"github.com/syssam/graphql-go"
 	"github.com/syssam/graphql-go/ext/apq"
+	"github.com/syssam/graphql-go/ext/trusted"
 	"github.com/syssam/graphql-go/transport/gqlecho"
 	"github.com/syssam/graphql-go/transport/gqlfiber"
 	"github.com/syssam/graphql-go/transport/gqlhttp"
@@ -448,9 +449,19 @@ func TestEquivalence(t *testing.T) {
 			map[string]string{"Accept": "application/json", "GraphQL-Require-Preflight": "1"}, "", http.StatusOK, want)
 	})
 
-	// The other half of the same rule: a client that asked for the
-	// specification media type gets the status the specification calls for.
-	t.Run("APQ miss over GET is 400 for the spec media type", func(t *testing.T) {
+	// The same answer under the specification media type. Read literally the
+	// specification would make this 4xx, since the request did not execute --
+	// but automatic persisted queries are not in the specification at all,
+	// they are Apollo's protocol, and Apollo Server answers the miss with 200
+	// whatever media type was negotiated. The status has to follow the
+	// protocol, not the media type: every client that sends a persistedQuery
+	// extension is an Apollo-protocol client, and a 4xx it reports as a failed
+	// request is a cold cache that never warms.
+	//
+	// This asserted 400 until a differential against Apollo Server 5.5.1 found
+	// it. Apollo Client sends `Accept: application/graphql-response+json` (and
+	// `*/*` reaches the same branch), so the 400 was what real clients got.
+	t.Run("APQ miss over GET is 200 for the spec media type too", func(t *testing.T) {
 		servers := newEquivServers(t,
 			[]gqlhttp.Option{gqlhttp.WithPersistedQueries(apq.NewCache(10))},
 			[]gqlsse.Option{gqlsse.WithPersistedQueries(apq.NewCache(10))},
@@ -459,7 +470,33 @@ func TestEquivalence(t *testing.T) {
 		ext := url.QueryEscape(`{"persistedQuery":{"version":1,"sha256Hash":"` +
 			apq.Hash(`{ hello }`) + `"}}`)
 		const want = `{"errors":[{"message":"PersistedQueryNotFound","extensions":{"code":"PERSISTED_QUERY_NOT_FOUND"}}]}`
-		assertEqualAcross(t, servers, httpFamily, http.MethodGet, "/graphql?extensions="+ext,
+		for _, accept := range []string{"application/graphql-response+json", "*/*"} {
+			t.Run(accept, func(t *testing.T) {
+				assertEqualAcross(t, servers, httpFamily, http.MethodGet, "/graphql?extensions="+ext,
+					map[string]string{"Accept": accept, "GraphQL-Require-Preflight": "1"}, "",
+					http.StatusOK, want)
+			})
+		}
+	})
+
+	// A safelist refusal is not a handshake: the client must not retry with
+	// the query text, which is the thing the safelist forbids, so it keeps the
+	// status its media type calls for.
+	t.Run("safelist refusal stays 400 for the spec media type", func(t *testing.T) {
+		store := trusted.NewStore(map[string]string{})
+		servers := newEquivServers(t,
+			[]gqlhttp.Option{gqlhttp.WithPersistedQueries(store)},
+			[]gqlsse.Option{gqlsse.WithPersistedQueries(store)},
+			[]gqlfiber.Option{gqlfiber.WithPersistedQueries(store)},
+		)
+		// The query text is what a safelist refuses; an unknown hash alone is
+		// still answered PersistedQueryNotFound, so it would not reach the
+		// branch under test.
+		ext := url.QueryEscape(`{"persistedQuery":{"version":1,"sha256Hash":"` +
+			apq.Hash(`{ hello }`) + `"}}`)
+		const want = `{"errors":[{"message":"PersistedQueryNotInList","extensions":{"code":"PERSISTED_QUERY_NOT_IN_LIST"}}]}`
+		assertEqualAcross(t, servers, httpFamily, http.MethodGet,
+			"/graphql?query="+url.QueryEscape(`{ hello }`)+"&extensions="+ext,
 			map[string]string{"Accept": "application/graphql-response+json", "GraphQL-Require-Preflight": "1"}, "",
 			http.StatusBadRequest, want)
 	})

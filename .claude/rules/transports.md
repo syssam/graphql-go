@@ -56,10 +56,24 @@ every handler, so adding one without wiring it fails rather than being assumed.
 **The APQ path nothing drove was a miss over GET.** Every APQ test registered the query first,
 so `writeGraphQLError` -- the only caller of which is the persisted-query miss on the GET
 branch -- was at 0% in `gqlhttp` and `gqlfiber` both. It is the *first* request an Apollo
-client ever sends, and its status rule is load-bearing in both directions: 200 for
-`application/json`, because that is what the client retries after, and 400 for
-`application/graphql-response+json`, because that is what the specification says. Both are
-asserted across the HTTP family now.
+client ever sends.
+
+**An APQ retry handshake is 200 under every media type** (`apq.IsRetryHandshake`, consulted at
+all four status decisions in `gqlhttp` and `gqlfiber`). This used to follow the media type like
+any other request error -- 200 for `application/json`, 400 for
+`application/graphql-response+json` "because that is what the specification says" -- and a
+differential against Apollo Server 5.5.1 showed both halves of that reasoning were wrong.
+Automatic persisted queries are not in the specification at all; they are Apollo's protocol,
+and Apollo answers `PersistedQueryNotFound` with 200 whatever was negotiated. Apollo Client
+sends `Accept: application/graphql-response+json`, and `*/*` and a missing `Accept` reach the
+same branch here, so the 400 was what real clients got on every cold cache -- the exact failure
+the `application/json` case was written to avoid. `CodeNotInList` is excluded: a safelist
+refusal is a rejection, and retrying with the text is what it forbids. Both codes and the
+safelist case are asserted across the HTTP family.
+
+An unknown *hash* against a `TrustedStore` still answers `PersistedQueryNotFound`, not
+`PersistedQueryNotInList`, so a safelist now invites a retry it will then refuse. One wasted
+round trip, no weaker a safelist -- but it is why the safelist row sends query text.
 
 `gqlecho` is `net/http` underneath, so it delegates to `gqlhttp`/`gqlsse`/`gqlws` rather than
 reimplementing them; its only addition over `echo.WrapHandler` is mapping a pre-response

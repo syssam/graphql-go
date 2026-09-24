@@ -113,6 +113,28 @@ func Resolve(c Cache, req *graphql.Request) *graphql.Response {
 	return nil
 }
 
+// IsRetryHandshake reports whether resp is the protocol asking the client to
+// send the query text, rather than refusing the request.
+//
+// The distinction is a status code. Apollo Server answers both of these with
+// 200 whatever media type was negotiated, because a client that sees 4xx here
+// reports a failed request instead of retrying, and the retry is the whole
+// protocol: every cold cache starts with one. CodeNotInList is deliberately
+// absent -- a safelist refusal is a rejection, and retrying with the text is
+// the thing it exists to forbid.
+func IsRetryHandshake(resp *graphql.Response) bool {
+	if resp == nil {
+		return false
+	}
+	for _, e := range resp.Errors {
+		switch e.Extensions["code"] {
+		case CodeNotFound, CodeNotSupported:
+			return true
+		}
+	}
+	return false
+}
+
 func errorResponse(code, message string) *graphql.Response {
 	err := graphql.Errorf("%s", message)
 	if code != "" {

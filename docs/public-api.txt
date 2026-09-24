@@ -16,6 +16,7 @@ ext/apq: const CodeNotFound
 ext/apq: const CodeNotInList
 ext/apq: const CodeNotSupported
 ext/apq: func Hash(query string) string
+ext/apq: func IsRetryHandshake(resp *graphql.Response) bool
 ext/apq: func NewCache(size int, opts ...CacheOption) Cache
 ext/apq: func Resolve(c Cache, req *graphql.Request) *graphql.Response
 ext/apq: func WithMaxBytes(n int64) CacheOption

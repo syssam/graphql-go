@@ -148,23 +148,47 @@ func TestPersistedMutationIsStillRejectedOverGET(t *testing.T) {
 	}
 }
 
-// TestAPQNotFoundIsBadRequestForSpecMediaType checks the other half of the
-// status rule: a client asking for application/graphql-response+json gets the
-// status the GraphQL over HTTP specification calls for.
-func TestAPQNotFoundIsBadRequestForSpecMediaType(t *testing.T) {
-	srv, client := apqServer(t, apq.NewCache(10))
+// TestAPQNotFoundIsOKForEveryMediaType checks that the miss keeps its 200
+// whatever was negotiated. It is a handshake, not a request error: the client
+// has to read PersistedQueryNotFound and retry with the query text, and a 4xx
+// it reports as a failed request is a cache that never warms. Apollo Server
+// answers 200 here under every media type.
+//
+// This asserted 400 for application/graphql-response+json, on the grounds that
+// the specification says so -- but persisted queries are not in the
+// specification, and that media type is the one Apollo Client sends.
+func TestAPQNotFoundIsOKForEveryMediaType(t *testing.T) {
+	for _, accept := range []string{
+		"application/graphql-response+json",
+		"application/json",
+		"*/*",
+		"",
+	} {
+		t.Run("accept="+accept, func(t *testing.T) {
+			srv, client := apqServer(t, apq.NewCache(10))
 
-	req, _ := http.NewRequest(http.MethodPost, srv.URL,
-		strings.NewReader(`{"extensions":`+extJSON(apq.Hash(`{ ping }`))+`}`))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/graphql-response+json")
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", resp.StatusCode)
+			req, _ := http.NewRequest(http.MethodPost, srv.URL,
+				strings.NewReader(`{"extensions":`+extJSON(apq.Hash(`{ ping }`))+`}`))
+			req.Header.Set("Content-Type", "application/json")
+			if accept != "" {
+				req.Header.Set("Accept", accept)
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200", resp.StatusCode)
+			}
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(body), apq.CodeNotFound) {
+				t.Fatalf("body = %s, want %s", body, apq.CodeNotFound)
+			}
+		})
 	}
 }
 

@@ -152,7 +152,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !batch {
 		resp := h.execute(ctx, reqs[0])
 		status := http.StatusOK
-		if mediaType == MediaTypeGraphQLResponse && resp.HasRequestErrors() {
+		if mediaType == MediaTypeGraphQLResponse && resp.HasRequestErrors() && !apq.IsRetryHandshake(resp) {
 			status = http.StatusBadRequest
 		}
 		h.writeResponse(w, mediaType, status, func(out io.Writer) error {
@@ -205,12 +205,12 @@ func (h *Handler) resolvePersisted(req *graphql.Request) *graphql.Response {
 }
 
 // writeGraphQLError sends a response carrying only errors, with the status the
-// negotiated media type calls for. A client sending application/json gets 200,
-// which is what a persisted-query client expects before it retries with the
-// query text.
+// negotiated media type calls for: a client sending application/json gets 200.
+// A persisted-query retry handshake is 200 under both media types, because the
+// client has to read it and retry rather than report a failed request.
 func (h *Handler) writeGraphQLError(w http.ResponseWriter, mediaType string, resp *graphql.Response) {
 	status := http.StatusOK
-	if mediaType == MediaTypeGraphQLResponse && resp.HasRequestErrors() {
+	if mediaType == MediaTypeGraphQLResponse && resp.HasRequestErrors() && !apq.IsRetryHandshake(resp) {
 		status = http.StatusBadRequest
 	}
 	h.writeResponse(w, mediaType, status, func(out io.Writer) error {
