@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/vektah/gqlparser/v2/ast"
+	"github.com/vektah/gqlparser/v2/parser"
 )
 
 const introSDL = `
@@ -331,5 +334,29 @@ func TestIntrospectionDirectivesDefaultsToVisible(t *testing.T) {
 	data := introQuery(t, e, `{__schema{directives{name}}}`)
 	if got := names(get(data, "__schema", "directives")); !strings.Contains(got, "tag") {
 		t.Errorf("directives = %s, want it to include tag", got)
+	}
+}
+
+// A defaultValue is a GraphQL literal a client parses. gqlparser's
+// ast.Value.String quotes with strconv.Quote, which writes \U and \x escapes
+// GraphQL does not define, so a default holding such a character reached the
+// client as a literal no GraphQL parser accepts.
+func TestIntrospectionDefaultValueIsAGraphQLLiteral(t *testing.T) {
+	const v = "tag \U000E0001 del \x7f end"
+	s, err := NewSchema(SDL(`type Query { f(a: String = "tag `+"\U000E0001"+` del \u007F end"): Int }`),
+		Args[struct{ A *string }](),
+		Query(FieldArgs("f", func(Root, struct{ A *string }) int { return 0 })),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := introQuery(t, NewExecutor(s), `{ __type(name: "Query") { fields { args { defaultValue } } } }`)
+	lit, _ := get(data, "__type", "fields").([]any)[0].(map[string]any)["args"].([]any)[0].(map[string]any)["defaultValue"].(string)
+	doc, gerr := parser.ParseQuery(&ast.Source{Input: "{ f(a: " + lit + ") }"})
+	if gerr != nil {
+		t.Fatalf("defaultValue %s does not parse as a GraphQL literal: %v", lit, gerr)
+	}
+	if got := doc.Operations[0].SelectionSet[0].(*ast.Field).Arguments[0].Value.Raw; got != v {
+		t.Fatalf("defaultValue %s reads back as %q, want %q", lit, got, v)
 	}
 }

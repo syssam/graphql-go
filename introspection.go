@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/syssam/graphql-go/internal/sdlprint"
 	"github.com/vektah/gqlparser/v2/ast"
 	"github.com/vektah/gqlparser/v2/validator/core"
 )
@@ -384,7 +385,7 @@ func (v *introInputValue) defaultValueString() *string {
 	if v.defaultValue == nil {
 		return nil
 	}
-	str := v.defaultValue.String()
+	str := sdlprint.Value(v.defaultValue)
 	return &str
 }
 
