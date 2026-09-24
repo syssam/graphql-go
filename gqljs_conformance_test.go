@@ -1,6 +1,7 @@
 package graphql
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -182,14 +183,28 @@ func readGQLJSON[T any](t *testing.T, name string) []T {
 	return out
 }
 
-// TestGraphQLJSDifferential runs every case in testdata/gqljs/cases.json and
-// requires this engine to agree with graphql-js on all of it.
+// TestGraphQLJSDifferential runs every recorded case set and requires this
+// engine to agree with graphql-js on all of it.
 func TestGraphQLJSDifferential(t *testing.T) {
-	e := newGQLJSExecutor(t)
-	cases := readGQLJSON[gqljsCase](t, "cases.json")
-	expects := readGQLJSON[gqljsExpect](t, "expected.json")
+	for _, set := range []struct {
+		name, cases, expected string
+		exec                  func(*testing.T) *Executor
+	}{
+		{"core", "cases.json", "expected.json", newGQLJSExecutor},
+		{"abstract-lists-inputs", "cases2.json", "expected2.json", newGQLJSExecutor2},
+	} {
+		t.Run(set.name, func(t *testing.T) {
+			runGQLJSSet(t, set.exec(t), set.cases, set.expected)
+		})
+	}
+}
+
+func runGQLJSSet(t *testing.T, e *Executor, casesFile, expectedFile string) {
+	t.Helper()
+	cases := readGQLJSON[gqljsCase](t, casesFile)
+	expects := readGQLJSON[gqljsExpect](t, expectedFile)
 	if len(cases) != len(expects) {
-		t.Fatalf("cases.json has %d cases, expected.json has %d", len(cases), len(expects))
+		t.Fatalf("%s has %d cases, %s has %d", casesFile, len(cases), expectedFile, len(expects))
 	}
 	want := make(map[string]gqljsExpect, len(expects))
 	for _, x := range expects {
@@ -232,22 +247,22 @@ func TestGraphQLJSDifferential(t *testing.T) {
 	}
 }
 
-// jsCanonical re-marshals the recorded data so key order and spacing match what
-// the writer emits, leaving a real shape difference as the only way to fail.
+// jsCanonical strips insignificant whitespace from the recorded data and
+// nothing else. It must not round-trip through map[string]any: that sorts the
+// keys, and response key order is document order, which the specification
+// requires and this comparison is here to check. It did round-trip at first,
+// and the first case set passed either way only because its field names
+// happened to be alphabetical.
 func jsCanonical(t *testing.T, raw json.RawMessage) string {
 	t.Helper()
 	if len(raw) == 0 {
 		return "null"
 	}
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		t.Fatalf("decode recorded data: %v", err)
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		t.Fatalf("compact recorded data: %v", err)
 	}
-	b, err := json.Marshal(v)
-	if err != nil {
-		t.Fatalf("re-encode recorded data: %v", err)
-	}
-	return string(b)
+	return buf.String()
 }
 
 func jsPaths(resp *Response) []string {

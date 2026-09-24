@@ -1,0 +1,611 @@
+[
+ {
+  "name": "list [String] with a null element",
+  "hasData": true,
+  "data": {
+   "nn": [
+    "a",
+    null,
+    "c"
+   ]
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "list [String!] with a null element",
+  "hasData": true,
+  "data": {
+   "nx": null
+  },
+  "errorCount": 1,
+  "errorPaths": [
+   [
+    "nx",
+    1
+   ]
+  ],
+  "messages": [
+   "Cannot return null for non-nullable field Query.nx."
+  ]
+ },
+ {
+  "name": "list [String]! with a null element",
+  "hasData": true,
+  "data": {
+   "xn": [
+    "a",
+    null,
+    "c"
+   ]
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "list [String!]! with a null element",
+  "hasData": true,
+  "data": null,
+  "errorCount": 1,
+  "errorPaths": [
+   [
+    "xx",
+    1
+   ]
+  ],
+  "messages": [
+   "Cannot return null for non-nullable field Query.xx."
+  ]
+ },
+ {
+  "name": "list [String!]! null element bubbles past a sibling",
+  "hasData": true,
+  "data": null,
+  "errorCount": 1,
+  "errorPaths": [
+   [
+    "xx",
+    1
+   ]
+  ],
+  "messages": [
+   "Cannot return null for non-nullable field Query.xx."
+  ]
+ },
+ {
+  "name": "whole list null, [String]",
+  "hasData": true,
+  "data": {
+   "nnNull": null
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "whole list null, [String]!",
+  "hasData": true,
+  "data": null,
+  "errorCount": 1,
+  "errorPaths": [
+   [
+    "xnNull"
+   ]
+  ],
+  "messages": [
+   "Cannot return null for non-nullable field Query.xnNull."
+  ]
+ },
+ {
+  "name": "nested list, null inner list and null element",
+  "hasData": true,
+  "data": {
+   "deepNN": [
+    [
+     "a"
+    ],
+    [
+     null
+    ],
+    null
+   ]
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "nested list all non-null, null at depth 2",
+  "hasData": true,
+  "data": null,
+  "errorCount": 1,
+  "errorPaths": [
+   [
+    "deepXX",
+    1,
+    0
+   ]
+  ],
+  "messages": [
+   "Cannot return null for non-nullable field Query.deepXX."
+  ]
+ },
+ {
+  "name": "interface resolves to Dog",
+  "hasData": true,
+  "data": {
+   "named": {
+    "__typename": "Dog",
+    "name": "Rex"
+   }
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "interface resolves to Cat",
+  "hasData": true,
+  "data": {
+   "namedCat": {
+    "__typename": "Cat",
+    "name": "Tom"
+   }
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "inline fragment matching the runtime type",
+  "hasData": true,
+  "data": {
+   "named": {
+    "name": "Rex",
+    "barks": true
+   }
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "inline fragment on the other type",
+  "hasData": true,
+  "data": {
+   "named": {
+    "name": "Rex"
+   }
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "both inline fragments",
+  "hasData": true,
+  "data": {
+   "named": {
+    "name": "Rex",
+    "barks": true
+   }
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "named fragment on an interface",
+  "hasData": true,
+  "data": {
+   "named": {
+    "__typename": "Dog",
+    "name": "Rex"
+   }
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "named fragment on a concrete type",
+  "hasData": true,
+  "data": {
+   "named": {
+    "name": "Rex",
+    "barks": true
+   }
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "union needs a fragment",
+  "hasData": true,
+  "data": {
+   "pet": {
+    "__typename": "Dog",
+    "name": "Rex",
+    "barks": true
+   }
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "union typename only",
+  "hasData": true,
+  "data": {
+   "pet": {
+    "__typename": "Dog"
+   }
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "abstract list of mixed types",
+  "hasData": true,
+  "data": {
+   "namedList": [
+    {
+     "__typename": "Dog",
+     "name": "Rex",
+     "barks": true
+    },
+    {
+     "__typename": "Cat",
+     "name": "Tom",
+     "lives": 9
+    }
+   ]
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "skip on a fragment spread",
+  "hasData": true,
+  "data": {
+   "named": {
+    "name": "Rex"
+   }
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "include false on a fragment spread",
+  "hasData": true,
+  "data": {
+   "named": {
+    "name": "Rex"
+   }
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "skip on an inline fragment",
+  "hasData": true,
+  "data": {
+   "named": {
+    "name": "Rex"
+   }
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "skip and include on the same field",
+  "hasData": true,
+  "data": {
+   "str": "ok",
+   "a": "ok"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "skip true wins over include true",
+  "hasData": true,
+  "data": {
+   "str": "ok"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "skip via variable on a fragment spread",
+  "hasData": true,
+  "data": {
+   "named": {
+    "name": "Rex"
+   }
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "nested input object literal",
+  "hasData": true,
+  "data": {
+   "outerArg": "Outer{inner=Inner{n=1,s=inner-default},list=absent,size=SMALL,req=7}"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "nested input object applies inner default",
+  "hasData": true,
+  "data": {
+   "outerArg": "Outer{inner=Inner{n=1,s=inner-default},list=absent,size=SMALL,req=7}"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "input object applies its own defaults",
+  "hasData": true,
+  "data": {
+   "outerArg": "Outer{inner=absent,list=absent,size=SMALL,req=7}"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "input object explicit null for a nullable field",
+  "hasData": true,
+  "data": {
+   "outerArg": "Outer{inner=null,list=absent,size=SMALL,req=7}"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "input object list of input objects",
+  "hasData": true,
+  "data": {
+   "outerArg": "Outer{inner=absent,list=[Inner{n=1,s=inner-default},Inner{n=2,s=inner-default}],size=SMALL,req=7}"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "input object list containing null",
+  "hasData": true,
+  "data": {
+   "outerArg": "Outer{inner=absent,list=[Inner{n=1,s=inner-default},null],size=SMALL,req=7}"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "input object null for a non-null field with a default",
+  "hasData": false,
+  "data": null,
+  "errorCount": 1,
+  "errorPaths": [
+   null
+  ],
+  "messages": [
+   "Expected value of non-null type \"Int!\" not to be null."
+  ]
+ },
+ {
+  "name": "input object enum default",
+  "hasData": true,
+  "data": {
+   "outerArg": "Outer{inner=absent,list=absent,size=SMALL,req=7}"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "input object enum explicit",
+  "hasData": true,
+  "data": {
+   "outerArg": "Outer{inner=absent,list=absent,size=LARGE,req=7}"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "input coercion single value to list",
+  "hasData": true,
+  "data": {
+   "innerListArg": "[Inner{n=1,s=inner-default}]"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "input list from a variable",
+  "hasData": true,
+  "data": {
+   "innerListArg": "[Inner{n=1,s=inner-default}]"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "input list single value from a variable",
+  "hasData": true,
+  "data": {
+   "innerListArg": "[Inner{n=1,s=inner-default}]"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "variable inside an input object literal",
+  "hasData": true,
+  "data": {
+   "outerArg": "Outer{inner=Inner{n=5,s=inner-default},list=absent,size=SMALL,req=7}"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "omitted variable inside an input object literal",
+  "hasData": true,
+  "data": {
+   "outerArg": "Outer{inner=Inner{n=absent,s=inner-default},list=absent,size=SMALL,req=7}"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "null variable inside an input object literal",
+  "hasData": true,
+  "data": {
+   "outerArg": "Outer{inner=Inner{n=null,s=inner-default},list=absent,size=SMALL,req=7}"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "variable inside a list literal",
+  "hasData": true,
+  "data": {
+   "innerListArg": "[Inner{n=5,s=inner-default}]"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "omitted variable inside a list literal",
+  "hasData": true,
+  "data": {
+   "innerListArg": "[Inner{n=absent,s=inner-default}]"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "argument default when variable omitted",
+  "hasData": true,
+  "data": {
+   "sizeArg": "LARGE"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "argument default not applied for explicit null",
+  "hasData": true,
+  "data": {
+   "sizeArg": "null"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "enum from a variable",
+  "hasData": true,
+  "data": {
+   "sizeArg": "SMALL"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ },
+ {
+  "name": "enum from an invalid variable",
+  "hasData": false,
+  "data": null,
+  "errorCount": 1,
+  "errorPaths": [
+   null
+  ],
+  "messages": [
+   "Variable \"$s\" has invalid value: Value \"HUGE\" does not exist in \"Size\" enum."
+  ]
+ },
+ {
+  "name": "input object unknown field in a variable",
+  "hasData": false,
+  "data": null,
+  "errorCount": 1,
+  "errorPaths": [
+   null
+  ],
+  "messages": [
+   "Variable \"$v\" has invalid value: Expected value of type \"Inner\" not to include unknown field \"nope\", found: { n: 1, nope: 2 }."
+  ]
+ },
+ {
+  "name": "error sorts with its siblings",
+  "hasData": true,
+  "data": {
+   "c": null,
+   "b": null,
+   "a": null
+  },
+  "errorCount": 3,
+  "errorPaths": [
+   [
+    "c"
+   ],
+   [
+    "b"
+   ],
+   [
+    "a"
+   ]
+  ],
+  "messages": [
+   "boom",
+   "boom",
+   "boom"
+  ]
+ },
+ {
+  "name": "error inside an abstract list element",
+  "hasData": true,
+  "data": {
+   "namedList": [
+    {
+     "name": "Rex"
+    },
+    {
+     "name": "Tom"
+    }
+   ],
+   "str": "ok"
+  },
+  "errorCount": 0,
+  "errorPaths": [],
+  "messages": []
+ }
+]

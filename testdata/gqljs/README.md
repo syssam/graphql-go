@@ -1,8 +1,14 @@
 # The graphql-js differential
 
-`expected.json` is [graphql-js](https://github.com/graphql/graphql-js) 17.0.2's own output for
-every case in `cases.json`, recorded by `run.mjs`. `TestGraphQLJSDifferential` (root package)
-builds the same schema in this engine, runs the same cases, and requires the two to agree.
+`expected*.json` is [graphql-js](https://github.com/graphql/graphql-js) 17.0.2's own output for
+every case in the matching `cases*.json`, recorded by the matching `run*.mjs`.
+`TestGraphQLJSDifferential` (root package) builds the same schemas in this engine, runs the
+same cases, and requires the two to agree. **90 cases across two sets:**
+
+| set | cases | covers |
+| --- | ---: | --- |
+| `cases.json` | 41 | null bubbling, error paths, argument and variable coercion, fragments, operation selection |
+| `cases2.json` | 49 | abstract types with two real implementations, the full list-nullability matrix, nested input coercion, directives on fragments |
 
 It runs in CI like any other Go test — Node is needed only to re-record.
 
@@ -21,8 +27,15 @@ worth nothing if they drift.
 
 ## What is compared, and what is not
 
-Compared: whether `data` is present, its exact shape, how far a non-null error bubbled, the
-number of errors, and the path on each one.
+Compared: whether `data` is present, its exact shape **including response key order**, how far
+a non-null error bubbled, the number of errors, and the path on each one, in order.
+
+Key order is document order and the specification requires it. Checking it needed a fix to the
+test rather than to the engine: the recorded data was being round-tripped through a Go
+`map[string]any` before comparison, which sorts keys, so the property was not being checked at
+all. The first 41 cases passed either way only because their field names happened to be
+alphabetical; the second set has `{ str a: str ... }` and caught it. The comparison now
+compacts the recorded JSON and nothing else, and the engine matches graphql-js on all 90.
 
 **Message wording is recorded but not compared.** Eight differ. Four are byte-identical to
 graphql-js **16** and differ only because 17 reworded them, which is gqlparser's phrasing
@@ -57,3 +70,7 @@ containing null, `listNonNullElems` returned an error where graphql-js returned 
 containing null, and `nullFromNonNull` returned `""` because a Go `string` cannot be null —
 it needs `*string`. A differential is only as good as the fixture on both sides, and a
 difference is a question, not a finding.
+
+The second set reported 49 of 49 on its first run, which is the opposite worry -- so it was
+checked by injecting three faults into the recorded output (a shortened error path, a changed
+input default, an added error) and requiring each to be caught. All three were.
