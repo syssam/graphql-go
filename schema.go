@@ -141,6 +141,10 @@ func PrintSDL(s *Schema) string {
 // escaping it, so an unescaped one ends its own block and the SDL does not
 // load. The copy reaches every description the formatter writes and shares
 // everything else with s, which it never modifies.
+//
+// Delete this once gqlparser's formatter escapes descriptions itself: the two
+// together escape twice, and TestPrintSDLEscapesTripleQuotes fails on the
+// upgrade that brings it, at every description.
 func escapedDescriptions(s *ast.Schema) *ast.Schema {
 	esc := func(d string) string { return strings.ReplaceAll(d, `"""`, `\"""`) }
 	args := func(l ast.ArgumentDefinitionList) ast.ArgumentDefinitionList {
