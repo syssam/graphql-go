@@ -100,6 +100,15 @@ func (s *Schema) IntrospectionEnabled() bool { return s.introspection }
 
 // PrintSDL renders the schema as SDL, excluding built-in types and
 // directives.
+//
+// Every applied directive is printed, including ones the schema uses
+// internally such as authorization requirements; a schema published from this
+// output publishes those too. fed.Subgraph serves the author's own SDL instead.
+//
+// Descriptions are written as block strings, which cannot hold leading or
+// trailing blank lines or a common indentation, so a description that relies
+// on those reloads with that whitespace removed. graphql-js falls back to a
+// quoted string there; gqlparser's formatter has no such fallback.
 func PrintSDL(s *Schema) string {
 	var sb strings.Builder
 	f := formatter.NewFormatter(&sb)
