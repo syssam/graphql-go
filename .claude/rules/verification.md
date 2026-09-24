@@ -122,16 +122,16 @@ like if the thing under test were broken:
 The habit that catches these is breaking the thing on purpose and requiring the test to
 fail. If it still passes, the test was agreeing with the code rather than checking it.
 
-
 **Running `govulncheck` in `golang:1.27` settles the version question.** The trap above is a
 locally installed binary built with the wrong Go; a container pinned to the version in
 `go.mod` cannot have it, and `govulncheck -version` prints the Go it was built with so the
 scan says so itself:
 
 ```sh
-docker run --rm -v "$PWD:/src" -w /src golang:1.27 bash -c   'go install golang.org/x/vuln/cmd/govulncheck@latest
-   govulncheck -version
-   for m in . benchmarks lint; do (cd $m && govulncheck ./...); done'
+docker run --rm -v "$PWD:/src" -w /src golang:1.27 bash -c '
+  go install golang.org/x/vuln/cmd/govulncheck@latest
+  govulncheck -version
+  for m in . benchmarks lint; do (cd $m && govulncheck ./...); done'
 ```
 
 Run on 2026-09-24 (scanner v1.8.0, DB 2026-09-16, Go 1.27.1): **0 affecting every module.**
