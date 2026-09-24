@@ -87,21 +87,50 @@ not a contradiction.
 
 ## Reproducing
 
+From this directory (`benchmarks/k6`). The paths are relative to it: `..` is the
+`benchmarks` module and `../..` is the repository. Getting that wrong is how the
+first version of this section shipped a build command that failed with
+`directory not found`; these were run before being written down.
+
 ```sh
 docker network create gqlbench
-docker run --rm -v "$PWD/..:/src" -w /src/benchmarks golang:1.27 \
+
+# One binary, both Go engines, one dataset.
+docker run --rm -v "$PWD/../..:/src" -w /src/benchmarks golang:1.27 \
   go build -o /src/benchmarks/srv-cmp ./cmd/compareserver
 
 docker run -d --name srv-ours   --network gqlbench --cpus=2 -v "$PWD/..:/b" \
   golang:1.27 /b/srv-cmp -engine ours   -addr :18090
 docker run -d --name srv-gqlgen --network gqlbench --cpus=2 -v "$PWD/..:/b" \
   golang:1.27 /b/srv-cmp -engine gqlgen -addr :18095
-# Node servers: see the schema note above; they must rebuild data.Dataset().
 
+# Node. Run npm install in k6/node once first.
+docker run -d --name srv-apollo --network gqlbench --cpus=2 -v "$PWD/node:/app" \
+  -w /app -e PORT=18096 node:22 node /app/apollo.mjs
+docker run -d --name srv-ghttp  --network gqlbench --cpus=2 -v "$PWD/node:/app" \
+  -w /app -e PORT=18097 node:22 node /app/ghttp.mjs
+```
+
+Check the fixture before believing any number. Three of the four bodies must
+hash the same and Apollo's must differ only by a trailing newline:
+
+```sh
+for t in srv-ours:18090 srv-gqlgen:18095 srv-apollo:18096 srv-ghttp:18097; do
+  docker run --rm --network gqlbench curlimages/curl -s -X POST \
+    -H 'content-type: application/json' -H 'accept: application/json' \
+    -d '{"query":"{ users { id name email friends { id name } } }"}' \
+    "http://$t/graphql" | md5sum
+done
+```
+
+Then warm each server and alternate the four; do not run one to completion
+before starting the next.
+
+```sh
 docker run --rm --network gqlbench --cpus=4 -v "$PWD:/k6" \
   -e URL=http://srv-ours:18090/graphql -e SIZE=shallow -e VUS=16 -e DURATION=15s \
   grafana/k6 run /k6/fourway.js
 ```
 
-Warm each server, then alternate the four; do not run one to completion before
-starting the next.
+`SIZE` is `tiny`, `shallow` or `nested`. `fourway.js` prints one line of JSON,
+so a shell loop can collect rounds.

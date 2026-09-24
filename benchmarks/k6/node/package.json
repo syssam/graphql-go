@@ -1,15 +1,8 @@
 {
-  "name": "node",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
+  "name": "graphql-go-fourway-node",
+  "private": true,
+  "description": "Apollo Server and graphql-http serving the benchmark fixture, for k6/FOURWAY.md",
+  "type": "module",
   "dependencies": {
     "@apollo/server": "^5.5.1",
     "@graphql-tools/schema": "^10.1.1",

@@ -5,6 +5,9 @@
 *.test
 *.out
 *.prof
+# Linux server binaries built for benchmarks/k6/FOURWAY.md, which have no
+# extension to be caught by the rules above.
+/benchmarks/srv-*
 
 # Editor and OS files
 .idea/
