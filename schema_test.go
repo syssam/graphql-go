@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/vektah/gqlparser/v2/ast"
 )
 
 func TestNewSchemaMinimal(t *testing.T) {
@@ -119,6 +121,142 @@ func TestPrintSDLRoundTrip(t *testing.T) {
 	if _, err := NewSchema(SDL(printed), Object[Root]("Query", Field("a", func(Root) int { return 1 }))); err != nil {
 		t.Fatalf("printed SDL does not reload: %v", err)
 	}
+}
+
+// gqlparser's formatter never writes ast.Schema.Description, so PrintSDL lost
+// what introspection reports as __schema.description. With the default root
+// names the formatter also writes no schema definition at all, which leaves
+// the description nowhere to go; both shapes are covered for that reason.
+func TestPrintSDLKeepsSchemaDescription(t *testing.T) {
+	for _, tc := range []struct{ name, sdl, query string }{
+		{"default root name", `"""Root schema"""
+schema { query: Query }
+type Query { a: Int }`, "Query"},
+		{"custom root name", `"""Root schema"""
+schema { query: Q }
+type Q { a: Int }`, "Q"},
+		{"schema directive and mutation root", `directive @meta on SCHEMA
+"""Root schema"""
+schema @meta { query: Query mutation: M }
+type Query { a: Int }
+type M { a: Int }`, "Query"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bind := Options(Object[Root](tc.query, Field("a", func(Root) int { return 1 })))
+			if strings.Contains(tc.sdl, "mutation: M") {
+				bind = Options(bind, Object[Root]("M", Field("a", func(Root) int { return 1 })))
+			}
+			s, err := NewSchema(SDL(tc.sdl), bind)
+			if err != nil {
+				t.Fatal(err)
+			}
+			printed := PrintSDL(s)
+			again, err := NewSchema(SDL(printed), bind)
+			if err != nil {
+				t.Fatalf("printed SDL does not reload: %v\n%s", err, printed)
+			}
+			if got := again.AST().Description; got != "Root schema" {
+				t.Fatalf("description after round trip = %q, want %q\n%s", got, "Root schema", printed)
+			}
+			if got := again.AST().Query.Name; got != tc.query {
+				t.Fatalf("query root after round trip = %q, want %q\n%s", got, tc.query, printed)
+			}
+			if (s.AST().Mutation == nil) != (again.AST().Mutation == nil) {
+				t.Fatalf("mutation root lost in round trip\n%s", printed)
+			}
+			if got, want := len(again.AST().SchemaDirectives), len(s.AST().SchemaDirectives); got != want {
+				t.Fatalf("schema directives after round trip = %d, want %d\n%s", got, want, printed)
+			}
+		})
+	}
+}
+
+// gqlparser's formatter writes every description as a block string without
+// escaping, so a description holding `"""` closed its own block early and the
+// printed SDL did not load. Every place a description can sit is covered,
+// because each is written by a different formatter path.
+func TestPrintSDLEscapesTripleQuotes(t *testing.T) {
+	type en int
+	type in struct{ V *string }
+	type args struct{ A *in }
+	const q = `\"""`
+	sdl := `"""schema ` + q + `"""
+schema { query: Query }
+"""directive ` + q + `"""
+directive @d("""directive arg ` + q + `""" x: Int) on FIELD_DEFINITION
+"""type ` + q + `"""
+type Query {
+  """field ` + q + `"""
+  f("""arg ` + q + `""" a: In): E
+}
+"""enum ` + q + `"""
+enum E { """value ` + q + `""" V }
+"""input ` + q + `"""
+input In { """input field ` + q + `""" v: String }`
+	opts := Options(
+		Enum("E", map[en]string{0: "V"}),
+		Input[in]("In"),
+		Args[args](),
+		Query(FieldArgs("f", func(Root, args) en { return 0 })),
+	)
+	s, err := NewSchema(SDL(sdl), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	printed := PrintSDL(s)
+	again, err := NewSchema(SDL(printed), opts)
+	if err != nil {
+		t.Fatalf("printed SDL does not reload: %v\n%s", err, printed)
+	}
+	want, got := descriptions(s.AST()), descriptions(again.AST())
+	if len(want) != 10 {
+		t.Fatalf("fixture has %d descriptions, want 10: %v", len(want), want)
+	}
+	for where, d := range want {
+		if !strings.Contains(d, `"""`) {
+			t.Fatalf("fixture description at %s = %q, want it to hold a triple quote", where, d)
+		}
+		if got[where] != d {
+			t.Errorf("description at %s after round trip = %q, want %q", where, got[where], d)
+		}
+	}
+}
+
+// descriptions collects every non-built-in description in s, keyed by where
+// it sits.
+func descriptions(s *ast.Schema) map[string]string {
+	out := map[string]string{}
+	add := func(where, d string) {
+		if d != "" {
+			out[where] = d
+		}
+	}
+	add("schema", s.Description)
+	for _, d := range s.Directives {
+		if d.Position != nil && d.Position.Src.BuiltIn {
+			continue
+		}
+		add("@"+d.Name, d.Description)
+		for _, a := range d.Arguments {
+			add("@"+d.Name+"("+a.Name+")", a.Description)
+		}
+	}
+	for _, t := range s.Types {
+		if t.BuiltIn {
+			continue
+		}
+		add(t.Name, t.Description)
+		for _, f := range t.Fields {
+			add(t.Name+"."+f.Name, f.Description)
+			for _, a := range f.Arguments {
+				add(t.Name+"."+f.Name+"("+a.Name+")", a.Description)
+			}
+		}
+		for _, v := range t.EnumValues {
+			add(t.Name+"."+v.Name, v.Description)
+		}
+	}
+	return out
 }
 
 func TestDisableIntrospection(t *testing.T) {

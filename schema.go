@@ -102,8 +102,83 @@ func (s *Schema) IntrospectionEnabled() bool { return s.introspection }
 // directives.
 func PrintSDL(s *Schema) string {
 	var sb strings.Builder
-	formatter.NewFormatter(&sb).FormatSchema(s.ast)
+	f := formatter.NewFormatter(&sb)
+	a := escapedDescriptions(s.ast)
+	if a.Description == "" {
+		f.FormatSchema(a)
+		return sb.String()
+	}
+	// FormatSchema never writes the schema description, and with the default
+	// root names it writes no schema definition to carry one. Write the
+	// definition from the document formatter, which does, and hand
+	// FormatSchema a copy with nothing left for it to write there.
+	def := &ast.SchemaDefinition{Description: a.Description, Directives: a.SchemaDirectives}
+	for _, root := range []struct {
+		op  ast.Operation
+		def *ast.Definition
+	}{{ast.Query, a.Query}, {ast.Mutation, a.Mutation}, {ast.Subscription, a.Subscription}} {
+		if root.def != nil {
+			def.OperationTypes = append(def.OperationTypes, &ast.OperationTypeDefinition{Operation: root.op, Type: root.def.Name})
+		}
+	}
+	f.FormatSchemaDocument(&ast.SchemaDocument{Schema: ast.SchemaDefinitionList{def}})
+	a.Query, a.Mutation, a.Subscription, a.SchemaDirectives = nil, nil, nil, nil
+	f.FormatSchema(a)
 	return sb.String()
+}
+
+// escapedDescriptions returns a copy of s whose descriptions escape `"""` as
+// `\"""`. The formatter writes every description inside a block string without
+// escaping it, so an unescaped one ends its own block and the SDL does not
+// load. The copy reaches every description the formatter writes and shares
+// everything else with s, which it never modifies.
+func escapedDescriptions(s *ast.Schema) *ast.Schema {
+	esc := func(d string) string { return strings.ReplaceAll(d, `"""`, `\"""`) }
+	args := func(l ast.ArgumentDefinitionList) ast.ArgumentDefinitionList {
+		if l == nil {
+			return nil
+		}
+		out := make(ast.ArgumentDefinitionList, len(l))
+		for i, a := range l {
+			c := *a
+			c.Description = esc(a.Description)
+			out[i] = &c
+		}
+		return out
+	}
+	cp := *s
+	cp.Description = esc(s.Description)
+	cp.Types = make(map[string]*ast.Definition, len(s.Types))
+	for name, t := range s.Types {
+		c := *t
+		c.Description = esc(t.Description)
+		if t.Fields != nil {
+			c.Fields = make(ast.FieldList, len(t.Fields))
+			for i, f := range t.Fields {
+				fc := *f
+				fc.Description = esc(f.Description)
+				fc.Arguments = args(f.Arguments)
+				c.Fields[i] = &fc
+			}
+		}
+		if t.EnumValues != nil {
+			c.EnumValues = make(ast.EnumValueList, len(t.EnumValues))
+			for i, v := range t.EnumValues {
+				vc := *v
+				vc.Description = esc(v.Description)
+				c.EnumValues[i] = &vc
+			}
+		}
+		cp.Types[name] = &c
+	}
+	cp.Directives = make(map[string]*ast.DirectiveDefinition, len(s.Directives))
+	for name, d := range s.Directives {
+		c := *d
+		c.Description = esc(d.Description)
+		c.Arguments = args(d.Arguments)
+		cp.Directives[name] = &c
+	}
+	return &cp
 }
 
 // objectType is a resolved GraphQL object type.
