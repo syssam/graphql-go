@@ -122,6 +122,32 @@ like if the thing under test were broken:
 The habit that catches these is breaking the thing on purpose and requiring the test to
 fail. If it still passes, the test was agreeing with the code rather than checking it.
 
+
+**Running `govulncheck` in `golang:1.27` settles the version question.** The trap above is a
+locally installed binary built with the wrong Go; a container pinned to the version in
+`go.mod` cannot have it, and `govulncheck -version` prints the Go it was built with so the
+scan says so itself:
+
+```sh
+docker run --rm -v "$PWD:/src" -w /src golang:1.27 bash -c   'go install golang.org/x/vuln/cmd/govulncheck@latest
+   govulncheck -version
+   for m in . benchmarks lint; do (cd $m && govulncheck ./...); done'
+```
+
+Run on 2026-09-24 (scanner v1.8.0, DB 2026-09-16, Go 1.27.1): **0 affecting every module.**
+Read the "modules you require" tail as well as the headline -- it found two in
+`golang.org/x/mod@v0.39.0` under `lint/` that were fixed in v0.40.0 and uncalled, so nothing
+was affected and the bump was still free. What is left is
+`golang.org/x/crypto@v0.57.0`/GO-2026-5932 in the root and `benchmarks/`, **fixed in N/A**:
+there is no version to move to, this code does not call it, and it will keep appearing until
+upstream ships one.
+
+**Fuzz targets are discovered, not listed.** `go test -list 'Fuzz.*'` over `go list ./...`
+finds five: `FuzzRequirementDirectiveLiteral`, `FuzzExecute` and `FuzzOperationMetrics` in the
+root, `FuzzString` and `FuzzKey` in `internal/jsonw`. A hand-maintained list is how
+`internal/jsonw` went unfuzzed. 45s each on Linux, 2026-09-24: all pass, ~10.2M executions
+total, no crashers.
+
 **Lint is `golangci-lint run ./...`, and it runs in every module.** It did not always: the
 CI job had no `working-directory` and `golangci-lint` lints the directory it is run in, so
 for a long time it covered the root and reported success over a quarter of the repository --
