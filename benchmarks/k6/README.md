@@ -1,5 +1,11 @@
 # Transport load tests
 
+> Comparing the **engines** rather than the transports is a different question
+> with a different answer, because the effect there is 4-7 ms rather than
+> 4.6 µs. See [`FOURWAY.md`](FOURWAY.md): graphql-go, gqlgen, Apollo Server and
+> graphql-http over HTTP, cross-checked against an in-process measurement.
+
+
 k6 against each HTTP transport, so `transport_bench_test.go` is not the only
 evidence for what a transport costs.
 

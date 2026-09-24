@@ -17,6 +17,7 @@ require (
 	github.com/agnivade/levenshtein v1.2.1 // indirect
 	github.com/coder/websocket v1.8.15 // indirect
 	github.com/fasthttp/websocket v1.5.12 // indirect
+	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/gofiber/contrib/v3/websocket v1.2.6 // indirect
 	github.com/gofiber/schema v1.8.6 // indirect
