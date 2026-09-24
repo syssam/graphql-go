@@ -7,8 +7,9 @@ executor, not by reading code.
 
 Four gaps remain, and every one of them is in the parser — `gqlparser/v2`,
 which the root package is restricted to — rather than in the engine. None can
-be fixed here without forking it, and `v2.5.37`, the newest release, carries
-all four. What was checked on the engine side is listed under *Verified
+be fixed here without forking it, and `v2.5.58`, the newest release, carries
+all four: re-tested against it on 2026-09-24 after upgrading from `v2.5.37`,
+twenty-one releases of which fixed none of them. What was checked on the engine side is listed under *Verified
 conformant* below; that section is the extent of the claim, not a statement
 that nothing else could be wrong.
 
@@ -17,6 +18,15 @@ lexer gaps share one. Each applies to a clean gqlparser checkout and passes
 that project's suite; all three were also verified applied together, in any
 order. They are not applied here — `go.mod` still points at the release — so
 the gaps stay open until they land upstream.
+
+**Re-test the gaps, not just the patches.** The 2026-09-24 re-test nearly
+recorded gap 1 as fixed upstream. The probe's `\uD83D\uDE00` had reached the Go
+source as a literal emoji, so it measured the parser passing a character
+through rather than decoding an escape, and of course that worked. Re-authored
+so the backslashes survived, it produced two U+FFFD -- what the table below
+says. A probe for an escaping bug has to be checked for having been escaped
+itself, and the same thing then happened twice more: to the script that wrote
+this paragraph, and to an earlier one that truncated this file.
 
 Re-verified on 2026-09-22 against gqlparser `991cd11`, the commit after
 `v2.5.37`: all three still apply cleanly, the seven-package suite passes with

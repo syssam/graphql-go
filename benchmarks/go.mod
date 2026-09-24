@@ -10,7 +10,7 @@ require (
 	github.com/labstack/echo/v5 v5.3.1
 	github.com/syssam/graphql-go v0.0.0-00010101000000-000000000000
 	github.com/valyala/fasthttp v1.74.0
-	github.com/vektah/gqlparser/v2 v2.5.37
+	github.com/vektah/gqlparser/v2 v2.5.58
 )
 
 require (
@@ -40,7 +40,7 @@ require (
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
-	golang.org/x/tools v0.49.0 // indirect
+	golang.org/x/tools v0.50.0 // indirect
 )
 
 tool github.com/99designs/gqlgen

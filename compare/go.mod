@@ -10,7 +10,7 @@ require (
 	github.com/99designs/gqlgen v0.17.95
 	github.com/syssam/graphql-go v0.0.0-00010101000000-000000000000
 	github.com/syssam/graphql-go/benchmarks v0.0.0-00010101000000-000000000000
-	github.com/vektah/gqlparser/v2 v2.5.37
+	github.com/vektah/gqlparser/v2 v2.5.58
 )
 
 require (
@@ -24,5 +24,5 @@ require (
 	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
-	golang.org/x/tools v0.49.0 // indirect
+	golang.org/x/tools v0.50.0 // indirect
 )
