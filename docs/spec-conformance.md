@@ -152,7 +152,11 @@ schema-diff tooling.
 
 ## Verified conformant
 
-Probed directly, not assumed:
+Probed directly, not assumed -- and each claim names the test that keeps it
+true. Probing is what someone did once, at audit time, with a throwaway
+program; a published conformance claim with nothing guarding it regresses
+silently, which is worse than making no claim. Two of the entries below were in
+that state until a review added the tests now named.
 
 - `CoerceArgumentValues`, including the `hasValue` correction from spec #1056:
   an argument default applies when its variable is omitted, an explicitly null
@@ -163,8 +167,13 @@ Probed directly, not assumed:
 - `@deprecated` is refused on required arguments and input fields, section
   3.13.2 (`TestNewSchemaRejectsDeprecatedRequiredInputs`).
 - Scalar input coercion: 32-bit `Int` bounds, non-integer rejection, `Float`
-  accepting `Int`, `ID` accepting `Int` but not `Float`.
+  accepting `Int`, `ID` accepting `Int` but not `Float`
+  (`TestSpecIDAcceptsIntAndStringOnly` -- including that an *integral* float
+  such as `5.0` is still refused, in both literal and variable form).
 - Response shape: `message` / `locations` / `path`; `data` absent on a request
-  error, `data: null` on a root field error.
+  error, `data: null` on a root field error
+  (`TestSpecDataIsAbsentOnARequestErrorAndNullOnAFieldError`, which checks the
+  serialized envelope as well as the Response, since section 7.1 is about what
+  reaches the client).
 - Single-root-field and no-introspection-root rules for subscriptions, field
   merging, and introspection depth limiting.
