@@ -46,6 +46,11 @@ go get github.com/syssam/graphql-go
 
 Go 1.27 or newer.
 
+The API reference is godoc -- `go doc github.com/syssam/graphql-go`, and
+[`doc.go`](doc.go) is the overview worth reading before writing any binding.
+[`docs/README.md`](docs/README.md) maps everything else: which example teaches
+what, which document answers whether to trust this, and what is not written yet.
+
 ## Quick start
 
 ```go
