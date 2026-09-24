@@ -75,18 +75,29 @@ before/after once reported a strictly-cheaper change as 50% slower.
   correctly, so there is no behaviour to assert.
 - **Undo a deliberate break with a reverse edit, never `git checkout -- <file>` or
   `git restore`.** Those revert to HEAD and destroy uncommitted work. A hook blocks them.
-- **Watch for results that pass while covering less than they appear to.** Eleven instances so
-  far, each described in `verification.md`: `go test ./...` skipping three modules, fuzz
-  discovery that missed `internal/jsonw`, the gate skipping `compare/` in CI, lint reaching one
-  module, a `govulncheck` built with an older Go exiting 0 having analyzed nothing, a leak test
-  passing against a broken path, a benchmark timing dropped events, generated code that read
-  fine and did not compile, `-cover` reporting `internal/httpreq` at 12.8% when it is
-  89.7%, and a pool-cap test that agreed with the constant because its input came from the
-  same estimate. Measure coverage of `internal/` packages with
+- **Watch for results that pass while covering less than they appear to.** Sixteen instances
+  so far, each described in `verification.md`. The tooling ones: `go test ./...` skipping three
+  modules, fuzz discovery that missed `internal/jsonw`, the gate skipping `compare/` in CI,
+  lint reaching one module, a `govulncheck` built with an older Go exiting 0 having analyzed
+  nothing, `-cover` reporting `internal/httpreq` at 12.8% when it is 89.7%, and `go tool cover`
+  reporting 0.0% on an empty function body that is fully tested. The test-shaped ones: a leak
+  test passing against a broken path, a benchmark timing dropped events, generated code that
+  read fine and did not compile, a pool-cap test that agreed with the constant because its
+  input came from the same estimate, a guarded-list test that measured the drain instead of the
+  traversal it was written for, and a fix verified only against a consumer schema outside this
+  tree. And the two that are about doing the break itself: a break that did not compile, and a
+  reverse edit that landed on the wrong occurrence — **check `git diff` after undoing a break,
+  not just that the suite is green**. Measure coverage of `internal/` packages with
   `-coverpkg=./internal/X/... ./internal/X/... ./transport/...`.
 - A generated-code change is verified by compiling the output. For anything touching
   `NewSchema` against the real consumer schema, run `NewSchema` itself, not only `go build`
   (see `codegen.md`).
+- **High coverage is not the signal.** Every file this repository has reviewed line by line was
+  already above 90%, and most findings were in lines the tests *did* execute without asserting
+  anything about them: a sort whose order nothing checked, a memo whose sharing nothing
+  observed, a `[T!]!` fixture that never exercised the nullable shape where the outcome
+  differs. Coverage finds untested branches; it says nothing about untested *properties*. The
+  method that works is reading each claim a comment makes and breaking it.
 - Show evidence: paste the command and its result rather than saying "tests pass".
 
 ## Architecture

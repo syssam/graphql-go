@@ -94,6 +94,17 @@ the fallback never takes a name another field's tag claimed, or two fields could
 (`TestInputTagWinsOverTheGoFieldName`). It applies to `Input` only -- `Args` arguments are not
 known until the field that uses them is resolved, so `declared` is nil there.
 
+**A `Directive` binding whose directive can never wrap a field is a build error.**
+`DirectiveArgs` applies `FIELD_DEFINITION` and `OBJECT`; a directive declared on neither --
+`directive @audit on ARGUMENT_DEFINITION` -- can be bound, and the binding is dead. That was
+a `slog.Debug` line, which is off by default, so the author wrote a wrapper, the schema built,
+and nothing said the wrapper never runs. It is the fail-open `authz.md` names for the
+requirement directives, and the adjacent case -- a binding for a directive the SDL does not
+declare at all -- was already an error. The check fires only when **no** declared location is
+usable, so a directive with one usable location among several still builds, and the message
+lists the declared locations rather than making the author guess which two are applied
+(`TestADirectiveBindingThatCanNeverWrapIsABuildError`).
+
 **Schema build scales with the width of the widest type, not the type count.** 4800 types build
 in 78 ms and retain 33 MB; narrowing that schema's 4800-field Query root to 100 fields takes the
 identical type set to 34 ms, because gqlparser validates a k-field type in O(k^2).

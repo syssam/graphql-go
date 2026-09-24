@@ -75,6 +75,38 @@ like if the thing under test were broken:
 
   `-short` distorts in the other direction: it puts `codegen` at 62.9% when the full run,
   which compiles the generated output, measures 92.6%.
+- **A coverage reading of 0.0% on a function that is fully tested.** `ext/trusted.Store.Set`
+  is `func (s *Store) Set(string, string) {}` -- an empty body, so 0 of 0 statements, which
+  `go tool cover` reports as 0.0%. It has a test, added after a review found it had none, and
+  a later pass nearly re-added a second one on the strength of the number. Read a suspicious
+  0.0% against the function body before acting on it.
+- **A test that measured the drain instead of the traversal.** A guarded-list test put a
+  `Resolve` field under the list to make "this element was reached" observable. That made the
+  list deeply schedulable, and `WithMaxConcurrency` defaults to `GOMAXPROCS*4`, so
+  `writeList` drained it first through `drainList` -- whose callback always returns true,
+  because draining has to see every element. The test passed, the counter counted the drain,
+  and the early-exit it was written for never ran. The clue was `-race`, which reported a data
+  race on the test's own counter: the fields were running concurrently, which they could not
+  have been on the path the test believed it was on.
+- **A break that did not compile.** Deleting a suffix loop left an unused import and an unused
+  variable, so `go build` failed and the test was never run. An invalid break proves nothing
+  and reads exactly like a test that did not catch the change. Build before believing either
+  outcome.
+- **A verification against something outside the repository.** `extraQualifier`'s
+  reuse-an-existing-import branch was the fix for a real bug, confirmed by regenerating
+  against a consumer schema that is not in this tree -- so nothing here reproduced it, and
+  `go test ./codegen` said the branch was uncovered. If a fix was proved against an external
+  artefact, it does not have a test.
+- **A reverse edit that lands on the wrong occurrence.** Three times: `plan.go`'s `get` and
+  `put` carry the same guard line and a single-shot replace hit `get`; two `extraQualifier`
+  loops came back swapped; an `ext/apq` restore left a stray blank line. Every one was found
+  by `git diff`, none by a test. **Check the diff after undoing a break, not just that the
+  suite is green.**
+- **A break that hangs.** Removing the loader's key dedup leaves a second waiter on a key the
+  queue carries once, and the test ran to the 600-second default timeout. Run a break that
+  could deadlock with a short `-timeout`; the gqlwsproto and wave breaks after that were
+  caught in 30.
+
 - `TestPoolCapCoversALargeSchemasIntrospection` passed for the whole life of the 8 MiB pool
   cap and was guarding nothing, because it asserted a size **derived** from the thing it was
   meant to check. The cap had been sized as "introspection to roughly 8 000 types" by
