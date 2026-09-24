@@ -175,6 +175,77 @@ in an incident.
   which graphql-ws does not retry, and that happens every age period rather
   than only at shutdown.
 
+## In a container
+
+Measured on 2026-09-24 with `benchmarks/cmd/memlimit` in `golang:1.27`, under
+`docker run --memory=256m --memory-swap=256m` -- **both** flags, because
+`--memory` alone grants an equal amount of swap and the process then survives
+well past its limit. A Kubernetes pod has no swap, so `--memory` on its own
+measures something no deployment sees.
+
+**Go reads the cgroup CPU limit and not the memory limit.** In a container
+limited to 2 CPUs and 256 MiB, the runtime reports:
+
+```
+GOMAXPROCS=2 NumCPU=20
+GOMEMLIMIT=9223372036854775807   (unset)
+/sys/fs/cgroup/memory.max = 268435456
+```
+
+`GOMAXPROCS` follows `cpu.max` on its own. Nothing sets `GOMEMLIMIT`, so the
+collector has no idea a limit exists and grows until the kernel kills the
+process.
+
+**Set `GOMEMLIMIT`.** The same workload, 4 concurrent requests in a 256 MiB
+container:
+
+| response | `GOMEMLIMIT` unset | `GOMEMLIMIT=200MiB` |
+|---:|---|---|
+| 5.5 MB | survives, 33 GCs | survives, 38 GCs |
+| 11.1 MB | survives, 34 GCs | survives, 32 GCs |
+| **16.9 MB** | **killed (exit 137)** | **survives, 136 GCs** |
+
+At 16.9 MB responses the unlimited runtime is OOM-killed on a workload it can
+otherwise serve. `GOMEMLIMIT` converts the kill into collector pressure: it
+survives, at four times the GC count and roughly twice the wall time. That is
+the trade, and it is the right one -- a slow server is a server.
+
+**`GOMEMLIMIT` does not raise the floor.** Concurrent responses are live at the
+same time, and no collector can reclaim what is in use:
+
+| live bytes (response × concurrency) | 256 MiB container, `GOMEMLIMIT=200MiB` |
+|---:|---|
+| 16.9 MB × 4 = 68 MB | survives |
+| 22.7 MB × 4 = 91 MB | survives |
+| 11.1 MB × 8 = 89 MB | survives |
+| 34.2 MB × 4 = 137 MB | killed |
+| 11.1 MB × 16 = 178 MB | killed |
+
+The boundary on this shape sits between 91 MB and 137 MB of concurrent response
+bytes in a 256 MiB container -- call it a third of the limit, and note it is one
+shape on one machine. **So size `WithMaxResponseBytes` against the container,
+not the machine.** Its default is 64 MiB: four concurrent responses at that
+size are 256 MiB, which is the whole container. The default exists to stop one
+runaway query, not to make a small container safe.
+
+**A CPU limit is also a memory limit here.** The same 16 concurrent requests
+that are killed at `GOMAXPROCS=20` survive at 4 and at 2:
+
+| `--cpus` | GOMAXPROCS | 11.1 MB × 16 |
+|---:|---:|---|
+| 20 | 20 | killed |
+| 4 | 4 | survives, peak heap 211 MB |
+| 2 | 2 | survives, peak heap 209 MB |
+
+`WithMaxConcurrency` defaults to 4 × GOMAXPROCS, so capping CPU caps the
+engine's own fan-out and with it how much response is live at once. **Many CPUs
+with little memory is the dangerous combination**, and it is the one a
+generously-sized node with a small pod limit produces by default.
+
+One reading trap: `runtime.MemStats.Sys` goes above the container limit (305 MB
+in a 256 MiB container) on runs that survive comfortably. That is reserved
+address space, not resident pages; the cgroup accounts RSS.
+
 ## What has not been measured
 
 Stated so that nobody reads silence as a result.
@@ -182,9 +253,12 @@ Stated so that nobody reads silence as a result.
 - **Everything in `docs/performance.md` was measured on Windows** on one
   developer machine. CI builds and tests on Linux and macOS; it does not
   benchmark them.
-- **Latency percentiles.** The development machine's clock granularity
-  (~522 µs) makes them meaningless, so none are published.
-- **Behaviour under a cgroup memory limit.** Not measured; needs Linux.
+- ~~Latency percentiles.~~ Measured on Linux, where the clock tick is 17 ns
+  rather than this machine's 211 µs; see
+  [`performance.md`](performance.md#latency-percentiles). Still unmeasurable on
+  Windows.
+- ~~Behaviour under a cgroup memory limit.~~ Measured; see
+  [In a container](#in-a-container) above.
 - ~~Schema build cost above ~1 600 types.~~ Measured; see
   [`performance.md`](performance.md). 4 800 types build in 78 ms and retain
   33 MB, and the variable is the width of the widest type rather than the

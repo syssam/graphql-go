@@ -253,16 +253,11 @@ go build                  # -pgo=auto is already the default
 
 ## What is not measured
 
-- **Latency percentiles of an unsaturated request.** This machine's monotonic
-  clock has ~522 us granularity, so a 70 us request cannot be timed
-  individually and the faster engine accumulates more unmeasurable samples.
-  Under load this stops applying: queued requests take milliseconds, three
-  orders of magnitude above the tick, and
-  [`compare/k6`](../compare/k6/README.md) reports real percentiles. The
-  artefact is still visible at low queue depth, where k6 reported graphql-go's
-  median as exactly `0s` while gqlgen's was 17.6 ms.
-- **Behaviour under a cgroup memory limit** with `GOMEMLIMIT`, which is how a
-  container actually runs. Linux only.
+- ~~Latency percentiles of an unsaturated request.~~ Measured on Linux; see
+  [Latency percentiles](#latency-percentiles) below. They remain unmeasurable
+  *on Windows*, and the tool says so rather than printing a number.
+- ~~Behaviour under a cgroup memory limit.~~ Measured; see
+  [operations.md](operations.md#in-a-container).
 - **Subscriptions against another engine.** `BenchmarkSubscriptionFanout`
   measures this engine broadcasting over WebSocket, but nothing compares it
   with gqlgen: that needs gqlgen subscription resolvers generated into
@@ -272,6 +267,64 @@ go build                  # -pgo=auto is already the default
   which is enough to find accumulation and small enough to stay clear of
   Windows ephemeral-port exhaustion. Whether behaviour holds at ten thousand
   is untested.
+
+## Latency percentiles
+
+Withheld for a long time because this development machine could not resolve
+them. `benchmarks/cmd/latency` now measures the clock before it measures the
+engine and prints what it found, so the result carries its own validity:
+
+```
+windows/amd64  GOMAXPROCS=20  clock tick: 211.5us
+shape            min        p50        p90        p99      p99.9        max
+tiny              0s         0s         0s         0s    1.621ms  10.2783ms
+WARNING: the clock resolves p50 of "tiny" to only 0.0 ticks; these percentiles
+are the timer, not the engine.
+```
+
+Every p50 is exactly `0s`. That is the whole reason no percentile was ever
+published here.
+
+The same binary in `golang:1.27` on this machine's Docker (linux/amd64, 20
+cores), 200 000 samples per shape:
+
+```
+linux/amd64  GOMAXPROCS=20  clock tick: 17ns
+shape            min        p50        p90        p99      p99.9        max   ticks/p50
+tiny         5.299us    5.892us    7.648us   36.256us   133.18us  2.540533ms        347
+shallow     11.866us   12.966us   15.768us   48.641us  190.039us  2.202726ms        763
+nested      35.446us   38.113us    54.97us  240.922us  387.761us  9.477178ms       2242
+```
+
+17 ns against 211.5 us: four orders of magnitude, and the smallest p50 is 347
+ticks wide. These are the engine.
+
+`tiny` is `{ users { id } }`, `shallow` adds two more scalars, `nested` is
+`{ users { id friends { id name } } }` over 100 users with 2 friends each.
+Single caller, in process, plan cache warm.
+
+The tail is real and worth reading: p99 is 6x p50 on `tiny` and the maximum is
+three orders of magnitude above it. That is the garbage collector, not a
+scheduling bug -- these are 200 000 back-to-back allocations of response
+buffers with no think time, which is the worst case for it.
+
+Concurrency costs the tail far more than the median:
+
+| callers | tiny p50 | tiny p99 | nested p50 | nested p99 |
+|---:|---:|---:|---:|---:|
+| 1 | 5.9us | 36us | 38.1us | 241us |
+| 4 | 7.6us | 164us | 52.6us | 449us |
+| 20 | 12.8us | 1.69ms | 125.6us | 5.00ms |
+
+At 20 callers on 20 cores the machine is saturated *twice over*: each request
+also schedules its own fields concurrently, up to `WithMaxConcurrency`, which
+defaults to 4 x GOMAXPROCS. Twenty concurrent callers is not twenty cores of
+work, and the p99 says so. Treat the single-caller column as the engine's
+latency and the rest as this machine under load.
+
+**These are in-process numbers.** `k6/README.md` already established that a
+loopback round trip (66-118 us) is larger than anything the transports separate,
+so a percentile measured over HTTP would be a percentile of the socket.
 
 ## Schema build past 1 600 types
 
