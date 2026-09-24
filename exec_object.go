@@ -26,8 +26,8 @@ func (st *execState) writeObject(ctx context.Context, w *jsonw.Writer, obj *obje
 			return false
 		}
 	} else {
-		for _, f := range sel.fields {
-			if !st.writeField(ctx, w, obj, f, val, path) {
+		for i, f := range sel.fields {
+			if !st.writeField(ctx, w, obj, f, val, path, int32(i)) {
 				w.Rewind(mark)
 				return false
 			}
@@ -40,10 +40,10 @@ func (st *execState) writeObject(ctx context.Context, w *jsonw.Writer, obj *obje
 // writeField writes one response key. It returns false when the field is
 // non-null and failed, or when the response limit has been passed; the caller
 // must propagate either.
-func (st *execState) writeField(ctx context.Context, w *jsonw.Writer, obj *objectType, f *planField, parent any, path *pathNode) bool {
+func (st *execState) writeField(ctx context.Context, w *jsonw.Writer, obj *objectType, f *planField, parent any, path *pathNode, ord int32) bool {
 	fm := w.Mark()
 	w.Key(f.key)
-	if st.writeFieldValue(ctx, w, obj, f, parent, path) {
+	if st.writeFieldValue(ctx, w, obj, f, parent, path, ord) {
 		return true
 	}
 	// Past the response limit a null is no cheaper to keep than the field was:
@@ -61,7 +61,7 @@ func (st *execState) writeField(ctx context.Context, w *jsonw.Writer, obj *objec
 // writeFieldValue resolves and writes the value of f. On failure it records
 // the error and returns false without cleaning up partial output; callers
 // rewind.
-func (st *execState) writeFieldValue(ctx context.Context, w *jsonw.Writer, obj *objectType, f *planField, parent any, path *pathNode) bool {
+func (st *execState) writeFieldValue(ctx context.Context, w *jsonw.Writer, obj *objectType, f *planField, parent any, path *pathNode, ord int32) bool {
 	// An unguarded __typename reads only the planField it is already on, so it
 	// pays no load from execState on the path every Apollo client exercises.
 	if f.kind == fieldTypename && f.authIdx < 0 {
@@ -71,7 +71,7 @@ func (st *execState) writeFieldValue(ctx context.Context, w *jsonw.Writer, obj *
 	// -1 on a field that declares nothing, so the ordinary path pays one
 	// compare on a struct already in cache.
 	if st.decision != nil && f.authIdx >= 0 {
-		if done, ok := st.enforceAuth(ctx, w, f, path); done {
+		if done, ok := st.enforceAuth(ctx, w, f, path, ord); done {
 			return ok
 		}
 	}
@@ -101,7 +101,7 @@ func (st *execState) writeFieldValue(ctx context.Context, w *jsonw.Writer, obj *
 			err = aerr
 		}
 		if err != nil {
-			st.fieldError(ctx, Errorf("Invalid argument for field %s: %v", coordinate(obj.name, fd.name), err).WithCode(CodeBadUserInput), path, f)
+			st.fieldError(ctx, Errorf("Invalid argument for field %s: %v", coordinate(obj.name, fd.name), err).WithCode(CodeBadUserInput), path, f, ord)
 			return false
 		}
 		args = v
@@ -117,17 +117,17 @@ func (st *execState) writeFieldValue(ctx context.Context, w *jsonw.Writer, obj *
 		if err == nil {
 			return true
 		}
-		st.fieldError(ctx, err, path, f)
+		st.fieldError(ctx, err, path, f, ord)
 		var soft *elementErrors
 		return errors.As(err, &soft)
 	}
 
 	v, err := st.callResolve(ctx, f, parent, args, path)
 	if err != nil {
-		st.fieldError(ctx, err, path, f)
+		st.fieldError(ctx, err, path, f, ord)
 		return false
 	}
-	return st.writeValue(ctx, w, v, fd.typ, fd.shape, f, &pathNode{parent: path, key: f.alias})
+	return st.writeValue(ctx, w, v, fd.typ, fd.shape, f, &pathNode{parent: path, key: f.alias, order: ord})
 }
 
 // fieldContext builds the FieldContext for a field and attaches it to the
@@ -640,7 +640,7 @@ func (st *execState) writeFieldsConcurrent(ctx context.Context, w *jsonw.Writer,
 		g.run(func() {
 			sub := jsonw.Get()
 			sub.ShareLimit(w)
-			ok := st.writeFieldValue(ctx, sub, obj, f, parent, path)
+			ok := st.writeFieldValue(ctx, sub, obj, f, parent, path, int32(i))
 			results[i] = taskResult{buf: sub, ok: ok}
 		})
 	}
@@ -652,7 +652,7 @@ func (st *execState) writeFieldsConcurrent(ctx context.Context, w *jsonw.Writer,
 
 	for i, f := range fields {
 		if !f.schedulable {
-			if !st.writeField(ctx, w, obj, f, parent, path) {
+			if !st.writeField(ctx, w, obj, f, parent, path, int32(i)) {
 				return false
 			}
 			continue

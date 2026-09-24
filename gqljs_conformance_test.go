@@ -14,17 +14,16 @@ import (
 // graphql-js 17.0.2's own output for testdata/gqljs/cases.json, recorded by
 // testdata/gqljs/run.mjs; the schema below mirrors the one that script builds.
 //
-// Only observable behaviour is asserted: the response shape, which fields went
-// null, how far a non-null error bubbled, and the path on every error. Two
-// things are recorded but not compared, both explained in
-// testdata/gqljs/README.md:
+// Asserted: the response shape, which fields went null, how far a non-null
+// error bubbled, and the path on every error, in order.
 //
-//   - Message wording. Seven of the eight that differ come out of gqlparser,
-//     which still carries graphql-js 16's phrasing, and message text is not
-//     specified.
-//   - The order of the errors slice. graphql-js reports in document order;
-//     this engine appends as concurrent resolvers finish, so paths are
-//     compared as a multiset. TestErrorsAreInDocumentOrder covers the order.
+// Message wording is recorded but not compared. Seven of the eight that differ
+// come out of gqlparser, which still carries graphql-js 16's phrasing, and
+// message text is not specified; testdata/gqljs/README.md has the table.
+//
+// Error order was compared as a multiset until the engine was changed to report
+// in document order, which is the one behavioural difference this differential
+// found. TestErrorsAreInDocumentOrder holds that directly.
 
 const gqljsSDL = `
 enum Color { RED GREEN }
@@ -268,7 +267,6 @@ func jsPaths(resp *Response) []string {
 		b, _ := json.Marshal(p)
 		out = append(out, string(b))
 	}
-	slices.Sort(out)
 	return out
 }
 
@@ -294,6 +292,5 @@ func jsWantPaths(t *testing.T, paths [][]any) []string {
 		}
 		out = append(out, string(b))
 	}
-	slices.Sort(out)
 	return out
 }

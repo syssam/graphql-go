@@ -113,6 +113,21 @@ one selection, so what an author sees is the merged tree rather than the DAG. Dr
 (`TestSelectionWalkIsLinearInTheMergedTree`). Any new accessor on `Selection` owes the same
 property.
 
+**Errors are reported in document order** (`sortErrorsByDocumentOrder`, called once in
+`finishResponse`). Fields finish in whatever order their resolvers return, so the same query
+used to answer the same errors in a different order run to run — 200 executions of a
+six-error query gave **150 distinct orderings** — while `data`, written by walking the plan,
+was stable. graphql-js, graphql-http, Apollo Server and graphql-yoga all report in document
+order, and build errors here were already sorted for the same reason. The sort key is carried
+on `pathNode`: a field's position in its selection set, or a list element's index, one entry
+per segment. It rides in padding the struct already had, so `pathNode` is still 40 bytes, and
+the ordinal reaches it as an `int32` threaded from the loops in `writeObject` and
+`writeFieldsConcurrent` that already have it — `planField` is exactly full at 176 bytes and
+could not hold it. Interleaved n=12: allocs/op and B/op identical on `FieldPathBare`,
+`ExecuteUsers` and `ExecuteConcurrentList`, sec/op not distinguishable on any of them
+(p=0.856, 0.855, 0.235). The sort is stable and an error with no key — the
+`ERROR_LIMIT_EXCEEDED` notice — stays last.
+
 **`WithMaxErrors` (1000 by default) bounds the errors list, and checks before it allocates.**
 Field errors — `fieldError`, a null in a non-null position, an unresolvable abstract type — go
 through `addFieldError`, which returns before materializing the path or calling the presenter

@@ -616,6 +616,7 @@ func (st *execState) reportActualCost(e *Executor, oc *OperationContext) {
 // finishResponse packages a written buffer and the collected errors, taking
 // over ownership of w so the caller must not touch it again.
 func (e *Executor) finishResponse(oc *OperationContext, w *jsonw.Writer, st *execState) *Response {
+	sortErrorsByDocumentOrder(st.errs)
 	resp := &Response{Data: w.Bytes(), Errors: st.errs, buf: w}
 	oc.mu.Lock()
 	if len(oc.extensions) > 0 {
@@ -632,6 +633,37 @@ type pathNode struct {
 	key     string
 	index   int
 	isIndex bool
+
+	// order is this field's position in its selection set, which is document
+	// order. It is what sorts the errors slice, since fields finish in
+	// whatever order their resolvers return and every reference implementation
+	// reports errors in document order. It occupies padding the struct already
+	// had, so carrying it costs nothing.
+	order int32
+}
+
+// materializeOrder returns the document-order sort key for this path: one
+// element per segment, a field's position in its selection set or a list
+// element's index. Siblings are either all fields or all elements, never a
+// mix, so the two never have to be told apart.
+func (n *pathNode) materializeOrder() []int32 {
+	depth := 0
+	for p := n; p != nil; p = p.parent {
+		depth++
+	}
+	if depth == 0 {
+		return nil
+	}
+	out := make([]int32, depth)
+	for p := n; p != nil; p = p.parent {
+		depth--
+		if p.isIndex {
+			out[depth] = int32(p.index)
+		} else {
+			out[depth] = p.order
+		}
+	}
+	return out
 }
 
 func (n *pathNode) materialize() Path {
@@ -705,7 +737,7 @@ func (e *elementErrors) add(i int, err error) *elementErrors {
 // is for errors that explain why a request stopped, which WithMaxErrors never
 // drops; field errors go through addFieldError.
 func (st *execState) addError(ctx context.Context, err error, path Path, pos *ast.Position) {
-	st.appendError(ctx, err, path, pos, false)
+	st.appendError(ctx, err, path, nil, pos, false)
 }
 
 // addFieldError records a field error unless the error limit is full. The
@@ -717,14 +749,14 @@ func (st *execState) addFieldError(ctx context.Context, err error, path *pathNod
 		st.droppedFieldError(ctx, err)
 		return
 	}
-	if !st.appendError(ctx, err, path.materialize(), pos, true) {
+	if !st.appendError(ctx, err, path.materialize(), path.materializeOrder(), pos, true) {
 		st.droppedFieldError(ctx, err)
 	}
 }
 
 // appendError reports false when a limited error was dropped because the
 // list filled while it was being presented.
-func (st *execState) appendError(ctx context.Context, err error, path Path, pos *ast.Position, limited bool) bool {
+func (st *execState) appendError(ctx context.Context, err error, path Path, ord []int32, pos *ast.Position, limited bool) bool {
 	presented := st.e.presenter(ctx, err)
 	if presented == nil {
 		return true
@@ -732,6 +764,10 @@ func (st *execState) appendError(ctx context.Context, err error, path Path, pos 
 	if presented.Path == nil {
 		presented.Path = path
 	}
+	// Set even when the presenter supplied its own Path: the key describes
+	// where the field was, which is what orders the list, and a presenter that
+	// rewrites the path does not move the field.
+	presented.ord = ord
 	if pos != nil && len(presented.Locations) == 0 {
 		presented.Locations = []Location{{Line: pos.Line, Column: pos.Column}}
 	}
@@ -793,7 +829,7 @@ func (st *execState) fullLocked() bool {
 // fieldError records an error raised while producing the value of f. List
 // indices carried by indexedError extend the path; errNonNull becomes the
 // specification's non-null violation message.
-func (st *execState) fieldError(ctx context.Context, err error, path *pathNode, f *planField) {
+func (st *execState) fieldError(ctx context.Context, err error, path *pathNode, f *planField, ord int32) {
 	// Checked here as well as in addFieldError so that past the limit not even
 	// the path nodes below are built.
 	if st.fieldErrorsFull() {
@@ -803,13 +839,13 @@ func (st *execState) fieldError(ctx context.Context, err error, path *pathNode, 
 	var soft *elementErrors
 	if errors.As(err, &soft) {
 		for _, ie := range soft.errs {
-			st.fieldError(ctx, ie, path, f)
+			st.fieldError(ctx, ie, path, f, ord)
 		}
 		return
 	}
 	full := path
 	if f != nil {
-		full = &pathNode{parent: path, key: f.alias}
+		full = &pathNode{parent: path, key: f.alias, order: ord}
 	}
 	for {
 		var ie *indexedError

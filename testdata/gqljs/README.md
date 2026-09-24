@@ -42,10 +42,11 @@ Exactly one is this engine's: an argument coercion failure is prefixed with
 `Invalid argument for field Query.intArg: field "v": `. The error carries a source location as
 graphql-js's does, so the prefix is extra context rather than a substitute for it.
 
-**Error order is not compared either** — paths are matched as a multiset. graphql-js reports in
-document order; this engine appends as concurrent resolvers finish, so the same query can
-produce a different order run to run (200 executions of one six-error query gave 150 distinct
-orderings). `data` is deterministic; `errors` is not.
+**Error order is compared.** It was not at first: graphql-js reported in document order and
+this engine appended as concurrent resolvers finished, so the same query produced a different
+order run to run — 200 executions of one six-error query gave 150 distinct orderings, while
+`data` was stable. That was the one behavioural difference this differential found, and the
+engine now sorts (`sortErrorsByDocumentOrder`, `TestErrorsAreInDocumentOrder`).
 
 ## A warning about this harness
 

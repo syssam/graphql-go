@@ -110,6 +110,12 @@ type Error struct {
 	Path       Path
 	Extensions map[string]any
 	Err        error
+
+	// ord is the document-order sort key for a field error: one element per
+	// path segment (see pathNode.materializeOrder). It is unexported because
+	// it is an execution detail, and nil on an error that did not come from a
+	// field -- those keep their arrival order, after the sorted ones.
+	ord []int32
 }
 
 // Errorf formats a new Error.
@@ -154,6 +160,33 @@ func (e *Error) WithExtension(key string, v any) *Error {
 func (e *Error) WithPath(p Path) *Error {
 	e.Path = p
 	return e
+}
+
+// sortErrorsByDocumentOrder puts field errors in the order their fields appear
+// in the document, which is the order graphql-js, graphql-http, Apollo Server
+// and graphql-yoga all report. Fields here finish in whatever order their
+// resolvers return, so without this the same query answers the same errors in a
+// different order run to run, while data -- written by walking the plan -- is
+// stable. Build errors are already sorted for the same reason.
+//
+// The sort is stable and errors carrying no key keep their arrival order after
+// the rest: that is the error-limit notice, which belongs last, and request
+// errors, which never accompany field errors.
+func sortErrorsByDocumentOrder(errs []*Error) {
+	if len(errs) < 2 {
+		return
+	}
+	slices.SortStableFunc(errs, func(a, b *Error) int {
+		switch {
+		case a.ord == nil && b.ord == nil:
+			return 0
+		case a.ord == nil:
+			return 1
+		case b.ord == nil:
+			return -1
+		}
+		return slices.Compare(a.ord, b.ord)
+	})
 }
 
 // clone returns a shallow copy with its own Extensions map so that callers
