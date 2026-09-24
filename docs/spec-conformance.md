@@ -177,12 +177,11 @@ documentation. `TestIntrospectionStringDescriptionHasItsSpace` holds it, and the
 replacement is matched exactly so a fixed prelude stops needing it rather than
 having correct text corrupted.
 
-**HTTP, against the specification's own audit suite** (`graphql-http` 1.23.0 ships it).
-`gqlhttp` takes **61 of 61** with CSRF prevention off, and **58** with it on, where all three
-it does not take are `MAY` rows that send a GET with no preflight header — the request shape
-the CSRF check exists to refuse. **Every MUST and every SHOULD passes in both
-configurations.** [`testdata/httpaudit/README.md`](../testdata/httpaudit/README.md) has the
-harness and the breakdown; the suite found two SHOULDs, both since fixed.
+**HTTP, against the specification's own audit suite.** 61 of 61 with CSRF prevention off,
+58 with it on, every MUST and every SHOULD passing in both.
+[`graphql-http-audit.md`](graphql-http-audit.md) is the record and
+[`testdata/httpaudit/`](../testdata/httpaudit/) the harness; the numbers are not repeated
+here.
 
 **HTTP, against Apollo Server 5.5.1, graphql-yoga 5.24.1 and graphql-http 1.23.0** — the last
 being this specification's own reference implementation. Request-error status, by the

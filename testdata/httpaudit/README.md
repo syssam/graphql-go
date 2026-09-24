@@ -12,28 +12,11 @@ go run ./server.go &          # any gqlhttp server on the URL below works
 node run.mjs http://127.0.0.1:4151/
 ```
 
-## Result, 2026-09-24, graphql-http 1.23.0
+## Results
 
-| configuration | ok | warn | error |
-| --- | --- | --- | --- |
-| `gqlhttp.New(exec)` (the default) | 58 | 0 | 3 |
-| `gqlhttp.New(exec, gqlhttp.WithCSRFPrevention(false))` | **61** | 0 | 0 |
-
-**Every MUST and every SHOULD passes in both.** The three the default configuration does not
-take are all `MAY`, and all three are one cause: CSRF prevention rejects a GET that carries no
-preflight header, which is what those rows send.
-
-- `MAY accept application/x-www-form-urlencoded formatted GET requests`
-- `MAY allow URL-encoded JSON string {variables} parameter in GETs` (both media types)
-
-`graphql-http` has no CSRF prevention at all, so it has nothing to trade away here. Turning the
-check off is a deployment decision, not a conformance fix, and GET with URL-encoded JSON
-variables works with a preflight header:
-
-```
-GET /?query=query($v:String){echo(v:$v)}&variables={"v":"hi"} -- graphql-require-preflight: 1
-{"data":{"echo":"hi"}}
-```
+In [`docs/graphql-http-audit.md`](../../docs/graphql-http-audit.md), which is the
+record for both this suite and the 2026-09-14 run against gqlgen. They are not
+repeated here: three copies of one table is how two of them go stale.
 
 ## What the suite found
 

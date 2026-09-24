@@ -738,8 +738,12 @@ authoritative behaviour.
   `DisableIntrospection()` is set. `@defer` from gqlparser's prelude is not
   advertised until it is executed.
 - **`gqlhttp` returns 406** when the `Accept` header allows neither supported
-  media type, and treats `*/*` and `application/*` as preferring
-  `application/graphql-response+json`.
+  media type. It used to treat `*/*` and `application/*` as preferring
+  `application/graphql-response+json`; **that was reversed on 2026-09-24** and
+  they now yield `application/json`, because the specification's own reference
+  implementation, graphql-yoga and Apollo Server all do, and because the
+  negotiated type also decides whether a request error is 200 or 400. See
+  [`graphql-http-audit.md`](../../graphql-http-audit.md).
 - **Typed interceptors.** `WithInterceptors(...any)` is replaced by
   `WithRequestInterceptor`, `WithOperationInterceptor` and
   `WithFieldInterceptor`, matching `grpc.UnaryInterceptor` /
