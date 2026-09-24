@@ -263,10 +263,10 @@ go build                  # -pgo=auto is already the default
   with gqlgen: that needs gqlgen subscription resolvers generated into
   `compare/`, which does not exist yet. The comparison figures above are all
   request/response.
-- **Anything above 150 concurrent connections.** The leak tests open 150,
-  which is enough to find accumulation and small enough to stay clear of
-  Windows ephemeral-port exhaustion. Whether behaviour holds at ten thousand
-  is untested.
+- ~~Anything above 150 concurrent connections.~~ Measured to 20 000 on Linux;
+  see [Subscriptions at scale](#subscriptions-at-scale) below. The default is
+  still 150, because that is what the Windows development machine's ephemeral
+  ports allow.
 
 ## Latency percentiles
 
@@ -325,6 +325,38 @@ latency and the rest as this machine under load.
 **These are in-process numbers.** `k6/README.md` already established that a
 loopback round trip (66-118 us) is larger than anything the transports separate,
 so a percentile measured over HTTP would be a percentile of the socket.
+
+## Subscriptions at scale
+
+`TestManySubscriptionsAreReleased` opens 150 connections by default, which is
+what this Windows machine's ephemeral ports allow. `GQLWS_LOAD_CONNS` raises it;
+in `golang:1.27` with `--ulimit nofile=200000`:
+
+| connections | goroutines while open | after close | heap while open | per connection |
+|---:|---:|---:|---:|---:|
+| 150 | 153 | 3 | 5.8 MB | 35.4 KB |
+| 1 000 | 1 003 | 3 | 37.2 MB | 37.4 KB |
+| 10 000 | 10 003 | 3 | 363.5 MB | 37.2 KB |
+| 20 000 | 20 003 | 3 | 590.2 MB | 30.2 KB |
+
+Two things hold across two orders of magnitude. **Exactly one goroutine per
+subscription**, and every one of them comes back: the count returns to the
+3-goroutine baseline at 20 000 just as it does at 150, with the leak threshold
+still an absolute `baseline+10` rather than a fraction of the count, so a larger
+run is a stricter test per connection. And the cost per connection is flat --
+30-37 KB, no superlinear term.
+
+**That figure covers both sides.** The load generator and the server share one
+process, so a subscriber's client is counted with it; the server's own share is
+roughly half and is not separated here. Use 35 KB as an upper bound on what the
+server holds per subscriber, not as its actual footprint.
+
+The teardown is what the test is really for. A subscription that is *idle* when
+its client disconnects has no failing write to reclaim it -- only the operation
+context reaching the source does -- which is why
+`TestIdleSubscriptionsAreReleased` exists beside it and was run at the same
+counts.
+
 
 ## Schema build past 1 600 types
 

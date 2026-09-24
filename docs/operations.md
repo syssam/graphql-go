@@ -246,6 +246,16 @@ One reading trap: `runtime.MemStats.Sys` goes above the container limit (305 MB
 in a 256 MiB container) on runs that survive comfortably. That is reserved
 address space, not resident pages; the cgroup accounts RSS.
 
+
+**Sizing a subscription fleet.** One goroutine per subscription, and 30-37 KB
+per connection measured from 150 up to 20 000 with no superlinear term -- but
+that figure counts the load generator's client too, so treat it as an upper
+bound on the server's share (see
+[`performance.md`](performance.md#subscriptions-at-scale)). 20 000 subscribers
+held 590 MB of heap for both sides together, which against the container numbers
+above means a subscription server wants its memory limit sized on connection
+count, and `GOMEMLIMIT` set, before it wants anything else.
+
 ## What has not been measured
 
 Stated so that nobody reads silence as a result.

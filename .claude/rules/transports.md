@@ -198,7 +198,13 @@ that either one is dead code** — breaking each half separately still passes ev
 breaking both leaks. See the comment on `cancelAll` in `internal/gqlwsproto/conn.go`.
 
 `transport/gqlws/load_test.go` opens 150 concurrent subscriptions and requires both the
-source registrations and the goroutines back afterwards; it honours `-short`.
+source registrations and the goroutines back afterwards; it honours `-short`. **`GQLWS_LOAD_CONNS` raises the count** -- 150 is what the Windows development machine's
+ephemeral ports allow, not a limit of the engine. Run at 1 000, 10 000 and 20 000 on Linux
+(`--ulimit nofile=200000`): exactly one goroutine per subscription, every one returned to a
+3-goroutine baseline, and 30-37 KB per connection for client and server together, flat across
+the whole range. The leak threshold stays absolute (`baseline+10`) rather than scaling, so a
+larger run is stricter per connection; the waits scale with the count, because 20 000 clients
+take longer to register than 150 and a fixed deadline would report that as a leak.
 `BenchmarkSubscriptionFanout` measures a broadcast reaching every subscriber by counting
 receipts, because `publish` drops rather than blocks and timing it alone reports a fan-out
 to 128 clients at 45ns each when the honest figure is 4us. **Releasing an operation is

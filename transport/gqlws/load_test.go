@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
+	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -125,6 +127,22 @@ func openSubscriber(t testing.TB, url, id string) *websocket.Conn {
 	return ws
 }
 
+func heapAlloc() uint64 {
+	runtime.GC()
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	return ms.HeapAlloc
+}
+
+func mib(b uint64) string { return fmt.Sprintf("%.1f MiB", float64(b)/(1<<20)) }
+
+func perConn(b uint64, n int) string {
+	if n == 0 {
+		return "n/a"
+	}
+	return fmt.Sprintf("%.1f KiB", float64(b)/float64(n)/1024)
+}
+
 // settledGoroutines waits for the count to stop falling, then reports it.
 // Connection teardown is asynchronous on both sides, so a single reading taken
 // straight after Close is measuring the shutdown rather than what is left.
@@ -141,6 +159,38 @@ func settledGoroutines(target int, within time.Duration) int {
 	return runtime.NumGoroutine()
 }
 
+// loadConns is how many connections the two load tests open. The default is
+// 150: enough to find accumulation, and small enough to stay clear of Windows
+// ephemeral-port exhaustion on the development machine. GQLWS_LOAD_CONNS
+// raises it where the host allows -- ten thousand needs a raised file-descriptor
+// limit, so it is opt-in rather than a number CI has to be able to reach.
+//
+// The leak threshold stays absolute (baseline+10) rather than scaling with the
+// count, so a larger run is a stricter test per connection, not a looser one.
+func loadConns(t testing.TB) int {
+	t.Helper()
+	v := os.Getenv("GQLWS_LOAD_CONNS")
+	if v == "" {
+		return 150
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 {
+		t.Fatalf("GQLWS_LOAD_CONNS=%q is not a positive count", v)
+	}
+	return n
+}
+
+// loadWithin scales a wait with the connection count: 10 000 clients take
+// meaningfully longer to register and to tear down than 150, and a fixed
+// deadline would report that as a leak.
+func loadWithin(n int, base time.Duration) time.Duration {
+	d := base + time.Duration(n/150)*base
+	if d > 5*time.Minute {
+		d = 5 * time.Minute
+	}
+	return d
+}
+
 // TestManySubscriptionsAreReleased is the accumulation test: open a batch of
 // subscriptions, drive events through all of them, close them, and require
 // both the source registrations and the goroutines to come back.
@@ -148,7 +198,7 @@ func TestManySubscriptionsAreReleased(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping load test")
 	}
-	const n = 150
+	n := loadConns(t)
 
 	f, srv := fanoutServer(t)
 	url := "ws" + strings.TrimPrefix(srv.URL, "http")
@@ -161,6 +211,7 @@ func TestManySubscriptionsAreReleased(t *testing.T) {
 	warm.Close(websocket.StatusNormalClosure, "")
 	settledGoroutines(0, 2*time.Second)
 	baseline := runtime.NumGoroutine()
+	baseHeap := heapAlloc()
 
 	conns := make([]*websocket.Conn, 0, n)
 	for i := range n {
@@ -168,7 +219,7 @@ func TestManySubscriptionsAreReleased(t *testing.T) {
 	}
 
 	// Wait for the server to have registered them all, rather than assuming.
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(loadWithin(n, 20*time.Second))
 	for f.open() < n && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -179,6 +230,12 @@ func TestManySubscriptionsAreReleased(t *testing.T) {
 	for i := range 5 {
 		f.publish(i)
 	}
+
+	// Both sides are in this process, so this is the cost of a subscriber and
+	// its client together, not the server's alone. It is logged rather than
+	// asserted: it is a sizing figure, and a threshold on it would be a flaky
+	// test rather than a useful one.
+	heldHeap := heapAlloc()
 
 	for _, c := range conns {
 		c.Close(websocket.StatusNormalClosure, "")
@@ -195,12 +252,14 @@ func TestManySubscriptionsAreReleased(t *testing.T) {
 
 	// Goroutines are the other half: a source can deregister while the
 	// goroutine that was feeding it stays parked forever.
-	got := settledGoroutines(baseline+10, 20*time.Second)
+	got := settledGoroutines(baseline+10, loadWithin(n, 20*time.Second))
 	if got > baseline+10 {
 		t.Fatalf("goroutines %d, baseline %d: %d subscriptions leaked about %.1f goroutines each",
 			got, baseline, n, float64(got-baseline)/float64(n))
 	}
-	t.Logf("%d subscriptions: goroutines %d -> %d (baseline %d)", n, baseline+n, got, baseline)
+	t.Logf("%d subscriptions: goroutines %d -> %d (baseline %d), heap %s -> %s while open (%s each, both sides)",
+		n, baseline+n, got, baseline,
+		mib(baseHeap), mib(heldHeap), perConn(heldHeap-baseHeap, n))
 }
 
 // BenchmarkSubscriptionFanout measures one broadcast reaching every
@@ -281,13 +340,13 @@ func TestIdleSubscriptionsAreReleased(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping load test")
 	}
-	const n = 150
+	n := loadConns(t)
 
 	f, srv := fanoutServer(t)
 	url := "ws" + strings.TrimPrefix(srv.URL, "http")
 
 	warm := openSubscriber(t, url, "warm")
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(loadWithin(n, 20*time.Second))
 	for f.open() < 1 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -299,7 +358,7 @@ func TestIdleSubscriptionsAreReleased(t *testing.T) {
 	for i := range n {
 		conns = append(conns, openSubscriber(t, url, fmt.Sprintf("s%d", i)))
 	}
-	deadline = time.Now().Add(20 * time.Second)
+	deadline = time.Now().Add(loadWithin(n, 20*time.Second))
 	for f.open() < n && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -319,7 +378,7 @@ func TestIdleSubscriptionsAreReleased(t *testing.T) {
 	if got := f.open(); got != 0 {
 		t.Fatalf("%d idle subscriptions still registered after every client closed", got)
 	}
-	if got := settledGoroutines(baseline+10, 20*time.Second); got > baseline+10 {
+	if got := settledGoroutines(baseline+10, loadWithin(n, 20*time.Second)); got > baseline+10 {
 		t.Fatalf("goroutines %d, baseline %d: %d idle subscriptions leaked about %.1f goroutines each",
 			got, baseline, n, float64(got-baseline)/float64(n))
 	}
