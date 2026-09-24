@@ -93,6 +93,14 @@ func patchPrelude(s *ast.Schema) {
 	if d := s.Directives["defer"]; d != nil && isBuiltInDefinition(d.Position) {
 		delete(s.Directives, "defer")
 	}
+	// gqlparser's prelude is missing a space in String's description: it reads
+	// "The `String`scalar type". Every introspection response carries it, and
+	// every tool that renders schema documentation shows it, so it is worth the
+	// one line here rather than only upstream. Matched exactly so a fixed
+	// prelude silently stops needing this instead of corrupting the fixed text.
+	if t := s.Types["String"]; t != nil && isBuiltInDefinition(t.Position) {
+		t.Description = strings.Replace(t.Description, "`String`scalar", "`String` scalar", 1)
+	}
 	if sc := s.Types["__Schema"]; sc != nil {
 		if f := sc.Fields.ForName("directives"); f != nil && f.Arguments.ForName("includeDeprecated") == nil {
 			f.Arguments = append(f.Arguments, &ast.ArgumentDefinition{

@@ -150,6 +150,33 @@ nullability, error count and every error path agree on all 41, in order.
 [`testdata/gqljs/README.md`](../testdata/gqljs/README.md) has the eight message-wording
 differences, seven of which are gqlparser still carrying graphql-js 16's phrasing.
 
+**Introspection, against graphql-js 17.0.2.** The full `getIntrospectionQuery()`
+-- descriptions, `specifiedByURL`, `isRepeatable`, schema description and input
+value deprecation all on -- run against the same SDL on both, over a schema with
+an interface implementing an interface, a union, a custom scalar with
+`@specifiedBy`, enum and input-field and field deprecations, and default values
+on arguments and input fields.
+
+Thirty differences, and reading them is the point:
+
+| cause | count | verdict |
+| --- | ---: | --- |
+| `includeDeprecated` is `Boolean` here, `Boolean!` in graphql-js 17 | 15 | the deviation recorded below, at five sites |
+| `@deprecated(reason:)` is `String` here, `String!` there | 3 | the same family; the prelude spells it nullable |
+| `@deprecated` is not allowed on `DIRECTIVE_DEFINITION` here | 2 | gap 4 |
+| `__DirectiveLocation` has `VARIABLE_DEFINITION` where graphql-js 17 splits it into `FRAGMENT_` and `OPERATION_` forms | 4 | graphql-js ahead of the ratified specification: fragment arguments is experimental there |
+| `Float` and `ID` are reported though the schema uses neither | 2 | graphql-js prunes unreachable built-ins; this engine reports all five |
+| `String`'s description is missing a space | 1 | **a defect, fixed** |
+| description on `DIRECTIVE_DEFINITION` | 1 | this engine adds the value, without graphql-js's description text |
+
+Everything except the last two confirmed a decision already written down, which
+is what a differential is for. The defect is gqlparser's prelude, which reads
+``"The `String`scalar type"``: `patchPrelude` repairs it, because the string
+reaches every introspection response and every tool that renders schema
+documentation. `TestIntrospectionStringDescriptionHasItsSpace` holds it, and the
+replacement is matched exactly so a fixed prelude stops needing it rather than
+having correct text corrupted.
+
 **HTTP, against the specification's own audit suite** (`graphql-http` 1.23.0 ships it).
 `gqlhttp` takes **61 of 61** with CSRF prevention off, and **58** with it on, where all three
 it does not take are `MAY` rows that send a GET with no preflight header — the request shape

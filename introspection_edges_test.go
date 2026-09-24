@@ -3,6 +3,7 @@ package graphql
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -100,4 +101,26 @@ type introProbe struct {
 	Name        *string     `json:"name"`
 	Description *string     `json:"description"`
 	OfType      *introProbe `json:"ofType"`
+}
+
+// TestIntrospectionStringDescriptionHasItsSpace pins a repair to gqlparser's
+// prelude, which reads "The `String`scalar type" with no space. Every
+// introspection response carries the description and every tool that renders
+// schema documentation shows it, so the engine repairs it rather than waiting
+// on upstream. Found by diffing a full introspection response against
+// graphql-js, which is the only way a missing space in a built-in description
+// ever surfaces.
+func TestIntrospectionStringDescriptionHasItsSpace(t *testing.T) {
+	_, e := newFixtureExecutor(t)
+	resp := run(t, e, `{ __type(name: "String") { description } }`, "")
+	if len(resp.Errors) > 0 {
+		t.Fatalf("errors: %s", errorsJSON(resp.Errors))
+	}
+	got := string(resp.Data)
+	if strings.Contains(got, "`String`scalar") {
+		t.Fatalf("the prelude's missing space reached introspection: %s", got)
+	}
+	if !strings.Contains(got, "The `String` scalar type represents textual data") {
+		t.Fatalf("description = %s", got)
+	}
 }
