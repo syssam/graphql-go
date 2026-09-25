@@ -4,10 +4,44 @@ type Warehouse @goModel(model: "github.com/syssam/graphql-go/examples/veloxfx/ve
   id: ID!
   name: String!
   stocks: [Stock!]!
+  orders(
+    """
+    Returns the elements in the list that come after the specified cursor.
+    """
+    after: Cursor
+
+    """
+    Returns the first _n_ elements from the list.
+    """
+    first: Int
+
+    """
+    Returns the elements in the list that come before the specified cursor.
+    """
+    before: Cursor
+
+    """
+    Returns the last _n_ elements from the list.
+    """
+    last: Int
+
+    """
+    Ordering options for Orders returned from the connection.
+    """
+    orderBy: OrderOrder
+
+    """
+    Filtering options for Orders returned from the connection.
+    """
+    where: OrderWhereInput
+  ): OrderConnection!
 }
 
 input CreateWarehouseInput @goModel(model: "github.com/syssam/graphql-go/examples/veloxfx/velox/client/warehouse.CreateWarehouseInput") {
   name: String!
-  stockIDs: [ID!]
+}
+
+input UpdateWarehouseInput @goModel(model: "github.com/syssam/graphql-go/examples/veloxfx/velox/client/warehouse.UpdateWarehouseInput") {
+  name: String
 }
 

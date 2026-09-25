@@ -21,35 +21,3 @@ func (c *StockCreate) SetInput(i CreateStockInput) *StockCreate {
 	i.Mutate(c.Mutation())
 	return c
 }
-
-// UpdateStockInput represents a mutation input for updating stocks.
-type UpdateStockInput struct {
-	Quantity    *int `json:"quantity,omitempty"`
-	WarehouseID *int `json:"warehouseID,omitempty"`
-	ProductID   *int `json:"productID,omitempty"`
-}
-
-// Mutate applies the UpdateStockInput on the StockMutation builder.
-func (i *UpdateStockInput) Mutate(m *StockMutation) {
-	if i.Quantity != nil {
-		m.SetQuantity(*i.Quantity)
-	}
-	if i.WarehouseID != nil {
-		m.SetWarehouseID(*i.WarehouseID)
-	}
-	if i.ProductID != nil {
-		m.SetProductID(*i.ProductID)
-	}
-}
-
-// SetInput applies the change-set in the UpdateStockInput on the StockUpdate builder.
-func (c *StockUpdate) SetInput(i UpdateStockInput) *StockUpdate {
-	i.Mutate(c.Mutation())
-	return c
-}
-
-// SetInput applies the change-set in the UpdateStockInput on the StockUpdateOne builder.
-func (c *StockUpdateOne) SetInput(i UpdateStockInput) *StockUpdateOne {
-	i.Mutate(c.Mutation())
-	return c
-}

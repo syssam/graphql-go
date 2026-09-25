@@ -11,6 +11,7 @@ import (
 	order "github.com/syssam/graphql-go/examples/veloxfx/velox/order"
 	orderitem "github.com/syssam/graphql-go/examples/veloxfx/velox/orderitem"
 	predicate "github.com/syssam/graphql-go/examples/veloxfx/velox/predicate"
+	warehouse "github.com/syssam/graphql-go/examples/veloxfx/velox/warehouse"
 	velox "github.com/syssam/velox"
 	dialect "github.com/syssam/velox/dialect"
 	sql "github.com/syssam/velox/dialect/sql"
@@ -30,6 +31,7 @@ type OrderQuery struct {
 	inters         *entity.InterceptorStore
 	withFKs        bool
 	withCustomer   *CustomerQuery
+	withWarehouse  *WarehouseQuery
 	withItems      *OrderItemQuery
 	withNamedItems map[string]*OrderItemQuery
 	path           func(context.Context) (*sql.Selector, error)
@@ -79,6 +81,14 @@ func (q *OrderQuery) WithEdgeLoad(name string, opts ...runtime.LoadOption) runti
 		q.withFKs = true
 		q.withCustomer.applyLoad(runtime.NewLoadConfig(opts...), false)
 		return q.withCustomer
+	case "warehouse":
+		if q.withWarehouse == nil {
+			q.withWarehouse = NewWarehouseQuery(q.config)
+			q.withWarehouse.inters = q.inters
+		}
+		q.withFKs = true
+		q.withWarehouse.applyLoad(runtime.NewLoadConfig(opts...), false)
+		return q.withWarehouse
 	case "items":
 		if q.withItems == nil {
 			q.withItems = NewOrderItemQuery(q.config)
@@ -169,6 +179,18 @@ func (q *OrderQuery) WithCustomer(opts ...func(entity.CustomerQuerier)) entity.O
 	return q
 }
 
+// WithWarehouse tells the query-builder to eager-load the "warehouse" edge.
+func (q *OrderQuery) WithWarehouse(opts ...func(entity.WarehouseQuerier)) entity.OrderQuerier {
+	tq := NewWarehouseQuery(q.config)
+	tq.inters = q.inters
+	for _, opt := range opts {
+		opt(tq)
+	}
+	q.withWarehouse = tq
+	q.withFKs = true
+	return q
+}
+
 // WithItems tells the query-builder to eager-load the "items" edge.
 func (q *OrderQuery) WithItems(opts ...func(entity.OrderItemQuerier)) entity.OrderQuerier {
 	tq := NewOrderItemQuery(q.config)
@@ -205,6 +227,22 @@ func (q *OrderQuery) QueryCustomer() entity.CustomerQuerier {
 			return nil, err
 		}
 		step := sqlgraph.NewStep(sqlgraph.From(order.Table, order.FieldID), sqlgraph.To(customer.Table, customer.FieldID), sqlgraph.Edge(sqlgraph.M2O, true, order.CustomerTable, order.CustomerColumn))
+		step.From.V = from
+		return sqlgraph.SetNeighbors(q.config.Driver.Dialect(), step), nil
+	}
+	return tq
+}
+
+// QueryWarehouse chains the current query on the "warehouse" edge.
+func (q *OrderQuery) QueryWarehouse() entity.WarehouseQuerier {
+	tq := NewWarehouseQuery(q.config)
+	tq.inters = q.inters
+	tq.path = func(ctx context.Context) (*sql.Selector, error) {
+		from, err := q.buildQuery(ctx)
+		if err != nil {
+			return nil, err
+		}
+		step := sqlgraph.NewStep(sqlgraph.From(order.Table, order.FieldID), sqlgraph.To(warehouse.Table, warehouse.FieldID), sqlgraph.Edge(sqlgraph.M2O, true, order.WarehouseTable, order.WarehouseColumn))
 		step.From.V = from
 		return sqlgraph.SetNeighbors(q.config.Driver.Dialect(), step), nil
 	}
@@ -256,6 +294,15 @@ func (q *OrderQuery) eagerLoad(ctx context.Context, nodes []*entity.Order) error
 			n.Edges.MarkCustomerLoaded()
 		}, func(n *entity.Order, e *entity.Customer) {
 			n.Edges.Customer = e
+		}); err != nil {
+			return err
+		}
+	}
+	if query := q.withWarehouse; query != nil {
+		if err := q.loadWarehouse(ctx, query, nodes, func(n *entity.Order) {
+			n.Edges.MarkWarehouseLoaded()
+		}, func(n *entity.Order, e *entity.Warehouse) {
+			n.Edges.Warehouse = e
 		}); err != nil {
 			return err
 		}
@@ -462,6 +509,17 @@ func (q *OrderQuery) Explain(ctx context.Context) (*runtime.QueryPlan, error) {
 			plan.Edges = append(plan.Edges, runtime.EdgePlan{
 				Args: ea,
 				Name: "customer",
+				SQL:  eq,
+			})
+		}
+	}
+	if q.withWarehouse != nil {
+		eSel, eErr := q.withWarehouse.buildSelector(ctx)
+		if eErr == nil {
+			eq, ea := eSel.Query()
+			plan.Edges = append(plan.Edges, runtime.EdgePlan{
+				Args: ea,
+				Name: "warehouse",
 				SQL:  eq,
 			})
 		}
@@ -841,16 +899,17 @@ func (q *OrderQuery) clone() *OrderQuery {
 		return nil
 	}
 	c := &OrderQuery{
-		config:       q.config,
-		ctx:          q.ctx.Clone(),
-		inters:       q.inters,
-		modifiers:    runtime.CloneSlice(q.modifiers),
-		order:        runtime.CloneSlice(q.order),
-		path:         q.path,
-		predicates:   runtime.CloneSlice(q.predicates),
-		withCustomer: q.withCustomer.clone(),
-		withFKs:      q.withFKs,
-		withItems:    q.withItems.clone(),
+		config:        q.config,
+		ctx:           q.ctx.Clone(),
+		inters:        q.inters,
+		modifiers:     runtime.CloneSlice(q.modifiers),
+		order:         runtime.CloneSlice(q.order),
+		path:          q.path,
+		predicates:    runtime.CloneSlice(q.predicates),
+		withCustomer:  q.withCustomer.clone(),
+		withFKs:       q.withFKs,
+		withItems:     q.withItems.clone(),
+		withWarehouse: q.withWarehouse.clone(),
 	}
 	if q.withNamedItems != nil {
 		c.withNamedItems = make(map[string]*OrderItemQuery, len(q.withNamedItems))
@@ -896,6 +955,52 @@ func (q *OrderQuery) loadCustomer(ctx context.Context, query *CustomerQuery, nod
 	}
 	for _, n := range nodes {
 		fkRaw := n.FKValue("customer_orders")
+		if fkRaw == nil {
+			continue
+		}
+		fkVal := derefFK(fkRaw).(int)
+		if neighbor, ok := neighborByID[fkVal]; ok {
+			assign(n, neighbor)
+		}
+	}
+	return nil
+}
+
+// loadWarehouse eagerly loads the "warehouse" edge for the given nodes.
+func (q *OrderQuery) loadWarehouse(ctx context.Context, query *WarehouseQuery, nodes []*entity.Order, init func(*entity.Order), assign func(*entity.Order, *entity.Warehouse)) error {
+	query = query.clone()
+	fkSeen := make(map[int]struct{}, len(nodes))
+	var fks []any
+	for _, n := range nodes {
+		fkRaw := n.FKValue("warehouse_orders")
+		if fkRaw == nil {
+			continue
+		}
+		fkVal := derefFK(fkRaw).(int)
+		if _, ok := fkSeen[fkVal]; !ok {
+			fkSeen[fkVal] = struct{}{}
+			fks = append(fks, any(fkVal))
+		}
+		if init != nil {
+			init(n)
+		}
+	}
+	if len(fks) == 0 {
+		return nil
+	}
+	query.Where(func(s *sql.Selector) {
+		s.Where(sql.In(s.C(warehouse.FieldID), fks...))
+	})
+	neighbors, err := query.All(ctx)
+	if err != nil {
+		return err
+	}
+	neighborByID := make(map[int]*entity.Warehouse, len(neighbors))
+	for _, n := range neighbors {
+		neighborByID[n.ID] = n
+	}
+	for _, n := range nodes {
+		fkRaw := n.FKValue("warehouse_orders")
 		if fkRaw == nil {
 			continue
 		}

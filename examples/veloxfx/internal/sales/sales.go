@@ -1,4 +1,9 @@
 // Package sales implements the customer, order and orderitem groups.
+//
+// An order changes only through the operations in sdl/order.graphql, and
+// each one is a conditional update on the state it moves from: two requests
+// racing to ship and cancel the same order cannot both win, because the
+// second one's WHERE status = ... matches no row.
 package sales
 
 import (
@@ -13,14 +18,13 @@ import (
 	ordermodel "github.com/syssam/graphql-go/examples/veloxfx/graph/model/order"
 	ordergql "github.com/syssam/graphql-go/examples/veloxfx/graph/order"
 	orderitemgql "github.com/syssam/graphql-go/examples/veloxfx/graph/orderitem"
+	"github.com/syssam/graphql-go/examples/veloxfx/internal/inventory"
+	"github.com/syssam/graphql-go/examples/veloxfx/internal/orderby"
 	"github.com/syssam/graphql-go/examples/veloxfx/internal/resolve"
 	"github.com/syssam/graphql-go/examples/veloxfx/velox"
 	"github.com/syssam/graphql-go/examples/veloxfx/velox/entity"
 	"github.com/syssam/graphql-go/examples/veloxfx/velox/order"
 	"github.com/syssam/graphql-go/examples/veloxfx/velox/orderitem"
-	"github.com/syssam/graphql-go/examples/veloxfx/velox/product"
-	"github.com/syssam/graphql-go/examples/veloxfx/velox/stock"
-	"github.com/syssam/graphql-go/examples/veloxfx/velox/warehouse"
 )
 
 // Module provides the domain's resolvers and registers their bindings.
@@ -47,9 +51,10 @@ func (r *CustomerResolver) Customer(ctx context.Context, args customergql.Custom
 	return resolve.Get(ctx, args.ID, r.client.Customer.Get)
 }
 
-// CustomerOrders is Customer.orders, a connection; see CategoryProducts.
+// CustomerOrders is Customer.orders, a connection; see catalog's
+// CategoryProducts.
 func (r *CustomerResolver) CustomerOrders(ctx context.Context, c *entity.Customer, args customergql.CustomerOrdersArgs) (*entity.OrderConnection, error) {
-	o, err := OrderOrder(args.OrderBy)
+	o, err := orderby.Order(args.OrderBy)
 	if err != nil {
 		return nil, err
 	}
@@ -58,6 +63,14 @@ func (r *CustomerResolver) CustomerOrders(ctx context.Context, c *entity.Custome
 
 func (r *CustomerResolver) CreateCustomer(ctx context.Context, args customergql.CreateCustomerArgs) (*entity.Customer, error) {
 	return r.client.Customer.Create().SetInput(args.Input).Save(ctx)
+}
+
+func (r *CustomerResolver) UpdateCustomer(ctx context.Context, args customergql.UpdateCustomerArgs) (*entity.Customer, error) {
+	id, err := resolve.ParseID(args.ID)
+	if err != nil {
+		return nil, err
+	}
+	return r.client.Customer.UpdateOneID(id).SetInput(args.Input).Save(ctx)
 }
 
 // DeleteCustomer is refused while the customer has orders: an order is a
@@ -85,7 +98,7 @@ func NewOrderResolver(client *velox.Client) *OrderResolver {
 // into the catalog domain: orders { edges { node { items { product } } } }
 // is a fixed number of queries, not one per item.
 func (r *OrderResolver) Orders(ctx context.Context, args ordergql.OrdersArgs) (*entity.OrderConnection, error) {
-	o, err := OrderOrder(args.OrderBy)
+	o, err := orderby.Order(args.OrderBy)
 	if err != nil {
 		return nil, err
 	}
@@ -103,21 +116,10 @@ func (r *OrderResolver) Order(ctx context.Context, args ordergql.OrderArgs) (*en
 	return resolve.Get(ctx, args.ID, r.client.Order.Get)
 }
 
-func (r *OrderResolver) CreateOrder(ctx context.Context, args ordergql.CreateOrderArgs) (*entity.Order, error) {
-	o, err := r.client.Order.Create().SetInput(args.Input).Save(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return r.client.Order.Get(ctx, o.ID)
-}
-
-// PlaceOrder is the mutation a shop actually takes: the order, its items at
-// the current price, and the stock they come out of, together or not at all.
-//
-// Stock is taken with a conditional update -- quantity = quantity - n WHERE
-// quantity >= n -- rather than read, checked and written, so two orders
-// racing for the last unit cannot both succeed: the second update matches no
-// row, and its whole transaction rolls back.
+// PlaceOrder is the only way an order comes to exist: the order, its items
+// at the current price, and the stock they come out of, together or not at
+// all. inventory.Take refuses a line the warehouse cannot cover, and the
+// whole transaction rolls back with it.
 func (r *OrderResolver) PlaceOrder(ctx context.Context, args ordergql.PlaceOrderArgs) (*entity.Order, error) {
 	in := args.Input
 	if len(in.Items) == 0 {
@@ -132,7 +134,7 @@ func (r *OrderResolver) PlaceOrder(ctx context.Context, args ordergql.PlaceOrder
 		return nil, err
 	}
 	id, err := resolve.InTx(ctx, r.client, func(tx *velox.Tx) (int, error) {
-		o, err := tx.Order.Create().SetCustomerID(customerID).Save(ctx)
+		o, err := tx.Order.Create().SetCustomerID(customerID).SetWarehouseID(warehouseID).Save(ctx)
 		if err != nil {
 			return 0, err
 		}
@@ -161,19 +163,8 @@ func placeLine(ctx context.Context, tx *velox.Tx, orderID, warehouseID int, line
 	if err != nil {
 		return fmt.Errorf("product %s: %w", line.ProductID, err)
 	}
-	taken, err := tx.Stock.Update().
-		Where(
-			stock.HasWarehouseWith(warehouse.IDField.EQ(warehouseID)),
-			stock.HasProductWith(product.IDField.EQ(productID)),
-			stock.QuantityField.GTE(line.Quantity),
-		).
-		AddQuantity(-line.Quantity).
-		Save(ctx)
-	if err != nil {
-		return err
-	}
-	if taken == 0 {
-		return fmt.Errorf("not enough %s in stock for %d", p.Sku, line.Quantity)
+	if err := inventory.Take(ctx, tx, warehouseID, productID, line.Quantity); err != nil {
+		return fmt.Errorf("%s: %w", p.Sku, err)
 	}
 	_, err = tx.OrderItem.Create().
 		SetOrderID(orderID).
@@ -184,20 +175,56 @@ func placeLine(ctx context.Context, tx *velox.Tx, orderID, warehouseID int, line
 	return err
 }
 
-func (r *OrderResolver) UpdateOrder(ctx context.Context, args ordergql.UpdateOrderArgs) (*entity.Order, error) {
+func (r *OrderResolver) PayOrder(ctx context.Context, args ordergql.PayOrderArgs) (*entity.Order, error) {
+	return r.move(ctx, args.ID, order.StatusPAID, order.StatusPENDING)
+}
+
+func (r *OrderResolver) ShipOrder(ctx context.Context, args ordergql.ShipOrderArgs) (*entity.Order, error) {
+	return r.move(ctx, args.ID, order.StatusSHIPPED, order.StatusPAID)
+}
+
+// CancelOrder moves the order to CANCELLED and puts every item back into the
+// warehouse it was taken from, in one transaction. A shipped order has left
+// the warehouse and cannot be cancelled.
+func (r *OrderResolver) CancelOrder(ctx context.Context, args ordergql.CancelOrderArgs) (*entity.Order, error) {
 	id, err := resolve.ParseID(args.ID)
 	if err != nil {
 		return nil, err
 	}
-	return r.client.Order.UpdateOneID(id).SetInput(args.Input).Save(ctx)
+	_, err = resolve.InTx(ctx, r.client, func(tx *velox.Tx) (struct{}, error) {
+		if err := transition(ctx, tx.Client(), id, order.StatusCANCELLED, order.StatusPENDING, order.StatusPAID); err != nil {
+			return struct{}{}, err
+		}
+		o, err := tx.Order.Query().
+			Where(order.IDField.EQ(id)).
+			WithWarehouse().
+			WithItems(func(q entity.OrderItemQuerier) { q.WithProduct() }).
+			Only(ctx)
+		if err != nil {
+			return struct{}{}, err
+		}
+		for _, it := range o.Edges.Items {
+			if err := inventory.Return(ctx, tx, o.Edges.Warehouse.ID, it.Edges.Product.ID, it.Quantity); err != nil {
+				return struct{}{}, err
+			}
+		}
+		return struct{}{}, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return r.client.Order.Get(ctx, id)
 }
 
-// DeleteOrder deletes the order's items with it, in one transaction: items
-// are part of the order, where a customer's orders are not part of the
-// customer (see DeleteCustomer).
+// DeleteOrder removes a cancelled order and its items. Any other order is a
+// record of a sale, and its stock is either still taken or already shipped;
+// cancelling first is what returns it.
 func (r *OrderResolver) DeleteOrder(ctx context.Context, args ordergql.DeleteOrderArgs) (graphql.ID, error) {
 	return resolve.Delete(ctx, args.ID, func(ctx context.Context, id int) error {
 		_, err := resolve.InTx(ctx, r.client, func(tx *velox.Tx) (struct{}, error) {
+			if err := requireStatus(ctx, tx.Client(), id, order.StatusCANCELLED); err != nil {
+				return struct{}{}, err
+			}
 			if _, err := tx.OrderItem.Delete().Where(orderitem.HasOrderWith(order.IDField.EQ(id))).Exec(ctx); err != nil {
 				return struct{}{}, err
 			}
@@ -205,6 +232,48 @@ func (r *OrderResolver) DeleteOrder(ctx context.Context, args ordergql.DeleteOrd
 		})
 		return err
 	})
+}
+
+// move is one state transition, from any of from to to.
+func (r *OrderResolver) move(ctx context.Context, gid graphql.ID, to order.Status, from ...order.Status) (*entity.Order, error) {
+	id, err := resolve.ParseID(gid)
+	if err != nil {
+		return nil, err
+	}
+	if err := transition(ctx, r.client, id, to, from...); err != nil {
+		return nil, err
+	}
+	return r.client.Order.Get(ctx, id)
+}
+
+// transition sets the status only where it is still one of from. No row
+// updated means the order is missing or in another state, and the error says
+// which, so a client told "cannot ship" learns what the order is instead.
+func transition(ctx context.Context, c *velox.Client, id int, to order.Status, from ...order.Status) error {
+	n, err := c.Order.Update().
+		Where(order.IDField.EQ(id), order.StatusField.In(from...)).
+		SetStatus(to).
+		Save(ctx)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return requireStatus(ctx, c, id, from...)
+	}
+	return nil
+}
+
+func requireStatus(ctx context.Context, c *velox.Client, id int, want ...order.Status) error {
+	o, err := c.Order.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	for _, s := range want {
+		if o.Status == s {
+			return nil
+		}
+	}
+	return fmt.Errorf("order %d is %s, and this needs %v", id, o.Status, want)
 }
 
 // OrderTotalCents answers Order.totalCents, which sdl/order.graphql adds and
@@ -242,32 +311,6 @@ func (r *OrderItemResolver) OrderItem(ctx context.Context, args orderitemgql.Ord
 	return resolve.Get(ctx, args.ID, r.client.OrderItem.Get)
 }
 
-func (r *OrderItemResolver) CreateOrderItem(ctx context.Context, args orderitemgql.CreateOrderItemArgs) (*entity.OrderItem, error) {
-	it, err := r.client.OrderItem.Create().SetInput(args.Input).Save(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return r.client.OrderItem.Get(ctx, it.ID)
-}
-
-func (r *OrderItemResolver) DeleteOrderItem(ctx context.Context, args orderitemgql.DeleteOrderItemArgs) (graphql.ID, error) {
-	return resolve.Delete(ctx, args.ID, func(ctx context.Context, id int) error {
-		return r.client.OrderItem.DeleteOneID(id).Exec(ctx)
-	})
-}
-
 func (r *OrderItemResolver) OrderItemID(_ context.Context, it *entity.OrderItem) (graphql.ID, error) {
 	return resolve.ID(it.ID), nil
-}
-
-// OrderOrder converts an Order orderBy argument; see catalog.ProductOrder.
-func OrderOrder(o *ordermodel.OrderOrder) (*entity.OrderOrder, error) {
-	if o == nil {
-		return nil, nil
-	}
-	f, err := resolve.OrderField[entity.OrderOrderField](string(o.Field))
-	if err != nil {
-		return nil, err
-	}
-	return &entity.OrderOrder{Direction: o.Direction, Field: f}, nil
 }

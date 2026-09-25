@@ -15,9 +15,9 @@ type CreateStockArgs struct {
 	Input stock.CreateStockInput `graphql:"input"`
 }
 
-type UpdateStockArgs struct {
-	ID    graphql.ID             `graphql:"id"`
-	Input stock.UpdateStockInput `graphql:"input"`
+type AdjustStockArgs struct {
+	ID    graphql.ID `graphql:"id"`
+	Delta int        `graphql:"delta"`
 }
 
 type DeleteStockArgs struct {
@@ -31,7 +31,7 @@ type StockArgs struct {
 // Resolver holds methods for fields that are not struct data.
 type Resolver interface {
 	CreateStock(ctx context.Context, args CreateStockArgs) (*entity.Stock, error)
-	UpdateStock(ctx context.Context, args UpdateStockArgs) (*entity.Stock, error)
+	AdjustStock(ctx context.Context, args AdjustStockArgs) (*entity.Stock, error)
 	DeleteStock(ctx context.Context, args DeleteStockArgs) (graphql.ID, error)
 	Stocks(ctx context.Context) ([]*entity.Stock, error)
 	Stock(ctx context.Context, args StockArgs) (*entity.Stock, error)
@@ -41,7 +41,6 @@ type Resolver interface {
 func Bindings(r Resolver) graphql.SchemaOption {
 	return graphql.Options(
 		graphql.Input[stock.CreateStockInput]("CreateStockInput", graphql.ZeroForNull()),
-		graphql.Input[stock.UpdateStockInput]("UpdateStockInput", graphql.ZeroForNull()),
 		graphql.Object[entity.Stock]("Stock",
 			graphql.Resolve("id", func(ctx context.Context, v *entity.Stock) (graphql.ID, error) { return r.StockID(ctx, v) }),
 			graphql.Field("quantity", func(v *entity.Stock) int { return v.Quantity }),
@@ -56,15 +55,15 @@ func Bindings(r Resolver) graphql.SchemaOption {
 			graphql.ResolveArgs("createStock", func(ctx context.Context, _ graphql.Root, a CreateStockArgs) (*entity.Stock, error) {
 				return r.CreateStock(ctx, a)
 			}),
-			graphql.ResolveArgs("updateStock", func(ctx context.Context, _ graphql.Root, a UpdateStockArgs) (*entity.Stock, error) {
-				return r.UpdateStock(ctx, a)
+			graphql.ResolveArgs("adjustStock", func(ctx context.Context, _ graphql.Root, a AdjustStockArgs) (*entity.Stock, error) {
+				return r.AdjustStock(ctx, a)
 			}),
 			graphql.ResolveArgs("deleteStock", func(ctx context.Context, _ graphql.Root, a DeleteStockArgs) (graphql.ID, error) {
 				return r.DeleteStock(ctx, a)
 			}),
 		),
 		graphql.Args[CreateStockArgs](),
-		graphql.Args[UpdateStockArgs](),
+		graphql.Args[AdjustStockArgs](),
 		graphql.Args[DeleteStockArgs](),
 		graphql.Args[StockArgs](),
 	)

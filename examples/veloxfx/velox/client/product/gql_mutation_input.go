@@ -4,12 +4,10 @@ package productclient
 
 // CreateProductInput represents a mutation input for creating products.
 type CreateProductInput struct {
-	Sku          string `json:"sku"`
-	Name         string `json:"name"`
-	PriceCents   int    `json:"priceCents"`
-	CategoryID   int    `json:"categoryID"`
-	StockIDs     []int  `json:"stockIDs,omitempty"`
-	OrderItemIDs []int  `json:"orderItemIDs,omitempty"`
+	Sku        string `json:"sku"`
+	Name       string `json:"name"`
+	PriceCents int    `json:"priceCents"`
+	CategoryID int    `json:"categoryID"`
 }
 
 // Mutate applies the CreateProductInput on the ProductMutation builder.
@@ -18,12 +16,6 @@ func (i *CreateProductInput) Mutate(m *ProductMutation) {
 	m.SetName(i.Name)
 	m.SetPriceCents(i.PriceCents)
 	m.SetCategoryID(i.CategoryID)
-	if len(i.StockIDs) > 0 {
-		m.AddStockIDs(i.StockIDs...)
-	}
-	if len(i.OrderItemIDs) > 0 {
-		m.AddOrderItemIDs(i.OrderItemIDs...)
-	}
 }
 
 // SetInput applies the change-set in the CreateProductInput on the ProductCreate builder.
@@ -34,16 +26,10 @@ func (c *ProductCreate) SetInput(i CreateProductInput) *ProductCreate {
 
 // UpdateProductInput represents a mutation input for updating products.
 type UpdateProductInput struct {
-	Sku                *string `json:"sku,omitempty"`
-	Name               *string `json:"name,omitempty"`
-	PriceCents         *int    `json:"priceCents,omitempty"`
-	CategoryID         *int    `json:"categoryID,omitempty"`
-	ClearStocks        bool    `json:"clearStocks,omitempty"`
-	AddStockIDs        []int   `json:"addStockIDs,omitempty"`
-	RemoveStockIDs     []int   `json:"removeStockIDs,omitempty"`
-	ClearOrderItems    bool    `json:"clearOrderItems,omitempty"`
-	AddOrderItemIDs    []int   `json:"addOrderItemIDs,omitempty"`
-	RemoveOrderItemIDs []int   `json:"removeOrderItemIDs,omitempty"`
+	Sku        *string `json:"sku,omitempty"`
+	Name       *string `json:"name,omitempty"`
+	PriceCents *int    `json:"priceCents,omitempty"`
+	CategoryID *int    `json:"categoryID,omitempty"`
 }
 
 // Mutate applies the UpdateProductInput on the ProductMutation builder.
@@ -59,24 +45,6 @@ func (i *UpdateProductInput) Mutate(m *ProductMutation) {
 	}
 	if i.CategoryID != nil {
 		m.SetCategoryID(*i.CategoryID)
-	}
-	if i.ClearStocks {
-		m.ClearStocks()
-	}
-	if len(i.AddStockIDs) > 0 {
-		m.AddStockIDs(i.AddStockIDs...)
-	}
-	if len(i.RemoveStockIDs) > 0 {
-		m.RemoveStockIDs(i.RemoveStockIDs...)
-	}
-	if i.ClearOrderItems {
-		m.ClearOrderItems()
-	}
-	if len(i.AddOrderItemIDs) > 0 {
-		m.AddOrderItemIDs(i.AddOrderItemIDs...)
-	}
-	if len(i.RemoveOrderItemIDs) > 0 {
-		m.RemoveOrderItemIDs(i.RemoveOrderItemIDs...)
 	}
 }
 

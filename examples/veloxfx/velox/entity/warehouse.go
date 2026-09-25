@@ -27,7 +27,9 @@ type Warehouse struct {
 type WarehouseEdges struct {
 	Stocks      []*Stock `json:"stocks,omitempty"`
 	namedStocks map[string][]*Stock
-	loadedTypes [1]bool
+	Orders      []*Order `json:"orders,omitempty"`
+	namedOrders map[string][]*Order
+	loadedTypes [2]bool
 	totalCount  map[string]int
 }
 
@@ -71,6 +73,46 @@ func (e WarehouseEdges) GetStocks() any {
 	return e.Stocks
 }
 
+// OrdersOrErr returns the orders value or an error if the edge was not loaded.
+func (e WarehouseEdges) OrdersOrErr() ([]*Order, error) {
+	if e.loadedTypes[1] {
+		return e.Orders, nil
+	}
+	return nil, runtime.NewNotLoadedError("orders")
+}
+
+// SetOrders stores the orders edge value and marks it as loaded.
+func (e *WarehouseEdges) SetOrders(v []*Order) {
+	e.Orders = v
+	e.loadedTypes[1] = true
+}
+
+// OrdersLoaded reports whether the orders edge was loaded.
+func (e WarehouseEdges) OrdersLoaded() bool {
+	return e.loadedTypes[1]
+}
+
+// MarkOrdersLoaded marks the orders edge as loaded, even if empty.
+func (e *WarehouseEdges) MarkOrdersLoaded() {
+	e.loadedTypes[1] = true
+}
+
+// SetOrdersAny sets the orders edge from an any value (used by runtime edge loading).
+func (e *WarehouseEdges) SetOrdersAny(v any) {
+	children := v.([]any)
+	typed := make([]*Order, len(children))
+	for i, c := range children {
+		typed[i] = c.(*Order)
+	}
+	e.Orders = typed
+	e.loadedTypes[1] = true
+}
+
+// GetOrders returns the orders edge value as any (for runtime edge loading).
+func (e WarehouseEdges) GetOrders() any {
+	return e.Orders
+}
+
 // NamedStocks returns the stocks edge with the given name or an error if it was not loaded.
 func (e *Warehouse) NamedStocks(name string) ([]*Stock, error) {
 	if e.Edges.namedStocks == nil {
@@ -89,6 +131,26 @@ func (e *Warehouse) AppendNamedStocks(name string, edges ...*Stock) {
 		e.Edges.namedStocks = make(map[string][]*Stock)
 	}
 	e.Edges.namedStocks[name] = append(e.Edges.namedStocks[name], edges...)
+}
+
+// NamedOrders returns the orders edge with the given name or an error if it was not loaded.
+func (e *Warehouse) NamedOrders(name string) ([]*Order, error) {
+	if e.Edges.namedOrders == nil {
+		return nil, runtime.NewNotLoadedError("orders")
+	}
+	edges, ok := e.Edges.namedOrders[name]
+	if !ok {
+		return nil, runtime.NewNotLoadedError("orders")
+	}
+	return edges, nil
+}
+
+// AppendNamedOrders adds the given edges to the named edge with the given name.
+func (e *Warehouse) AppendNamedOrders(name string, edges ...*Order) {
+	if e.Edges.namedOrders == nil {
+		e.Edges.namedOrders = make(map[string][]*Order)
+	}
+	e.Edges.namedOrders[name] = append(e.Edges.namedOrders[name], edges...)
 }
 
 // ScanValues returns the types for scanning values from sql.Rows.
@@ -219,6 +281,34 @@ func (_e *Warehouse) QueryStocks() StockQuerier {
 	return tq.(StockQuerier)
 }
 
+// QueryOrders queries the "orders" edge of the Warehouse.
+func (_e *Warehouse) QueryOrders() OrderQuerier {
+	tq := runtime.NewEntityQuery("Order", _e.config)
+	_is, _ := _e.config.InterStore.(*InterceptorStore)
+	if _is == nil {
+		_is = &InterceptorStore{}
+	}
+	tq.(interface {
+		SetInterStore(*InterceptorStore)
+	}).SetInterStore(_is)
+	_tp := runtime.EntityPolicy("Order")
+	if _tp != nil {
+		if _sp, _ok := tq.(interface {
+			SetPolicy(velox.Policy)
+		}); _ok {
+			_sp.SetPolicy(_tp)
+		}
+	}
+	tq.(interface {
+		SetPath(func(context.Context) (*sql.Selector, error))
+	}).SetPath(func(ctx context.Context) (*sql.Selector, error) {
+		id := _e.ID
+		step := sqlgraph.NewStep(sqlgraph.From("warehouses", "id", id), sqlgraph.To("orders", "id"), sqlgraph.Edge(sqlgraph.O2M, false, "orders", "warehouse_orders"))
+		return sqlgraph.Neighbors(_e.config.Driver.Dialect(), step), nil
+	})
+	return tq.(OrderQuerier)
+}
+
 // WarehouseQuerier defines the query interface for Warehouse entities.
 type WarehouseQuerier interface {
 	All(ctx context.Context) ([]*Warehouse, error)
@@ -237,6 +327,7 @@ type WarehouseQuerier interface {
 	Order(o ...func(*sql.Selector)) WarehouseQuerier
 	Unique(unique bool) WarehouseQuerier
 	WithStocks(opts ...func(StockQuerier)) WarehouseQuerier
+	WithOrders(opts ...func(OrderQuerier)) WarehouseQuerier
 	Select(fields ...string) WarehouseSelector
 	Modify(modifiers ...func(*sql.Selector)) WarehouseQuerier
 	GroupBy(field string, fields ...string) WarehouseGroupByer

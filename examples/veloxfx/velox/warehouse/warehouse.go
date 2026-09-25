@@ -18,6 +18,8 @@ const (
 	FieldName = "name"
 	// EdgeStocks holds the string denoting the stocks edge name in mutations.
 	EdgeStocks = "stocks"
+	// EdgeOrders holds the string denoting the orders edge name in mutations.
+	EdgeOrders = "orders"
 	// Table holds the table name of the Warehouse in the database.
 	Table = "warehouses"
 	// StocksTable is the table that holds the stocks relation/edge.
@@ -27,6 +29,13 @@ const (
 	StocksInverseTable = "stocks"
 	// StocksColumn is the table column denoting the stocks relation/edge.
 	StocksColumn = "warehouse_stocks"
+	// OrdersTable is the table that holds the orders relation/edge.
+	OrdersTable = "orders"
+	// OrdersInverseTable is the table name for the Order entity.
+	// It exists in this package in order to avoid circular dependency with the "order" package.
+	OrdersInverseTable = "orders"
+	// OrdersColumn is the table column denoting the orders relation/edge.
+	OrdersColumn = "warehouse_orders"
 )
 
 // Columns holds all SQL columns for Warehouse fields.
@@ -82,8 +91,25 @@ func ByStocks(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
 		sqlgraph.OrderByNeighborTerms(s, newStocksStep(), append([]sql.OrderTerm{term}, terms...)...)
 	}
 }
+
+// ByOrdersCount orders the results by orders count.
+func ByOrdersCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newOrdersStep(), opts...)
+	}
+}
+
+// ByOrders orders the results by orders terms.
+func ByOrders(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newOrdersStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
 func newStocksStep() *sqlgraph.Step {
 	return sqlgraph.NewStep(sqlgraph.From(Table, FieldID), sqlgraph.To(StocksInverseTable, FieldID), sqlgraph.Edge(sqlgraph.O2M, false, StocksTable, StocksColumn))
+}
+func newOrdersStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(sqlgraph.From(Table, FieldID), sqlgraph.To(OrdersInverseTable, FieldID), sqlgraph.Edge(sqlgraph.O2M, false, OrdersTable, OrdersColumn))
 }
 
 // =============================================================================
@@ -117,4 +143,9 @@ func OrderBy(o ...func(*sql.Selector)) runtime.LoadOption {
 // WithStocks returns a LoadOption that eager-loads the "stocks" edge.
 func WithStocks(opts ...runtime.LoadOption) runtime.LoadOption {
 	return runtime.WithEdge("stocks", opts...)
+}
+
+// WithOrders returns a LoadOption that eager-loads the "orders" edge.
+func WithOrders(opts ...runtime.LoadOption) runtime.LoadOption {
+	return runtime.WithEdge("orders", opts...)
 }

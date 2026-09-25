@@ -87,6 +87,26 @@ func (_u *OrderUpdate) ClearCustomer() *OrderUpdate {
 	return _u
 }
 
+// SetWarehouseID sets the "warehouse" edge by id.
+func (_u *OrderUpdate) SetWarehouseID(id int) *OrderUpdate {
+	_u.mutation.SetWarehouseID(id)
+	return _u
+}
+
+// SetNillableWarehouseID sets the "warehouse" edge by id if the given value is not nil.
+func (_u *OrderUpdate) SetNillableWarehouseID(id *int) *OrderUpdate {
+	if id != nil {
+		_u.SetWarehouseID(*id)
+	}
+	return _u
+}
+
+// ClearWarehouse clears the "warehouse" edge.
+func (_u *OrderUpdate) ClearWarehouse() *OrderUpdate {
+	_u.mutation.ClearWarehouse()
+	return _u
+}
+
 // AddItemIDs adds the "items" edge by ids.
 func (_u *OrderUpdate) AddItemIDs(ids ...int) *OrderUpdate {
 	_u.mutation.AddItemIDs(ids...)
@@ -108,6 +128,12 @@ func (_u *OrderUpdate) ClearItems() *OrderUpdate {
 // SetCustomer sets the "customer" edge to the given entity.
 func (_u *OrderUpdate) SetCustomer(v *entity.Customer) *OrderUpdate {
 	_u.SetCustomerID(v.ID)
+	return _u
+}
+
+// SetWarehouse sets the "warehouse" edge to the given entity.
+func (_u *OrderUpdate) SetWarehouse(v *entity.Warehouse) *OrderUpdate {
+	_u.SetWarehouseID(v.ID)
 	return _u
 }
 
@@ -158,6 +184,9 @@ func (_u *OrderUpdate) check() error {
 	if _u.mutation.CustomerCleared() {
 		return errors.New("clearing a required unique edge \"Order.customer\"")
 	}
+	if _u.mutation.WarehouseCleared() {
+		return errors.New("clearing a required unique edge \"Order.warehouse\"")
+	}
 	return nil
 }
 
@@ -202,6 +231,37 @@ func (_u *OrderUpdate) sqlSave(ctx context.Context) (int, error) {
 		edge := &sqlgraph.EdgeSpec{
 			Bidi:    false,
 			Columns: []string{"customer_orders"},
+			Inverse: true,
+			Rel:     sqlgraph.M2O,
+			Table:   "orders",
+			Target: &sqlgraph.EdgeTarget{IDSpec: &sqlgraph.FieldSpec{
+				Column: "id",
+				Type:   field.TypeInt,
+			}},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		spec.Edges.Add = append(spec.Edges.Add, edge)
+	}
+	if _u.mutation.WarehouseCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Bidi:    false,
+			Columns: []string{"warehouse_orders"},
+			Inverse: true,
+			Rel:     sqlgraph.M2O,
+			Table:   "orders",
+			Target: &sqlgraph.EdgeTarget{IDSpec: &sqlgraph.FieldSpec{
+				Column: "id",
+				Type:   field.TypeInt,
+			}},
+		}
+		spec.Edges.Clear = append(spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.WarehouseIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Bidi:    false,
+			Columns: []string{"warehouse_orders"},
 			Inverse: true,
 			Rel:     sqlgraph.M2O,
 			Table:   "orders",
@@ -378,6 +438,26 @@ func (_u *OrderUpdateOne) ClearCustomer() *OrderUpdateOne {
 	return _u
 }
 
+// SetWarehouseID sets the "warehouse" edge by id.
+func (_u *OrderUpdateOne) SetWarehouseID(id int) *OrderUpdateOne {
+	_u.mutation.SetWarehouseID(id)
+	return _u
+}
+
+// SetNillableWarehouseID sets the "warehouse" edge by id if the given value is not nil.
+func (_u *OrderUpdateOne) SetNillableWarehouseID(id *int) *OrderUpdateOne {
+	if id != nil {
+		_u.SetWarehouseID(*id)
+	}
+	return _u
+}
+
+// ClearWarehouse clears the "warehouse" edge.
+func (_u *OrderUpdateOne) ClearWarehouse() *OrderUpdateOne {
+	_u.mutation.ClearWarehouse()
+	return _u
+}
+
 // AddItemIDs adds the "items" edge by ids.
 func (_u *OrderUpdateOne) AddItemIDs(ids ...int) *OrderUpdateOne {
 	_u.mutation.AddItemIDs(ids...)
@@ -399,6 +479,12 @@ func (_u *OrderUpdateOne) ClearItems() *OrderUpdateOne {
 // SetCustomer sets the "customer" edge to the given entity.
 func (_u *OrderUpdateOne) SetCustomer(v *entity.Customer) *OrderUpdateOne {
 	_u.SetCustomerID(v.ID)
+	return _u
+}
+
+// SetWarehouse sets the "warehouse" edge to the given entity.
+func (_u *OrderUpdateOne) SetWarehouse(v *entity.Warehouse) *OrderUpdateOne {
+	_u.SetWarehouseID(v.ID)
 	return _u
 }
 
@@ -449,6 +535,9 @@ func (_u *OrderUpdateOne) check() error {
 	if _u.mutation.CustomerCleared() {
 		return errors.New("clearing a required unique edge \"Order.customer\"")
 	}
+	if _u.mutation.WarehouseCleared() {
+		return errors.New("clearing a required unique edge \"Order.warehouse\"")
+	}
 	return nil
 }
 
@@ -497,6 +586,37 @@ func (_u *OrderUpdateOne) sqlSave(ctx context.Context) (*entity.Order, error) {
 		edge := &sqlgraph.EdgeSpec{
 			Bidi:    false,
 			Columns: []string{"customer_orders"},
+			Inverse: true,
+			Rel:     sqlgraph.M2O,
+			Table:   "orders",
+			Target: &sqlgraph.EdgeTarget{IDSpec: &sqlgraph.FieldSpec{
+				Column: "id",
+				Type:   field.TypeInt,
+			}},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		spec.Edges.Add = append(spec.Edges.Add, edge)
+	}
+	if _u.mutation.WarehouseCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Bidi:    false,
+			Columns: []string{"warehouse_orders"},
+			Inverse: true,
+			Rel:     sqlgraph.M2O,
+			Table:   "orders",
+			Target: &sqlgraph.EdgeTarget{IDSpec: &sqlgraph.FieldSpec{
+				Column: "id",
+				Type:   field.TypeInt,
+			}},
+		}
+		spec.Edges.Clear = append(spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.WarehouseIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Bidi:    false,
+			Columns: []string{"warehouse_orders"},
 			Inverse: true,
 			Rel:     sqlgraph.M2O,
 			Table:   "orders",

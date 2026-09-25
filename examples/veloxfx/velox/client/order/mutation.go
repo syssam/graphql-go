@@ -17,23 +17,26 @@ import (
 
 // OrderMutation represents an operation that mutates the Order nodes in the graph.
 type OrderMutation struct {
-	config          runtime.Config
-	op              runtime.Op
-	id              *int
-	_created_at     *time.Time
-	_updated_at     *time.Time
-	_status         *order.Status
-	clearedFields   map[string]struct{}
-	oldValue        func(context.Context) (*entity.Order, error)
-	oldLoaded       bool
-	oldCache        *entity.Order
-	customer        map[int]struct{}
-	removedCustomer map[int]struct{}
-	clearedCustomer bool
-	items           map[int]struct{}
-	removedItems    map[int]struct{}
-	clearedItems    bool
-	predicates      []predicate.Order
+	config           runtime.Config
+	op               runtime.Op
+	id               *int
+	_created_at      *time.Time
+	_updated_at      *time.Time
+	_status          *order.Status
+	clearedFields    map[string]struct{}
+	oldValue         func(context.Context) (*entity.Order, error)
+	oldLoaded        bool
+	oldCache         *entity.Order
+	customer         map[int]struct{}
+	removedCustomer  map[int]struct{}
+	clearedCustomer  bool
+	warehouse        map[int]struct{}
+	removedWarehouse map[int]struct{}
+	clearedWarehouse bool
+	items            map[int]struct{}
+	removedItems     map[int]struct{}
+	clearedItems     bool
+	predicates       []predicate.Order
 }
 
 var _ velox.Mutation = (*OrderMutation)(nil)
@@ -201,6 +204,39 @@ func (m *OrderMutation) ResetCustomer() {
 // CustomerIDs returns the "customer" edge IDs in the mutation.
 func (m *OrderMutation) CustomerIDs() (ids []int) {
 	for id := range m.customer {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// SetWarehouseID sets the "warehouse" edge to the Warehouse entity by id.
+func (m *OrderMutation) SetWarehouseID(id int) {
+	if m.warehouse == nil {
+		m.warehouse = make(map[int]struct{})
+	}
+	m.warehouse[id] = struct{}{}
+}
+
+// ClearWarehouse clears the "warehouse" edge.
+func (m *OrderMutation) ClearWarehouse() {
+	m.clearedWarehouse = true
+}
+
+// WarehouseCleared reports if the "warehouse" edge was cleared.
+func (m *OrderMutation) WarehouseCleared() bool {
+	return m.clearedWarehouse
+}
+
+// ResetWarehouse resets all changes to the "warehouse" edge.
+func (m *OrderMutation) ResetWarehouse() {
+	m.warehouse = nil
+	m.clearedWarehouse = false
+	m.removedWarehouse = nil
+}
+
+// WarehouseIDs returns the "warehouse" edge IDs in the mutation.
+func (m *OrderMutation) WarehouseIDs() (ids []int) {
+	for id := range m.warehouse {
 		ids = append(ids, id)
 	}
 	return
@@ -384,9 +420,12 @@ func (m *OrderMutation) ResetField(name string) error {
 
 // AddedEdges returns all edge names that were set/added in this mutation.
 func (m *OrderMutation) AddedEdges() []string {
-	edges := make([]string, 0, 2)
+	edges := make([]string, 0, 3)
 	if m.customer != nil {
 		edges = append(edges, "customer")
+	}
+	if m.warehouse != nil {
+		edges = append(edges, "warehouse")
 	}
 	if m.items != nil {
 		edges = append(edges, "items")
@@ -403,6 +442,12 @@ func (m *OrderMutation) AddedIDs(name string) []velox.Value {
 			ids = append(ids, id)
 		}
 		return ids
+	case "warehouse":
+		ids := make([]velox.Value, 0, len(m.warehouse))
+		for id := range m.warehouse {
+			ids = append(ids, id)
+		}
+		return ids
 	case "items":
 		ids := make([]velox.Value, 0, len(m.items))
 		for id := range m.items {
@@ -415,9 +460,12 @@ func (m *OrderMutation) AddedIDs(name string) []velox.Value {
 
 // RemovedEdges returns all edge names that were removed in this mutation.
 func (m *OrderMutation) RemovedEdges() []string {
-	edges := make([]string, 0, 2)
+	edges := make([]string, 0, 3)
 	if m.removedCustomer != nil {
 		edges = append(edges, "customer")
+	}
+	if m.removedWarehouse != nil {
+		edges = append(edges, "warehouse")
 	}
 	if m.removedItems != nil {
 		edges = append(edges, "items")
@@ -434,6 +482,12 @@ func (m *OrderMutation) RemovedIDs(name string) []velox.Value {
 			ids = append(ids, id)
 		}
 		return ids
+	case "warehouse":
+		ids := make([]velox.Value, 0, len(m.removedWarehouse))
+		for id := range m.removedWarehouse {
+			ids = append(ids, id)
+		}
+		return ids
 	case "items":
 		ids := make([]velox.Value, 0, len(m.removedItems))
 		for id := range m.removedItems {
@@ -446,9 +500,12 @@ func (m *OrderMutation) RemovedIDs(name string) []velox.Value {
 
 // ClearedEdges returns all edge names that were cleared in this mutation.
 func (m *OrderMutation) ClearedEdges() []string {
-	edges := make([]string, 0, 2)
+	edges := make([]string, 0, 3)
 	if m.clearedCustomer {
 		edges = append(edges, "customer")
+	}
+	if m.clearedWarehouse {
+		edges = append(edges, "warehouse")
 	}
 	if m.clearedItems {
 		edges = append(edges, "items")
@@ -461,6 +518,8 @@ func (m *OrderMutation) EdgeCleared(name string) bool {
 	switch name {
 	case "customer":
 		return m.clearedCustomer
+	case "warehouse":
+		return m.clearedWarehouse
 	case "items":
 		return m.clearedItems
 	}
@@ -472,6 +531,9 @@ func (m *OrderMutation) ClearEdge(name string) error {
 	switch name {
 	case "customer":
 		m.ClearCustomer()
+		return nil
+	case "warehouse":
+		m.ClearWarehouse()
 		return nil
 	case "items":
 		m.ClearItems()
@@ -485,6 +547,9 @@ func (m *OrderMutation) ResetEdge(name string) error {
 	switch name {
 	case "customer":
 		m.ResetCustomer()
+		return nil
+	case "warehouse":
+		m.ResetWarehouse()
 		return nil
 	case "items":
 		m.ResetItems()

@@ -4,22 +4,46 @@ package customerclient
 
 // CreateCustomerInput represents a mutation input for creating customers.
 type CreateCustomerInput struct {
-	Name     string `json:"name"`
-	Email    string `json:"email"`
-	OrderIDs []int  `json:"orderIDs,omitempty"`
+	Name  string `json:"name"`
+	Email string `json:"email"`
 }
 
 // Mutate applies the CreateCustomerInput on the CustomerMutation builder.
 func (i *CreateCustomerInput) Mutate(m *CustomerMutation) {
 	m.SetName(i.Name)
 	m.SetEmail(i.Email)
-	if len(i.OrderIDs) > 0 {
-		m.AddOrderIDs(i.OrderIDs...)
-	}
 }
 
 // SetInput applies the change-set in the CreateCustomerInput on the CustomerCreate builder.
 func (c *CustomerCreate) SetInput(i CreateCustomerInput) *CustomerCreate {
+	i.Mutate(c.Mutation())
+	return c
+}
+
+// UpdateCustomerInput represents a mutation input for updating customers.
+type UpdateCustomerInput struct {
+	Name  *string `json:"name,omitempty"`
+	Email *string `json:"email,omitempty"`
+}
+
+// Mutate applies the UpdateCustomerInput on the CustomerMutation builder.
+func (i *UpdateCustomerInput) Mutate(m *CustomerMutation) {
+	if i.Name != nil {
+		m.SetName(*i.Name)
+	}
+	if i.Email != nil {
+		m.SetEmail(*i.Email)
+	}
+}
+
+// SetInput applies the change-set in the UpdateCustomerInput on the CustomerUpdate builder.
+func (c *CustomerUpdate) SetInput(i UpdateCustomerInput) *CustomerUpdate {
+	i.Mutate(c.Mutation())
+	return c
+}
+
+// SetInput applies the change-set in the UpdateCustomerInput on the CustomerUpdateOne builder.
+func (c *CustomerUpdateOne) SetInput(i UpdateCustomerInput) *CustomerUpdateOne {
 	i.Mutate(c.Mutation())
 	return c
 }

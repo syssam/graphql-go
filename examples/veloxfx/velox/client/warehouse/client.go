@@ -155,6 +155,30 @@ func (c *WarehouseClient) QueryStocks(v *entity.Warehouse) entity.StockQuerier {
 	return tq.(entity.StockQuerier)
 }
 
+// QueryOrders queries the "orders" edge of a Warehouse.
+func (c *WarehouseClient) QueryOrders(v *entity.Warehouse) entity.OrderQuerier {
+	tq := runtime.NewEntityQuery("Order", c.config)
+	tq.(interface {
+		SetInterStore(*entity.InterceptorStore)
+	}).SetInterStore(c.interStore)
+	_tp := runtime.EntityPolicy("Order")
+	if _tp != nil {
+		if _sp, _ok := tq.(interface {
+			SetPolicy(velox.Policy)
+		}); _ok {
+			_sp.SetPolicy(_tp)
+		}
+	}
+	tq.(interface {
+		SetPath(func(context.Context) (*sql.Selector, error))
+	}).SetPath(func(ctx context.Context) (*sql.Selector, error) {
+		id := v.ID
+		step := sqlgraph.NewStep(sqlgraph.From(warehouse.Table, warehouse.FieldID, id), sqlgraph.To("orders", "id"), sqlgraph.Edge(sqlgraph.O2M, false, warehouse.OrdersTable, warehouse.OrdersColumn))
+		return sqlgraph.Neighbors(c.config.Driver.Dialect(), step), nil
+	})
+	return tq.(entity.OrderQuerier)
+}
+
 // Use adds the mutation hooks to the WarehouseClient.
 func (c *WarehouseClient) Use(hooks ...runtime.Hook) {
 	c.hookStore.Warehouse = append(c.hookStore.Warehouse, hooks...)

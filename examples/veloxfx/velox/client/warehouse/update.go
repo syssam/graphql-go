@@ -76,6 +76,24 @@ func (_u *WarehouseUpdate) ClearStocks() *WarehouseUpdate {
 	return _u
 }
 
+// AddOrderIDs adds the "orders" edge by ids.
+func (_u *WarehouseUpdate) AddOrderIDs(ids ...int) *WarehouseUpdate {
+	_u.mutation.AddOrderIDs(ids...)
+	return _u
+}
+
+// RemoveOrderIDs removes the "orders" edge by ids.
+func (_u *WarehouseUpdate) RemoveOrderIDs(ids ...int) *WarehouseUpdate {
+	_u.mutation.RemoveOrderIDs(ids...)
+	return _u
+}
+
+// ClearOrders clears the "orders" edge.
+func (_u *WarehouseUpdate) ClearOrders() *WarehouseUpdate {
+	_u.mutation.ClearOrders()
+	return _u
+}
+
 // AddStocks adds the "stocks" edge to the given entities.
 func (_u *WarehouseUpdate) AddStocks(v ...*entity.Stock) *WarehouseUpdate {
 	ids := make([]int, len(v))
@@ -93,6 +111,26 @@ func (_u *WarehouseUpdate) RemoveStocks(v ...*entity.Stock) *WarehouseUpdate {
 		ids[i] = v[i].ID
 	}
 	_u.RemoveStockIDs(ids...)
+	return _u
+}
+
+// AddOrders adds the "orders" edge to the given entities.
+func (_u *WarehouseUpdate) AddOrders(v ...*entity.Order) *WarehouseUpdate {
+	ids := make([]int, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	_u.AddOrderIDs(ids...)
+	return _u
+}
+
+// RemoveOrders removes the "orders" edge to the given entities.
+func (_u *WarehouseUpdate) RemoveOrders(v ...*entity.Order) *WarehouseUpdate {
+	ids := make([]int, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	_u.RemoveOrderIDs(ids...)
 	return _u
 }
 
@@ -181,6 +219,54 @@ func (_u *WarehouseUpdate) sqlSave(ctx context.Context) (int, error) {
 			Inverse: false,
 			Rel:     sqlgraph.O2M,
 			Table:   "stocks",
+			Target: &sqlgraph.EdgeTarget{IDSpec: &sqlgraph.FieldSpec{
+				Column: "id",
+				Type:   field.TypeInt,
+			}},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		spec.Edges.Add = append(spec.Edges.Add, edge)
+	}
+	if _u.mutation.OrdersCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Bidi:    false,
+			Columns: []string{"warehouse_orders"},
+			Inverse: false,
+			Rel:     sqlgraph.O2M,
+			Table:   "orders",
+			Target: &sqlgraph.EdgeTarget{IDSpec: &sqlgraph.FieldSpec{
+				Column: "id",
+				Type:   field.TypeInt,
+			}},
+		}
+		spec.Edges.Clear = append(spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedOrdersIDs(); len(nodes) > 0 && !_u.mutation.OrdersCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Bidi:    false,
+			Columns: []string{"warehouse_orders"},
+			Inverse: false,
+			Rel:     sqlgraph.O2M,
+			Table:   "orders",
+			Target: &sqlgraph.EdgeTarget{IDSpec: &sqlgraph.FieldSpec{
+				Column: "id",
+				Type:   field.TypeInt,
+			}},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		spec.Edges.Clear = append(spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.OrdersIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Bidi:    false,
+			Columns: []string{"warehouse_orders"},
+			Inverse: false,
+			Rel:     sqlgraph.O2M,
+			Table:   "orders",
 			Target: &sqlgraph.EdgeTarget{IDSpec: &sqlgraph.FieldSpec{
 				Column: "id",
 				Type:   field.TypeInt,
@@ -293,6 +379,24 @@ func (_u *WarehouseUpdateOne) ClearStocks() *WarehouseUpdateOne {
 	return _u
 }
 
+// AddOrderIDs adds the "orders" edge by ids.
+func (_u *WarehouseUpdateOne) AddOrderIDs(ids ...int) *WarehouseUpdateOne {
+	_u.mutation.AddOrderIDs(ids...)
+	return _u
+}
+
+// RemoveOrderIDs removes the "orders" edge by ids.
+func (_u *WarehouseUpdateOne) RemoveOrderIDs(ids ...int) *WarehouseUpdateOne {
+	_u.mutation.RemoveOrderIDs(ids...)
+	return _u
+}
+
+// ClearOrders clears the "orders" edge.
+func (_u *WarehouseUpdateOne) ClearOrders() *WarehouseUpdateOne {
+	_u.mutation.ClearOrders()
+	return _u
+}
+
 // AddStocks adds the "stocks" edge to the given entities.
 func (_u *WarehouseUpdateOne) AddStocks(v ...*entity.Stock) *WarehouseUpdateOne {
 	ids := make([]int, len(v))
@@ -310,6 +414,26 @@ func (_u *WarehouseUpdateOne) RemoveStocks(v ...*entity.Stock) *WarehouseUpdateO
 		ids[i] = v[i].ID
 	}
 	_u.RemoveStockIDs(ids...)
+	return _u
+}
+
+// AddOrders adds the "orders" edge to the given entities.
+func (_u *WarehouseUpdateOne) AddOrders(v ...*entity.Order) *WarehouseUpdateOne {
+	ids := make([]int, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	_u.AddOrderIDs(ids...)
+	return _u
+}
+
+// RemoveOrders removes the "orders" edge to the given entities.
+func (_u *WarehouseUpdateOne) RemoveOrders(v ...*entity.Order) *WarehouseUpdateOne {
+	ids := make([]int, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	_u.RemoveOrderIDs(ids...)
 	return _u
 }
 
@@ -402,6 +526,54 @@ func (_u *WarehouseUpdateOne) sqlSave(ctx context.Context) (*entity.Warehouse, e
 			Inverse: false,
 			Rel:     sqlgraph.O2M,
 			Table:   "stocks",
+			Target: &sqlgraph.EdgeTarget{IDSpec: &sqlgraph.FieldSpec{
+				Column: "id",
+				Type:   field.TypeInt,
+			}},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		spec.Edges.Add = append(spec.Edges.Add, edge)
+	}
+	if _u.mutation.OrdersCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Bidi:    false,
+			Columns: []string{"warehouse_orders"},
+			Inverse: false,
+			Rel:     sqlgraph.O2M,
+			Table:   "orders",
+			Target: &sqlgraph.EdgeTarget{IDSpec: &sqlgraph.FieldSpec{
+				Column: "id",
+				Type:   field.TypeInt,
+			}},
+		}
+		spec.Edges.Clear = append(spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedOrdersIDs(); len(nodes) > 0 && !_u.mutation.OrdersCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Bidi:    false,
+			Columns: []string{"warehouse_orders"},
+			Inverse: false,
+			Rel:     sqlgraph.O2M,
+			Table:   "orders",
+			Target: &sqlgraph.EdgeTarget{IDSpec: &sqlgraph.FieldSpec{
+				Column: "id",
+				Type:   field.TypeInt,
+			}},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		spec.Edges.Clear = append(spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.OrdersIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Bidi:    false,
+			Columns: []string{"warehouse_orders"},
+			Inverse: false,
+			Rel:     sqlgraph.O2M,
+			Table:   "orders",
 			Target: &sqlgraph.EdgeTarget{IDSpec: &sqlgraph.FieldSpec{
 				Column: "id",
 				Type:   field.TypeInt,

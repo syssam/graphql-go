@@ -7,17 +7,8 @@ import (
 	"context"
 
 	"github.com/syssam/graphql-go"
-	orderitem "github.com/syssam/graphql-go/examples/veloxfx/velox/client/orderitem"
 	entity "github.com/syssam/graphql-go/examples/veloxfx/velox/entity"
 )
-
-type CreateOrderItemArgs struct {
-	Input orderitem.CreateOrderItemInput `graphql:"input"`
-}
-
-type DeleteOrderItemArgs struct {
-	ID graphql.ID `graphql:"id"`
-}
 
 type OrderItemArgs struct {
 	ID graphql.ID `graphql:"id"`
@@ -25,8 +16,6 @@ type OrderItemArgs struct {
 
 // Resolver holds methods for fields that are not struct data.
 type Resolver interface {
-	CreateOrderItem(ctx context.Context, args CreateOrderItemArgs) (*entity.OrderItem, error)
-	DeleteOrderItem(ctx context.Context, args DeleteOrderItemArgs) (graphql.ID, error)
 	OrderItemID(ctx context.Context, obj *entity.OrderItem) (graphql.ID, error)
 	OrderItems(ctx context.Context) ([]*entity.OrderItem, error)
 	OrderItem(ctx context.Context, args OrderItemArgs) (*entity.OrderItem, error)
@@ -34,7 +23,6 @@ type Resolver interface {
 
 func Bindings(r Resolver) graphql.SchemaOption {
 	return graphql.Options(
-		graphql.Input[orderitem.CreateOrderItemInput]("CreateOrderItemInput", graphql.ZeroForNull()),
 		graphql.Object[entity.OrderItem]("OrderItem",
 			graphql.Resolve("id", func(ctx context.Context, v *entity.OrderItem) (graphql.ID, error) { return r.OrderItemID(ctx, v) }),
 			graphql.Field("quantity", func(v *entity.OrderItem) int { return v.Quantity }),
@@ -48,16 +36,6 @@ func Bindings(r Resolver) graphql.SchemaOption {
 				return r.OrderItem(ctx, a)
 			}),
 		),
-		graphql.Mutation(
-			graphql.ResolveArgs("createOrderItem", func(ctx context.Context, _ graphql.Root, a CreateOrderItemArgs) (*entity.OrderItem, error) {
-				return r.CreateOrderItem(ctx, a)
-			}),
-			graphql.ResolveArgs("deleteOrderItem", func(ctx context.Context, _ graphql.Root, a DeleteOrderItemArgs) (graphql.ID, error) {
-				return r.DeleteOrderItem(ctx, a)
-			}),
-		),
-		graphql.Args[CreateOrderItemArgs](),
-		graphql.Args[DeleteOrderItemArgs](),
 		graphql.Args[OrderItemArgs](),
 	)
 }

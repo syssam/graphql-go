@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	entity "github.com/syssam/graphql-go/examples/veloxfx/velox/entity"
+	order "github.com/syssam/graphql-go/examples/veloxfx/velox/order"
 	predicate "github.com/syssam/graphql-go/examples/veloxfx/velox/predicate"
 	stock "github.com/syssam/graphql-go/examples/veloxfx/velox/stock"
 	warehouse "github.com/syssam/graphql-go/examples/veloxfx/velox/warehouse"
@@ -28,7 +29,9 @@ type WarehouseQuery struct {
 	modifiers       []func(*sql.Selector)
 	inters          *entity.InterceptorStore
 	withStocks      *StockQuery
+	withOrders      *OrderQuery
 	withNamedStocks map[string]*StockQuery
+	withNamedOrders map[string]*OrderQuery
 	path            func(context.Context) (*sql.Selector, error)
 }
 
@@ -75,6 +78,13 @@ func (q *WarehouseQuery) WithEdgeLoad(name string, opts ...runtime.LoadOption) r
 		}
 		q.withStocks.applyLoad(runtime.NewLoadConfig(opts...), true)
 		return q.withStocks
+	case "orders":
+		if q.withOrders == nil {
+			q.withOrders = NewOrderQuery(q.config)
+			q.withOrders.inters = q.inters
+		}
+		q.withOrders.applyLoad(runtime.NewLoadConfig(opts...), true)
+		return q.withOrders
 	}
 	return nil
 }
@@ -157,6 +167,17 @@ func (q *WarehouseQuery) WithStocks(opts ...func(entity.StockQuerier)) entity.Wa
 	return q
 }
 
+// WithOrders tells the query-builder to eager-load the "orders" edge.
+func (q *WarehouseQuery) WithOrders(opts ...func(entity.OrderQuerier)) entity.WarehouseQuerier {
+	tq := NewOrderQuery(q.config)
+	tq.inters = q.inters
+	for _, opt := range opts {
+		opt(tq)
+	}
+	q.withOrders = tq
+	return q
+}
+
 // WithNamedStocks tells the query-builder to eager-load the "stocks" edge with the given name.
 // The optional arguments are used to configure the query builder of the edge.
 func (q *WarehouseQuery) WithNamedStocks(name string, opts ...func(*StockQuery)) *WarehouseQuery {
@@ -172,6 +193,21 @@ func (q *WarehouseQuery) WithNamedStocks(name string, opts ...func(*StockQuery))
 	return q
 }
 
+// WithNamedOrders tells the query-builder to eager-load the "orders" edge with the given name.
+// The optional arguments are used to configure the query builder of the edge.
+func (q *WarehouseQuery) WithNamedOrders(name string, opts ...func(*OrderQuery)) *WarehouseQuery {
+	query := NewOrderQuery(q.config)
+	query.inters = q.inters
+	for _, opt := range opts {
+		opt(query)
+	}
+	if q.withNamedOrders == nil {
+		q.withNamedOrders = make(map[string]*OrderQuery)
+	}
+	q.withNamedOrders[name] = query
+	return q
+}
+
 // QueryStocks chains the current query on the "stocks" edge.
 func (q *WarehouseQuery) QueryStocks() entity.StockQuerier {
 	tq := NewStockQuery(q.config)
@@ -182,6 +218,22 @@ func (q *WarehouseQuery) QueryStocks() entity.StockQuerier {
 			return nil, err
 		}
 		step := sqlgraph.NewStep(sqlgraph.From(warehouse.Table, warehouse.FieldID), sqlgraph.To(stock.Table, stock.FieldID), sqlgraph.Edge(sqlgraph.O2M, false, warehouse.StocksTable, warehouse.StocksColumn))
+		step.From.V = from
+		return sqlgraph.SetNeighbors(q.config.Driver.Dialect(), step), nil
+	}
+	return tq
+}
+
+// QueryOrders chains the current query on the "orders" edge.
+func (q *WarehouseQuery) QueryOrders() entity.OrderQuerier {
+	tq := NewOrderQuery(q.config)
+	tq.inters = q.inters
+	tq.path = func(ctx context.Context) (*sql.Selector, error) {
+		from, err := q.buildQuery(ctx)
+		if err != nil {
+			return nil, err
+		}
+		step := sqlgraph.NewStep(sqlgraph.From(warehouse.Table, warehouse.FieldID), sqlgraph.To(order.Table, order.FieldID), sqlgraph.Edge(sqlgraph.O2M, false, warehouse.OrdersTable, warehouse.OrdersColumn))
 		step.From.V = from
 		return sqlgraph.SetNeighbors(q.config.Driver.Dialect(), step), nil
 	}
@@ -222,11 +274,30 @@ func (q *WarehouseQuery) eagerLoad(ctx context.Context, nodes []*entity.Warehous
 			return err
 		}
 	}
+	if query := q.withOrders; query != nil {
+		if err := q.loadOrders(ctx, query, nodes, func(n *entity.Warehouse) {
+			n.Edges.Orders = []*entity.Order{}
+			n.Edges.MarkOrdersLoaded()
+		}, func(n *entity.Warehouse, e *entity.Order) {
+			n.Edges.Orders = append(n.Edges.Orders, e)
+		}); err != nil {
+			return err
+		}
+	}
 	for name, query := range q.withNamedStocks {
 		if err := q.loadStocks(ctx, query, nodes, func(n *entity.Warehouse) {
 			n.AppendNamedStocks(name)
 		}, func(n *entity.Warehouse, e *entity.Stock) {
 			n.AppendNamedStocks(name, e)
+		}); err != nil {
+			return err
+		}
+	}
+	for name, query := range q.withNamedOrders {
+		if err := q.loadOrders(ctx, query, nodes, func(n *entity.Warehouse) {
+			n.AppendNamedOrders(name)
+		}, func(n *entity.Warehouse, e *entity.Order) {
+			n.AppendNamedOrders(name, e)
 		}); err != nil {
 			return err
 		}
@@ -414,6 +485,17 @@ func (q *WarehouseQuery) Explain(ctx context.Context) (*runtime.QueryPlan, error
 			plan.Edges = append(plan.Edges, runtime.EdgePlan{
 				Args: ea,
 				Name: "stocks",
+				SQL:  eq,
+			})
+		}
+	}
+	if q.withOrders != nil {
+		eSel, eErr := q.withOrders.buildSelector(ctx)
+		if eErr == nil {
+			eq, ea := eSel.Query()
+			plan.Edges = append(plan.Edges, runtime.EdgePlan{
+				Args: ea,
+				Name: "orders",
 				SQL:  eq,
 			})
 		}
@@ -789,12 +871,19 @@ func (q *WarehouseQuery) clone() *WarehouseQuery {
 		order:      runtime.CloneSlice(q.order),
 		path:       q.path,
 		predicates: runtime.CloneSlice(q.predicates),
+		withOrders: q.withOrders.clone(),
 		withStocks: q.withStocks.clone(),
 	}
 	if q.withNamedStocks != nil {
 		c.withNamedStocks = make(map[string]*StockQuery, len(q.withNamedStocks))
 		for name, q := range q.withNamedStocks {
 			c.withNamedStocks[name] = q.clone()
+		}
+	}
+	if q.withNamedOrders != nil {
+		c.withNamedOrders = make(map[string]*OrderQuery, len(q.withNamedOrders))
+		for name, q := range q.withNamedOrders {
+			c.withNamedOrders[name] = q.clone()
 		}
 	}
 	return c
@@ -838,6 +927,53 @@ func (q *WarehouseQuery) loadStocks(ctx context.Context, query *StockQuery, node
 		node, ok := nodeids[parentID]
 		if !ok {
 			return fmt.Errorf("velox: unexpected foreign-key %q returned %v for node %v", "warehouse_stocks", parentID, n.ID)
+		}
+		if !limit.Keep(parentID) {
+			continue
+		}
+		assign(node, n)
+	}
+	return nil
+}
+
+// loadOrders eagerly loads the "orders" edge for the given nodes.
+func (q *WarehouseQuery) loadOrders(ctx context.Context, query *OrderQuery, nodes []*entity.Warehouse, init func(*entity.Warehouse), assign func(*entity.Warehouse, *entity.Order)) error {
+	query = query.clone()
+	fks := make([]any, 0, len(nodes))
+	nodeids := make(map[int]*entity.Warehouse, len(nodes))
+	for i := range nodes {
+		fks = append(fks, nodes[i].ID)
+		nodeids[nodes[i].ID] = nodes[i]
+		if init != nil {
+			init(nodes[i])
+		}
+	}
+	query.withFKs = true
+	query.Where(func(s *sql.Selector) {
+		s.Where(sql.In(s.C(warehouse.OrdersColumn), fks...))
+	})
+	limit, err := runtime.PlanPerParentLimit[int](ctx, query.ctx, query.config.Driver, "orders")
+	if err != nil {
+		return err
+	}
+	if limit.Active {
+		query.modifiers = append(query.modifiers, func(s *sql.Selector) {
+			limit.Apply(s, s.C(warehouse.OrdersColumn), s.C(order.FieldID))
+		})
+	}
+	neighbors, err := query.All(ctx)
+	if err != nil {
+		return err
+	}
+	for _, n := range neighbors {
+		fk := n.FKValue("warehouse_orders")
+		if fk == nil {
+			return fmt.Errorf("velox: foreign-key %q is nil for node %v", "warehouse_orders", n.ID)
+		}
+		parentID := derefFK(fk).(int)
+		node, ok := nodeids[parentID]
+		if !ok {
+			return fmt.Errorf("velox: unexpected foreign-key %q returned %v for node %v", "warehouse_orders", parentID, n.ID)
 		}
 		if !limit.Keep(parentID) {
 			continue

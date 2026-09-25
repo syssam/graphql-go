@@ -93,9 +93,9 @@ expect may simply be absent rather than renamed.
 |---|---|---|---|
 | `Category` | `categories` | `category/` | products→Product |
 | `Customer` | `customers` | `customer/` | orders→Order |
-| `Order` | `orders` | `order/` | customer→Customer, items→OrderItem |
+| `Order` | `orders` | `order/` | customer→Customer, warehouse→Warehouse, items→OrderItem |
 | `OrderItem` | `order_items` | `orderitem/` | order→Order, product→Product |
 | `Product` | `products` | `product/` | category→Category, stocks→Stock, order_items→OrderItem |
 | `Stock` | `stocks` | `stock/` | warehouse→Warehouse, product→Product |
-| `Warehouse` | `warehouses` | `warehouse/` | stocks→Stock |
+| `Warehouse` | `warehouses` | `warehouse/` | stocks→Stock, orders→Order |
 

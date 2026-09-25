@@ -4,20 +4,40 @@ package warehouseclient
 
 // CreateWarehouseInput represents a mutation input for creating warehouses.
 type CreateWarehouseInput struct {
-	Name     string `json:"name"`
-	StockIDs []int  `json:"stockIDs,omitempty"`
+	Name string `json:"name"`
 }
 
 // Mutate applies the CreateWarehouseInput on the WarehouseMutation builder.
 func (i *CreateWarehouseInput) Mutate(m *WarehouseMutation) {
 	m.SetName(i.Name)
-	if len(i.StockIDs) > 0 {
-		m.AddStockIDs(i.StockIDs...)
-	}
 }
 
 // SetInput applies the change-set in the CreateWarehouseInput on the WarehouseCreate builder.
 func (c *WarehouseCreate) SetInput(i CreateWarehouseInput) *WarehouseCreate {
+	i.Mutate(c.Mutation())
+	return c
+}
+
+// UpdateWarehouseInput represents a mutation input for updating warehouses.
+type UpdateWarehouseInput struct {
+	Name *string `json:"name,omitempty"`
+}
+
+// Mutate applies the UpdateWarehouseInput on the WarehouseMutation builder.
+func (i *UpdateWarehouseInput) Mutate(m *WarehouseMutation) {
+	if i.Name != nil {
+		m.SetName(*i.Name)
+	}
+}
+
+// SetInput applies the change-set in the UpdateWarehouseInput on the WarehouseUpdate builder.
+func (c *WarehouseUpdate) SetInput(i UpdateWarehouseInput) *WarehouseUpdate {
+	i.Mutate(c.Mutation())
+	return c
+}
+
+// SetInput applies the change-set in the UpdateWarehouseInput on the WarehouseUpdateOne builder.
+func (c *WarehouseUpdateOne) SetInput(i UpdateWarehouseInput) *WarehouseUpdateOne {
 	i.Mutate(c.Mutation())
 	return c
 }

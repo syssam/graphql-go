@@ -291,12 +291,12 @@ type Resolver interface {
 ```
 
 `Supplier.products` is a connection, because `Product` is one, and its
-`orderBy` needs converting. catalog owns Product and exports the conversion,
-so the whole method is a hand-off to velox's edge method:
+`orderBy` needs converting. `internal/orderby` holds that conversion for
+every domain, so the whole method is a hand-off to velox's edge method:
 
 ```go
 func (r *SupplierResolver) SupplierProducts(ctx context.Context, s *entity.Supplier, args suppliergql.SupplierProductsArgs) (*entity.ProductConnection, error) {
-	order, err := catalog.ProductOrder(args.OrderBy)
+	order, err := orderby.Product(args.OrderBy)
 	if err != nil {
 		return nil, err
 	}
@@ -304,8 +304,10 @@ func (r *SupplierResolver) SupplierProducts(ctx context.Context, s *entity.Suppl
 }
 ```
 
-That was found the real way: the first attempt called catalog's conversion,
-which was unexported, and the build said so.
+That was found the real way, twice: the first attempt called catalog's
+conversion, which was unexported, and the build said so; exporting it from
+catalog later made sales and inventory import each other, which is why it
+now has a package of its own.
 
 Implement the rest in `internal/inventory`, and register it -- one
 constructor and one line:
@@ -328,9 +330,26 @@ pins the group list and needed the new name too, which is what it is for.
 
 Each is tested, and each test was confirmed to fail with its handling removed.
 
+**The API offers operations, not raw writes.** velox would generate a create
+and an update for every entity, each writing any column and attaching any
+row by id. That is the ORM's default, not an API: with it a client can set an
+order line's price, move an order back from CANCELLED, move stock rows
+between products, or overwrite a stock count. So:
+
+| Entity | Writes |
+|---|---|
+| Category, Customer, Product, Warehouse | velox's create and update, with every edge that would attach existing rows removed (`graphql.Skip(graphql.SkipInputs)`) |
+| Order | none from velox: `placeOrder`, `payOrder`, `shipOrder`, `cancelOrder`, `deleteOrder` |
+| OrderItem | none: written by `placeOrder`, never edited |
+| Stock | velox's create to open the row, then `adjustStock(id, delta)` only |
+
+`TestTheAPIOffersOperationsNotRawWrites` introspects the schema for it, so a
+velox annotation that brings a raw write back fails a test rather than
+waiting for a code review to notice.
+
 **Paging, filtering, ordering.** `products` and `orders` are velox's Relay
-connections, and so are the edges `Category.products` and
-`Customer.orders`:
+connections, and so are the edges `Category.products`, `Customer.orders` and
+`Warehouse.orders`:
 
     products(first: 2, after: $cursor,
              where: {priceCentsLT: 2000, hasCategoryWith: [{name: "Keyboards"}]},
@@ -343,23 +362,40 @@ the other side filterable too. A connection is opt-in the other way: velox
 makes every one-to-many edge a connection unless its target declares a
 `QueryField`, which `Stock` and `OrderItem` do -- an order's items are a list,
 a category's products are a page. Paging, cursors and filtering are velox's
-generated code; the resolver's only job is converting `orderBy` (next list).
+generated code; the resolver's only job is converting `orderBy` (next list),
+which `internal/orderby` does for every domain.
 
-**Read and delete by id, for every entity.** velox generates neither, so
-they are hand-written in `sdl/<entity>.graphql` and land in the entity's group
-by file name. An id naming nothing is `null`; a malformed one is an error.
-What a delete takes with it is decided per entity: an order deletes its items
-in one transaction, while a category with products, a customer with orders,
-a stocked product and a warehouse holding stock are refused, and the refusal
-says "still referenced" rather than the driver's text.
+**An order is a state machine.** PENDING -> PAID -> SHIPPED, or CANCELLED from
+either of the first two. Each move is one conditional update --
+`SET status = PAID WHERE id = ? AND status = PENDING` -- so two requests
+racing to ship and cancel one order cannot both win, and a move from the
+wrong state says what the state is: `order 1 is SHIPPED, and this needs
+[PENDING PAID]`. Cancelling returns every item to the warehouse it came from,
+in the same transaction; the order records that warehouse for exactly this.
 
-**One transaction per business operation.** `placeOrder` creates the order and
-its items at the product's current price and takes the quantities out of
-stock, all or nothing (`resolve.InTx`). Stock is taken with a conditional
-update -- `quantity = quantity - n WHERE quantity >= n` -- so two orders racing
-for the last unit cannot both succeed. That condition is the only guard:
-velox's `NonNegative()` on the column does not check `AddQuantity`, and
-without the condition the stock goes negative and the order succeeds.
+**Stock never goes below zero, and the database is what says so.**
+`placeOrder` takes each line with `quantity = quantity - n WHERE quantity >=
+n` (`inventory.Take`), all lines in one transaction, so a line the warehouse
+cannot cover rolls back the lines before it. Twenty concurrent orders for
+five units place exactly five (`TestConcurrentOrdersCannotOversell`);
+without the condition all twenty succeed and the stock ends at -15. The
+condition is the only guard: velox's `NonNegative()` is checked when a value
+is set, not when one is added. `adjustStock` uses the same condition, and a
+unique index keeps a warehouse to one row per product.
+
+**Read and delete by id.** velox generates neither, so they are hand-written
+in `sdl/<entity>.graphql` and land in the entity's group by file name. An id
+naming nothing is `null`; a malformed one is an error. What a delete takes
+with it is decided per entity: a cancelled order deletes with its items, any
+other order is refused; a category with products, a customer with orders, a
+stocked or ordered product, and a warehouse with stock or orders are refused
+with "still referenced" rather than the driver's text.
+
+**Domains depend on each other one way.** sales takes and returns stock
+through `inventory.Take` and `inventory.Return`, so the stock rule has one
+owner. The orderBy conversions sit in their own leaf package because
+inventory also pages a warehouse's orders; kept in sales, the two domains
+imported each other.
 
 ### What velox does that a resolver answers for
 

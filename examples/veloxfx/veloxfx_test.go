@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -31,8 +32,8 @@ func TestSchemaBinds(t *testing.T) {
 }
 
 // Every entity is its own group, and no root field stayed in root: the ones
-// velox declares follow the type they return, and deleteProduct, which
-// returns an ID, follows the file it is declared in, sdl/product.graphql.
+// velox declares follow the type they return, and the hand-written ones in
+// sdl/ follow their file.
 func TestEveryEntityIsItsOwnGroup(t *testing.T) {
 	dirs, err := os.ReadDir("graph")
 	if err != nil {
@@ -58,11 +59,14 @@ func TestEveryEntityIsItsOwnGroup(t *testing.T) {
 	if root := read("root"); strings.Contains(root, "type Resolver interface") {
 		t.Errorf("root still holds resolver fields:\n%s", root)
 	}
-	if !strings.Contains(read("product"), "DeleteProduct(ctx") {
-		t.Error("deleteProduct is not in the product group")
-	}
-	if !strings.Contains(read("order"), "OrderTotalCents(ctx") {
-		t.Error("Order.totalCents is not in the order group")
+	for g, method := range map[string]string{
+		"product": "DeleteProduct(ctx",
+		"order":   "CancelOrder(ctx",
+		"stock":   "AdjustStock(ctx",
+	} {
+		if !strings.Contains(read(g), method) {
+			t.Errorf("%s is not in the %s group", method, g)
+		}
 	}
 }
 
@@ -129,20 +133,79 @@ func (a *app) data(query string) string {
 	return string(r.Data)
 }
 
-// seed builds a small shop through the API: two products in one category,
-// stocked in one warehouse, and three orders of two items each.
-func (a *app) seed() {
+// refused runs a query that must fail with one error containing want.
+func (a *app) refused(query, want string) {
+	a.t.Helper()
+	r := a.post(query)
+	if len(r.Errors) != 1 || !strings.Contains(r.Errors[0].Message, want) {
+		a.t.Errorf("%s: want one error containing %q, got %+v (data %s)", query, want, r.Errors, r.Data)
+	}
+}
+
+// shop builds the catalog and the stock, and no orders: two products in one
+// category, stocked in one warehouse, and one customer.
+func (a *app) shop(boards, keycaps int) {
 	a.t.Helper()
 	a.data(`mutation { createCategory(input: {name: "Keyboards"}) { id } }`)
 	a.data(`mutation { createProduct(input: {sku: "kb-1", name: "Board", priceCents: 5000, categoryID: "1"}) { id } }`)
 	a.data(`mutation { createProduct(input: {sku: "kb-2", name: "Keycaps", priceCents: 1500, categoryID: "1"}) { id } }`)
 	a.data(`mutation { createWarehouse(input: {name: "North"}) { id } }`)
-	a.data(`mutation { createStock(input: {quantity: 7, warehouseID: "1", productID: "1"}) { id } }`)
+	a.data(fmt.Sprintf(`mutation { createStock(input: {quantity: %d, warehouseID: "1", productID: "1"}) { id } }`, boards))
+	a.data(fmt.Sprintf(`mutation { createStock(input: {quantity: %d, warehouseID: "1", productID: "2"}) { id } }`, keycaps))
 	a.data(`mutation { createCustomer(input: {name: "Ada", email: "ada@example.com"}) { id } }`)
-	for o := 1; o <= 3; o++ {
-		a.data(`mutation { createOrder(input: {customerID: "1"}) { id } }`)
-		a.data(fmt.Sprintf(`mutation { createOrderItem(input: {quantity: 2, unitPriceCents: 5000, orderID: "%d", productID: "1"}) { id } }`, o))
-		a.data(fmt.Sprintf(`mutation { createOrderItem(input: {quantity: 1, unitPriceCents: 1500, orderID: "%d", productID: "2"}) { id } }`, o))
+}
+
+const placeTwoBoardsAndKeycaps = `mutation { placeOrder(input: {customerID: "1", warehouseID: "1",
+	items: [{productID: "1", quantity: 2}, {productID: "2", quantity: 1}]}) { id } }`
+
+// seed is shop plus three orders of two lines each, placed the only way an
+// order can be: placeOrder. Stock ends at 7 boards and no keycaps.
+func (a *app) seed() {
+	a.t.Helper()
+	a.shop(13, 3)
+	for range 3 {
+		a.data(placeTwoBoardsAndKeycaps)
+	}
+}
+
+// velox would generate a create and an update for every entity, writing any
+// column and attaching any row by id. An order's status, an item's price and
+// a stock count carry rules, so those writes are operations instead, and no
+// input can move a row from one parent to another.
+func TestTheAPIOffersOperationsNotRawWrites(t *testing.T) {
+	a := start(t)
+	var mutation struct {
+		Type struct{ Fields []struct{ Name string } } `json:"__type"`
+	}
+	if err := json.Unmarshal([]byte(a.data(`{ __type(name: "Mutation") { fields { name } } }`)), &mutation); err != nil {
+		t.Fatal(err)
+	}
+	have := map[string]bool{}
+	for _, f := range mutation.Type.Fields {
+		have[f.Name] = true
+	}
+	for _, name := range []string{"createOrder", "updateOrder", "createOrderItem", "updateOrderItem", "updateStock"} {
+		if have[name] {
+			t.Errorf("Mutation.%s bypasses a business rule and must not exist", name)
+		}
+	}
+	for _, name := range []string{
+		"placeOrder", "payOrder", "shipOrder", "cancelOrder", "deleteOrder", "adjustStock",
+		"updateCategory", "updateCustomer", "updateProduct", "updateWarehouse",
+	} {
+		if !have[name] {
+			t.Errorf("Mutation.%s is missing", name)
+		}
+	}
+
+	for _, input := range []string{"CreateCategoryInput", "UpdateCategoryInput", "CreateProductInput", "UpdateProductInput",
+		"CreateCustomerInput", "UpdateCustomerInput", "CreateWarehouseInput", "UpdateWarehouseInput"} {
+		got := a.data(fmt.Sprintf(`{ __type(name: %q) { inputFields { name } } }`, input))
+		for _, bad := range []string{`IDs"`, `"clear`, `"add`, `"remove`} {
+			if strings.Contains(got, bad) {
+				t.Errorf("%s lets a client move rows between parents: %s", input, got)
+			}
+		}
 	}
 }
 
@@ -158,34 +221,31 @@ func TestServesThroughEveryDomain(t *testing.T) {
 	}
 
 	// sales -> catalog, and the computed totalCents from sdl/order.graphql.
-	got = a.data(`{ orders { edges { node { status totalCents customer { name } items { quantity product { sku category { name } } } } } } }`)
+	got = a.data(`{ orders { edges { node { status totalCents customer { name } items { quantity unitPriceCents product { sku category { name } } } } } } }`)
 	order := `{"status":"PENDING","totalCents":11500,"customer":{"name":"Ada"},"items":[` +
-		`{"quantity":2,"product":{"sku":"kb-1","category":{"name":"Keyboards"}}},` +
-		`{"quantity":1,"product":{"sku":"kb-2","category":{"name":"Keyboards"}}}]}`
+		`{"quantity":2,"unitPriceCents":5000,"product":{"sku":"kb-1","category":{"name":"Keyboards"}}},` +
+		`{"quantity":1,"unitPriceCents":1500,"product":{"sku":"kb-2","category":{"name":"Keyboards"}}}]}`
 	node := `{"node":` + order + `}`
 	if want := `{"orders":{"edges":[` + node + `,` + node + `,` + node + `]}}`; got != want {
 		t.Errorf("orders = %s", got)
 	}
 
-	// inventory -> catalog.
-	got = a.data(`{ warehouses { name stocks { quantity product { name } } } }`)
-	if want := `{"warehouses":[{"name":"North","stocks":[{"quantity":7,"product":{"name":"Board"}}]}]}`; got != want {
-		t.Errorf("warehouses = %s", got)
+	// inventory -> catalog, and -> sales through the orders taken from it.
+	got = a.data(`{ warehouse(id: "1") { name stocks { quantity product { name } } orders { totalCount } } }`)
+	if want := `{"warehouse":{"name":"North","stocks":[{"quantity":7,"product":{"name":"Board"}},{"quantity":0,"product":{"name":"Keycaps"}}],"orders":{"totalCount":3}}}`; got != want {
+		t.Errorf("warehouse = %s", got)
 	}
 
-	got = a.data(`mutation { updateOrder(id: "2", input: {status: PAID}) { status } }`)
-	if want := `{"updateOrder":{"status":"PAID"}}`; got != want {
-		t.Errorf("updateOrder = %s", got)
+	for _, q := range []string{
+		`mutation { updateCategory(id: "1", input: {name: "Boards"}) { name } }`,
+		`mutation { updateCustomer(id: "1", input: {email: "ada@example.org"}) { email } }`,
+		`mutation { updateWarehouse(id: "1", input: {name: "North 2"}) { name } }`,
+		`mutation { updateProduct(id: "3", input: {priceCents: 950}) { priceCents } }`,
+	} {
+		a.data(q)
 	}
-
-	// deleteProduct is hand-written SDL returning a scalar. A product nothing
-	// references deletes; one an order item references is refused by the
-	// foreign key, and the refusal is a field error, not a failed request.
-	if got := a.data(`mutation { deleteProduct(id: "3") }`); got != `{"deleteProduct":"3"}` {
-		t.Errorf("deleteProduct(3) = %s", got)
-	}
-	if r := a.post(`mutation { deleteProduct(id: "1") }`); len(r.Errors) != 1 {
-		t.Errorf("deleting a referenced product: errors = %+v, data = %s", r.Errors, r.Data)
+	if got := a.data(`{ category(id: "1") { name } customer(id: "1") { email } }`); got != `{"category":{"name":"Boards"},"customer":{"email":"ada@example.org"}}` {
+		t.Errorf("after updates = %s", got)
 	}
 }
 
@@ -220,69 +280,6 @@ func TestOrdersAreAFixedNumberOfQueries(t *testing.T) {
 	counting.Store(0)
 	if n := queries.Load(); n != 5 {
 		t.Errorf("orders ran %d queries, want 5 (count, orders, customers, items, products)", n)
-	}
-}
-
-// A constraint velox enforces reaches the client as a GraphQL error on the
-// field, not as a failed request.
-func TestORMValidationIsAFieldError(t *testing.T) {
-	a := start(t)
-	r := a.post(`mutation { createCategory(input: {name: ""}) { id } }`)
-	if len(r.Errors) != 1 || !strings.Contains(r.Errors[0].Message, "name") {
-		t.Fatalf("want one error naming the field, got %+v (data %s)", r.Errors, r.Data)
-	}
-}
-
-// A domain module left out of the app is a failed start that names what it
-// left unbound, not a schema that builds and fails the first request to
-// reach it. catalog depends on inventory through Product.stocks.
-func TestAMissingDomainFailsStart(t *testing.T) {
-	a := fx.New(
-		catalog.Module, sales.Module, // inventory.Module left out
-		appCore,
-		fx.Supply(Config{Addr: "127.0.0.1:0", DSN: dsn(t)}),
-		fx.NopLogger,
-	)
-	err := a.Err()
-	if err == nil || !strings.Contains(err.Error(), "type Stock has no Object binding") {
-		t.Fatalf("err = %v", err)
-	}
-}
-
-// Stopping the app must release the port; a stop hook that returned before
-// shutting the server down would leave it answering.
-func TestStopClosesTheListener(t *testing.T) {
-	var srv *Server
-	a := fxtest.New(t,
-		Module,
-		fx.Supply(Config{Addr: "127.0.0.1:0", DSN: dsn(t)}),
-		fx.Populate(&srv),
-		fx.NopLogger,
-	)
-	a.RequireStart()
-	url := "http://" + srv.Addr() + "/graphql"
-	const q = `{"query":"{ categories { id } }"}`
-	res, err := http.Post(url, "application/json", strings.NewReader(q))
-	if err != nil {
-		t.Fatal(err)
-	}
-	res.Body.Close()
-	a.RequireStop()
-
-	if _, err := http.Post(url, "application/json", strings.NewReader(q)); err == nil {
-		t.Fatal("server still answering after stop")
-	}
-}
-
-// BenchmarkNewSchema is the start-up cost of the layout: eight groups, each
-// registered separately, merged into one schema.
-//
-//	go test -run '^$' -bench NewSchema
-func BenchmarkNewSchema(b *testing.B) {
-	for b.Loop() {
-		if err := graph.ValidateSchema(scalars); err != nil {
-			b.Fatal(err)
-		}
 	}
 }
 
@@ -349,8 +346,8 @@ func skus(edges []struct{ Node struct{ Sku string } }) string {
 	return strings.Join(s, ",")
 }
 
-// Every entity reads by id and deletes by id, and what a delete may take
-// with it is a decision per entity, not a default.
+// Every entity reads by id, and what a delete may take with it is a decision
+// per entity, not a default.
 func TestReadAndDeleteByID(t *testing.T) {
 	a := start(t)
 	a.seed()
@@ -360,23 +357,18 @@ func TestReadAndDeleteByID(t *testing.T) {
 	if got := a.data(`{ product(id: "1") { sku } missing: product(id: "999") { sku } }`); got != `{"product":{"sku":"kb-1"},"missing":null}` {
 		t.Errorf("product by id = %s", got)
 	}
-	if r := a.post(`{ product(id: "kb-1") { sku } }`); len(r.Errors) != 1 {
-		t.Errorf("a malformed id: errors = %+v", r.Errors)
-	}
+	a.refused(`{ product(id: "kb-1") { sku } }`, "invalid id")
 
 	// Refused while referenced, with the reason rather than the driver's text.
-	for _, q := range []string{
-		`mutation { deleteCategory(id: "1") }`, // products are in it
-		`mutation { deleteCustomer(id: "1") }`, // she has orders
-		`mutation { deleteProduct(id: "1") }`,  // stocked and ordered
-	} {
-		r := a.post(q)
-		if len(r.Errors) != 1 || !strings.Contains(r.Errors[0].Message, "still referenced") {
-			t.Errorf("%s: errors = %+v", q, r.Errors)
-		}
-	}
+	a.refused(`mutation { deleteCategory(id: "1") }`, "still referenced")  // products are in it
+	a.refused(`mutation { deleteCustomer(id: "1") }`, "still referenced")  // she has orders
+	a.refused(`mutation { deleteProduct(id: "1") }`, "still referenced")   // stocked and ordered
+	a.refused(`mutation { deleteWarehouse(id: "1") }`, "still referenced") // stock, and orders taken from it
 
-	// An order takes its items with it, in one transaction.
+	// An order is a record of a sale: it deletes only once cancelled, and
+	// then takes its items with it.
+	a.refused(`mutation { deleteOrder(id: "1") }`, "order 1 is PENDING")
+	a.data(`mutation { cancelOrder(id: "1") { status } }`)
 	if got := a.data(`mutation { deleteOrder(id: "1") }`); got != `{"deleteOrder":"1"}` {
 		t.Errorf("deleteOrder = %s", got)
 	}
@@ -384,31 +376,22 @@ func TestReadAndDeleteByID(t *testing.T) {
 		t.Errorf("order 1 or its items survived: %s", got)
 	}
 
-	// Retiring a warehouse: its stock first, then the warehouse.
-	if r := a.post(`mutation { deleteWarehouse(id: "1") }`); len(r.Errors) != 1 {
-		t.Errorf("deleting a stocked warehouse: errors = %+v", r.Errors)
-	}
-	a.data(`mutation { deleteStock(id: "1") }`)
-	if got := a.data(`mutation { deleteWarehouse(id: "1") }`); got != `{"deleteWarehouse":"1"}` {
+	// Retiring a warehouse nothing was ordered from: its stock, then it.
+	a.data(`mutation { createWarehouse(input: {name: "South"}) { id } }`)
+	a.data(`mutation { createStock(input: {quantity: 4, warehouseID: "2", productID: "1"}) { id } }`)
+	a.refused(`mutation { deleteWarehouse(id: "2") }`, "still referenced")
+	a.data(`mutation { deleteStock(id: "3") }`)
+	if got := a.data(`mutation { deleteWarehouse(id: "2") }`); got != `{"deleteWarehouse":"2"}` {
 		t.Errorf("deleteWarehouse = %s", got)
 	}
-
-	if r := a.post(`mutation { deleteStock(id: "1") }`); len(r.Errors) != 1 || !strings.Contains(r.Errors[0].Message, "no such row") {
-		t.Errorf("deleting twice: errors = %+v", r.Errors)
-	}
+	a.refused(`mutation { deleteStock(id: "3") }`, "no such row")
 }
 
 // placeOrder is all or nothing: the order, its items at today's price, and
 // the stock they come out of.
 func TestPlaceOrderIsOneTransaction(t *testing.T) {
 	a := start(t)
-	a.data(`mutation { createCategory(input: {name: "Keyboards"}) { id } }`)
-	a.data(`mutation { createProduct(input: {sku: "kb-1", name: "Board", priceCents: 5000, categoryID: "1"}) { id } }`)
-	a.data(`mutation { createProduct(input: {sku: "kb-2", name: "Keycaps", priceCents: 1500, categoryID: "1"}) { id } }`)
-	a.data(`mutation { createWarehouse(input: {name: "North"}) { id } }`)
-	a.data(`mutation { createStock(input: {quantity: 3, warehouseID: "1", productID: "1"}) { id } }`)
-	a.data(`mutation { createStock(input: {quantity: 1, warehouseID: "1", productID: "2"}) { id } }`)
-	a.data(`mutation { createCustomer(input: {name: "Ada", email: "ada@example.com"}) { id } }`)
+	a.shop(3, 1)
 
 	placed := a.data(`mutation { placeOrder(input: {customerID: "1", warehouseID: "1", items: [
 		{productID: "1", quantity: 2}, {productID: "2", quantity: 1}]}) {
@@ -427,11 +410,8 @@ func TestPlaceOrderIsOneTransaction(t *testing.T) {
 	// The first line fits (1 board left), the second does not (0 keycaps).
 	// The whole order fails, and the board taken for the first line is put
 	// back: no order, no items, stock unchanged.
-	r := a.post(`mutation { placeOrder(input: {customerID: "1", warehouseID: "1", items: [
-		{productID: "1", quantity: 1}, {productID: "2", quantity: 1}]}) { id } }`)
-	if len(r.Errors) != 1 || !strings.Contains(r.Errors[0].Message, "items[1]: not enough kb-2") {
-		t.Fatalf("an uncoverable line: errors = %+v, data = %s", r.Errors, r.Data)
-	}
+	a.refused(`mutation { placeOrder(input: {customerID: "1", warehouseID: "1", items: [
+		{productID: "1", quantity: 1}, {productID: "2", quantity: 1}]}) { id } }`, "items[1]: kb-2: not enough in stock")
 	if got := stock(); got != `{"stocks":[{"quantity":1},{"quantity":0}]}` {
 		t.Errorf("a failed order changed stock: %s", got)
 	}
@@ -443,5 +423,147 @@ func TestPlaceOrderIsOneTransaction(t *testing.T) {
 	a.data(`mutation { updateProduct(id: "1", input: {priceCents: 9999}) { id } }`)
 	if got := a.data(`{ order(id: "1") { totalCents } }`); got != `{"order":{"totalCents":11500}}` {
 		t.Errorf("repricing a product rewrote a placed order: %s", got)
+	}
+}
+
+// An order moves PENDING -> PAID -> SHIPPED, or to CANCELLED from either of
+// the first two, and a move from the wrong state says what the state is.
+// Cancelling puts the stock back.
+func TestOrderLifecycle(t *testing.T) {
+	a := start(t)
+	a.shop(10, 10)
+	a.data(placeTwoBoardsAndKeycaps) // 1
+	a.data(placeTwoBoardsAndKeycaps) // 2
+
+	a.refused(`mutation { shipOrder(id: "1") { status } }`, "order 1 is PENDING")
+	if got := a.data(`mutation { payOrder(id: "1") { status } }`); got != `{"payOrder":{"status":"PAID"}}` {
+		t.Errorf("payOrder = %s", got)
+	}
+	a.refused(`mutation { payOrder(id: "1") { status } }`, "order 1 is PAID")
+	if got := a.data(`mutation { shipOrder(id: "1") { status } }`); got != `{"shipOrder":{"status":"SHIPPED"}}` {
+		t.Errorf("shipOrder = %s", got)
+	}
+	a.refused(`mutation { cancelOrder(id: "1") { status } }`, "order 1 is SHIPPED")
+
+	stock := `{ stocks { quantity } }`
+	if got := a.data(stock); got != `{"stocks":[{"quantity":6},{"quantity":8}]}` {
+		t.Fatalf("stock before cancelling = %s", got)
+	}
+	if got := a.data(`mutation { cancelOrder(id: "2") { status } }`); got != `{"cancelOrder":{"status":"CANCELLED"}}` {
+		t.Errorf("cancelOrder = %s", got)
+	}
+	if got := a.data(stock); got != `{"stocks":[{"quantity":8},{"quantity":9}]}` {
+		t.Errorf("cancelling did not return the stock: %s", got)
+	}
+	a.refused(`mutation { cancelOrder(id: "2") { status } }`, "order 2 is CANCELLED")
+	a.refused(`mutation { payOrder(id: "999") { status } }`, "not found")
+}
+
+// Twenty orders race for five units: exactly five are placed, the other
+// fifteen are refused as short, and the stock ends at zero. Take's
+// conditional update is what decides; without its WHERE quantity >= n all
+// twenty succeed and the stock ends at -15.
+func TestConcurrentOrdersCannotOversell(t *testing.T) {
+	a := start(t)
+	a.shop(5, 0)
+
+	var wg sync.WaitGroup
+	var placed, short atomic.Int64
+	for range 20 {
+		wg.Go(func() {
+			r := a.post(`mutation { placeOrder(input: {customerID: "1", warehouseID: "1", items: [{productID: "1", quantity: 1}]}) { id } }`)
+			if len(r.Errors) == 0 {
+				placed.Add(1)
+			} else if strings.Contains(r.Errors[0].Message, "not enough in stock") {
+				short.Add(1)
+			}
+		})
+	}
+	wg.Wait()
+
+	var got struct {
+		Stock  struct{ Quantity int }
+		Orders struct{ TotalCount int }
+	}
+	if err := json.Unmarshal([]byte(a.data(`{ stock(id: "1") { quantity } orders { totalCount } }`)), &got); err != nil {
+		t.Fatal(err)
+	}
+	if placed.Load() != 5 || short.Load() != 15 || got.Stock.Quantity != 0 || got.Orders.TotalCount != 5 {
+		t.Fatalf("placed %d, short %d; stock %d, orders %d: want 5, 15; 0, 5", placed.Load(), short.Load(), got.Stock.Quantity, got.Orders.TotalCount)
+	}
+}
+
+// A count moves by a delta, never below zero, and a warehouse holds one row
+// per product.
+func TestStockOnlyMovesByDelta(t *testing.T) {
+	a := start(t)
+	a.shop(3, 0)
+	if got := a.data(`mutation { adjustStock(id: "1", delta: 4) { quantity } }`); got != `{"adjustStock":{"quantity":7}}` {
+		t.Errorf("adjustStock(+4) = %s", got)
+	}
+	a.refused(`mutation { adjustStock(id: "1", delta: -8) { quantity } }`, "holds 7, cannot remove 8")
+	if got := a.data(`mutation { adjustStock(id: "1", delta: -7) { quantity } }`); got != `{"adjustStock":{"quantity":0}}` {
+		t.Errorf("adjustStock(-7) = %s", got)
+	}
+	a.refused(`mutation { createStock(input: {quantity: 1, warehouseID: "1", productID: "1"}) { id } }`, "already stocks this product")
+}
+
+// A constraint velox enforces reaches the client as a GraphQL error on the
+// field, not as a failed request.
+func TestORMValidationIsAFieldError(t *testing.T) {
+	a := start(t)
+	a.refused(`mutation { createCategory(input: {name: ""}) { id } }`, "name")
+}
+
+// A domain module left out of the app is a failed start that names what it
+// left unbound, not a schema that builds and fails the first request to
+// reach it. catalog depends on inventory through Product.stocks.
+func TestAMissingDomainFailsStart(t *testing.T) {
+	a := fx.New(
+		catalog.Module, sales.Module, // inventory.Module left out
+		appCore,
+		fx.Supply(Config{Addr: "127.0.0.1:0", DSN: dsn(t)}),
+		fx.NopLogger,
+	)
+	err := a.Err()
+	if err == nil || !strings.Contains(err.Error(), "type Stock has no Object binding") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// Stopping the app must release the port; a stop hook that returned before
+// shutting the server down would leave it answering.
+func TestStopClosesTheListener(t *testing.T) {
+	var srv *Server
+	a := fxtest.New(t,
+		Module,
+		fx.Supply(Config{Addr: "127.0.0.1:0", DSN: dsn(t)}),
+		fx.Populate(&srv),
+		fx.NopLogger,
+	)
+	a.RequireStart()
+	url := "http://" + srv.Addr() + "/graphql"
+	const q = `{"query":"{ categories { id } }"}`
+	res, err := http.Post(url, "application/json", strings.NewReader(q))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	a.RequireStop()
+
+	if _, err := http.Post(url, "application/json", strings.NewReader(q)); err == nil {
+		t.Fatal("server still answering after stop")
+	}
+}
+
+// BenchmarkNewSchema is the start-up cost of the layout: eight groups, each
+// registered separately, merged into one schema.
+//
+//	go test -run '^$' -bench NewSchema
+func BenchmarkNewSchema(b *testing.B) {
+	for b.Loop() {
+		if err := graph.ValidateSchema(scalars); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

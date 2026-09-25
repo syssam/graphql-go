@@ -17,6 +17,14 @@ func init() {
 		Relay:       false,
 		Target:      "customers",
 		Unique:      true,
+	}, "warehouse": {
+		FKColumns:   []string{"warehouse_orders"},
+		Inverse:     "orders",
+		Name:        "warehouse",
+		PagesLoaded: false,
+		Relay:       false,
+		Target:      "warehouses",
+		Unique:      true,
 	}, "items": {
 		FKColumns:   []string{},
 		Inverse:     "",

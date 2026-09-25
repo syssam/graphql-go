@@ -12,8 +12,8 @@ import (
 
 	graphql "github.com/syssam/graphql-go"
 	categorygql "github.com/syssam/graphql-go/examples/veloxfx/graph/category"
-	productmodel "github.com/syssam/graphql-go/examples/veloxfx/graph/model/product"
 	productgql "github.com/syssam/graphql-go/examples/veloxfx/graph/product"
+	"github.com/syssam/graphql-go/examples/veloxfx/internal/orderby"
 	"github.com/syssam/graphql-go/examples/veloxfx/internal/resolve"
 	"github.com/syssam/graphql-go/examples/veloxfx/velox"
 	"github.com/syssam/graphql-go/examples/veloxfx/velox/entity"
@@ -47,7 +47,7 @@ func (r *CategoryResolver) Category(ctx context.Context, args categorygql.Catego
 // edge when no cursor, filter or order asks for more; the resolver exists only
 // to convert the order argument, which gqlc could not bind to velox's type.
 func (r *CategoryResolver) CategoryProducts(ctx context.Context, c *entity.Category, args categorygql.CategoryProductsArgs) (*entity.ProductConnection, error) {
-	order, err := ProductOrder(args.OrderBy)
+	order, err := orderby.Product(args.OrderBy)
 	if err != nil {
 		return nil, err
 	}
@@ -56,6 +56,14 @@ func (r *CategoryResolver) CategoryProducts(ctx context.Context, c *entity.Categ
 
 func (r *CategoryResolver) CreateCategory(ctx context.Context, args categorygql.CreateCategoryArgs) (*entity.Category, error) {
 	return r.client.Category.Create().SetInput(args.Input).Save(ctx)
+}
+
+func (r *CategoryResolver) UpdateCategory(ctx context.Context, args categorygql.UpdateCategoryArgs) (*entity.Category, error) {
+	id, err := resolve.ParseID(args.ID)
+	if err != nil {
+		return nil, err
+	}
+	return r.client.Category.UpdateOneID(id).SetInput(args.Input).Save(ctx)
 }
 
 // DeleteCategory is refused while products are in the category: the foreign
@@ -81,7 +89,7 @@ func NewProductResolver(client *velox.Client) *ProductResolver {
 // Products is a connection: products(first: 10, after: $cursor,
 // where: {priceCentsLT: 2000}, orderBy: {field: PRICE}).
 func (r *ProductResolver) Products(ctx context.Context, args productgql.ProductsArgs) (*entity.ProductConnection, error) {
-	order, err := ProductOrder(args.OrderBy)
+	order, err := orderby.Product(args.OrderBy)
 	if err != nil {
 		return nil, err
 	}
@@ -125,18 +133,4 @@ func (r *ProductResolver) DeleteProduct(ctx context.Context, args productgql.Del
 
 func (r *ProductResolver) ProductID(_ context.Context, p *entity.Product) (graphql.ID, error) {
 	return resolve.ID(p.ID), nil
-}
-
-// ProductOrder converts a Product orderBy argument. A nil order is velox's
-// default, by id. It is exported because every domain with an edge to
-// Product takes the same argument: catalog owns Product, so it owns this.
-func ProductOrder(o *productmodel.ProductOrder) (*entity.ProductOrder, error) {
-	if o == nil {
-		return nil, nil
-	}
-	f, err := resolve.OrderField[entity.ProductOrderField](string(o.Field))
-	if err != nil {
-		return nil, err
-	}
-	return &entity.ProductOrder{Direction: o.Direction, Field: f}, nil
 }

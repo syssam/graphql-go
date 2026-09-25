@@ -122,13 +122,12 @@ type Query {
 
 type Mutation {
   createCategory(input: CreateCategoryInput!): Category!
+  updateCategory(id: ID!, input: UpdateCategoryInput!): Category!
   createCustomer(input: CreateCustomerInput!): Customer!
-  createOrder(input: CreateOrderInput!): Order!
-  updateOrder(id: ID!, input: UpdateOrderInput!): Order!
-  createOrderItem(input: CreateOrderItemInput!): OrderItem!
+  updateCustomer(id: ID!, input: UpdateCustomerInput!): Customer!
   createProduct(input: CreateProductInput!): Product!
   updateProduct(id: ID!, input: UpdateProductInput!): Product!
   createStock(input: CreateStockInput!): Stock!
-  updateStock(id: ID!, input: UpdateStockInput!): Stock!
   createWarehouse(input: CreateWarehouseInput!): Warehouse!
+  updateWarehouse(id: ID!, input: UpdateWarehouseInput!): Warehouse!
 }

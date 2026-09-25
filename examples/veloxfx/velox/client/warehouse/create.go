@@ -49,6 +49,12 @@ func (c *WarehouseCreate) AddStockIDs(ids ...int) *WarehouseCreate {
 	return c
 }
 
+// AddOrderIDs adds the "orders" edge by ids.
+func (c *WarehouseCreate) AddOrderIDs(ids ...int) *WarehouseCreate {
+	c.mutation.AddOrderIDs(ids...)
+	return c
+}
+
 // AddStocks adds the "stocks" edge to the given entities.
 func (c *WarehouseCreate) AddStocks(v ...*entity.Stock) *WarehouseCreate {
 	ids := make([]int, len(v))
@@ -56,6 +62,16 @@ func (c *WarehouseCreate) AddStocks(v ...*entity.Stock) *WarehouseCreate {
 		ids[i] = v[i].ID
 	}
 	c.AddStockIDs(ids...)
+	return c
+}
+
+// AddOrders adds the "orders" edge to the given entities.
+func (c *WarehouseCreate) AddOrders(v ...*entity.Order) *WarehouseCreate {
+	ids := make([]int, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	c.AddOrderIDs(ids...)
 	return c
 }
 
@@ -126,6 +142,23 @@ func (c *WarehouseCreate) createSpec() (*entity.Warehouse, *sqlgraph.CreateSpec)
 			Inverse: false,
 			Rel:     sqlgraph.O2M,
 			Table:   "stocks",
+			Target: &sqlgraph.EdgeTarget{IDSpec: &sqlgraph.FieldSpec{
+				Column: "id",
+				Type:   field.TypeInt,
+			}},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges = append(_spec.Edges, edge)
+	}
+	if nodes := c.mutation.OrdersIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Bidi:    false,
+			Columns: []string{"warehouse_orders"},
+			Inverse: false,
+			Rel:     sqlgraph.O2M,
+			Table:   "orders",
 			Target: &sqlgraph.EdgeTarget{IDSpec: &sqlgraph.FieldSpec{
 				Column: "id",
 				Type:   field.TypeInt,

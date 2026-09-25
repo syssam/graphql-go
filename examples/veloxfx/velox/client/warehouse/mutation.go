@@ -26,6 +26,9 @@ type WarehouseMutation struct {
 	stocks        map[int]struct{}
 	removedStocks map[int]struct{}
 	clearedStocks bool
+	orders        map[int]struct{}
+	removedOrders map[int]struct{}
+	clearedOrders bool
 	predicates    []predicate.Warehouse
 }
 
@@ -182,6 +185,60 @@ func (m *WarehouseMutation) StocksIDs() (ids []int) {
 	return
 }
 
+// AddOrderIDs adds the "orders" edge to the Order entity by ids.
+func (m *WarehouseMutation) AddOrderIDs(ids ...int) {
+	if m.orders == nil {
+		m.orders = make(map[int]struct{})
+	}
+	for _, id := range ids {
+		m.orders[id] = struct{}{}
+	}
+}
+
+// RemoveOrderIDs removes the "orders" edge to the Order entity by ids.
+func (m *WarehouseMutation) RemoveOrderIDs(ids ...int) {
+	if m.removedOrders == nil {
+		m.removedOrders = make(map[int]struct{})
+	}
+	for _, id := range ids {
+		delete(m.orders, id)
+		m.removedOrders[id] = struct{}{}
+	}
+}
+
+// ClearOrders clears the "orders" edge.
+func (m *WarehouseMutation) ClearOrders() {
+	m.clearedOrders = true
+}
+
+// OrdersCleared reports if the "orders" edge was cleared.
+func (m *WarehouseMutation) OrdersCleared() bool {
+	return m.clearedOrders
+}
+
+// RemovedOrdersIDs returns the removed IDs of the "orders" edge.
+func (m *WarehouseMutation) RemovedOrdersIDs() (ids []int) {
+	for id := range m.removedOrders {
+		ids = append(ids, id)
+	}
+	return
+}
+
+// ResetOrders resets all changes to the "orders" edge.
+func (m *WarehouseMutation) ResetOrders() {
+	m.orders = nil
+	m.clearedOrders = false
+	m.removedOrders = nil
+}
+
+// OrdersIDs returns the "orders" edge IDs in the mutation.
+func (m *WarehouseMutation) OrdersIDs() (ids []int) {
+	for id := range m.orders {
+		ids = append(ids, id)
+	}
+	return
+}
+
 // Fields returns all fields that were changed during this mutation.
 func (m *WarehouseMutation) Fields() []string {
 	var fields []string
@@ -272,9 +329,12 @@ func (m *WarehouseMutation) ResetField(name string) error {
 
 // AddedEdges returns all edge names that were set/added in this mutation.
 func (m *WarehouseMutation) AddedEdges() []string {
-	edges := make([]string, 0, 1)
+	edges := make([]string, 0, 2)
 	if m.stocks != nil {
 		edges = append(edges, "stocks")
+	}
+	if m.orders != nil {
+		edges = append(edges, "orders")
 	}
 	return edges
 }
@@ -288,15 +348,24 @@ func (m *WarehouseMutation) AddedIDs(name string) []velox.Value {
 			ids = append(ids, id)
 		}
 		return ids
+	case "orders":
+		ids := make([]velox.Value, 0, len(m.orders))
+		for id := range m.orders {
+			ids = append(ids, id)
+		}
+		return ids
 	}
 	return nil
 }
 
 // RemovedEdges returns all edge names that were removed in this mutation.
 func (m *WarehouseMutation) RemovedEdges() []string {
-	edges := make([]string, 0, 1)
+	edges := make([]string, 0, 2)
 	if m.removedStocks != nil {
 		edges = append(edges, "stocks")
+	}
+	if m.removedOrders != nil {
+		edges = append(edges, "orders")
 	}
 	return edges
 }
@@ -310,15 +379,24 @@ func (m *WarehouseMutation) RemovedIDs(name string) []velox.Value {
 			ids = append(ids, id)
 		}
 		return ids
+	case "orders":
+		ids := make([]velox.Value, 0, len(m.removedOrders))
+		for id := range m.removedOrders {
+			ids = append(ids, id)
+		}
+		return ids
 	}
 	return nil
 }
 
 // ClearedEdges returns all edge names that were cleared in this mutation.
 func (m *WarehouseMutation) ClearedEdges() []string {
-	edges := make([]string, 0, 1)
+	edges := make([]string, 0, 2)
 	if m.clearedStocks {
 		edges = append(edges, "stocks")
+	}
+	if m.clearedOrders {
+		edges = append(edges, "orders")
 	}
 	return edges
 }
@@ -328,6 +406,8 @@ func (m *WarehouseMutation) EdgeCleared(name string) bool {
 	switch name {
 	case "stocks":
 		return m.clearedStocks
+	case "orders":
+		return m.clearedOrders
 	}
 	return false
 }
@@ -338,6 +418,9 @@ func (m *WarehouseMutation) ClearEdge(name string) error {
 	case "stocks":
 		m.ClearStocks()
 		return nil
+	case "orders":
+		m.ClearOrders()
+		return nil
 	}
 	return fmt.Errorf("unknown Warehouse unique edge %s", name)
 }
@@ -347,6 +430,9 @@ func (m *WarehouseMutation) ResetEdge(name string) error {
 	switch name {
 	case "stocks":
 		m.ResetStocks()
+		return nil
+	case "orders":
+		m.ResetOrders()
 		return nil
 	}
 	return fmt.Errorf("unknown Warehouse edge %s", name)

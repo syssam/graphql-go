@@ -1,11 +1,15 @@
-# Hand-written beside velox's output, which has no single-row query and no
-# delete. Named after the entity, so both land in the stock group.
+# Hand-written beside velox's output. A stock count changes by a delta --
+# a delivery, a stocktake correction -- never by being overwritten, so two
+# changes at once both count.
 extend type Query {
   "The Stock with this id, or null if there is none."
   stock(id: ID!): Stock
 }
 
 extend type Mutation {
-  "Deletes the Stock and returns its id. Refused while other rows refer to it."
+  "Adds delta to the count, which may be negative but may not take it below zero."
+  adjustStock(id: ID!, delta: Int!): Stock!
+
+  "Deletes the Stock and returns its id."
   deleteStock(id: ID!): ID!
 }

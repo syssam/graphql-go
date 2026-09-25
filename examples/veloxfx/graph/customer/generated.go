@@ -27,6 +27,11 @@ type CreateCustomerArgs struct {
 	Input customer.CreateCustomerInput `graphql:"input"`
 }
 
+type UpdateCustomerArgs struct {
+	ID    graphql.ID                   `graphql:"id"`
+	Input customer.UpdateCustomerInput `graphql:"input"`
+}
+
 type DeleteCustomerArgs struct {
 	ID graphql.ID `graphql:"id"`
 }
@@ -40,6 +45,7 @@ type Resolver interface {
 	CustomerID(ctx context.Context, obj *entity.Customer) (graphql.ID, error)
 	CustomerOrders(ctx context.Context, obj *entity.Customer, args CustomerOrdersArgs) (*entity.OrderConnection, error)
 	CreateCustomer(ctx context.Context, args CreateCustomerArgs) (*entity.Customer, error)
+	UpdateCustomer(ctx context.Context, args UpdateCustomerArgs) (*entity.Customer, error)
 	DeleteCustomer(ctx context.Context, args DeleteCustomerArgs) (graphql.ID, error)
 	Customers(ctx context.Context) ([]*entity.Customer, error)
 	Customer(ctx context.Context, args CustomerArgs) (*entity.Customer, error)
@@ -48,6 +54,7 @@ type Resolver interface {
 func Bindings(r Resolver) graphql.SchemaOption {
 	return graphql.Options(
 		graphql.Input[customer.CreateCustomerInput]("CreateCustomerInput", graphql.ZeroForNull()),
+		graphql.Input[customer.UpdateCustomerInput]("UpdateCustomerInput", graphql.ZeroForNull()),
 		graphql.Object[entity.Customer]("Customer",
 			graphql.Resolve("id", func(ctx context.Context, v *entity.Customer) (graphql.ID, error) { return r.CustomerID(ctx, v) }),
 			graphql.Field("name", func(v *entity.Customer) string { return v.Name }),
@@ -66,12 +73,16 @@ func Bindings(r Resolver) graphql.SchemaOption {
 			graphql.ResolveArgs("createCustomer", func(ctx context.Context, _ graphql.Root, a CreateCustomerArgs) (*entity.Customer, error) {
 				return r.CreateCustomer(ctx, a)
 			}),
+			graphql.ResolveArgs("updateCustomer", func(ctx context.Context, _ graphql.Root, a UpdateCustomerArgs) (*entity.Customer, error) {
+				return r.UpdateCustomer(ctx, a)
+			}),
 			graphql.ResolveArgs("deleteCustomer", func(ctx context.Context, _ graphql.Root, a DeleteCustomerArgs) (graphql.ID, error) {
 				return r.DeleteCustomer(ctx, a)
 			}),
 		),
 		graphql.Args[CustomerOrdersArgs](),
 		graphql.Args[CreateCustomerArgs](),
+		graphql.Args[UpdateCustomerArgs](),
 		graphql.Args[DeleteCustomerArgs](),
 		graphql.Args[CustomerArgs](),
 	)

@@ -20,17 +20,20 @@ func (Customer) Fields() []velox.Field {
 
 func (Customer) Edges() []velox.Edge {
 	return []velox.Edge{
-		edge.To("orders", Order.Type),
+		edge.To("orders", Order.Type).Annotations(graphql.Skip(graphql.SkipInputs)),
 	}
 }
 
 func (Customer) Annotations() []schema.Annotation {
 	return []schema.Annotation{
 		graphql.QueryField(),
-		graphql.Mutations(graphql.MutationCreate()),
+		graphql.Mutations(graphql.MutationCreate(), graphql.MutationUpdate()),
 	}
 }
 
+// Order has no velox mutations. It is created by placeOrder and moves
+// through its states by payOrder, shipOrder and cancelOrder (sdl/order.graphql),
+// each of which checks the state it moves from.
 type Order struct{ velox.Schema }
 
 func (Order) Mixin() []velox.Mixin {
@@ -46,6 +49,9 @@ func (Order) Fields() []velox.Field {
 func (Order) Edges() []velox.Edge {
 	return []velox.Edge{
 		edge.From("customer", Customer.Type).Ref("orders").Unique().Required(),
+		// The warehouse the items were taken from, which is where a
+		// cancellation puts them back.
+		edge.From("warehouse", Warehouse.Type).Ref("orders").Unique().Required(),
 		edge.To("items", OrderItem.Type),
 	}
 }
@@ -56,10 +62,11 @@ func (Order) Annotations() []schema.Annotation {
 		graphql.WhereInputFields("status"),
 		graphql.WhereInputEdges("customer"),
 		graphql.QueryField(),
-		graphql.Mutations(graphql.MutationCreate(), graphql.MutationUpdate()),
 	}
 }
 
+// OrderItem has no mutations: a line is written by placeOrder, at the price
+// the product had then, and never edited.
 type OrderItem struct{ velox.Schema }
 
 func (OrderItem) Fields() []velox.Field {
@@ -80,6 +87,5 @@ func (OrderItem) Annotations() []schema.Annotation {
 	return []schema.Annotation{
 		// An order's items are a plain list, not a connection; see Stock.
 		graphql.QueryField(),
-		graphql.Mutations(graphql.MutationCreate()),
 	}
 }

@@ -27,6 +27,11 @@ type CreateCategoryArgs struct {
 	Input category.CreateCategoryInput `graphql:"input"`
 }
 
+type UpdateCategoryArgs struct {
+	ID    graphql.ID                   `graphql:"id"`
+	Input category.UpdateCategoryInput `graphql:"input"`
+}
+
 type DeleteCategoryArgs struct {
 	ID graphql.ID `graphql:"id"`
 }
@@ -40,6 +45,7 @@ type Resolver interface {
 	CategoryID(ctx context.Context, obj *entity.Category) (graphql.ID, error)
 	CategoryProducts(ctx context.Context, obj *entity.Category, args CategoryProductsArgs) (*entity.ProductConnection, error)
 	CreateCategory(ctx context.Context, args CreateCategoryArgs) (*entity.Category, error)
+	UpdateCategory(ctx context.Context, args UpdateCategoryArgs) (*entity.Category, error)
 	DeleteCategory(ctx context.Context, args DeleteCategoryArgs) (graphql.ID, error)
 	Categories(ctx context.Context) ([]*entity.Category, error)
 	Category(ctx context.Context, args CategoryArgs) (*entity.Category, error)
@@ -49,6 +55,7 @@ func Bindings(r Resolver) graphql.SchemaOption {
 	return graphql.Options(
 		graphql.Input[filter.CategoryWhereInput]("CategoryWhereInput", graphql.ZeroForNull()),
 		graphql.Input[category.CreateCategoryInput]("CreateCategoryInput", graphql.ZeroForNull()),
+		graphql.Input[category.UpdateCategoryInput]("UpdateCategoryInput", graphql.ZeroForNull()),
 		graphql.Object[entity.Category]("Category",
 			graphql.Resolve("id", func(ctx context.Context, v *entity.Category) (graphql.ID, error) { return r.CategoryID(ctx, v) }),
 			graphql.Field("name", func(v *entity.Category) string { return v.Name }),
@@ -66,12 +73,16 @@ func Bindings(r Resolver) graphql.SchemaOption {
 			graphql.ResolveArgs("createCategory", func(ctx context.Context, _ graphql.Root, a CreateCategoryArgs) (*entity.Category, error) {
 				return r.CreateCategory(ctx, a)
 			}),
+			graphql.ResolveArgs("updateCategory", func(ctx context.Context, _ graphql.Root, a UpdateCategoryArgs) (*entity.Category, error) {
+				return r.UpdateCategory(ctx, a)
+			}),
 			graphql.ResolveArgs("deleteCategory", func(ctx context.Context, _ graphql.Root, a DeleteCategoryArgs) (graphql.ID, error) {
 				return r.DeleteCategory(ctx, a)
 			}),
 		),
 		graphql.Args[CategoryProductsArgs](),
 		graphql.Args[CreateCategoryArgs](),
+		graphql.Args[UpdateCategoryArgs](),
 		graphql.Args[DeleteCategoryArgs](),
 		graphql.Args[CategoryArgs](),
 	)

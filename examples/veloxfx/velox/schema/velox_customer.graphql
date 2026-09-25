@@ -40,6 +40,10 @@ type Customer @goModel(model: "github.com/syssam/graphql-go/examples/veloxfx/vel
 input CreateCustomerInput @goModel(model: "github.com/syssam/graphql-go/examples/veloxfx/velox/client/customer.CreateCustomerInput") {
   name: String!
   email: String!
-  orderIDs: [ID!]
+}
+
+input UpdateCustomerInput @goModel(model: "github.com/syssam/graphql-go/examples/veloxfx/velox/client/customer.UpdateCustomerInput") {
+  name: String
+  email: String
 }
 

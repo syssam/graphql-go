@@ -94,6 +94,20 @@ func (c *OrderCreate) SetNillableCustomerID(id *int) *OrderCreate {
 	return c
 }
 
+// SetWarehouseID sets the "warehouse" edge by id.
+func (c *OrderCreate) SetWarehouseID(id int) *OrderCreate {
+	c.mutation.SetWarehouseID(id)
+	return c
+}
+
+// SetNillableWarehouseID sets the "warehouse" edge by id if the given value is not nil.
+func (c *OrderCreate) SetNillableWarehouseID(id *int) *OrderCreate {
+	if id != nil {
+		c.SetWarehouseID(*id)
+	}
+	return c
+}
+
 // AddItemIDs adds the "items" edge by ids.
 func (c *OrderCreate) AddItemIDs(ids ...int) *OrderCreate {
 	c.mutation.AddItemIDs(ids...)
@@ -103,6 +117,12 @@ func (c *OrderCreate) AddItemIDs(ids ...int) *OrderCreate {
 // SetCustomer sets the "customer" edge to the given entity.
 func (c *OrderCreate) SetCustomer(v *entity.Customer) *OrderCreate {
 	c.SetCustomerID(v.ID)
+	return c
+}
+
+// SetWarehouse sets the "warehouse" edge to the given entity.
+func (c *OrderCreate) SetWarehouse(v *entity.Warehouse) *OrderCreate {
+	c.SetWarehouseID(v.ID)
 	return c
 }
 
@@ -188,6 +208,14 @@ func (c *OrderCreate) check() error {
 			Name:   "customer",
 		}
 	}
+	if len(c.mutation.WarehouseIDs()) == 0 {
+		return &runtime.ValidationError{
+			Entity: "Order",
+			Err:    errors.New("missing required edge \"Order.warehouse\""),
+			Field:  "warehouse",
+			Name:   "warehouse",
+		}
+	}
 	return nil
 }
 
@@ -249,6 +277,24 @@ func (c *OrderCreate) createSpec() (*entity.Order, *sqlgraph.CreateSpec) {
 			edge.Target.Nodes = append(edge.Target.Nodes, k)
 		}
 		_node.Edges.SetCustomer(&entity.Customer{ID: nodes[0]})
+		_spec.Edges = append(_spec.Edges, edge)
+	}
+	if nodes := c.mutation.WarehouseIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Bidi:    false,
+			Columns: []string{"warehouse_orders"},
+			Inverse: true,
+			Rel:     sqlgraph.M2O,
+			Table:   "orders",
+			Target: &sqlgraph.EdgeTarget{IDSpec: &sqlgraph.FieldSpec{
+				Column: "id",
+				Type:   field.TypeInt,
+			}},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_node.Edges.SetWarehouse(&entity.Warehouse{ID: nodes[0]})
 		_spec.Edges = append(_spec.Edges, edge)
 	}
 	if nodes := c.mutation.ItemsIDs(); len(nodes) > 0 {

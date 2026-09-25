@@ -4,20 +4,40 @@ package categoryclient
 
 // CreateCategoryInput represents a mutation input for creating categorys.
 type CreateCategoryInput struct {
-	Name       string `json:"name"`
-	ProductIDs []int  `json:"productIDs,omitempty"`
+	Name string `json:"name"`
 }
 
 // Mutate applies the CreateCategoryInput on the CategoryMutation builder.
 func (i *CreateCategoryInput) Mutate(m *CategoryMutation) {
 	m.SetName(i.Name)
-	if len(i.ProductIDs) > 0 {
-		m.AddProductIDs(i.ProductIDs...)
-	}
 }
 
 // SetInput applies the change-set in the CreateCategoryInput on the CategoryCreate builder.
 func (c *CategoryCreate) SetInput(i CreateCategoryInput) *CategoryCreate {
+	i.Mutate(c.Mutation())
+	return c
+}
+
+// UpdateCategoryInput represents a mutation input for updating categorys.
+type UpdateCategoryInput struct {
+	Name *string `json:"name,omitempty"`
+}
+
+// Mutate applies the UpdateCategoryInput on the CategoryMutation builder.
+func (i *UpdateCategoryInput) Mutate(m *CategoryMutation) {
+	if i.Name != nil {
+		m.SetName(*i.Name)
+	}
+}
+
+// SetInput applies the change-set in the UpdateCategoryInput on the CategoryUpdate builder.
+func (c *CategoryUpdate) SetInput(i UpdateCategoryInput) *CategoryUpdate {
+	i.Mutate(c.Mutation())
+	return c
+}
+
+// SetInput applies the change-set in the UpdateCategoryInput on the CategoryUpdateOne builder.
+func (c *CategoryUpdateOne) SetInput(i UpdateCategoryInput) *CategoryUpdateOne {
 	i.Mutate(c.Mutation())
 	return c
 }

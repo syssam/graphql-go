@@ -1,4 +1,6 @@
-# Hand-written beside velox's output.
+# Hand-written beside velox's output, which generates no mutation for Order:
+# every change to an order is one of these operations, and each checks the
+# state it moves from.
 
 extend type Order {
   "Sum of quantity times unit price over the items. velox has no such column."
@@ -18,19 +20,28 @@ input PlaceOrderItemInput {
 
 input PlaceOrderInput {
   customerID: ID!
-  "The warehouse every line is taken from."
+  "The warehouse every line is taken from, and returned to on cancellation."
   warehouseID: ID!
   items: [PlaceOrderItemInput!]!
 }
 
 extend type Mutation {
   """
-  Creates the order and its items at the product's current price, and takes
-  the quantities out of the warehouse's stock -- all or nothing. A line the
-  warehouse cannot cover fails the whole order and changes nothing.
+  Creates a PENDING order and its items at each product's current price, and
+  takes the quantities out of the warehouse's stock -- all or nothing. A line
+  the warehouse cannot cover fails the whole order and changes nothing.
   """
   placeOrder(input: PlaceOrderInput!): Order!
 
-  "Deletes the Order and its items together."
+  "PENDING to PAID."
+  payOrder(id: ID!): Order!
+
+  "PAID to SHIPPED."
+  shipOrder(id: ID!): Order!
+
+  "PENDING or PAID to CANCELLED, returning the items to the warehouse's stock."
+  cancelOrder(id: ID!): Order!
+
+  "Deletes a CANCELLED order and its items. Any other order is a record of a sale."
   deleteOrder(id: ID!): ID!
 }

@@ -8,10 +8,3 @@ type OrderItem @goModel(model: "github.com/syssam/graphql-go/examples/veloxfx/ve
   product: Product!
 }
 
-input CreateOrderItemInput @goModel(model: "github.com/syssam/graphql-go/examples/veloxfx/velox/client/orderitem.CreateOrderItemInput") {
-  quantity: Int!
-  unitPriceCents: Int!
-  orderID: ID!
-  productID: ID!
-}
-

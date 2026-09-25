@@ -155,6 +155,30 @@ func (c *OrderClient) QueryCustomer(v *entity.Order) entity.CustomerQuerier {
 	return tq.(entity.CustomerQuerier)
 }
 
+// QueryWarehouse queries the "warehouse" edge of a Order.
+func (c *OrderClient) QueryWarehouse(v *entity.Order) entity.WarehouseQuerier {
+	tq := runtime.NewEntityQuery("Warehouse", c.config)
+	tq.(interface {
+		SetInterStore(*entity.InterceptorStore)
+	}).SetInterStore(c.interStore)
+	_tp := runtime.EntityPolicy("Warehouse")
+	if _tp != nil {
+		if _sp, _ok := tq.(interface {
+			SetPolicy(velox.Policy)
+		}); _ok {
+			_sp.SetPolicy(_tp)
+		}
+	}
+	tq.(interface {
+		SetPath(func(context.Context) (*sql.Selector, error))
+	}).SetPath(func(ctx context.Context) (*sql.Selector, error) {
+		id := v.ID
+		step := sqlgraph.NewStep(sqlgraph.From(order.Table, order.FieldID, id), sqlgraph.To("warehouses", "id"), sqlgraph.Edge(sqlgraph.M2O, true, order.WarehouseTable, order.WarehouseColumn))
+		return sqlgraph.Neighbors(c.config.Driver.Dialect(), step), nil
+	})
+	return tq.(entity.WarehouseQuerier)
+}
+
 // QueryItems queries the "items" edge of a Order.
 func (c *OrderClient) QueryItems(v *entity.Order) entity.OrderItemQuerier {
 	tq := runtime.NewEntityQuery("OrderItem", c.config)

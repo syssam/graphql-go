@@ -12,6 +12,7 @@ type Order @goModel(model: "github.com/syssam/graphql-go/examples/veloxfx/velox/
   updatedAt: Time!
   status: OrderStatus!
   customer: Customer!
+  warehouse: Warehouse!
   items: [OrderItem!]!
 }
 
@@ -91,19 +92,5 @@ type OrderEdge @goModel(model: "github.com/syssam/graphql-go/examples/veloxfx/ve
   A cursor for use in pagination.
   """
   cursor: Cursor!
-}
-
-input CreateOrderInput @goModel(model: "github.com/syssam/graphql-go/examples/veloxfx/velox/client/order.CreateOrderInput") {
-  status: OrderStatus
-  customerID: ID!
-  itemIDs: [ID!]
-}
-
-input UpdateOrderInput @goModel(model: "github.com/syssam/graphql-go/examples/veloxfx/velox/client/order.UpdateOrderInput") {
-  status: OrderStatus
-  customerID: ID
-  clearItems: Boolean
-  addItemIDs: [ID!]
-  removeItemIDs: [ID!]
 }
 

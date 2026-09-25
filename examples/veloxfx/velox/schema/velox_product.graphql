@@ -109,8 +109,6 @@ input CreateProductInput @goModel(model: "github.com/syssam/graphql-go/examples/
   name: String!
   priceCents: Int!
   categoryID: ID!
-  stockIDs: [ID!]
-  orderItemIDs: [ID!]
 }
 
 input UpdateProductInput @goModel(model: "github.com/syssam/graphql-go/examples/veloxfx/velox/client/product.UpdateProductInput") {
@@ -118,11 +116,5 @@ input UpdateProductInput @goModel(model: "github.com/syssam/graphql-go/examples/
   name: String
   priceCents: Int
   categoryID: ID
-  clearStocks: Boolean
-  addStockIDs: [ID!]
-  removeStockIDs: [ID!]
-  clearOrderItems: Boolean
-  addOrderItemIDs: [ID!]
-  removeOrderItemIDs: [ID!]
 }
 

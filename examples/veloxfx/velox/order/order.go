@@ -100,6 +100,8 @@ const (
 	FieldStatus = "status"
 	// EdgeCustomer holds the string denoting the customer edge name in mutations.
 	EdgeCustomer = "customer"
+	// EdgeWarehouse holds the string denoting the warehouse edge name in mutations.
+	EdgeWarehouse = "warehouse"
 	// EdgeItems holds the string denoting the items edge name in mutations.
 	EdgeItems = "items"
 	// Table holds the table name of the Order in the database.
@@ -111,6 +113,13 @@ const (
 	CustomerInverseTable = "customers"
 	// CustomerColumn is the table column denoting the customer relation/edge.
 	CustomerColumn = "customer_orders"
+	// WarehouseTable is the table that holds the warehouse relation/edge.
+	WarehouseTable = "orders"
+	// WarehouseInverseTable is the table name for the Warehouse entity.
+	// It exists in this package in order to avoid circular dependency with the "warehouse" package.
+	WarehouseInverseTable = "warehouses"
+	// WarehouseColumn is the table column denoting the warehouse relation/edge.
+	WarehouseColumn = "warehouse_orders"
 	// ItemsTable is the table that holds the items relation/edge.
 	ItemsTable = "order_items"
 	// ItemsInverseTable is the table name for the OrderItem entity.
@@ -125,11 +134,11 @@ var Columns = []string{FieldID, FieldCreatedAt, FieldUpdatedAt, FieldStatus}
 
 // ForeignKeys holds the SQL foreign-keys that are owned by the "orders"
 // table and are not defined as standalone fields in the schema.
-var ForeignKeys = []string{"customer_orders"}
+var ForeignKeys = []string{"customer_orders", "warehouse_orders"}
 
 // columnSet holds the set of valid column names for O(1) lookups.
 var columnSet = func() map[string]struct{} {
-	s := make(map[string]struct{}, 5)
+	s := make(map[string]struct{}, 6)
 	for _, c := range Columns {
 		s[c] = struct{}{}
 	}
@@ -196,6 +205,13 @@ func ByCustomerField(field string, opts ...sql.OrderTermOption) OrderOption {
 	}
 }
 
+// ByWarehouseField orders the results by warehouse field.
+func ByWarehouseField(field string, opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newWarehouseStep(), sql.OrderByField(field, opts...))
+	}
+}
+
 // ByItemsCount orders the results by items count.
 func ByItemsCount(opts ...sql.OrderTermOption) OrderOption {
 	return func(s *sql.Selector) {
@@ -211,6 +227,9 @@ func ByItems(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
 }
 func newCustomerStep() *sqlgraph.Step {
 	return sqlgraph.NewStep(sqlgraph.From(Table, FieldID), sqlgraph.To(CustomerInverseTable, FieldID), sqlgraph.Edge(sqlgraph.M2O, true, CustomerTable, CustomerColumn))
+}
+func newWarehouseStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(sqlgraph.From(Table, FieldID), sqlgraph.To(WarehouseInverseTable, FieldID), sqlgraph.Edge(sqlgraph.M2O, true, WarehouseTable, WarehouseColumn))
 }
 func newItemsStep() *sqlgraph.Step {
 	return sqlgraph.NewStep(sqlgraph.From(Table, FieldID), sqlgraph.To(ItemsInverseTable, FieldID), sqlgraph.Edge(sqlgraph.O2M, false, ItemsTable, ItemsColumn))
@@ -247,6 +266,11 @@ func OrderBy(o ...func(*sql.Selector)) runtime.LoadOption {
 // WithCustomer returns a LoadOption that eager-loads the "customer" edge.
 func WithCustomer(opts ...runtime.LoadOption) runtime.LoadOption {
 	return runtime.WithEdge("customer", opts...)
+}
+
+// WithWarehouse returns a LoadOption that eager-loads the "warehouse" edge.
+func WithWarehouse(opts ...runtime.LoadOption) runtime.LoadOption {
+	return runtime.WithEdge("warehouse", opts...)
 }
 
 // WithItems returns a LoadOption that eager-loads the "items" edge.

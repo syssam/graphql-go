@@ -19,6 +19,17 @@ func (m *Order) Customer(ctx context.Context) (*Customer, error) {
 	}
 	return result, runtime.MaskNotFound(err)
 }
+func (m *Order) Warehouse(ctx context.Context) (*Warehouse, error) {
+	result, err := m.Edges.WarehouseOrErr()
+	if runtime.IsNotLoaded(err) {
+		val, err2 := m.QueryWarehouse().Only(ctx)
+		if err2 != nil {
+			return nil, runtime.MaskNotFound(err2)
+		}
+		return val, nil
+	}
+	return result, runtime.MaskNotFound(err)
+}
 func (m *Order) Items(ctx context.Context) ([]*OrderItem, error) {
 	result, err := m.Edges.ItemsOrErr()
 	if runtime.IsNotLoaded(err) {

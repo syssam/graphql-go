@@ -55,6 +55,9 @@ input CategoryWhereInput @goModel(model: "github.com/syssam/graphql-go/examples/
 
 input CreateCategoryInput @goModel(model: "github.com/syssam/graphql-go/examples/veloxfx/velox/client/category.CreateCategoryInput") {
   name: String!
-  productIDs: [ID!]
+}
+
+input UpdateCategoryInput @goModel(model: "github.com/syssam/graphql-go/examples/veloxfx/velox/client/category.UpdateCategoryInput") {
+  name: String
 }
 

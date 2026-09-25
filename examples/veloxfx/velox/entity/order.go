@@ -19,22 +19,24 @@ import (
 
 // Order is the model entity for the Order schema.
 type Order struct {
-	ID              int          `json:"id,omitempty"`
-	CreatedAt       time.Time    `json:"created_at,omitempty"`
-	UpdatedAt       time.Time    `json:"updated_at,omitempty"`
-	Status          order.Status `json:"status,omitempty"`
-	customer_orders *int
-	config          runtime.Config
-	selectValues    sql.SelectValues
-	Edges           OrderEdges `json:"edges"`
+	ID               int          `json:"id,omitempty"`
+	CreatedAt        time.Time    `json:"created_at,omitempty"`
+	UpdatedAt        time.Time    `json:"updated_at,omitempty"`
+	Status           order.Status `json:"status,omitempty"`
+	customer_orders  *int
+	warehouse_orders *int
+	config           runtime.Config
+	selectValues     sql.SelectValues
+	Edges            OrderEdges `json:"edges"`
 }
 
 // OrderEdges holds the relations/edges for the Order entity.
 type OrderEdges struct {
 	Customer    *Customer    `json:"customer,omitempty"`
+	Warehouse   *Warehouse   `json:"warehouse,omitempty"`
 	Items       []*OrderItem `json:"items,omitempty"`
 	namedItems  map[string][]*OrderItem
-	loadedTypes [2]bool
+	loadedTypes [3]bool
 	totalCount  map[string]int
 }
 
@@ -75,9 +77,46 @@ func (e OrderEdges) GetCustomer() any {
 	return e.Customer
 }
 
+// WarehouseOrErr returns the warehouse value or an error if the edge was not loaded.
+func (e OrderEdges) WarehouseOrErr() (*Warehouse, error) {
+	if e.loadedTypes[1] {
+		return e.Warehouse, nil
+	}
+	return nil, runtime.NewNotLoadedError("warehouse")
+}
+
+// SetWarehouse stores the warehouse edge value and marks it as loaded.
+func (e *OrderEdges) SetWarehouse(v *Warehouse) {
+	e.Warehouse = v
+	e.loadedTypes[1] = true
+}
+
+// WarehouseLoaded reports whether the warehouse edge was loaded.
+func (e OrderEdges) WarehouseLoaded() bool {
+	return e.loadedTypes[1]
+}
+
+// MarkWarehouseLoaded marks the warehouse edge as loaded, even if empty.
+func (e *OrderEdges) MarkWarehouseLoaded() {
+	e.loadedTypes[1] = true
+}
+
+// SetWarehouseAny sets the warehouse edge from an any value (used by runtime edge loading).
+func (e *OrderEdges) SetWarehouseAny(v any) {
+	if v != nil {
+		e.Warehouse = v.(*Warehouse)
+	}
+	e.loadedTypes[1] = true
+}
+
+// GetWarehouse returns the warehouse edge value as any (for runtime edge loading).
+func (e OrderEdges) GetWarehouse() any {
+	return e.Warehouse
+}
+
 // ItemsOrErr returns the items value or an error if the edge was not loaded.
 func (e OrderEdges) ItemsOrErr() ([]*OrderItem, error) {
-	if e.loadedTypes[1] {
+	if e.loadedTypes[2] {
 		return e.Items, nil
 	}
 	return nil, runtime.NewNotLoadedError("items")
@@ -86,17 +125,17 @@ func (e OrderEdges) ItemsOrErr() ([]*OrderItem, error) {
 // SetItems stores the items edge value and marks it as loaded.
 func (e *OrderEdges) SetItems(v []*OrderItem) {
 	e.Items = v
-	e.loadedTypes[1] = true
+	e.loadedTypes[2] = true
 }
 
 // ItemsLoaded reports whether the items edge was loaded.
 func (e OrderEdges) ItemsLoaded() bool {
-	return e.loadedTypes[1]
+	return e.loadedTypes[2]
 }
 
 // MarkItemsLoaded marks the items edge as loaded, even if empty.
 func (e *OrderEdges) MarkItemsLoaded() {
-	e.loadedTypes[1] = true
+	e.loadedTypes[2] = true
 }
 
 // SetItemsAny sets the items edge from an any value (used by runtime edge loading).
@@ -107,7 +146,7 @@ func (e *OrderEdges) SetItemsAny(v any) {
 		typed[i] = c.(*OrderItem)
 	}
 	e.Items = typed
-	e.loadedTypes[1] = true
+	e.loadedTypes[2] = true
 }
 
 // GetItems returns the items edge value as any (for runtime edge loading).
@@ -147,6 +186,8 @@ func (*Order) ScanValues(columns []string) ([]any, error) {
 		case "created_at", "updated_at":
 			values[i] = new(sql.NullTime)
 		case "customer_orders":
+			values[i] = new(sql.NullInt64)
+		case "warehouse_orders":
 			values[i] = new(sql.NullInt64)
 		default:
 			values[i] = new(sql.UnknownType)
@@ -204,6 +245,15 @@ func (e *Order) AssignValues(columns []string, values []any) error {
 					*e.customer_orders = int(value.Int64)
 				}
 			}
+		case "warehouse_orders":
+			if value, ok := values[i].(*sql.NullInt64); !ok {
+				return fmt.Errorf("unexpected type %T for field warehouse_orders", values[i])
+			} else {
+				if value.Valid {
+					e.warehouse_orders = new(int)
+					*e.warehouse_orders = int(value.Int64)
+				}
+			}
 		default:
 			e.selectValues.Set(columns[i], values[i])
 		}
@@ -222,6 +272,8 @@ func (e *Order) FKValue(column string) any {
 	switch column {
 	case "customer_orders":
 		return e.customer_orders
+	case "warehouse_orders":
+		return e.warehouse_orders
 	default:
 		return nil
 	}
@@ -309,6 +361,34 @@ func (_e *Order) QueryCustomer() CustomerQuerier {
 	return tq.(CustomerQuerier)
 }
 
+// QueryWarehouse queries the "warehouse" edge of the Order.
+func (_e *Order) QueryWarehouse() WarehouseQuerier {
+	tq := runtime.NewEntityQuery("Warehouse", _e.config)
+	_is, _ := _e.config.InterStore.(*InterceptorStore)
+	if _is == nil {
+		_is = &InterceptorStore{}
+	}
+	tq.(interface {
+		SetInterStore(*InterceptorStore)
+	}).SetInterStore(_is)
+	_tp := runtime.EntityPolicy("Warehouse")
+	if _tp != nil {
+		if _sp, _ok := tq.(interface {
+			SetPolicy(velox.Policy)
+		}); _ok {
+			_sp.SetPolicy(_tp)
+		}
+	}
+	tq.(interface {
+		SetPath(func(context.Context) (*sql.Selector, error))
+	}).SetPath(func(ctx context.Context) (*sql.Selector, error) {
+		id := _e.ID
+		step := sqlgraph.NewStep(sqlgraph.From("orders", "id", id), sqlgraph.To("warehouses", "id"), sqlgraph.Edge(sqlgraph.M2O, true, "orders", "warehouse_orders"))
+		return sqlgraph.Neighbors(_e.config.Driver.Dialect(), step), nil
+	})
+	return tq.(WarehouseQuerier)
+}
+
 // QueryItems queries the "items" edge of the Order.
 func (_e *Order) QueryItems() OrderItemQuerier {
 	tq := runtime.NewEntityQuery("OrderItem", _e.config)
@@ -355,6 +435,7 @@ type OrderQuerier interface {
 	Order(o ...func(*sql.Selector)) OrderQuerier
 	Unique(unique bool) OrderQuerier
 	WithCustomer(opts ...func(CustomerQuerier)) OrderQuerier
+	WithWarehouse(opts ...func(WarehouseQuerier)) OrderQuerier
 	WithItems(opts ...func(OrderItemQuerier)) OrderQuerier
 	Select(fields ...string) OrderSelector
 	Modify(modifiers ...func(*sql.Selector)) OrderQuerier

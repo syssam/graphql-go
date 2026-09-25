@@ -3,8 +3,11 @@
 package entity
 
 import (
+	"cmp"
 	"context"
 
+	"github.com/syssam/graphql-go/examples/veloxfx/velox/filter"
+	"github.com/syssam/velox/contrib/graphql/gqlrelay"
 	"github.com/syssam/velox/runtime"
 )
 
@@ -14,4 +17,23 @@ func (m *Warehouse) Stocks(ctx context.Context) ([]*Stock, error) {
 		return m.QueryStocks().All(ctx)
 	}
 	return result, err
+}
+func (m *Warehouse) Orders(ctx context.Context, after *gqlrelay.Cursor, first *int, before *gqlrelay.Cursor, last *int, orderBy *OrderOrder, where *filter.OrderWhereInput) (*OrderConnection, error) {
+	if nodes, err := m.Edges.OrdersOrErr(); err == nil && where == nil && after == nil && before == nil && orderBy == nil {
+		page, err := gqlrelay.PageLoaded(nodes, func(a, b *Order) int {
+			return cmp.Compare(a.ID, b.ID)
+		}, first, last)
+		if err != nil {
+			return nil, err
+		}
+		conn := BuildOrderConnection(page.Nodes, page.TotalCount, nil, nil, nil, nil, nil)
+		conn.PageInfo.HasNextPage = page.HasNextPage
+		conn.PageInfo.HasPreviousPage = page.HasPreviousPage
+		return conn, nil
+	}
+	opts := []OrderPaginateOption{WithOrderOrder(orderBy)}
+	if where != nil {
+		opts = append(opts, WithOrderFilter(where.Filter))
+	}
+	return m.QueryOrders().(OrderPaginatable).Paginate(ctx, after, first, before, last, opts...)
 }

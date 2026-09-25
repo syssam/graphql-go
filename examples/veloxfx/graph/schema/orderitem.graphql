@@ -1,11 +1,6 @@
-# Hand-written beside velox's output, which has no single-row query and no
-# delete. Named after the entity, so both land in the orderitem group.
+# Hand-written beside velox's output. An order line has no mutations of its
+# own: placeOrder writes it and deleteOrder removes it with its order.
 extend type Query {
   "The OrderItem with this id, or null if there is none."
   orderItem(id: ID!): OrderItem
-}
-
-extend type Mutation {
-  "Deletes the OrderItem and returns its id. Refused while other rows refer to it."
-  deleteOrderItem(id: ID!): ID!
 }

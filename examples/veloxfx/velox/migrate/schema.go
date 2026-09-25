@@ -69,6 +69,9 @@ var OrderColumns = []*schema.Column{{
 }, {
 	Name: "customer_orders",
 	Type: field.TypeInt,
+}, {
+	Name: "warehouse_orders",
+	Type: field.TypeInt,
 }}
 
 // OrderTable holds the schema information for the "orders" table.
@@ -79,6 +82,11 @@ var OrderTable = &schema.Table{
 		OnDelete:   schema.NoAction,
 		RefColumns: []*schema.Column{CustomerColumns[0]},
 		Symbol:     "orders_customers_orders",
+	}, {
+		Columns:    []*schema.Column{OrderColumns[5]},
+		OnDelete:   schema.NoAction,
+		RefColumns: []*schema.Column{WarehouseColumns[0]},
+		Symbol:     "orders_warehouses_orders",
 	}},
 	Indexes:    nil,
 	Name:       "orders",
@@ -187,7 +195,11 @@ var StockTable = &schema.Table{
 		RefColumns: []*schema.Column{ProductColumns[0]},
 		Symbol:     "stocks_products_stocks",
 	}},
-	Indexes:    nil,
+	Indexes: []*schema.Index{{
+		Columns: []*schema.Column{StockColumns[2], StockColumns[3]},
+		Name:    "stock_warehouse_stocks_product_stocks",
+		Unique:  true,
+	}},
 	Name:       "stocks",
 	PrimaryKey: []*schema.Column{StockColumns[0]},
 }
@@ -217,6 +229,7 @@ var Tables = []*schema.Table{CategoryTable, CustomerTable, OrderTable, OrderItem
 
 func init() {
 	OrderTable.ForeignKeys[0].RefTable = CustomerTable
+	OrderTable.ForeignKeys[1].RefTable = WarehouseTable
 	OrderItemTable.ForeignKeys[0].RefTable = OrderTable
 	OrderItemTable.ForeignKeys[1].RefTable = ProductTable
 	ProductTable.ForeignKeys[0].RefTable = CategoryTable

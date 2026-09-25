@@ -13,9 +13,3 @@ input CreateStockInput @goModel(model: "github.com/syssam/graphql-go/examples/ve
   productID: ID!
 }
 
-input UpdateStockInput @goModel(model: "github.com/syssam/graphql-go/examples/veloxfx/velox/client/stock.UpdateStockInput") {
-  quantity: Int
-  warehouseID: ID
-  productID: ID
-}
-

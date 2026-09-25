@@ -42,6 +42,26 @@ func HasCustomerWith(preds ...predicate.Customer) predicate.Order {
 	})
 }
 
+// HasWarehouse applies the HasEdge predicate on the "warehouse" edge.
+func HasWarehouse() predicate.Order {
+	return predicate.Order(func(s *sql.Selector) {
+		step := sqlgraph.NewStep(sqlgraph.From(Table, FieldID), sqlgraph.Edge(sqlgraph.M2O, true, WarehouseTable, WarehouseColumn))
+		sqlgraph.HasNeighbors(s, step)
+	})
+}
+
+// HasWarehouseWith applies the HasEdge predicate on the "warehouse" edge with a given conditions (other predicates).
+func HasWarehouseWith(preds ...predicate.Warehouse) predicate.Order {
+	return predicate.Order(func(s *sql.Selector) {
+		step := newWarehouseStep()
+		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
+			for _, p := range preds {
+				p(s)
+			}
+		})
+	})
+}
+
 // HasItems applies the HasEdge predicate on the "items" edge.
 func HasItems() predicate.Order {
 	return predicate.Order(func(s *sql.Selector) {

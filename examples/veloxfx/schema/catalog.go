@@ -7,7 +7,15 @@
 //	sales      Customer, Order, OrderItem
 //	inventory  Warehouse, Stock
 //
-// OrderItem.product and Stock.product cross from one domain into another.
+// OrderItem.product, Stock.product and Order.warehouse cross from one domain
+// into another.
+//
+// What velox would generate is not what the API should offer. Its create and
+// update mutations write any column and any edge, so the entities whose rows
+// carry business rules -- an order's status, an item's price, a stock count --
+// get none, and their changes are hand-written operations in sdl/. The
+// others keep velox's create and update, minus the edges that would let a
+// client move rows between parents (graphql.Skip(graphql.SkipInputs)).
 package schema
 
 import (
@@ -28,7 +36,7 @@ func (Category) Fields() []velox.Field {
 
 func (Category) Edges() []velox.Edge {
 	return []velox.Edge{
-		edge.To("products", Product.Type),
+		edge.To("products", Product.Type).Annotations(graphql.Skip(graphql.SkipInputs)),
 	}
 }
 
@@ -38,7 +46,7 @@ func (Category) Annotations() []schema.Annotation {
 		// category: hasCategoryWith takes a CategoryWhereInput.
 		graphql.WhereInputFields("name"),
 		graphql.QueryField(),
-		graphql.Mutations(graphql.MutationCreate()),
+		graphql.Mutations(graphql.MutationCreate(), graphql.MutationUpdate()),
 	}
 }
 
@@ -57,8 +65,10 @@ func (Product) Fields() []velox.Field {
 func (Product) Edges() []velox.Edge {
 	return []velox.Edge{
 		edge.From("category", Category.Type).Ref("products").Unique().Required(),
-		edge.To("stocks", Stock.Type),
-		edge.To("order_items", OrderItem.Type),
+		// Stock and order lines belong to the product; they are created
+		// through their own operations, never attached by id.
+		edge.To("stocks", Stock.Type).Annotations(graphql.Skip(graphql.SkipInputs)),
+		edge.To("order_items", OrderItem.Type).Annotations(graphql.Skip(graphql.SkipInputs)),
 	}
 }
 
