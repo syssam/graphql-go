@@ -43,8 +43,15 @@ func NewEcho(exec *graphql.Executor, d *drain.Drain) *echo.Echo {
 	return e
 }
 
-// timeout is ReadHeaderTimeout, and the bound on shutdown.
+// timeout is ReadHeaderTimeout.
 const timeout = 5 * time.Second
+
+// shutdownTimeout bounds OnStop. It must exceed five seconds: http.Server
+// gives a connection that was opened but has sent nothing that long before
+// Shutdown counts it idle, in case a request is on its way, and clients --
+// load balancers, browsers, Go's own Transport under concurrency -- open
+// such connections ahead of need. At five, one of them failed every stop.
+const shutdownTimeout = 10 * time.Second
 
 // Server is the listening half, kept apart from NewEcho so that a test can
 // take the routes without a socket.
@@ -83,11 +90,16 @@ func NewServer(lc fx.Lifecycle, sd fx.Shutdowner, cfg Config, e *echo.Echo, d *d
 		// every handler to return, and an SSE stream or a WebSocket returns
 		// only when the drain ends it.
 		OnStop: func(ctx context.Context) error {
-			ctx, cancel := context.WithTimeout(ctx, timeout)
+			ctx, cancel := context.WithTimeout(ctx, shutdownTimeout)
 			defer cancel()
 			drained := make(chan error, 1)
 			go func() { drained <- d.Shutdown(ctx) }()
 			err := s.srv.Shutdown(ctx)
+			if err != nil {
+				// Out of time: close what is left rather than leave it open
+				// under a process that is about to exit, and still report it.
+				err = errors.Join(err, s.srv.Close())
+			}
 			return errors.Join(<-drained, err)
 		},
 	})

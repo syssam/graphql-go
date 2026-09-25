@@ -28,3 +28,14 @@ rootFields: returnType
 # which is the case graphql.ZeroForNull exists for. Without it NewSchema
 # refuses the binding, as it should for a bool whose false means something.
 zeroForNullInputs: true
+# Each group's Resolver is implemented by a type in its domain package. A
+# method the type does not have yet is written as a stub into
+# internal/<domain>/<group>.resolvers.go; methods that exist are never touched.
+scaffold:
+  category:  internal/catalog.CategoryResolver
+  product:   internal/catalog.ProductResolver
+  customer:  internal/sales.CustomerResolver
+  order:     internal/sales.OrderResolver
+  orderitem: internal/sales.OrderItemResolver
+  warehouse: internal/inventory.WarehouseResolver
+  stock:     internal/inventory.StockResolver

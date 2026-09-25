@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxtest"
@@ -88,6 +90,10 @@ func start(t *testing.T, opts ...fx.Option) *app {
 	}, opts...)...)
 	a.RequireStart()
 	t.Cleanup(a.RequireStop)
+	// Runs first: connections the client opened ahead of need would make
+	// every stop wait out http.Server's grace for them. The server handles
+	// that (TestStopWaitsOutAnUnusedConnection); tests need not pay for it.
+	t.Cleanup(http.DefaultClient.CloseIdleConnections)
 	return &app{t: t, url: "http://" + srv.Addr() + "/graphql"}
 }
 
@@ -201,7 +207,9 @@ func TestTheAPIOffersOperationsNotRawWrites(t *testing.T) {
 	for _, input := range []string{"CreateCategoryInput", "UpdateCategoryInput", "CreateProductInput", "UpdateProductInput",
 		"CreateCustomerInput", "UpdateCustomerInput", "CreateWarehouseInput", "UpdateWarehouseInput"} {
 		got := a.data(fmt.Sprintf(`{ __type(name: %q) { inputFields { name } } }`, input))
-		for _, bad := range []string{`IDs"`, `"clear`, `"add`, `"remove`} {
+		// A list of ids, or adding and removing by id, attaches existing rows. A
+		// nullable edge's clearX sets the row's own foreign key and is allowed.
+		for _, bad := range []string{`IDs"`, `"add`, `"remove`} {
 			if strings.Contains(got, bad) {
 				t.Errorf("%s lets a client move rows between parents: %s", input, got)
 			}
@@ -565,5 +573,33 @@ func BenchmarkNewSchema(b *testing.B) {
 		if err := graph.ValidateSchema(scalars); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// A client that opens a connection and sends nothing -- a load balancer's
+// warm pool, Go's Transport under concurrency -- holds up http.Server's
+// Shutdown for five seconds, in case a request is on its way. With the stop
+// bounded at five, that failed every stop; shutdownTimeout is longer.
+func TestStopWaitsOutAnUnusedConnection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out http.Server's five-second grace")
+	}
+	var srv *Server
+	a := fxtest.New(t,
+		Module,
+		fx.Supply(Config{Addr: "127.0.0.1:0", DSN: dsn(t)}),
+		fx.Populate(&srv),
+		fx.NopLogger,
+	)
+	a.RequireStart()
+	conn, err := net.Dial("tcp", srv.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	start := time.Now()
+	a.RequireStop()
+	if d := time.Since(start); d >= shutdownTimeout {
+		t.Errorf("stop took %v, the whole shutdownTimeout", d)
 	}
 }

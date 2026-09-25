@@ -219,7 +219,7 @@ output. Seven entities in three domains:
     velox/schema/*.graphql + sdl/ --go tool gqlc-->          graph/<entity>/ (Resolver, Bindings)
 
 The second step is the same `gqlc` every other example uses, configured in
-`gqlc.yaml`. Four of its keys are what an ORM's output needs:
+`gqlc.yaml`. Five of its keys are what an ORM-backed service needs:
 
 | Key | Why |
 |---|---|
@@ -227,6 +227,7 @@ The second step is the same `gqlc` every other example uses, configured in
 | `autoBind: [./velox/entity]` | fields velox's structs and edge methods already answer are bound to them; `Order.customer` calls velox's `Order.Customer(ctx)` |
 | `groups` | `velox_product.graphql` and `sdl/product.graphql` are the product group; velox's shared file is root |
 | `rootFields: returnType` | velox declares every root field in the shared file; `createProduct` goes beside `Product` instead of into root |
+| `scaffold` | each group's implementing type; a method it lacks is written as a stub, one it has is never touched |
 
 What is left in each group's `Resolver` is that entity's roots and mutations,
 its `id` (velox keys rows by `int`, and `ID` is a string on the wire), and
@@ -251,66 +252,72 @@ This is the loop a developer runs, done for real on a copy of the example --
 adding a `Supplier` to the inventory domain, with `Product.supplier` pointing
 at it. The outputs are what it printed.
 
-**1. Declare it in the velox schema.** A `Supplier` type in
-`schema/inventory.go` (21 lines), and one edge on `Product`:
+**1. Declare it.** A `Supplier` type in `schema/inventory.go` (21 lines), one
+edge on `Product`:
 
 ```go
 edge.From("supplier", Supplier.Type).Ref("products").Unique(),
 ```
 
-**2. `go generate`** (about 9 s: velox from a clean directory, then gqlc). A new
-group appears:
+and one line in `gqlc.yaml` saying which type implements the new group:
 
-    graph/supplier/generated.go
-
-and `Product.supplier` is already bound, because velox generated the edge
-method and AutoBind found it:
-
-```go
-graphql.Resolve("supplier", func(ctx context.Context, v *entity.Product) (*entity.Supplier, error) { return v.Supplier(ctx) }),
+```yaml
+scaffold:
+  supplier:  internal/inventory.SupplierResolver
 ```
 
-**3. `go build` passes.** Nothing refers to the new group yet.
-
-**4. `go test` says what is missing**, at start, before any request:
-
-    failed to build *graphql.Schema: ... graphql: field Product.supplier: type Supplier has no Object binding
-
-fx prints the whole constructor chain above it; the line that matters is the
-last one.
-
-**5. Implement the interface gqlc wrote** in `graph/supplier/generated.go`:
+**2. `go generate`** (about 6 s: velox from a clean directory, then gqlc).
+Besides `graph/supplier`, gqlc writes the implementation's stubs, because
+`SupplierResolver` has none of the methods the group's interface asks for --
+`internal/inventory/supplier.resolvers.go`:
 
 ```go
-type Resolver interface {
-	CreateSupplier(ctx context.Context, args CreateSupplierArgs) (*entity.Supplier, error)
-	Suppliers(ctx context.Context) ([]*entity.Supplier, error)
-	SupplierID(ctx context.Context, obj *entity.Supplier) (graphql.ID, error)
-	SupplierProducts(ctx context.Context, obj *entity.Supplier, args SupplierProductsArgs) (*entity.ProductConnection, error)
+// SupplierResolver implements the supplier group's Resolver.
+type SupplierResolver struct{}
+
+var _ suppliergql.Resolver = (*SupplierResolver)(nil)
+
+// CreateSupplier resolves Mutation.createSupplier.
+func (r *SupplierResolver) CreateSupplier(ctx context.Context, args suppliergql.CreateSupplierArgs) (*entity.Supplier, error) {
+	panic("not implemented: Mutation.createSupplier")
+}
+
+// ... UpdateSupplier, Suppliers, SupplierID ...
+
+// SupplierProducts resolves Supplier.products.
+func (r *SupplierResolver) SupplierProducts(ctx context.Context, obj *entity.Supplier, args suppliergql.SupplierProductsArgs) (*entity.ProductConnection, error) {
+	panic("not implemented: Supplier.products")
 }
 ```
 
-`Supplier.products` is a connection, because `Product` is one, and its
-`orderBy` needs converting. `internal/orderby` holds that conversion for
-every domain, so the whole method is a hand-off to velox's edge method:
+`Product.supplier` needs no stub: velox generated the edge method and
+AutoBind bound it. Nothing is written for the seven existing groups, whose
+methods all exist.
+
+**3. `go build` passes**, stubs and all.
+
+**4. `go test` says what is missing**, at start, before any request:
+
+    failed to build *graphql.Schema: ... graphql: type Supplier has no Object binding
+
+The group is not registered yet. fx prints the whole constructor chain above
+it; the line that matters is the last one.
+
+**5. Fill in the bodies and register the group.** The stub file is the
+developer's from here on: a client field and constructor on the type, a body
+for each method --
 
 ```go
-func (r *SupplierResolver) SupplierProducts(ctx context.Context, s *entity.Supplier, args suppliergql.SupplierProductsArgs) (*entity.ProductConnection, error) {
+func (r *SupplierResolver) SupplierProducts(ctx context.Context, obj *entity.Supplier, args suppliergql.SupplierProductsArgs) (*entity.ProductConnection, error) {
 	order, err := orderby.Product(args.OrderBy)
 	if err != nil {
 		return nil, err
 	}
-	return s.Products(ctx, args.After, args.First, args.Before, args.Last, order, args.Where)
+	return obj.Products(ctx, args.After, args.First, args.Before, args.Last, order, args.Where)
 }
 ```
 
-That was found the real way, twice: the first attempt called catalog's
-conversion, which was unexported, and the build said so; exporting it from
-catalog later made sales and inventory import each other, which is why it
-now has a package of its own.
-
-Implement the rest in `internal/inventory`, and register it -- one
-constructor and one line:
+-- and two lines in `internal/inventory`'s Module:
 
 ```go
 fx.Provide(NewWarehouseResolver, NewStockResolver, NewSupplierResolver),
@@ -318,13 +325,21 @@ fx.Provide(NewWarehouseResolver, NewStockResolver, NewSupplierResolver),
 resolve.Bindings(func(r *SupplierResolver) graphql.SchemaOption { return suppliergql.Bindings(r) }),
 ```
 
-**6. Green**, and it answers:
+**6. Green.** Running `go generate` again leaves the filled-in file byte for
+byte as it was; a field added to the SDL later arrives as one new stub at its
+end.
 
-    $ curl ... '{ suppliers { name products(orderBy: {field: PRICE}) { totalCount edges { node { sku } } } } }'
-    {"data":{"suppliers":[{"name":"Keychron","products":{"totalCount":1,"edges":[{"node":{"sku":"kb-1"}}]}}]}}
+About 48 lines written by hand in all: 22 of schema, 4 of configuration and
+wiring, 21 of method bodies and the constructor, and one in
+`TestEveryEntityIsItsOwnGroup`, which pins the group list and needed the new
+name too. No signature was typed by hand.
 
-55 lines written by hand in all, three of them wiring. `TestEveryEntityIsItsOwnGroup`
-pins the group list and needed the new name too, which is what it is for.
+The first time through, before gqlc scaffolded, the same entity took 55 lines
+and each signature was copied out of the generated interface. Two things were
+found on the way that the code now reflects: the orderBy conversion has to
+live outside any one domain, or domains import each other, and the check that
+no input attaches rows by id was too broad -- it refused `clearSupplier`, a
+product clearing its own foreign key.
 
 ### The cases a real service has
 
