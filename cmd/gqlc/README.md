@@ -85,7 +85,10 @@ Each missing method becomes a stub with the interface's exact signature and a
 `internal/catalog/product.resolvers.go`; a new file opens with the type, if it
 does not exist yet, and `var _ productgql.Resolver = (*ProductResolver)(nil)`.
 A method that exists is never touched, whichever file declares it, and a run
-with nothing new changes nothing. The implementation's package is parsed, not
+with nothing new changes nothing. A method whose field the SDL dropped still
+compiles, so gqlc names it instead (`gqlc: scaffold product: ... has methods
+the product Resolver does not: ProductWeight`); only exported methods are
+named, and nothing is deleted. The implementation's package is parsed, not
 loaded, so gqlc still type-checks no Go code of yours. With one group, the key
 is the output package's name.
 

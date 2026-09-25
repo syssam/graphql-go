@@ -268,13 +268,17 @@ is where gqlgen's stub generation was the better experience. It parses the targe
 `<group>.resolvers.go`, and opens a new file with `var _ Resolver = (*T)(nil)` so a signature
 the SDL changes is a compile error next to the stubs. The signatures come from
 `resolverSignatures`, the same function that renders the interface, so the two cannot differ.
-It never edits or removes an existing method; a stale one is the compiler's to report. The
+It never edits or removes an existing method. A changed signature is the compiler's to report;
+a *removed* field's method still compiles, so `reportStale` names every exported method the
+Resolver lacks as a note (`TestScaffoldNamesMethodsTheResolverNoLongerHas`, which fails with
+either the exported filter or the interface check removed -- the first version's `HasPrefix`
+assertion passed with the filter gone). The
 first version imported the group package unconditionally and did not compile when the type
 was declared elsewhere and no stub took args -- `TestScaffoldKeepsWhatExists` builds that case.
 Four breaks (ignore existing methods, overwrite instead of append, not called, no group check)
 each fail a `TestScaffold*` test.
 
-One SDL group stays flat in `Output`; two or more become subpackages plus a `Resolvers` struct, with models split the same way (`model/<group>/`) so a one-group edit
+One SDL group stays flat in `Output`; two or more become subpackages, each registered by its own `Bindings`, with models split the same way (`model/<group>/`) so a one-group edit
 does not invalidate every other group's compiled package — except when two groups' input
 objects reference each other, which would be an import cycle and falls back to one shared
 `model` package (`modelGroupsAcyclic`). Generated files are strings run through `go/format` (not Jennifer), and

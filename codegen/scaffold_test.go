@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -211,5 +212,50 @@ func TestScaffoldFlatUsesThePackageName(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("lacks %q\n%s", want, got)
 		}
+	}
+}
+
+// A field removed from the SDL leaves its method behind, and it compiles:
+// the var _ Resolver assertion checks only what the interface asks for. The
+// run that removed it is the one moment anything knows, so it says so.
+// Unexported methods are the implementation's own helpers and are not named.
+func TestScaffoldNamesMethodsTheResolverNoLongerHas(t *testing.T) {
+	dir, _ := scaffoldModule(t, nil)
+	handWritten := `package impl
+
+import "context"
+
+type UserResolver struct{}
+
+func (r *UserResolver) UserFriends(context.Context) error { return nil }
+func (r *UserResolver) Users(context.Context) error      { return nil }
+func (r *UserResolver) cache()                          {}
+func (UserResolver) Archived()                          {}
+`
+	if err := os.MkdirAll(filepath.Join(dir, "impl"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "impl", "user.go"), []byte(handWritten), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var notes []string
+	err := Generate(context.Background(), Config{
+		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"},
+		Output: "graph", Package: "hello/graph",
+		Scaffold: map[string]string{"user": "impl.UserResolver"},
+		Notef:    func(format string, args ...any) { notes = append(notes, fmt.Sprintf(format, args...)) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stale []string
+	for _, n := range notes {
+		if strings.Contains(n, "UserResolver") {
+			stale = append(stale, n)
+		}
+	}
+	want := "scaffold user: impl.UserResolver has methods the user Resolver does not: Archived, UserFriends. If"
+	if len(stale) != 1 || !strings.HasPrefix(stale[0], want) {
+		t.Fatalf("notes = %q\nwant one starting %q", notes, want)
 	}
 }

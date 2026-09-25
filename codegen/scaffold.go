@@ -26,7 +26,8 @@ import (
 // one type, nothing type-checked and nothing loaded, which keeps the promise
 // that gqlc loads no Go packages unless AutoBind asks. It never edits or
 // removes a method that exists. A method whose signature no longer matches is
-// the compiler's to report, through the var _ Resolver assertion.
+// the compiler's to report, through the var _ Resolver assertion; one whose
+// field is gone still compiles, so reportStale names it.
 
 // scaffold writes stubs for every group Config.Scaffold names. Groups the
 // schema does not have, or that have no Resolver, are errors: a typo there
@@ -81,8 +82,10 @@ func (b *builder) scaffoldGroup(name, group, target string) error {
 		groupImport += "/" + group
 	}
 	alias := identFrom(name) + "gql"
+	sigs := b.resolverSignatures(group, alias+".")
+	b.reportStale(name, target, have, sigs)
 	var stubs strings.Builder
-	for _, m := range b.resolverSignatures(group, alias+".") {
+	for _, m := range sigs {
 		if have[m.name] {
 			continue
 		}
@@ -130,6 +133,30 @@ func (b *builder) scaffoldGroup(name, group, target string) error {
 		return err
 	}
 	return os.WriteFile(file, out, 0o644)
+}
+
+// reportStale names the exported methods on the implementation that its
+// Resolver does not have. A field removed from the SDL leaves its method
+// behind, compiling, because the var _ Resolver assertion checks only what
+// the interface asks for; this run is the one that knows. It is a note, not
+// an error: an exported method can be the author's own, such as String.
+func (b *builder) reportStale(name, target string, have map[string]bool, sigs []resolverSig) {
+	want := make(map[string]bool, len(sigs))
+	for _, m := range sigs {
+		want[m.name] = true
+	}
+	var stale []string
+	for m := range have {
+		if !want[m] && goast.IsExported(m) {
+			stale = append(stale, m)
+		}
+	}
+	if len(stale) == 0 {
+		return
+	}
+	slices.Sort(stale)
+	b.notef("scaffold %s: %s has methods the %s Resolver does not: %s. If the SDL dropped their fields, delete them.",
+		name, target, name, strings.Join(stale, ", "))
 }
 
 // existingMethods lists the methods declared on typ in dir's non-test files,
