@@ -1,6 +1,13 @@
-# Hand-written beside velox's output: velox generates no delete mutation.
-# The file is named after the entity, so GroupFunc puts it in the product
-# group; deleteProduct returns an ID, which has no ReturnGroup to follow.
+# Hand-written beside velox's output, which has no single-row query and no
+# delete. Named after the entity, so both land in the product group;
+# deleteProduct returns an ID, which has no group to follow, so the file's
+# name is what places it.
+extend type Query {
+  "The Product with this id, or null if there is none."
+  product(id: ID!): Product
+}
+
 extend type Mutation {
+  "Deletes the Product and returns its id. Refused while stock or an order refers to it."
   deleteProduct(id: ID!): ID!
 }

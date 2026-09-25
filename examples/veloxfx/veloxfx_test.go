@@ -158,11 +158,12 @@ func TestServesThroughEveryDomain(t *testing.T) {
 	}
 
 	// sales -> catalog, and the computed totalCents from sdl/order.graphql.
-	got = a.data(`{ orders { status totalCents customer { name } items { quantity product { sku category { name } } } } }`)
+	got = a.data(`{ orders { edges { node { status totalCents customer { name } items { quantity product { sku category { name } } } } } } }`)
 	order := `{"status":"PENDING","totalCents":11500,"customer":{"name":"Ada"},"items":[` +
 		`{"quantity":2,"product":{"sku":"kb-1","category":{"name":"Keyboards"}}},` +
 		`{"quantity":1,"product":{"sku":"kb-2","category":{"name":"Keyboards"}}}]}`
-	if want := `{"orders":[` + order + `,` + order + `,` + order + `]}`; got != want {
+	node := `{"node":` + order + `}`
+	if want := `{"orders":{"edges":[` + node + `,` + node + `,` + node + `]}}`; got != want {
 		t.Errorf("orders = %s", got)
 	}
 
@@ -193,6 +194,11 @@ func TestServesThroughEveryDomain(t *testing.T) {
 // orders of two items each, loaded one edge at a time, is 1 + 3 customers +
 // 3 item lists + 6 products = 13 queries; loaded eagerly it is 4, and
 // totalCents reuses the items already loaded.
+//
+// Plus one: velox's Paginate runs SELECT COUNT(*) unless gqlgen's request
+// context says totalCount was not selected, and under this engine there is no
+// gqlgen context, so it always counts. graphql.SelectionFrom(ctx) knows the
+// answer; velox has no way to be told it yet. When it does, this is 4.
 func TestOrdersAreAFixedNumberOfQueries(t *testing.T) {
 	var queries, counting atomic.Int64
 	a := start(t, fx.Decorate(func(*velox.Client) (*velox.Client, error) {
@@ -210,10 +216,10 @@ func TestOrdersAreAFixedNumberOfQueries(t *testing.T) {
 	a.seed()
 
 	counting.Store(1)
-	a.data(`{ orders { totalCents customer { name } items { product { name } } } }`)
+	a.data(`{ orders { edges { node { totalCents customer { name } items { product { name } } } } } }`)
 	counting.Store(0)
-	if n := queries.Load(); n != 4 {
-		t.Errorf("orders ran %d queries, want 4 (orders, customers, items, products)", n)
+	if n := queries.Load(); n != 5 {
+		t.Errorf("orders ran %d queries, want 5 (count, orders, customers, items, products)", n)
 	}
 }
 
@@ -277,5 +283,165 @@ func BenchmarkNewSchema(b *testing.B) {
 		if err := graph.ValidateSchema(scalars); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// products is velox's Relay connection: a page, a cursor to the next one,
+// a filter over the columns schema/catalog.go opted in, and an order.
+func TestProductsPageFilterAndOrder(t *testing.T) {
+	a := start(t)
+	a.data(`mutation { createCategory(input: {name: "Keyboards"}) { id } }`)
+	a.data(`mutation { createCategory(input: {name: "Mice"}) { id } }`)
+	for i, p := range []struct {
+		sku   string
+		price int
+		cat   int
+	}{{"kb-1", 5000, 1}, {"kb-2", 1500, 1}, {"kb-3", 900, 1}, {"ms-1", 2500, 2}, {"ms-2", 4000, 2}} {
+		a.data(fmt.Sprintf(`mutation { createProduct(input: {sku: %q, name: "p%d", priceCents: %d, categoryID: "%d"}) { id } }`, p.sku, i, p.price, p.cat))
+	}
+
+	// Most expensive first, two at a time.
+	first := a.data(`{ products(first: 2, orderBy: {field: PRICE, direction: DESC}) {
+		totalCount edges { node { sku priceCents } } pageInfo { hasNextPage endCursor } } }`)
+	var page struct {
+		Products struct {
+			TotalCount int
+			Edges      []struct{ Node struct{ Sku string } }
+			PageInfo   struct {
+				HasNextPage bool
+				EndCursor   string
+			}
+		}
+	}
+	if err := json.Unmarshal([]byte(first), &page); err != nil {
+		t.Fatal(err)
+	}
+	if got := skus(page.Products.Edges); got != "kb-1,ms-2" || page.Products.TotalCount != 5 || !page.Products.PageInfo.HasNextPage {
+		t.Fatalf("first page = %s", first)
+	}
+
+	// The cursor continues from where the page ended, in the same order.
+	next := a.data(fmt.Sprintf(`{ products(first: 2, after: %q, orderBy: {field: PRICE, direction: DESC}) { edges { node { sku } } } }`,
+		page.Products.PageInfo.EndCursor))
+	if want := `{"products":{"edges":[{"node":{"sku":"ms-1"}},{"node":{"sku":"kb-2"}}]}}`; next != want {
+		t.Errorf("second page = %s, want %s", next, want)
+	}
+
+	// where combines a column predicate with an edge predicate.
+	cheap := a.data(`{ products(where: {priceCentsLT: 2000, hasCategoryWith: [{name: "Keyboards"}]}, orderBy: {field: PRICE}) { edges { node { sku } } } }`)
+	if want := `{"products":{"edges":[{"node":{"sku":"kb-3"}},{"node":{"sku":"kb-2"}}]}}`; cheap != want {
+		t.Errorf("cheap keyboards = %s, want %s", cheap, want)
+	}
+
+	// An edge can be a connection too: Category.products pages within the
+	// category.
+	nested := a.data(`{ category(id: "2") { name products(orderBy: {field: NAME, direction: DESC}) { totalCount edges { node { sku } } } } }`)
+	if want := `{"category":{"name":"Mice","products":{"totalCount":2,"edges":[{"node":{"sku":"ms-2"}},{"node":{"sku":"ms-1"}}]}}}`; nested != want {
+		t.Errorf("category products = %s, want %s", nested, want)
+	}
+}
+
+func skus(edges []struct{ Node struct{ Sku string } }) string {
+	var s []string
+	for _, e := range edges {
+		s = append(s, e.Node.Sku)
+	}
+	return strings.Join(s, ",")
+}
+
+// Every entity reads by id and deletes by id, and what a delete may take
+// with it is a decision per entity, not a default.
+func TestReadAndDeleteByID(t *testing.T) {
+	a := start(t)
+	a.seed()
+
+	// An id naming nothing is a null, not an error; one that is not an id
+	// at all is an error.
+	if got := a.data(`{ product(id: "1") { sku } missing: product(id: "999") { sku } }`); got != `{"product":{"sku":"kb-1"},"missing":null}` {
+		t.Errorf("product by id = %s", got)
+	}
+	if r := a.post(`{ product(id: "kb-1") { sku } }`); len(r.Errors) != 1 {
+		t.Errorf("a malformed id: errors = %+v", r.Errors)
+	}
+
+	// Refused while referenced, with the reason rather than the driver's text.
+	for _, q := range []string{
+		`mutation { deleteCategory(id: "1") }`, // products are in it
+		`mutation { deleteCustomer(id: "1") }`, // she has orders
+		`mutation { deleteProduct(id: "1") }`,  // stocked and ordered
+	} {
+		r := a.post(q)
+		if len(r.Errors) != 1 || !strings.Contains(r.Errors[0].Message, "still referenced") {
+			t.Errorf("%s: errors = %+v", q, r.Errors)
+		}
+	}
+
+	// An order takes its items with it, in one transaction.
+	if got := a.data(`mutation { deleteOrder(id: "1") }`); got != `{"deleteOrder":"1"}` {
+		t.Errorf("deleteOrder = %s", got)
+	}
+	if got := a.data(`{ order(id: "1") { id } orderItems { order { id } } }`); strings.Contains(got, `"id":"1"`) {
+		t.Errorf("order 1 or its items survived: %s", got)
+	}
+
+	// Retiring a warehouse: its stock first, then the warehouse.
+	if r := a.post(`mutation { deleteWarehouse(id: "1") }`); len(r.Errors) != 1 {
+		t.Errorf("deleting a stocked warehouse: errors = %+v", r.Errors)
+	}
+	a.data(`mutation { deleteStock(id: "1") }`)
+	if got := a.data(`mutation { deleteWarehouse(id: "1") }`); got != `{"deleteWarehouse":"1"}` {
+		t.Errorf("deleteWarehouse = %s", got)
+	}
+
+	if r := a.post(`mutation { deleteStock(id: "1") }`); len(r.Errors) != 1 || !strings.Contains(r.Errors[0].Message, "no such row") {
+		t.Errorf("deleting twice: errors = %+v", r.Errors)
+	}
+}
+
+// placeOrder is all or nothing: the order, its items at today's price, and
+// the stock they come out of.
+func TestPlaceOrderIsOneTransaction(t *testing.T) {
+	a := start(t)
+	a.data(`mutation { createCategory(input: {name: "Keyboards"}) { id } }`)
+	a.data(`mutation { createProduct(input: {sku: "kb-1", name: "Board", priceCents: 5000, categoryID: "1"}) { id } }`)
+	a.data(`mutation { createProduct(input: {sku: "kb-2", name: "Keycaps", priceCents: 1500, categoryID: "1"}) { id } }`)
+	a.data(`mutation { createWarehouse(input: {name: "North"}) { id } }`)
+	a.data(`mutation { createStock(input: {quantity: 3, warehouseID: "1", productID: "1"}) { id } }`)
+	a.data(`mutation { createStock(input: {quantity: 1, warehouseID: "1", productID: "2"}) { id } }`)
+	a.data(`mutation { createCustomer(input: {name: "Ada", email: "ada@example.com"}) { id } }`)
+
+	placed := a.data(`mutation { placeOrder(input: {customerID: "1", warehouseID: "1", items: [
+		{productID: "1", quantity: 2}, {productID: "2", quantity: 1}]}) {
+		status totalCents items { quantity unitPriceCents product { sku } } } }`)
+	want := `{"placeOrder":{"status":"PENDING","totalCents":11500,"items":[` +
+		`{"quantity":2,"unitPriceCents":5000,"product":{"sku":"kb-1"}},` +
+		`{"quantity":1,"unitPriceCents":1500,"product":{"sku":"kb-2"}}]}}`
+	if placed != want {
+		t.Fatalf("placeOrder = %s\nwant %s", placed, want)
+	}
+	stock := func() string { return a.data(`{ stocks { quantity } }`) }
+	if got := stock(); got != `{"stocks":[{"quantity":1},{"quantity":0}]}` {
+		t.Fatalf("stock after the order = %s", got)
+	}
+
+	// The first line fits (1 board left), the second does not (0 keycaps).
+	// The whole order fails, and the board taken for the first line is put
+	// back: no order, no items, stock unchanged.
+	r := a.post(`mutation { placeOrder(input: {customerID: "1", warehouseID: "1", items: [
+		{productID: "1", quantity: 1}, {productID: "2", quantity: 1}]}) { id } }`)
+	if len(r.Errors) != 1 || !strings.Contains(r.Errors[0].Message, "items[1]: not enough kb-2") {
+		t.Fatalf("an uncoverable line: errors = %+v, data = %s", r.Errors, r.Data)
+	}
+	if got := stock(); got != `{"stocks":[{"quantity":1},{"quantity":0}]}` {
+		t.Errorf("a failed order changed stock: %s", got)
+	}
+	if got := a.data(`{ orders { totalCount } orderItems { id } }`); got != `{"orders":{"totalCount":1},"orderItems":[{"id":"1"},{"id":"2"}]}` {
+		t.Errorf("a failed order left rows behind: %s", got)
+	}
+
+	// Price is taken at order time: a later price change does not rewrite it.
+	a.data(`mutation { updateProduct(id: "1", input: {priceCents: 9999}) { id } }`)
+	if got := a.data(`{ order(id: "1") { totalCents } }`); got != `{"order":{"totalCents":11500}}` {
+		t.Errorf("repricing a product rewrote a placed order: %s", got)
 	}
 }

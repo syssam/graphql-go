@@ -8,9 +8,12 @@ import (
 	"time"
 
 	"github.com/syssam/graphql-go"
+	ordermodel "github.com/syssam/graphql-go/examples/veloxfx/graph/model/order"
 	order "github.com/syssam/graphql-go/examples/veloxfx/velox/client/order"
 	entity "github.com/syssam/graphql-go/examples/veloxfx/velox/entity"
+	filter "github.com/syssam/graphql-go/examples/veloxfx/velox/filter"
 	veloxorder "github.com/syssam/graphql-go/examples/veloxfx/velox/order"
+	gqlrelay "github.com/syssam/velox/contrib/graphql/gqlrelay"
 )
 
 type CreateOrderArgs struct {
@@ -22,17 +25,46 @@ type UpdateOrderArgs struct {
 	Input order.UpdateOrderInput `graphql:"input"`
 }
 
+type PlaceOrderArgs struct {
+	Input ordermodel.PlaceOrderInput `graphql:"input"`
+}
+
+type DeleteOrderArgs struct {
+	ID graphql.ID `graphql:"id"`
+}
+
+type OrdersArgs struct {
+	After   *gqlrelay.Cursor        `graphql:"after"`
+	First   *int                    `graphql:"first"`
+	Before  *gqlrelay.Cursor        `graphql:"before"`
+	Last    *int                    `graphql:"last"`
+	OrderBy *ordermodel.OrderOrder  `graphql:"orderBy"`
+	Where   *filter.OrderWhereInput `graphql:"where"`
+}
+
+type OrderArgs struct {
+	ID graphql.ID `graphql:"id"`
+}
+
 // Resolver holds methods for fields that are not struct data.
 type Resolver interface {
 	CreateOrder(ctx context.Context, args CreateOrderArgs) (*entity.Order, error)
 	UpdateOrder(ctx context.Context, args UpdateOrderArgs) (*entity.Order, error)
+	PlaceOrder(ctx context.Context, args PlaceOrderArgs) (*entity.Order, error)
+	DeleteOrder(ctx context.Context, args DeleteOrderArgs) (graphql.ID, error)
 	OrderID(ctx context.Context, obj *entity.Order) (graphql.ID, error)
 	OrderTotalCents(ctx context.Context, obj *entity.Order) (int, error)
-	Orders(ctx context.Context) ([]*entity.Order, error)
+	Orders(ctx context.Context, args OrdersArgs) (*entity.OrderConnection, error)
+	Order(ctx context.Context, args OrderArgs) (*entity.Order, error)
 }
 
 func Bindings(r Resolver) graphql.SchemaOption {
 	return graphql.Options(
+		graphql.Enum[ordermodel.OrderOrderField]("OrderOrderField", map[ordermodel.OrderOrderField]string{
+			ordermodel.OrderOrderFieldCreated_at: "CREATED_AT",
+			ordermodel.OrderOrderFieldUpdated_at: "UPDATED_AT",
+			ordermodel.OrderOrderFieldStatus:     "STATUS",
+		}),
 		graphql.Enum[veloxorder.Status]("OrderStatus", map[veloxorder.Status]string{
 			veloxorder.StatusPENDING:   "PENDING",
 			veloxorder.StatusPAID:      "PAID",
@@ -40,6 +72,10 @@ func Bindings(r Resolver) graphql.SchemaOption {
 			veloxorder.StatusCANCELLED: "CANCELLED",
 		}),
 		graphql.Input[order.CreateOrderInput]("CreateOrderInput", graphql.ZeroForNull()),
+		graphql.Input[ordermodel.OrderOrder]("OrderOrder", graphql.ZeroForNull()),
+		graphql.Input[filter.OrderWhereInput]("OrderWhereInput", graphql.ZeroForNull()),
+		graphql.Input[ordermodel.PlaceOrderInput]("PlaceOrderInput", graphql.ZeroForNull()),
+		graphql.Input[ordermodel.PlaceOrderItemInput]("PlaceOrderItemInput", graphql.ZeroForNull()),
 		graphql.Input[order.UpdateOrderInput]("UpdateOrderInput", graphql.ZeroForNull()),
 		graphql.Object[entity.Order]("Order",
 			graphql.Resolve("id", func(ctx context.Context, v *entity.Order) (graphql.ID, error) { return r.OrderID(ctx, v) }),
@@ -50,8 +86,20 @@ func Bindings(r Resolver) graphql.SchemaOption {
 			graphql.Resolve("items", func(ctx context.Context, v *entity.Order) ([]*entity.OrderItem, error) { return v.Items(ctx) }),
 			graphql.Resolve("totalCents", func(ctx context.Context, v *entity.Order) (int, error) { return r.OrderTotalCents(ctx, v) }),
 		),
+		graphql.Object[entity.OrderConnection]("OrderConnection",
+			graphql.Field("edges", func(v *entity.OrderConnection) []*entity.OrderEdge { return v.Edges }),
+			graphql.Field("pageInfo", func(v *entity.OrderConnection) gqlrelay.PageInfo { return v.PageInfo }),
+			graphql.Field("totalCount", func(v *entity.OrderConnection) int { return v.TotalCount }),
+		),
+		graphql.Object[entity.OrderEdge]("OrderEdge",
+			graphql.Field("node", func(v *entity.OrderEdge) *entity.Order { return v.Node }),
+			graphql.Field("cursor", func(v *entity.OrderEdge) gqlrelay.Cursor { return v.Cursor }),
+		),
 		graphql.Query(
-			graphql.Resolve("orders", func(ctx context.Context, _ graphql.Root) ([]*entity.Order, error) { return r.Orders(ctx) }),
+			graphql.ResolveArgs("orders", func(ctx context.Context, _ graphql.Root, a OrdersArgs) (*entity.OrderConnection, error) {
+				return r.Orders(ctx, a)
+			}),
+			graphql.ResolveArgs("order", func(ctx context.Context, _ graphql.Root, a OrderArgs) (*entity.Order, error) { return r.Order(ctx, a) }),
 		),
 		graphql.Mutation(
 			graphql.ResolveArgs("createOrder", func(ctx context.Context, _ graphql.Root, a CreateOrderArgs) (*entity.Order, error) {
@@ -60,8 +108,18 @@ func Bindings(r Resolver) graphql.SchemaOption {
 			graphql.ResolveArgs("updateOrder", func(ctx context.Context, _ graphql.Root, a UpdateOrderArgs) (*entity.Order, error) {
 				return r.UpdateOrder(ctx, a)
 			}),
+			graphql.ResolveArgs("placeOrder", func(ctx context.Context, _ graphql.Root, a PlaceOrderArgs) (*entity.Order, error) {
+				return r.PlaceOrder(ctx, a)
+			}),
+			graphql.ResolveArgs("deleteOrder", func(ctx context.Context, _ graphql.Root, a DeleteOrderArgs) (graphql.ID, error) {
+				return r.DeleteOrder(ctx, a)
+			}),
 		),
 		graphql.Args[CreateOrderArgs](),
 		graphql.Args[UpdateOrderArgs](),
+		graphql.Args[PlaceOrderArgs](),
+		graphql.Args[DeleteOrderArgs](),
+		graphql.Args[OrdersArgs](),
+		graphql.Args[OrderArgs](),
 	)
 }

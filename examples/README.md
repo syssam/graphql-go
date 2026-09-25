@@ -258,7 +258,8 @@ at it. The outputs are what it printed.
 edge.From("supplier", Supplier.Type).Ref("products").Unique(),
 ```
 
-**2. `go generate`** (about 6 s: velox, then gqlc). A new group appears:
+**2. `go generate`** (about 9 s: velox from a clean directory, then gqlc). A new
+group appears:
 
     graph/supplier/generated.go
 
@@ -285,10 +286,29 @@ type Resolver interface {
 	CreateSupplier(ctx context.Context, args CreateSupplierArgs) (*entity.Supplier, error)
 	Suppliers(ctx context.Context) ([]*entity.Supplier, error)
 	SupplierID(ctx context.Context, obj *entity.Supplier) (graphql.ID, error)
+	SupplierProducts(ctx context.Context, obj *entity.Supplier, args SupplierProductsArgs) (*entity.ProductConnection, error)
 }
 ```
 
-in `internal/inventory`, and register it -- one constructor and one line:
+`Supplier.products` is a connection, because `Product` is one, and its
+`orderBy` needs converting. catalog owns Product and exports the conversion,
+so the whole method is a hand-off to velox's edge method:
+
+```go
+func (r *SupplierResolver) SupplierProducts(ctx context.Context, s *entity.Supplier, args suppliergql.SupplierProductsArgs) (*entity.ProductConnection, error) {
+	order, err := catalog.ProductOrder(args.OrderBy)
+	if err != nil {
+		return nil, err
+	}
+	return s.Products(ctx, args.After, args.First, args.Before, args.Last, order, args.Where)
+}
+```
+
+That was found the real way: the first attempt called catalog's conversion,
+which was unexported, and the build said so.
+
+Implement the rest in `internal/inventory`, and register it -- one
+constructor and one line:
 
 ```go
 fx.Provide(NewWarehouseResolver, NewStockResolver, NewSupplierResolver),
@@ -298,30 +318,83 @@ resolve.Bindings(func(r *SupplierResolver) graphql.SchemaOption { return supplie
 
 **6. Green**, and it answers:
 
-    $ curl ... '{ suppliers { name products { sku category { name } } } }'
-    {"data":{"suppliers":[{"name":"Keychron","products":[{"sku":"kb-1","category":{"name":"Keyboards"}}]}]}}
+    $ curl ... '{ suppliers { name products(orderBy: {field: PRICE}) { totalCount edges { node { sku } } } } }'
+    {"data":{"suppliers":[{"name":"Keychron","products":{"totalCount":1,"edges":[{"node":{"sku":"kb-1"}}]}}]}}
 
-46 lines written by hand in all, three of them wiring. `TestEveryEntityIsItsOwnGroup`
+55 lines written by hand in all, three of them wiring. `TestEveryEntityIsItsOwnGroup`
 pins the group list and needed the new name too, which is what it is for.
+
+### The cases a real service has
+
+Each is tested, and each test was confirmed to fail with its handling removed.
+
+**Paging, filtering, ordering.** `products` and `orders` are velox's Relay
+connections, and so are the edges `Category.products` and
+`Customer.orders`:
+
+    products(first: 2, after: $cursor,
+             where: {priceCentsLT: 2000, hasCategoryWith: [{name: "Keyboards"}]},
+             orderBy: {field: PRICE, direction: DESC})
+      { totalCount edges { node { sku } } pageInfo { hasNextPage endCursor } }
+
+Filtering is opt-in per column (`graphql.WhereInputFields`), so a column is
+not filterable until the schema says so, and filtering across an edge needs
+the other side filterable too. A connection is opt-in the other way: velox
+makes every one-to-many edge a connection unless its target declares a
+`QueryField`, which `Stock` and `OrderItem` do -- an order's items are a list,
+a category's products are a page. Paging, cursors and filtering are velox's
+generated code; the resolver's only job is converting `orderBy` (next list).
+
+**Read and delete by id, for every entity.** velox generates neither, so
+they are hand-written in `sdl/<entity>.graphql` and land in the entity's group
+by file name. An id naming nothing is `null`; a malformed one is an error.
+What a delete takes with it is decided per entity: an order deletes its items
+in one transaction, while a category with products, a customer with orders,
+a stocked product and a warehouse holding stock are refused, and the refusal
+says "still referenced" rather than the driver's text.
+
+**One transaction per business operation.** `placeOrder` creates the order and
+its items at the product's current price and takes the quantities out of
+stock, all or nothing (`resolve.InTx`). Stock is taken with a conditional
+update -- `quantity = quantity - n WHERE quantity >= n` -- so two orders racing
+for the last unit cannot both succeed. That condition is the only guard:
+velox's `NonNegative()` on the column does not check `AddQuantity`, and
+without the condition the stock goes negative and the order succeeds.
 
 ### What velox does that a resolver answers for
 
-Each of these fails a test if its handling is removed:
-
 - **An empty table is `nil`.** The engine writes a nil slice as `null`, which
   `[Product!]!` refuses, so the list resolvers return `[]` instead.
-- **Edges query per row unless loaded.** The list roots eager-load what their
-  type exposes, across domains: `orders { customer items { product } }` over
-  three orders of two items is 4 queries, not 13
+- **Edges query per row unless loaded.** The roots eager-load what their
+  type exposes, across domains: `orders { edges { node { customer items {
+  product } } } }` over three orders of two items is 5 queries; one edge at
+  a time it would be 14
   (`TestOrdersAreAFixedNumberOfQueries`; without the nested `WithProduct` it
-  is 9).
+  is 10).
+- **The fifth query is a `COUNT(*)` nobody asked for.** velox's `Paginate`
+  skips the count when gqlgen's request context says `totalCount` was not
+  selected; under this engine there is no gqlgen context, so it always counts.
+  `graphql.SelectionFrom(ctx).Has("totalCount")` knows the answer, and velox
+  has no way to be told it yet. The test asserts 5 so that it fails, and says
+  why, when velox gains one.
 - **A created row's edges are stubs.** velox marks each required edge of a new
   row loaded with `&Category{ID: id}`, so `createProduct { category { name } }`
   would answer an empty name. Every create reads its row back.
+- **`orderBy` cannot bind to velox's type.** velox's `ProductOrderField` is a
+  struct holding a cursor function, which no GraphQL enum can be; gqlc models
+  it as a string enum and says so while generating. `resolve.OrderField`
+  converts it through velox's `UnmarshalGQL`, the one constructor it exports.
 - **`clearItems: Boolean` is a Go `bool`.** velox's update inputs read false as
   "leave the items alone", so absent, null and false are one value; that is
   what `zeroForNullInputs` is for, and without it `NewSchema` refuses the
   binding.
+
+Two more are velox's to fix, and `generate.go` works around both by deleting
+`.velox/` and `velox/` before each run: its schema-loader cache never relinks
+when Go lives under a path with a space (`go build -n` quotes the linker, and
+the check compares `link.exe"`), so it generates from a stale schema; and the
+GraphQL extension's files are not in `.velox-manifest`, so one velox no
+longer writes is never deleted and stops compiling.
 
 ### What the layout costs
 
@@ -349,9 +422,10 @@ example, not of the library. `scripts/gate.sh` finds it like every other
     $GQL -d '{"query":"mutation { createCategory(input:{name:\"Keyboards\"}) { id } }"}'
     $GQL -d '{"query":"mutation { createProduct(input:{sku:\"kb-1\",name:\"Board\",priceCents:5000,categoryID:\"1\"}) { sku category { name } } }"}'
     $GQL -d '{"query":"mutation { createCustomer(input:{name:\"Ada\",email:\"ada@example.com\"}) { id } }"}'
-    $GQL -d '{"query":"mutation { createOrder(input:{customerID:\"1\"}) { id } }"}'
-    $GQL -d '{"query":"mutation { createOrderItem(input:{quantity:2,unitPriceCents:5000,orderID:\"1\",productID:\"1\"}) { id } }"}'
-    $GQL -d '{"query":"{ orders { status totalCents customer { name } items { quantity product { sku } } } }"}'
+    $GQL -d '{"query":"mutation { createWarehouse(input:{name:\"North\"}) { id } }"}'
+    $GQL -d '{"query":"mutation { createStock(input:{quantity:5,warehouseID:\"1\",productID:\"1\"}) { id } }"}'
+    $GQL -d '{"query":"mutation { placeOrder(input:{customerID:\"1\",warehouseID:\"1\",items:[{productID:\"1\",quantity:2}]}) { totalCents } }"}'
+    $GQL -d '{"query":"{ orders(first:10) { totalCount edges { node { status totalCents customer { name } items { quantity product { sku } } } } } stocks { quantity } }"}'
 
 ## Running
 

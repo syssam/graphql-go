@@ -5,14 +5,20 @@ package root
 
 import (
 	"github.com/syssam/graphql-go"
-	"github.com/syssam/graphql-go/examples/veloxfx/graph/model/root"
+	gqlrelay "github.com/syssam/velox/contrib/graphql/gqlrelay"
 )
 
 func Bindings() graphql.SchemaOption {
 	return graphql.Options(
-		graphql.Enum[root.OrderDirection]("OrderDirection", map[root.OrderDirection]string{
-			root.OrderDirectionAsc:  "ASC",
-			root.OrderDirectionDesc: "DESC",
+		graphql.Enum[gqlrelay.OrderDirection]("OrderDirection", map[gqlrelay.OrderDirection]string{
+			gqlrelay.OrderDirectionAsc:  "ASC",
+			gqlrelay.OrderDirectionDesc: "DESC",
 		}),
+		graphql.Object[gqlrelay.PageInfo]("PageInfo",
+			graphql.Field("hasNextPage", func(v *gqlrelay.PageInfo) bool { return v.HasNextPage }),
+			graphql.Field("hasPreviousPage", func(v *gqlrelay.PageInfo) bool { return v.HasPreviousPage }),
+			graphql.Field("startCursor", func(v *gqlrelay.PageInfo) *gqlrelay.Cursor { return v.StartCursor }),
+			graphql.Field("endCursor", func(v *gqlrelay.PageInfo) *gqlrelay.Cursor { return v.EndCursor }),
+		),
 	)
 }

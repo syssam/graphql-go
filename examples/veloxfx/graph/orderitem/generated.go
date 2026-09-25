@@ -15,11 +15,21 @@ type CreateOrderItemArgs struct {
 	Input orderitem.CreateOrderItemInput `graphql:"input"`
 }
 
+type DeleteOrderItemArgs struct {
+	ID graphql.ID `graphql:"id"`
+}
+
+type OrderItemArgs struct {
+	ID graphql.ID `graphql:"id"`
+}
+
 // Resolver holds methods for fields that are not struct data.
 type Resolver interface {
 	CreateOrderItem(ctx context.Context, args CreateOrderItemArgs) (*entity.OrderItem, error)
+	DeleteOrderItem(ctx context.Context, args DeleteOrderItemArgs) (graphql.ID, error)
 	OrderItemID(ctx context.Context, obj *entity.OrderItem) (graphql.ID, error)
 	OrderItems(ctx context.Context) ([]*entity.OrderItem, error)
+	OrderItem(ctx context.Context, args OrderItemArgs) (*entity.OrderItem, error)
 }
 
 func Bindings(r Resolver) graphql.SchemaOption {
@@ -34,12 +44,20 @@ func Bindings(r Resolver) graphql.SchemaOption {
 		),
 		graphql.Query(
 			graphql.Resolve("orderItems", func(ctx context.Context, _ graphql.Root) ([]*entity.OrderItem, error) { return r.OrderItems(ctx) }),
+			graphql.ResolveArgs("orderItem", func(ctx context.Context, _ graphql.Root, a OrderItemArgs) (*entity.OrderItem, error) {
+				return r.OrderItem(ctx, a)
+			}),
 		),
 		graphql.Mutation(
 			graphql.ResolveArgs("createOrderItem", func(ctx context.Context, _ graphql.Root, a CreateOrderItemArgs) (*entity.OrderItem, error) {
 				return r.CreateOrderItem(ctx, a)
 			}),
+			graphql.ResolveArgs("deleteOrderItem", func(ctx context.Context, _ graphql.Root, a DeleteOrderItemArgs) (graphql.ID, error) {
+				return r.DeleteOrderItem(ctx, a)
+			}),
 		),
 		graphql.Args[CreateOrderItemArgs](),
+		graphql.Args[DeleteOrderItemArgs](),
+		graphql.Args[OrderItemArgs](),
 	)
 }

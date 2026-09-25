@@ -15,10 +15,20 @@ type CreateWarehouseArgs struct {
 	Input warehouse.CreateWarehouseInput `graphql:"input"`
 }
 
+type DeleteWarehouseArgs struct {
+	ID graphql.ID `graphql:"id"`
+}
+
+type WarehouseArgs struct {
+	ID graphql.ID `graphql:"id"`
+}
+
 // Resolver holds methods for fields that are not struct data.
 type Resolver interface {
 	CreateWarehouse(ctx context.Context, args CreateWarehouseArgs) (*entity.Warehouse, error)
+	DeleteWarehouse(ctx context.Context, args DeleteWarehouseArgs) (graphql.ID, error)
 	Warehouses(ctx context.Context) ([]*entity.Warehouse, error)
+	Warehouse(ctx context.Context, args WarehouseArgs) (*entity.Warehouse, error)
 	WarehouseID(ctx context.Context, obj *entity.Warehouse) (graphql.ID, error)
 }
 
@@ -32,12 +42,20 @@ func Bindings(r Resolver) graphql.SchemaOption {
 		),
 		graphql.Query(
 			graphql.Resolve("warehouses", func(ctx context.Context, _ graphql.Root) ([]*entity.Warehouse, error) { return r.Warehouses(ctx) }),
+			graphql.ResolveArgs("warehouse", func(ctx context.Context, _ graphql.Root, a WarehouseArgs) (*entity.Warehouse, error) {
+				return r.Warehouse(ctx, a)
+			}),
 		),
 		graphql.Mutation(
 			graphql.ResolveArgs("createWarehouse", func(ctx context.Context, _ graphql.Root, a CreateWarehouseArgs) (*entity.Warehouse, error) {
 				return r.CreateWarehouse(ctx, a)
 			}),
+			graphql.ResolveArgs("deleteWarehouse", func(ctx context.Context, _ graphql.Root, a DeleteWarehouseArgs) (graphql.ID, error) {
+				return r.DeleteWarehouse(ctx, a)
+			}),
 		),
 		graphql.Args[CreateWarehouseArgs](),
+		graphql.Args[DeleteWarehouseArgs](),
+		graphql.Args[WarehouseArgs](),
 	)
 }

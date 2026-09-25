@@ -1,0 +1,11 @@
+# Hand-written beside velox's output, which has no single-row query and no
+# delete. Named after the entity, so both land in the warehouse group.
+extend type Query {
+  "The Warehouse with this id, or null if there is none."
+  warehouse(id: ID!): Warehouse
+}
+
+extend type Mutation {
+  "Deletes the Warehouse and returns its id. Refused while other rows refer to it."
+  deleteWarehouse(id: ID!): ID!
+}

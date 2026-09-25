@@ -27,12 +27,95 @@ enum OrderDirection {
   DESC
 }
 
+"""
+Information about pagination in a connection.
+https://relay.dev/graphql/connections.htm#sec-undefined.PageInfo
+"""
+type PageInfo @goModel(model: "github.com/syssam/velox/contrib/graphql/gqlrelay.PageInfo") {
+  """
+  When paginating forwards, are there more items?
+  """
+  hasNextPage: Boolean!
+  """
+  When paginating backwards, are there more items?
+  """
+  hasPreviousPage: Boolean!
+  """
+  When paginating backwards, the cursor to continue.
+  """
+  startCursor: Cursor
+  """
+  When paginating forwards, the cursor to continue.
+  """
+  endCursor: Cursor
+}
+
 type Query {
   categories: [Category!]!
   customers: [Customer!]!
-  orders: [Order!]!
+  orders(
+    """
+    Returns the elements in the list that come after the specified cursor.
+    """
+    after: Cursor
+
+    """
+    Returns the first _n_ elements from the list.
+    """
+    first: Int
+
+    """
+    Returns the elements in the list that come before the specified cursor.
+    """
+    before: Cursor
+
+    """
+    Returns the last _n_ elements from the list.
+    """
+    last: Int
+
+    """
+    Ordering options for Orders returned from the connection.
+    """
+    orderBy: OrderOrder
+
+    """
+    Filtering options for Orders returned from the connection.
+    """
+    where: OrderWhereInput
+  ): OrderConnection!
   orderItems: [OrderItem!]!
-  products: [Product!]!
+  products(
+    """
+    Returns the elements in the list that come after the specified cursor.
+    """
+    after: Cursor
+
+    """
+    Returns the first _n_ elements from the list.
+    """
+    first: Int
+
+    """
+    Returns the elements in the list that come before the specified cursor.
+    """
+    before: Cursor
+
+    """
+    Returns the last _n_ elements from the list.
+    """
+    last: Int
+
+    """
+    Ordering options for Products returned from the connection.
+    """
+    orderBy: ProductOrder
+
+    """
+    Filtering options for Products returned from the connection.
+    """
+    where: ProductWhereInput
+  ): ProductConnection!
   stocks: [Stock!]!
   warehouses: [Warehouse!]!
 }

@@ -7,19 +7,42 @@ import (
 	"context"
 
 	"github.com/syssam/graphql-go"
+	ordermodel "github.com/syssam/graphql-go/examples/veloxfx/graph/model/order"
 	customer "github.com/syssam/graphql-go/examples/veloxfx/velox/client/customer"
 	entity "github.com/syssam/graphql-go/examples/veloxfx/velox/entity"
+	filter "github.com/syssam/graphql-go/examples/veloxfx/velox/filter"
+	gqlrelay "github.com/syssam/velox/contrib/graphql/gqlrelay"
 )
+
+type CustomerOrdersArgs struct {
+	After   *gqlrelay.Cursor        `graphql:"after"`
+	First   *int                    `graphql:"first"`
+	Before  *gqlrelay.Cursor        `graphql:"before"`
+	Last    *int                    `graphql:"last"`
+	OrderBy *ordermodel.OrderOrder  `graphql:"orderBy"`
+	Where   *filter.OrderWhereInput `graphql:"where"`
+}
 
 type CreateCustomerArgs struct {
 	Input customer.CreateCustomerInput `graphql:"input"`
 }
 
+type DeleteCustomerArgs struct {
+	ID graphql.ID `graphql:"id"`
+}
+
+type CustomerArgs struct {
+	ID graphql.ID `graphql:"id"`
+}
+
 // Resolver holds methods for fields that are not struct data.
 type Resolver interface {
 	CustomerID(ctx context.Context, obj *entity.Customer) (graphql.ID, error)
+	CustomerOrders(ctx context.Context, obj *entity.Customer, args CustomerOrdersArgs) (*entity.OrderConnection, error)
 	CreateCustomer(ctx context.Context, args CreateCustomerArgs) (*entity.Customer, error)
+	DeleteCustomer(ctx context.Context, args DeleteCustomerArgs) (graphql.ID, error)
 	Customers(ctx context.Context) ([]*entity.Customer, error)
+	Customer(ctx context.Context, args CustomerArgs) (*entity.Customer, error)
 }
 
 func Bindings(r Resolver) graphql.SchemaOption {
@@ -29,16 +52,27 @@ func Bindings(r Resolver) graphql.SchemaOption {
 			graphql.Resolve("id", func(ctx context.Context, v *entity.Customer) (graphql.ID, error) { return r.CustomerID(ctx, v) }),
 			graphql.Field("name", func(v *entity.Customer) string { return v.Name }),
 			graphql.Field("email", func(v *entity.Customer) string { return v.Email }),
-			graphql.Resolve("orders", func(ctx context.Context, v *entity.Customer) ([]*entity.Order, error) { return v.Orders(ctx) }),
+			graphql.ResolveArgs("orders", func(ctx context.Context, v *entity.Customer, a CustomerOrdersArgs) (*entity.OrderConnection, error) {
+				return r.CustomerOrders(ctx, v, a)
+			}),
 		),
 		graphql.Query(
 			graphql.Resolve("customers", func(ctx context.Context, _ graphql.Root) ([]*entity.Customer, error) { return r.Customers(ctx) }),
+			graphql.ResolveArgs("customer", func(ctx context.Context, _ graphql.Root, a CustomerArgs) (*entity.Customer, error) {
+				return r.Customer(ctx, a)
+			}),
 		),
 		graphql.Mutation(
 			graphql.ResolveArgs("createCustomer", func(ctx context.Context, _ graphql.Root, a CreateCustomerArgs) (*entity.Customer, error) {
 				return r.CreateCustomer(ctx, a)
 			}),
+			graphql.ResolveArgs("deleteCustomer", func(ctx context.Context, _ graphql.Root, a DeleteCustomerArgs) (graphql.ID, error) {
+				return r.DeleteCustomer(ctx, a)
+			}),
 		),
+		graphql.Args[CustomerOrdersArgs](),
 		graphql.Args[CreateCustomerArgs](),
+		graphql.Args[DeleteCustomerArgs](),
+		graphql.Args[CustomerArgs](),
 	)
 }

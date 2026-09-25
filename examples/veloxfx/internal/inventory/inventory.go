@@ -74,3 +74,25 @@ func (r *StockResolver) UpdateStock(ctx context.Context, args stockgql.UpdateSto
 func (r *StockResolver) StockID(_ context.Context, s *entity.Stock) (graphql.ID, error) {
 	return resolve.ID(s.ID), nil
 }
+
+func (r *WarehouseResolver) Warehouse(ctx context.Context, args warehousegql.WarehouseArgs) (*entity.Warehouse, error) {
+	return resolve.Get(ctx, args.ID, r.client.Warehouse.Get)
+}
+
+// DeleteWarehouse is refused while it holds stock rows, even empty ones:
+// zeroing and deleting the stock first is the explicit way to retire one.
+func (r *WarehouseResolver) DeleteWarehouse(ctx context.Context, args warehousegql.DeleteWarehouseArgs) (graphql.ID, error) {
+	return resolve.Delete(ctx, args.ID, func(ctx context.Context, id int) error {
+		return r.client.Warehouse.DeleteOneID(id).Exec(ctx)
+	})
+}
+
+func (r *StockResolver) Stock(ctx context.Context, args stockgql.StockArgs) (*entity.Stock, error) {
+	return resolve.Get(ctx, args.ID, r.client.Stock.Get)
+}
+
+func (r *StockResolver) DeleteStock(ctx context.Context, args stockgql.DeleteStockArgs) (graphql.ID, error) {
+	return resolve.Delete(ctx, args.ID, func(ctx context.Context, id int) error {
+		return r.client.Stock.DeleteOneID(id).Exec(ctx)
+	})
+}

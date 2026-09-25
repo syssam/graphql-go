@@ -9,6 +9,7 @@ import (
 
 	predicate "github.com/syssam/graphql-go/examples/veloxfx/velox/predicate"
 	velox "github.com/syssam/velox"
+	gqlrelay "github.com/syssam/velox/contrib/graphql/gqlrelay"
 	sql "github.com/syssam/velox/dialect/sql"
 	sqlgraph "github.com/syssam/velox/dialect/sql/sqlgraph"
 	runtime "github.com/syssam/velox/runtime"
@@ -454,6 +455,7 @@ type ProductQuerier interface {
 	ForUpdate(opts ...sql.LockOption) ProductQuerier
 	ForShare(opts ...sql.LockOption) ProductQuerier
 	CollectFields(ctx context.Context, satisfies ...string) (ProductQuerier, error)
+	Paginate(ctx context.Context, after *gqlrelay.Cursor, first *int, before *gqlrelay.Cursor, last *int, opts ...ProductPaginateOption) (*ProductConnection, error)
 }
 
 // ProductSelector defines the select interface for Product entities.

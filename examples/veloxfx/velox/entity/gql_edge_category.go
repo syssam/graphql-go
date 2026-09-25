@@ -3,15 +3,29 @@
 package entity
 
 import (
+	"cmp"
 	"context"
 
-	"github.com/syssam/velox/runtime"
+	"github.com/syssam/graphql-go/examples/veloxfx/velox/filter"
+	"github.com/syssam/velox/contrib/graphql/gqlrelay"
 )
 
-func (m *Category) Products(ctx context.Context) ([]*Product, error) {
-	result, err := m.Edges.ProductsOrErr()
-	if runtime.IsNotLoaded(err) {
-		return m.QueryProducts().All(ctx)
+func (m *Category) Products(ctx context.Context, after *gqlrelay.Cursor, first *int, before *gqlrelay.Cursor, last *int, orderBy *ProductOrder, where *filter.ProductWhereInput) (*ProductConnection, error) {
+	if nodes, err := m.Edges.ProductsOrErr(); err == nil && where == nil && after == nil && before == nil && orderBy == nil {
+		page, err := gqlrelay.PageLoaded(nodes, func(a, b *Product) int {
+			return cmp.Compare(a.ID, b.ID)
+		}, first, last)
+		if err != nil {
+			return nil, err
+		}
+		conn := BuildProductConnection(page.Nodes, page.TotalCount, nil, nil, nil, nil, nil)
+		conn.PageInfo.HasNextPage = page.HasNextPage
+		conn.PageInfo.HasPreviousPage = page.HasPreviousPage
+		return conn, nil
 	}
-	return result, err
+	opts := []ProductPaginateOption{WithProductOrder(orderBy)}
+	if where != nil {
+		opts = append(opts, WithProductFilter(where.Filter))
+	}
+	return m.QueryProducts().(ProductPaginatable).Paginate(ctx, after, first, before, last, opts...)
 }

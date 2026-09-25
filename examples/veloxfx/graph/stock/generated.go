@@ -20,11 +20,21 @@ type UpdateStockArgs struct {
 	Input stock.UpdateStockInput `graphql:"input"`
 }
 
+type DeleteStockArgs struct {
+	ID graphql.ID `graphql:"id"`
+}
+
+type StockArgs struct {
+	ID graphql.ID `graphql:"id"`
+}
+
 // Resolver holds methods for fields that are not struct data.
 type Resolver interface {
 	CreateStock(ctx context.Context, args CreateStockArgs) (*entity.Stock, error)
 	UpdateStock(ctx context.Context, args UpdateStockArgs) (*entity.Stock, error)
+	DeleteStock(ctx context.Context, args DeleteStockArgs) (graphql.ID, error)
 	Stocks(ctx context.Context) ([]*entity.Stock, error)
+	Stock(ctx context.Context, args StockArgs) (*entity.Stock, error)
 	StockID(ctx context.Context, obj *entity.Stock) (graphql.ID, error)
 }
 
@@ -40,6 +50,7 @@ func Bindings(r Resolver) graphql.SchemaOption {
 		),
 		graphql.Query(
 			graphql.Resolve("stocks", func(ctx context.Context, _ graphql.Root) ([]*entity.Stock, error) { return r.Stocks(ctx) }),
+			graphql.ResolveArgs("stock", func(ctx context.Context, _ graphql.Root, a StockArgs) (*entity.Stock, error) { return r.Stock(ctx, a) }),
 		),
 		graphql.Mutation(
 			graphql.ResolveArgs("createStock", func(ctx context.Context, _ graphql.Root, a CreateStockArgs) (*entity.Stock, error) {
@@ -48,8 +59,13 @@ func Bindings(r Resolver) graphql.SchemaOption {
 			graphql.ResolveArgs("updateStock", func(ctx context.Context, _ graphql.Root, a UpdateStockArgs) (*entity.Stock, error) {
 				return r.UpdateStock(ctx, a)
 			}),
+			graphql.ResolveArgs("deleteStock", func(ctx context.Context, _ graphql.Root, a DeleteStockArgs) (graphql.ID, error) {
+				return r.DeleteStock(ctx, a)
+			}),
 		),
 		graphql.Args[CreateStockArgs](),
 		graphql.Args[UpdateStockArgs](),
+		graphql.Args[DeleteStockArgs](),
+		graphql.Args[StockArgs](),
 	)
 }

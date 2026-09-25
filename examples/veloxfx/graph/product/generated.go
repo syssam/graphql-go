@@ -7,8 +7,11 @@ import (
 	"context"
 
 	"github.com/syssam/graphql-go"
+	productmodel "github.com/syssam/graphql-go/examples/veloxfx/graph/model/product"
 	product "github.com/syssam/graphql-go/examples/veloxfx/velox/client/product"
 	entity "github.com/syssam/graphql-go/examples/veloxfx/velox/entity"
+	filter "github.com/syssam/graphql-go/examples/veloxfx/velox/filter"
+	gqlrelay "github.com/syssam/velox/contrib/graphql/gqlrelay"
 )
 
 type CreateProductArgs struct {
@@ -24,18 +27,39 @@ type DeleteProductArgs struct {
 	ID graphql.ID `graphql:"id"`
 }
 
+type ProductsArgs struct {
+	After   *gqlrelay.Cursor           `graphql:"after"`
+	First   *int                       `graphql:"first"`
+	Before  *gqlrelay.Cursor           `graphql:"before"`
+	Last    *int                       `graphql:"last"`
+	OrderBy *productmodel.ProductOrder `graphql:"orderBy"`
+	Where   *filter.ProductWhereInput  `graphql:"where"`
+}
+
+type ProductArgs struct {
+	ID graphql.ID `graphql:"id"`
+}
+
 // Resolver holds methods for fields that are not struct data.
 type Resolver interface {
 	CreateProduct(ctx context.Context, args CreateProductArgs) (*entity.Product, error)
 	UpdateProduct(ctx context.Context, args UpdateProductArgs) (*entity.Product, error)
 	DeleteProduct(ctx context.Context, args DeleteProductArgs) (graphql.ID, error)
 	ProductID(ctx context.Context, obj *entity.Product) (graphql.ID, error)
-	Products(ctx context.Context) ([]*entity.Product, error)
+	Products(ctx context.Context, args ProductsArgs) (*entity.ProductConnection, error)
+	Product(ctx context.Context, args ProductArgs) (*entity.Product, error)
 }
 
 func Bindings(r Resolver) graphql.SchemaOption {
 	return graphql.Options(
+		graphql.Enum[productmodel.ProductOrderField]("ProductOrderField", map[productmodel.ProductOrderField]string{
+			productmodel.ProductOrderFieldSku:   "SKU",
+			productmodel.ProductOrderFieldName:  "NAME",
+			productmodel.ProductOrderFieldPrice: "PRICE",
+		}),
 		graphql.Input[product.CreateProductInput]("CreateProductInput", graphql.ZeroForNull()),
+		graphql.Input[productmodel.ProductOrder]("ProductOrder", graphql.ZeroForNull()),
+		graphql.Input[filter.ProductWhereInput]("ProductWhereInput", graphql.ZeroForNull()),
 		graphql.Input[product.UpdateProductInput]("UpdateProductInput", graphql.ZeroForNull()),
 		graphql.Object[entity.Product]("Product",
 			graphql.Resolve("id", func(ctx context.Context, v *entity.Product) (graphql.ID, error) { return r.ProductID(ctx, v) }),
@@ -46,8 +70,22 @@ func Bindings(r Resolver) graphql.SchemaOption {
 			graphql.Resolve("stocks", func(ctx context.Context, v *entity.Product) ([]*entity.Stock, error) { return v.Stocks(ctx) }),
 			graphql.Resolve("orderItems", func(ctx context.Context, v *entity.Product) ([]*entity.OrderItem, error) { return v.OrderItems(ctx) }),
 		),
+		graphql.Object[entity.ProductConnection]("ProductConnection",
+			graphql.Field("edges", func(v *entity.ProductConnection) []*entity.ProductEdge { return v.Edges }),
+			graphql.Field("pageInfo", func(v *entity.ProductConnection) gqlrelay.PageInfo { return v.PageInfo }),
+			graphql.Field("totalCount", func(v *entity.ProductConnection) int { return v.TotalCount }),
+		),
+		graphql.Object[entity.ProductEdge]("ProductEdge",
+			graphql.Field("node", func(v *entity.ProductEdge) *entity.Product { return v.Node }),
+			graphql.Field("cursor", func(v *entity.ProductEdge) gqlrelay.Cursor { return v.Cursor }),
+		),
 		graphql.Query(
-			graphql.Resolve("products", func(ctx context.Context, _ graphql.Root) ([]*entity.Product, error) { return r.Products(ctx) }),
+			graphql.ResolveArgs("products", func(ctx context.Context, _ graphql.Root, a ProductsArgs) (*entity.ProductConnection, error) {
+				return r.Products(ctx, a)
+			}),
+			graphql.ResolveArgs("product", func(ctx context.Context, _ graphql.Root, a ProductArgs) (*entity.Product, error) {
+				return r.Product(ctx, a)
+			}),
 		),
 		graphql.Mutation(
 			graphql.ResolveArgs("createProduct", func(ctx context.Context, _ graphql.Root, a CreateProductArgs) (*entity.Product, error) {
@@ -63,5 +101,7 @@ func Bindings(r Resolver) graphql.SchemaOption {
 		graphql.Args[CreateProductArgs](),
 		graphql.Args[UpdateProductArgs](),
 		graphql.Args[DeleteProductArgs](),
+		graphql.Args[ProductsArgs](),
+		graphql.Args[ProductArgs](),
 	)
 }

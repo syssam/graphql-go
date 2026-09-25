@@ -46,6 +46,9 @@ func (Stock) Edges() []velox.Edge {
 
 func (Stock) Annotations() []schema.Annotation {
 	return []schema.Annotation{
+		// An explicit QueryField keeps stocks a plain list, and every edge to
+		// Stock with it; velox otherwise makes each one a connection.
+		graphql.QueryField(),
 		graphql.Mutations(graphql.MutationCreate(), graphql.MutationUpdate()),
 	}
 }

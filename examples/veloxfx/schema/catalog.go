@@ -34,6 +34,9 @@ func (Category) Edges() []velox.Edge {
 
 func (Category) Annotations() []schema.Annotation {
 	return []schema.Annotation{
+		// Filterable by name, which is also what lets products filter by
+		// category: hasCategoryWith takes a CategoryWhereInput.
+		graphql.WhereInputFields("name"),
 		graphql.QueryField(),
 		graphql.Mutations(graphql.MutationCreate()),
 	}
@@ -44,8 +47,10 @@ type Product struct{ velox.Schema }
 func (Product) Fields() []velox.Field {
 	return []velox.Field{
 		field.String("sku").NotEmpty().Unique(),
-		field.String("name").NotEmpty(),
-		field.Int("price_cents").NonNegative(),
+		field.String("name").NotEmpty().
+			Annotations(graphql.OrderField("NAME")),
+		field.Int("price_cents").NonNegative().
+			Annotations(graphql.OrderField("PRICE")),
 	}
 }
 
@@ -59,6 +64,11 @@ func (Product) Edges() []velox.Edge {
 
 func (Product) Annotations() []schema.Annotation {
 	return []schema.Annotation{
+		// products(first, after, where, orderBy) is a Relay connection. Filtering
+		// is opt-in per field: a column is not filterable until it is listed.
+		graphql.RelayConnection(),
+		graphql.WhereInputFields("sku", "name", "price_cents"),
+		graphql.WhereInputEdges("category"),
 		graphql.QueryField(),
 		graphql.Mutations(graphql.MutationCreate(), graphql.MutationUpdate()),
 	}

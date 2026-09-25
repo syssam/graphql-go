@@ -13,8 +13,8 @@ func init() {
 		FKColumns:   []string{},
 		Inverse:     "",
 		Name:        "orders",
-		PagesLoaded: false,
-		Relay:       false,
+		PagesLoaded: true,
+		Relay:       true,
 		Target:      "orders",
 		Unique:      false,
 	}}

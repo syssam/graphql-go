@@ -11,6 +11,7 @@ import (
 	order "github.com/syssam/graphql-go/examples/veloxfx/velox/order"
 	predicate "github.com/syssam/graphql-go/examples/veloxfx/velox/predicate"
 	velox "github.com/syssam/velox"
+	gqlrelay "github.com/syssam/velox/contrib/graphql/gqlrelay"
 	sql "github.com/syssam/velox/dialect/sql"
 	sqlgraph "github.com/syssam/velox/dialect/sql/sqlgraph"
 	runtime "github.com/syssam/velox/runtime"
@@ -365,6 +366,7 @@ type OrderQuerier interface {
 	ForUpdate(opts ...sql.LockOption) OrderQuerier
 	ForShare(opts ...sql.LockOption) OrderQuerier
 	CollectFields(ctx context.Context, satisfies ...string) (OrderQuerier, error)
+	Paginate(ctx context.Context, after *gqlrelay.Cursor, first *int, before *gqlrelay.Cursor, last *int, opts ...OrderPaginateOption) (*OrderConnection, error)
 }
 
 // OrderSelector defines the select interface for Order entities.

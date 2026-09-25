@@ -4,7 +4,37 @@ type Customer @goModel(model: "github.com/syssam/graphql-go/examples/veloxfx/vel
   id: ID!
   name: String!
   email: String!
-  orders: [Order!]!
+  orders(
+    """
+    Returns the elements in the list that come after the specified cursor.
+    """
+    after: Cursor
+
+    """
+    Returns the first _n_ elements from the list.
+    """
+    first: Int
+
+    """
+    Returns the elements in the list that come before the specified cursor.
+    """
+    before: Cursor
+
+    """
+    Returns the last _n_ elements from the list.
+    """
+    last: Int
+
+    """
+    Ordering options for Orders returned from the connection.
+    """
+    orderBy: OrderOrder
+
+    """
+    Filtering options for Orders returned from the connection.
+    """
+    where: OrderWhereInput
+  ): OrderConnection!
 }
 
 input CreateCustomerInput @goModel(model: "github.com/syssam/graphql-go/examples/veloxfx/velox/client/customer.CreateCustomerInput") {

@@ -1,5 +1,36 @@
-# A computed field. velox's Order has no totalCents, so AutoBind leaves it
-# to the order group's Resolver, which sums the items.
+# Hand-written beside velox's output.
+
 extend type Order {
+  "Sum of quantity times unit price over the items. velox has no such column."
   totalCents: Int!
+}
+
+extend type Query {
+  "The Order with this id, or null if there is none."
+  order(id: ID!): Order
+}
+
+"One line of placeOrder: which product, and how many."
+input PlaceOrderItemInput {
+  productID: ID!
+  quantity: Int!
+}
+
+input PlaceOrderInput {
+  customerID: ID!
+  "The warehouse every line is taken from."
+  warehouseID: ID!
+  items: [PlaceOrderItemInput!]!
+}
+
+extend type Mutation {
+  """
+  Creates the order and its items at the product's current price, and takes
+  the quantities out of the warehouse's stock -- all or nothing. A line the
+  warehouse cannot cover fails the whole order and changes nothing.
+  """
+  placeOrder(input: PlaceOrderInput!): Order!
+
+  "Deletes the Order and its items together."
+  deleteOrder(id: ID!): ID!
 }

@@ -52,6 +52,9 @@ func (Order) Edges() []velox.Edge {
 
 func (Order) Annotations() []schema.Annotation {
 	return []schema.Annotation{
+		graphql.RelayConnection(),
+		graphql.WhereInputFields("status"),
+		graphql.WhereInputEdges("customer"),
 		graphql.QueryField(),
 		graphql.Mutations(graphql.MutationCreate(), graphql.MutationUpdate()),
 	}
@@ -75,6 +78,8 @@ func (OrderItem) Edges() []velox.Edge {
 
 func (OrderItem) Annotations() []schema.Annotation {
 	return []schema.Annotation{
+		// An order's items are a plain list, not a connection; see Stock.
+		graphql.QueryField(),
 		graphql.Mutations(graphql.MutationCreate()),
 	}
 }
