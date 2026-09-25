@@ -153,8 +153,8 @@ The root package is ~32 files on purpose, because Go scopes encapsulation to the
 - Request-scoped extension state goes in via `OperationContext.GetOrSet`, never `Get` then
   `Set`: the pair silently degrades DataLoader batching to N+1, and `-race` cannot see it.
   `gqlvet` can.
-- A nil Go slice is written as `null`. For `[T!]!`, return `make([]T, 0, n)` when the result
-  is empty.
+- A nil Go slice is Go's empty list: `[]` at a non-null list position, `null` at a nullable
+  one. graphql-js has no nil slice to decide it and gqlgen writes `[]`; see `executor.md`.
 - Package docs go in `doc.go`. `graphql.go` holds only `ID`, `Root`, `Omittable` and the
   scalar `Writer`. Keep each
   file focused enough that its name tells you what is in it.

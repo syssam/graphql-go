@@ -236,6 +236,11 @@ func (st *execState) writeValue(ctx context.Context, w *jsonw.Writer, v any, t *
 // again, which would turn one batched policy call into N+1.
 func (st *execState) writeComposite(ctx context.Context, w *jsonw.Writer, v any, t *ast.Type, shape *valueShape, f *planField, path *pathNode, checkInstance bool) bool {
 	if v == nil || (shape.isNil != nil && shape.isNil(v)) {
+		if v != nil && shape.nilIsEmpty {
+			w.BeginArray()
+			w.EndArray()
+			return true
+		}
 		return st.writeNullValue(ctx, w, t, f, path)
 	}
 	if t.Elem != nil {

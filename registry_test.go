@@ -85,9 +85,15 @@ func TestLeafWriterShapes(t *testing.T) {
 		t.Fatalf("[Int]! with nil element: %v %s", err, w.Bytes())
 	}
 
+	// A nil slice is Go's empty list: [] where null is not allowed, null
+	// where it is. See TestNilSliceAtNonNullListIsEmpty.
 	w.Reset()
-	if err := leafWriter[[]int](t, r, "Int")(w, nil, parseType("[Int!]!")); !errors.Is(err, errNonNull) {
-		t.Fatalf("nil slice for [Int!]! should be errNonNull, got %v", err)
+	if err := leafWriter[[]int](t, r, "Int")(w, nil, parseType("[Int!]!")); err != nil || string(w.Bytes()) != "[]" {
+		t.Fatalf("nil slice for [Int!]! should be [], got %v %s", err, w.Bytes())
+	}
+	w.Reset()
+	if err := leafWriter[[]int](t, r, "Int")(w, nil, parseType("[Int!]")); err != nil || string(w.Bytes()) != "null" {
+		t.Fatalf("nil slice for [Int!] should be null, got %v %s", err, w.Bytes())
 	}
 }
 

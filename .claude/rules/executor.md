@@ -226,3 +226,18 @@ binaries. Allocation counts are deterministic, so batched runs are fine for thos
 `internal/jsonw` is the output writer and has no dependency on engine types — the plan
 compiler and executor deliberately live in the root package so generic constructors can
 produce engine values directly.
+
+**A nil slice at a non-null list is `[]`, not a null violation.** It was the violation until
+2026-09-25, and the CLAUDE.md convention told resolvers to return `make([]T, 0, n)`. Measured,
+same schema and input: graphql-js 17.0.2 errors on `resolve: () => null` for `[Int!]!` and
+writes `[]` for `[]`, which decides nothing because JS has no nil slice; gqlgen v0.17.95 writes
+`[]` for a nil slice (its template returns `graphql.Null` for a nil slice only when the list is
+nullable). So every gqlgen resolver returning nil for an empty non-null list -- ORMs return nil
+for no rows -- failed after migrating, at request time, where neither the compiler nor
+`NewSchema` could see it. `valueShape.nilIsEmpty` is decided in `shapeFor` (a Go slice at a
+non-null list), so the executor tests a bool on the nil path and reflects on nothing;
+`listWriter` does the same for leaf lists. A nullable list keeps nil as `null`, so nil and
+`[]T{}` still differ there. The graphql-js differential records `whole list null, [String]!` as
+an intended divergence, asserted exactly: a Go slice has no null to give at that position, and
+refusing a list is what an error is for. `TestNilSliceAtNonNullListIsEmpty` and
+`TestLeafWriterShapes` each fail with their path's check removed.

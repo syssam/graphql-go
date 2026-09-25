@@ -216,6 +216,15 @@ func runGQLJSSet(t *testing.T, e *Executor, casesFile, expectedFile string) {
 		if !ok {
 			t.Fatalf("case %q has no recorded graphql-js result", c.Name)
 		}
+		if d, ok := intendedDivergences[c.Name]; ok {
+			t.Run(c.Name, func(t *testing.T) {
+				resp := e.Execute(context.Background(), &Request{Query: c.Query})
+				if got := string(resp.Data); got != d.data || len(resp.Errors) != 0 {
+					t.Errorf("intended divergence changed: data %s, errors %s; want %s and none", got, errorsJSON(resp.Errors), d.data)
+				}
+			})
+			continue
+		}
 		t.Run(c.Name, func(t *testing.T) {
 			req := &Request{Query: c.Query}
 			if c.Variables != nil {
@@ -308,4 +317,21 @@ func jsWantPaths(t *testing.T, paths [][]any) []string {
 		out = append(out, string(b))
 	}
 	return out
+}
+
+// intendedDivergences are the recorded cases this engine answers differently
+// from graphql-js on purpose. Each is asserted exactly, so a change in either
+// direction is a failing test, not a silent drift.
+var intendedDivergences = map[string]struct {
+	data, why string
+}{
+	// graphql-js: `resolve: () => null` for [String]! is a null violation.
+	// A Go resolver returning a slice has no null to give: nil is the empty
+	// list (see TestNilSliceAtNonNullListIsEmpty), and the engine does not
+	// bind *[]T. So the Go fixture's nil is an empty list and answers [];
+	// refusing a list is what returning an error is for.
+	"whole list null, [String]!": {
+		data: `{"xnNull":[]}`,
+		why:  "a nil Go slice is the empty list at a non-null list position",
+	},
 }

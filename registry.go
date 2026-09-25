@@ -165,6 +165,12 @@ func registerLeafShape[V any](r *registry, name string, nullable []bool, write f
 func listWriter[V any](elem func(*jsonw.Writer, V, *ast.Type) error) func(*jsonw.Writer, []V, *ast.Type) error {
 	return func(w *jsonw.Writer, v []V, t *ast.Type) error {
 		if v == nil {
+			if t.NonNull {
+				// See valueShape.nilIsEmpty: a nil slice is Go's empty list.
+				w.BeginArray()
+				w.EndArray()
+				return nil
+			}
 			return writeNull(w, t)
 		}
 		var soft *elementErrors
@@ -354,6 +360,11 @@ type valueShape struct {
 	traverse func(any, func(int, any) bool)
 	toPtr    func(any) any
 	elem     *valueShape
+	// nilIsEmpty is set for a Go slice at a non-null list position, where a
+	// nil slice is written as [] rather than as a null violation: null is not
+	// a valid answer there, and a nil slice is Go's empty list. Decided here,
+	// at plan time, so the executor tests a bool and reflects on nothing.
+	nilIsEmpty bool
 }
 
 var reflectionWarned sync.Map
@@ -371,6 +382,7 @@ func (r *registry) shapeFor(t reflect.Type, sdl *ast.Type, obj *objectType) *val
 		}
 	}
 	if sdl.Elem != nil {
+		s.nilIsEmpty = sdl.NonNull && t.Kind() == reflect.Slice
 		if tr, ok := r.traversers[t]; ok {
 			s.traverse = tr
 		} else {

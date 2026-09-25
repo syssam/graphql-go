@@ -235,7 +235,7 @@ reflection permitted on the request path and is expected to be rare.
 |---|---|---|
 | `T!` | `E`, `*E` | A nil `*E` at runtime produces a field error and null-bubbling. |
 | `T` | `E`, `*E` | `E` never yields null. |
-| `[T!]!`, `[T!]` | `[]E`, `[]*E` | nil slice → `null` for a nullable list, error for a non-null list; nil element of `[]*E` → error. |
+| `[T!]!`, `[T!]` | `[]E`, `[]*E` | nil slice → `null` for a nullable list, `[]` for a non-null list (an error until 2026-09-25; see executor.md); nil element of `[]*E` → error. |
 | `[T]!`, `[T]` | `[]*E` | Element nil → `null`. |
 | interface / union | Go interface type or `any` | The dynamic type must be a bound object type. |
 | input field `T` (nullable) | `*E`, `Omittable[*E]`, `Omittable[E]` | `Omittable` only via `OmittableField`. |

@@ -95,11 +95,7 @@ func NewProducts() (*graphql.Executor, error) {
 		),
 		graphql.Query(
 			graphql.ResolveArgs("topProducts", func(_ context.Context, _ graphql.Root, a topProductsArgs) ([]*Product, error) {
-				n := min(a.First, len(productRows))
-				// A nil slice writes null, and the field is [Product!]!.
-				out := make([]*Product, 0, n)
-				out = append(out, productRows[:n]...)
-				return out, nil
+				return productRows[:min(a.First, len(productRows))], nil
 			}),
 			graphql.ResolveArgs("product", func(_ context.Context, _ graphql.Root, a productArgs) (*Product, error) {
 				return findProduct(string(a.SKU)), nil
