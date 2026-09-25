@@ -68,7 +68,7 @@ func newSchemaFrom(store *Store, src graphql.Source, opts ...graphql.SchemaOptio
 		graphql.MarkerDirective("authenticated", ScopeAuthenticated),
 
 		graphql.Scalar("Money", marshalMoney, unmarshalMoney),
-		graphql.Scalar("Time", marshalTime, unmarshalTime),
+		graphql.Time("Time"),
 
 		graphql.Enum("OrderStatus", map[OrderStatus]string{
 			StatusPending:  "PENDING",
@@ -247,17 +247,4 @@ func unmarshalMoney(v any) (Money, error) {
 		return 0, fmt.Errorf("Money must be a decimal string such as \"12.34\", got %T", v)
 	}
 	return ParseMoney(s)
-}
-
-func marshalTime(w *graphql.Writer, t time.Time) error {
-	w.String(t.UTC().Format(time.RFC3339Nano))
-	return nil
-}
-
-func unmarshalTime(v any) (time.Time, error) {
-	s, ok := v.(string)
-	if !ok {
-		return time.Time{}, fmt.Errorf("Time must be an RFC 3339 string, got %T", v)
-	}
-	return time.Parse(time.RFC3339Nano, s)
 }

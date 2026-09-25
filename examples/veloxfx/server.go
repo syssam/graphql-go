@@ -21,6 +21,11 @@ import (
 	"github.com/syssam/graphql-go/transport/gqlws"
 )
 
+// scalars binds Time, the one custom scalar gqlc does not: a models entry
+// chooses time.Time, not its wire format. velox's Cursor encodes itself, and
+// gqlc binds it.
+var scalars = graphql.Time("Time")
+
 // NewSchema takes whatever bindings the domain modules registered. It does
 // not name them: a module that is not in the app leaves its types unbound,
 // and graph.NewSchema says which.
