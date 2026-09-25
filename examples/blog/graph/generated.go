@@ -46,21 +46,40 @@ type UserPostsArgs struct {
 	First *int `graphql:"first"`
 }
 
-// Resolver holds methods for fields that are not struct data.
+// Resolver has a method for each field no Go value answers by itself: every
+// root field, and each field not bound to a struct field or method.
 type Resolver interface {
+	// CreatePost resolves Mutation.createPost.
 	CreatePost(ctx context.Context, args CreatePostArgs) (*model.Post, error)
+	// UpdatePost resolves Mutation.updatePost.
 	UpdatePost(ctx context.Context, args UpdatePostArgs) (*model.Post, error)
+	// PostAuthor resolves Post.author.
 	PostAuthor(ctx context.Context, obj *model.Post) (*model.User, error)
+	// Node resolves Query.node.
 	Node(ctx context.Context, args NodeArgs) (model.Node, error)
+	// User resolves Query.user.
 	User(ctx context.Context, args UserArgs) (*model.User, error)
+	// Users resolves Query.users.
 	Users(ctx context.Context) ([]*model.User, error)
+	// Posts resolves Query.posts.
 	Posts(ctx context.Context, args PostsArgs) ([]*model.Post, error)
+	// Search resolves Query.search.
 	Search(ctx context.Context, args SearchArgs) ([]model.SearchResult, error)
+	// PostCreated resolves Subscription.postCreated.
+	//
+	// Emits every post as it is created.
 	PostCreated(ctx context.Context) (<-chan *model.Post, error)
+	// PostCreatedWithTag resolves Subscription.postCreatedWithTag.
+	//
+	// Emits created posts carrying the given tag.
 	PostCreatedWithTag(ctx context.Context, args PostCreatedWithTagArgs) (<-chan *model.Post, error)
+	// UserPosts resolves User.posts.
 	UserPosts(ctx context.Context, obj *model.User, args UserPostsArgs) ([]*model.Post, error)
 }
 
+// Bindings registers the schema's types and fields, calling r for each
+// Resolver method. Building a schema never calls r, which is why
+// ValidateSchema can pass nil.
 func Bindings(r Resolver) graphql.SchemaOption {
 	return graphql.Options(
 		graphql.Enum[model.Role]("Role", map[model.Role]string{

@@ -28,15 +28,30 @@ type StockArgs struct {
 	ID int `graphql:"id"`
 }
 
-// Resolver holds methods for fields that are not struct data.
+// Resolver has a method for each field no Go value answers by itself: every
+// root field, and each field not bound to a struct field or method.
 type Resolver interface {
+	// CreateStock resolves Mutation.createStock.
 	CreateStock(ctx context.Context, args CreateStockArgs) (*entity.Stock, error)
+	// AdjustStock resolves Mutation.adjustStock.
+	//
+	// Adds delta to the count, which may be negative but may not take it below zero.
 	AdjustStock(ctx context.Context, args AdjustStockArgs) (*entity.Stock, error)
+	// DeleteStock resolves Mutation.deleteStock.
+	//
+	// Deletes the Stock and returns its id.
 	DeleteStock(ctx context.Context, args DeleteStockArgs) (int, error)
+	// Stocks resolves Query.stocks.
 	Stocks(ctx context.Context) ([]*entity.Stock, error)
+	// Stock resolves Query.stock.
+	//
+	// The Stock with this id, or null if there is none.
 	Stock(ctx context.Context, args StockArgs) (*entity.Stock, error)
 }
 
+// Bindings registers the stock group's types and fields, calling r for each
+// Resolver method. Building a schema never calls r, which is why
+// ValidateSchema can pass nil.
 func Bindings(r Resolver) graphql.SchemaOption {
 	return graphql.Options(
 		graphql.Input[stock.CreateStockInput]("CreateStockInput", graphql.ZeroForNull()),

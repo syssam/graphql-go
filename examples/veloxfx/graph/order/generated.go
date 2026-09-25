@@ -48,18 +48,46 @@ type OrderArgs struct {
 	ID int `graphql:"id"`
 }
 
-// Resolver holds methods for fields that are not struct data.
+// Resolver has a method for each field no Go value answers by itself: every
+// root field, and each field not bound to a struct field or method.
 type Resolver interface {
+	// PlaceOrder resolves Mutation.placeOrder.
+	//
+	// Creates a PENDING order and its items at each product's current price, and
+	// takes the quantities out of the warehouse's stock -- all or nothing. A line
+	// the warehouse cannot cover fails the whole order and changes nothing.
 	PlaceOrder(ctx context.Context, args PlaceOrderArgs) (*entity.Order, error)
+	// PayOrder resolves Mutation.payOrder.
+	//
+	// PENDING to PAID.
 	PayOrder(ctx context.Context, args PayOrderArgs) (*entity.Order, error)
+	// ShipOrder resolves Mutation.shipOrder.
+	//
+	// PAID to SHIPPED.
 	ShipOrder(ctx context.Context, args ShipOrderArgs) (*entity.Order, error)
+	// CancelOrder resolves Mutation.cancelOrder.
+	//
+	// PENDING or PAID to CANCELLED, returning the items to the warehouse's stock.
 	CancelOrder(ctx context.Context, args CancelOrderArgs) (*entity.Order, error)
+	// DeleteOrder resolves Mutation.deleteOrder.
+	//
+	// Deletes a CANCELLED order and its items. Any other order is a record of a sale.
 	DeleteOrder(ctx context.Context, args DeleteOrderArgs) (int, error)
+	// OrderTotalCents resolves Order.totalCents.
+	//
+	// Sum of quantity times unit price over the items. velox has no such column.
 	OrderTotalCents(ctx context.Context, obj *entity.Order) (int, error)
+	// Orders resolves Query.orders.
 	Orders(ctx context.Context, args OrdersArgs) (*entity.OrderConnection, error)
+	// Order resolves Query.order.
+	//
+	// The Order with this id, or null if there is none.
 	Order(ctx context.Context, args OrderArgs) (*entity.Order, error)
 }
 
+// Bindings registers the order group's types and fields, calling r for each
+// Resolver method. Building a schema never calls r, which is why
+// ValidateSchema can pass nil.
 func Bindings(r Resolver) graphql.SchemaOption {
 	return graphql.Options(
 		graphql.EnumMarshaler[entity.OrderOrderField]("OrderOrderField"),

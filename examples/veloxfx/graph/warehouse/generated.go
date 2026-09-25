@@ -39,15 +39,28 @@ type WarehouseOrdersArgs struct {
 	Where   *filter.OrderWhereInput `graphql:"where"`
 }
 
-// Resolver holds methods for fields that are not struct data.
+// Resolver has a method for each field no Go value answers by itself: every
+// root field, and each field not bound to a struct field or method.
 type Resolver interface {
+	// CreateWarehouse resolves Mutation.createWarehouse.
 	CreateWarehouse(ctx context.Context, args CreateWarehouseArgs) (*entity.Warehouse, error)
+	// UpdateWarehouse resolves Mutation.updateWarehouse.
 	UpdateWarehouse(ctx context.Context, args UpdateWarehouseArgs) (*entity.Warehouse, error)
+	// DeleteWarehouse resolves Mutation.deleteWarehouse.
+	//
+	// Deletes the Warehouse and returns its id. Refused while other rows refer to it.
 	DeleteWarehouse(ctx context.Context, args DeleteWarehouseArgs) (int, error)
+	// Warehouses resolves Query.warehouses.
 	Warehouses(ctx context.Context) ([]*entity.Warehouse, error)
+	// Warehouse resolves Query.warehouse.
+	//
+	// The Warehouse with this id, or null if there is none.
 	Warehouse(ctx context.Context, args WarehouseArgs) (*entity.Warehouse, error)
 }
 
+// Bindings registers the warehouse group's types and fields, calling r for each
+// Resolver method. Building a schema never calls r, which is why
+// ValidateSchema can pass nil.
 func Bindings(r Resolver) graphql.SchemaOption {
 	return graphql.Options(
 		graphql.Input[warehouse.CreateWarehouseInput]("CreateWarehouseInput", graphql.ZeroForNull()),

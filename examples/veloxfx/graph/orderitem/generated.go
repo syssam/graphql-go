@@ -14,12 +14,20 @@ type OrderItemArgs struct {
 	ID int `graphql:"id"`
 }
 
-// Resolver holds methods for fields that are not struct data.
+// Resolver has a method for each field no Go value answers by itself: every
+// root field, and each field not bound to a struct field or method.
 type Resolver interface {
+	// OrderItems resolves Query.orderItems.
 	OrderItems(ctx context.Context) ([]*entity.OrderItem, error)
+	// OrderItem resolves Query.orderItem.
+	//
+	// The OrderItem with this id, or null if there is none.
 	OrderItem(ctx context.Context, args OrderItemArgs) (*entity.OrderItem, error)
 }
 
+// Bindings registers the orderitem group's types and fields, calling r for each
+// Resolver method. Building a schema never calls r, which is why
+// ValidateSchema can pass nil.
 func Bindings(r Resolver) graphql.SchemaOption {
 	return graphql.Options(
 		graphql.Object[entity.OrderItem]("OrderItem",

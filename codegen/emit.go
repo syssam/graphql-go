@@ -308,9 +308,20 @@ func (b *builder) eachResolverField(group string, fn func(typeName string, fd *a
 
 func (b *builder) emitResolver(group string) string {
 	var body strings.Builder
-	body.WriteString("// Resolver holds methods for fields that are not struct data.\n")
+	body.WriteString("// Resolver has a method for each field no Go value answers by itself: every\n")
+	body.WriteString("// root field, and each field not bound to a struct field or method.\n")
 	body.WriteString("type Resolver interface {\n")
 	for _, m := range b.resolverSignatures(group, "") {
+		// The interface is what is read before a method is written, so it
+		// carries the field's SDL description, as a gRPC service interface
+		// carries the .proto comments.
+		fmt.Fprintf(&body, "\t// %s resolves %s.\n", m.name, m.coord)
+		if doc := strings.TrimSpace(m.doc); doc != "" {
+			body.WriteString("\t//\n")
+			for line := range strings.SplitSeq(doc, "\n") {
+				body.WriteString(strings.TrimRight("\t// "+line, " ") + "\n")
+			}
+		}
 		fmt.Fprintf(&body, "\t%s%s\n", m.name, m.signature)
 	}
 	body.WriteString("}\n")
@@ -511,9 +522,18 @@ func (b *builder) checkIdentifiers() error {
 
 func (b *builder) emitBindings(group string, withResolver bool) string {
 	var w strings.Builder
+	whose := "the schema's"
+	if group != "" {
+		whose = "the " + group + " group's"
+	}
 	if withResolver {
+		fmt.Fprintf(&w, "// Bindings registers %s types and fields, calling r for each\n", whose)
+		w.WriteString("// Resolver method. Building a schema never calls r, which is why\n")
+		w.WriteString("// ValidateSchema can pass nil.\n")
 		w.WriteString("func Bindings(r Resolver) graphql.SchemaOption {\n\treturn graphql.Options(\n")
 	} else {
+		fmt.Fprintf(&w, "// Bindings registers %s types and fields; none of them needs a\n", whose)
+		w.WriteString("// Resolver, so NewSchema registers them itself.\n")
 		w.WriteString("func Bindings() graphql.SchemaOption {\n\treturn graphql.Options(\n")
 	}
 

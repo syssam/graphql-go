@@ -39,15 +39,28 @@ type ProductArgs struct {
 	ID int `graphql:"id"`
 }
 
-// Resolver holds methods for fields that are not struct data.
+// Resolver has a method for each field no Go value answers by itself: every
+// root field, and each field not bound to a struct field or method.
 type Resolver interface {
+	// CreateProduct resolves Mutation.createProduct.
 	CreateProduct(ctx context.Context, args CreateProductArgs) (*entity.Product, error)
+	// UpdateProduct resolves Mutation.updateProduct.
 	UpdateProduct(ctx context.Context, args UpdateProductArgs) (*entity.Product, error)
+	// DeleteProduct resolves Mutation.deleteProduct.
+	//
+	// Deletes the Product and returns its id. Refused while stock or an order refers to it.
 	DeleteProduct(ctx context.Context, args DeleteProductArgs) (int, error)
+	// Products resolves Query.products.
 	Products(ctx context.Context, args ProductsArgs) (*entity.ProductConnection, error)
+	// Product resolves Query.product.
+	//
+	// The Product with this id, or null if there is none.
 	Product(ctx context.Context, args ProductArgs) (*entity.Product, error)
 }
 
+// Bindings registers the product group's types and fields, calling r for each
+// Resolver method. Building a schema never calls r, which is why
+// ValidateSchema can pass nil.
 func Bindings(r Resolver) graphql.SchemaOption {
 	return graphql.Options(
 		graphql.EnumMarshaler[entity.ProductOrderField]("ProductOrderField"),

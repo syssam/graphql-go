@@ -39,15 +39,28 @@ type CustomerArgs struct {
 	ID int `graphql:"id"`
 }
 
-// Resolver holds methods for fields that are not struct data.
+// Resolver has a method for each field no Go value answers by itself: every
+// root field, and each field not bound to a struct field or method.
 type Resolver interface {
+	// CreateCustomer resolves Mutation.createCustomer.
 	CreateCustomer(ctx context.Context, args CreateCustomerArgs) (*entity.Customer, error)
+	// UpdateCustomer resolves Mutation.updateCustomer.
 	UpdateCustomer(ctx context.Context, args UpdateCustomerArgs) (*entity.Customer, error)
+	// DeleteCustomer resolves Mutation.deleteCustomer.
+	//
+	// Deletes the Customer and returns its id. Refused while other rows refer to it.
 	DeleteCustomer(ctx context.Context, args DeleteCustomerArgs) (int, error)
+	// Customers resolves Query.customers.
 	Customers(ctx context.Context) ([]*entity.Customer, error)
+	// Customer resolves Query.customer.
+	//
+	// The Customer with this id, or null if there is none.
 	Customer(ctx context.Context, args CustomerArgs) (*entity.Customer, error)
 }
 
+// Bindings registers the customer group's types and fields, calling r for each
+// Resolver method. Building a schema never calls r, which is why
+// ValidateSchema can pass nil.
 func Bindings(r Resolver) graphql.SchemaOption {
 	return graphql.Options(
 		graphql.Input[customer.CreateCustomerInput]("CreateCustomerInput", graphql.ZeroForNull()),

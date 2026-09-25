@@ -8,6 +8,8 @@ import (
 	gqlrelay "github.com/syssam/velox/contrib/graphql/gqlrelay"
 )
 
+// Bindings registers the root group's types and fields; none of them needs a
+// Resolver, so NewSchema registers them itself.
 func Bindings() graphql.SchemaOption {
 	return graphql.Options(
 		graphql.Enum[gqlrelay.OrderDirection]("OrderDirection", map[gqlrelay.OrderDirection]string{

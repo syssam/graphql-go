@@ -259,3 +259,23 @@ func (UserResolver) Archived()                          {}
 		t.Fatalf("notes = %q\nwant one starting %q", notes, want)
 	}
 }
+
+// The Resolver interface is what a developer reads before writing a method,
+// as a gRPC service interface is, so it carries what the SDL says about each
+// field; Bindings says how it is used.
+func TestGeneratedGroupIsDocumented(t *testing.T) {
+	dir, generate := scaffoldModule(t, nil)
+	if err := generate(); err != nil {
+		t.Fatal(err)
+	}
+	post := readFile(t, filepath.Join(dir, "graph", "post", "generated.go"))
+	for _, want := range []string{
+		"\t// PostAuthor resolves Post.author.\n\t//\n\t// Who wrote it.\n\tPostAuthor(",
+		"\t// Publish resolves Mutation.publish.\n\tPublish(",
+		"// Bindings registers the post group's types and fields",
+	} {
+		if !strings.Contains(post, want) {
+			t.Errorf("post/generated.go lacks %q\n%s", want, post)
+		}
+	}
+}

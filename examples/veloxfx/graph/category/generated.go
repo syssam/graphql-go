@@ -39,15 +39,28 @@ type CategoryArgs struct {
 	ID int `graphql:"id"`
 }
 
-// Resolver holds methods for fields that are not struct data.
+// Resolver has a method for each field no Go value answers by itself: every
+// root field, and each field not bound to a struct field or method.
 type Resolver interface {
+	// CreateCategory resolves Mutation.createCategory.
 	CreateCategory(ctx context.Context, args CreateCategoryArgs) (*entity.Category, error)
+	// UpdateCategory resolves Mutation.updateCategory.
 	UpdateCategory(ctx context.Context, args UpdateCategoryArgs) (*entity.Category, error)
+	// DeleteCategory resolves Mutation.deleteCategory.
+	//
+	// Deletes the Category and returns its id. Refused while other rows refer to it.
 	DeleteCategory(ctx context.Context, args DeleteCategoryArgs) (int, error)
+	// Categories resolves Query.categories.
 	Categories(ctx context.Context) ([]*entity.Category, error)
+	// Category resolves Query.category.
+	//
+	// The Category with this id, or null if there is none.
 	Category(ctx context.Context, args CategoryArgs) (*entity.Category, error)
 }
 
+// Bindings registers the category group's types and fields, calling r for each
+// Resolver method. Building a schema never calls r, which is why
+// ValidateSchema can pass nil.
 func Bindings(r Resolver) graphql.SchemaOption {
 	return graphql.Options(
 		graphql.Input[filter.CategoryWhereInput]("CategoryWhereInput", graphql.ZeroForNull()),

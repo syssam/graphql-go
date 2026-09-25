@@ -240,7 +240,9 @@ failed on the first request to reach it. Now the grouped `NewSchema(opts...)` ta
 group's `Bindings(r)`, so a group left out fails the build with `type X has no Object
 binding`, and one passed twice fails with `bound more than once`. It also means a large
 service has no 800-field struct to fill: each domain contributes its own groups, which with
-uber/fx is a value group (`examples/veloxfx`). Groups with no Resolver are registered by
+uber/fx is a value group (`examples/veloxfx`). Each Resolver method carries its field's coordinate and SDL description, as a gRPC
+service interface carries the `.proto` comments (`TestGeneratedGroupIsDocumented`).
+Groups with no Resolver are registered by
 `NewSchema` itself; `ValidateSchema` registers the rest with a nil resolver.
 `TestGeneratedTwoGroupsExecutes` and `TestGenerateGroupFuncRegistersPureGroupItself` both
 fail if `NewSchema` registers a resolver group by itself.
