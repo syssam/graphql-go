@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"time"
 
 	"github.com/vektah/gqlparser/v2/ast"
 
@@ -38,6 +39,49 @@ func Scalar[T any](name string, marshal func(*Writer, T) error, unmarshal func(a
 			return marshal((*Writer)(w), v)
 		}, unmarshal)
 	})
+}
+
+// Time binds the scalar name to time.Time as an RFC 3339 string, the wire
+// format of gqlgen's built-in Time, so a service moving over answers with the
+// same bytes: the value's own offset is kept, and the fraction is written only
+// as far as it is non-zero (time.RFC3339Nano). *time.Time binds with it, and
+// nil is null.
+//
+// Two of gqlgen's choices are not taken. The zero time is written as
+// "0001-01-01T00:00:00Z", not null, because null at a Time! position is an
+// error the value did not cause; a column that can be empty is a *time.Time.
+// And input must be RFC 3339: gqlgen also reads "" as the zero time, which
+// hides a missing value, and "2006-01-02 15:04:05" as UTC, which is a
+// wall-clock time each client means in its own zone.
+func Time(name string) SchemaOption {
+	return Scalar(name, marshalTime, unmarshalTime)
+}
+
+func marshalTime(w *Writer, t time.Time) error {
+	if y := t.Year(); y < 0 || y > 9999 {
+		// RFC 3339 has four year digits; writing more would be a value
+		// unmarshalTime, and every other reader, refuses.
+		return fmt.Errorf("Time cannot represent year %d in RFC 3339", y)
+	}
+	// Nothing in an RFC 3339 time needs escaping, so the quotes are written
+	// around it rather than the time being formatted to a string first.
+	var buf [len(time.RFC3339Nano) + 8]byte
+	b := append(buf[:0], '"')
+	b = append(t.AppendFormat(b, time.RFC3339Nano), '"')
+	w.Raw(b)
+	return nil
+}
+
+func unmarshalTime(v any) (time.Time, error) {
+	s, ok := v.(string)
+	if !ok {
+		return time.Time{}, fmt.Errorf("Time must be an RFC 3339 string, got %T", v)
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("Time must be an RFC 3339 string: %q", s)
+	}
+	return t, nil
 }
 
 // registerBuiltins installs the specification's scalars for their natural Go

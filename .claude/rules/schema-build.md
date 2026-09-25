@@ -116,3 +116,12 @@ and running the six phases -- is 340 ms and +130 MB of heap. It is paid once, at
 and the first request after it is immediate (`{ __typename }` is under a millisecond). Neither
 half is worth optimizing before something measures start-up as a problem; what the split is
 for is knowing that half of any such attempt would have to happen in a dependency.
+
+**`Time(name)` is gqlgen's wire format with two of its choices refused** (`scalar.go`). Output
+is `time.RFC3339Nano` with the value's own offset, byte for byte what gqlgen writes, so a
+service moving over does not change what its clients parse. gqlgen writes the zero time as
+null, which is an error at `Time!` the value did not cause; here it is
+`0001-01-01T00:00:00Z`, and an empty column is a `*time.Time`. gqlgen reads `""` as the zero
+time and `2006-01-02 15:04:05` as UTC; both are refused. A year outside 0-9999 is a field
+error rather than a string no RFC 3339 reader accepts. `TestTimeIsRFC3339` fails with output
+forced to UTC, `""` accepted, or the year check removed.

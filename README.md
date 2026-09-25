@@ -211,6 +211,8 @@ field from an N+1 into one query per wave.
 | `Args[A]()` / `Input[T](name)` | Decoder from struct fields (`graphql` / `json` tags, or `AuthorID` → `authorId`). Explicit `InputField` stays the zero-reflect path. |
 | `InputField`, `OmittableField` | Hand-written setters when a name or type needs an override. |
 | `Enum`, `Scalar` | Leaf types; several Go types may back one GraphQL type. |
+| `Time(name)` | `time.Time` as RFC 3339, gqlgen's `Time` wire format; the one custom scalar almost every schema has. |
+| `EnumMarshaler` / `ScalarMarshaler` | Types with gqlgen's `MarshalGQL`/`UnmarshalGQL`, bound as they are (ent and velox order fields and cursors). |
 | `Interface`, `Union`, `TypeResolver` | Abstract types resolved from the dynamic Go type or an explicit function. |
 | `Directive` / `DirectiveArgs[A]` | Schema-directive middleware on `FIELD_DEFINITION` and `OBJECT`. |
 | `Query` / `Mutation` / `Subscription` | Bind the schema's root types without repeating their names. |

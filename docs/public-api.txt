@@ -212,6 +212,7 @@ graphql: func Sources(srcs ...Source) Source
 graphql: func SubscribeArgs[A, R any](name string, fn func(context.Context, A) (<-chan R, error), opts ...FieldSchedule) FieldOption
 graphql: func Subscribe[R any](name string, fn func(context.Context) (<-chan R, error), opts ...FieldSchedule) FieldOption
 graphql: func Subscription(fields ...FieldOption) SchemaOption
+graphql: func Time(name string) SchemaOption
 graphql: func TypeResolver[T any](fn func(T) string) AbstractOption
 graphql: func Union[T any](name string, opts ...AbstractOption) SchemaOption
 graphql: func Validate(src Source, opts ...SchemaOption) error
