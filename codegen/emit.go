@@ -829,6 +829,7 @@ func (b *builder) reportUnboundScalars() {
 		return
 	}
 	parts := make([]string, 0, len(names))
+	custom := ""
 	for _, name := range names {
 		if b.marshalers[name] {
 			continue
@@ -838,11 +839,23 @@ func (b *builder) reportUnboundScalars() {
 			_, ref := splitModelExpr(expr)
 			goType = ref
 		}
+		if goType == "time.Time" {
+			// The engine has this one's binding, so its fix is one call.
+			parts = append(parts, fmt.Sprintf("%s (time.Time: graphql.Time(%q))", name, name))
+			continue
+		}
+		if custom == "" {
+			custom = name
+		}
 		parts = append(parts, fmt.Sprintf("%s (%s)", name, goType))
 	}
 	if len(parts) == 0 {
 		return
 	}
-	b.notef("%d custom scalar(s) need a binding at NewSchema, or the schema will not build: %s. Add graphql.Scalar[GoType](%q, marshal, unmarshal) for each; a Models entry chooses the Go type but does not bind it.",
-		len(parts), strings.Join(parts, ", "), strings.SplitN(parts[0], " ", 2)[0])
+	how := "Add the call shown for each"
+	if custom != "" {
+		how = fmt.Sprintf("Add graphql.Scalar[GoType](%q, marshal, unmarshal) for each, or the call shown", custom)
+	}
+	b.notef("%d custom scalar(s) need a binding at NewSchema, or the schema will not build: %s. %s; a Models entry chooses the Go type but does not bind it.",
+		len(parts), strings.Join(parts, ", "), how)
 }

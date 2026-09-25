@@ -298,7 +298,9 @@ entry chooses a scalar's Go type; it does not register a marshaller, so a *mappe
 needs `graphql.Scalar` exactly as an unmapped one does. Believing otherwise made 21 641 of
 the real schema's 33 924 errors a surprise -- `Time` was mapped to `time.Time` and still had
 no binding. `reportUnboundScalars` now names all ten with their Go types in one line at
-generate time. The first version of its own test encoded the same misconception, which is
+generate time, and for one mapped to `time.Time` the exact call, `graphql.Time("Time")`.
+It does not emit that binding itself: a schema that binds `Time` by hand today, as the real
+one does, would fail with `bound more than once` on upgrade. The first version of its own test encoded the same misconception, which is
 the measure of how easy it is to hold.
 
 **Codegen against a real schema now compiles, and that is not the same as working.** A real

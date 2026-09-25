@@ -31,7 +31,9 @@ There is no struct aggregating the groups. A group left out fails `NewSchema`
 with the types it leaves unbound, where an unset field in an aggregate compiled,
 built, and failed on the first request to reach it. Groups with no `Resolver`
 are registered by `NewSchema` itself. Custom scalars listed under `models` must
-still be bound with `graphql.Scalar` in the `NewSchema` options.
+still be bound in the `NewSchema` options: `graphql.Time("Time")` for one
+mapped to `time.Time`, `graphql.Scalar` for the rest. gqlc lists each with
+the call to add.
 
 Each group is emitted as one `generated.go` holding its argument structs,
 `Resolver` interface and bindings; the compiler rebuilds per package, so extra

@@ -54,6 +54,11 @@ type Doc struct{ ID string }
 	if !strings.Contains(scalarNote, "time.Time") {
 		t.Errorf("the diagnostic does not name the mapped Go type: %s", scalarNote)
 	}
+	// time.Time has a binding in the engine, so its line is that call, and
+	// only its line: Stamp is a Time by name alone.
+	if !strings.Contains(scalarNote, `Mapped (time.Time: graphql.Time("Mapped"))`) || strings.Count(scalarNote, "graphql.Time(") != 1 {
+		t.Errorf("the diagnostic does not offer graphql.Time for the time.Time scalar alone: %s", scalarNote)
+	}
 	// The built-in scalars are never the author's problem.
 	for _, never := range []string{"String", "Int", "Boolean", "ID", "Float"} {
 		if strings.Contains(scalarNote, never) {
