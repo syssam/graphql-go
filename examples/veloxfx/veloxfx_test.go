@@ -104,7 +104,10 @@ func dsn(t *testing.T) string {
 type response struct {
 	Data   json.RawMessage `json:"data"`
 	Errors []struct {
-		Message string `json:"message"`
+		Message    string `json:"message"`
+		Extensions struct {
+			Code string `json:"code"`
+		} `json:"extensions"`
 	} `json:"errors"`
 }
 
@@ -139,12 +142,14 @@ func (a *app) data(query string) string {
 	return string(r.Data)
 }
 
-// refused runs a query that must fail with one error containing want.
-func (a *app) refused(query, want string) {
+// refused runs a query that must fail with one error whose extensions.code is
+// code and whose message contains want. The code is what a client branches
+// on; the message is for a person.
+func (a *app) refused(query, code, want string) {
 	a.t.Helper()
 	r := a.post(query)
-	if len(r.Errors) != 1 || !strings.Contains(r.Errors[0].Message, want) {
-		a.t.Errorf("%s: want one error containing %q, got %+v (data %s)", query, want, r.Errors, r.Data)
+	if len(r.Errors) != 1 || r.Errors[0].Extensions.Code != code || !strings.Contains(r.Errors[0].Message, want) {
+		a.t.Errorf("%s: want one %s error containing %q, got %+v (data %s)", query, code, want, r.Errors, r.Data)
 	}
 }
 
@@ -365,17 +370,17 @@ func TestReadAndDeleteByID(t *testing.T) {
 	if got := a.data(`{ product(id: "1") { sku } missing: product(id: "999") { sku } }`); got != `{"product":{"sku":"kb-1"},"missing":null}` {
 		t.Errorf("product by id = %s", got)
 	}
-	a.refused(`{ product(id: "kb-1") { sku } }`, "invalid id")
+	a.refused(`{ product(id: "kb-1") { sku } }`, "GRAPHQL_VALIDATION_FAILED", "ID cannot represent value")
 
 	// Refused while referenced, with the reason rather than the driver's text.
-	a.refused(`mutation { deleteCategory(id: "1") }`, "still referenced")  // products are in it
-	a.refused(`mutation { deleteCustomer(id: "1") }`, "still referenced")  // she has orders
-	a.refused(`mutation { deleteProduct(id: "1") }`, "still referenced")   // stocked and ordered
-	a.refused(`mutation { deleteWarehouse(id: "1") }`, "still referenced") // stock, and orders taken from it
+	a.refused(`mutation { deleteCategory(id: "1") }`, "FAILED_PRECONDITION", "still referenced")  // products are in it
+	a.refused(`mutation { deleteCustomer(id: "1") }`, "FAILED_PRECONDITION", "still referenced")  // she has orders
+	a.refused(`mutation { deleteProduct(id: "1") }`, "FAILED_PRECONDITION", "still referenced")   // stocked and ordered
+	a.refused(`mutation { deleteWarehouse(id: "1") }`, "FAILED_PRECONDITION", "still referenced") // stock, and orders taken from it
 
 	// An order is a record of a sale: it deletes only once cancelled, and
 	// then takes its items with it.
-	a.refused(`mutation { deleteOrder(id: "1") }`, "order 1 is PENDING")
+	a.refused(`mutation { deleteOrder(id: "1") }`, "FAILED_PRECONDITION", "order 1 is PENDING")
 	a.data(`mutation { cancelOrder(id: "1") { status } }`)
 	if got := a.data(`mutation { deleteOrder(id: "1") }`); got != `{"deleteOrder":"1"}` {
 		t.Errorf("deleteOrder = %s", got)
@@ -387,12 +392,12 @@ func TestReadAndDeleteByID(t *testing.T) {
 	// Retiring a warehouse nothing was ordered from: its stock, then it.
 	a.data(`mutation { createWarehouse(input: {name: "South"}) { id } }`)
 	a.data(`mutation { createStock(input: {quantity: 4, warehouseID: "2", productID: "1"}) { id } }`)
-	a.refused(`mutation { deleteWarehouse(id: "2") }`, "still referenced")
+	a.refused(`mutation { deleteWarehouse(id: "2") }`, "FAILED_PRECONDITION", "still referenced")
 	a.data(`mutation { deleteStock(id: "3") }`)
 	if got := a.data(`mutation { deleteWarehouse(id: "2") }`); got != `{"deleteWarehouse":"2"}` {
 		t.Errorf("deleteWarehouse = %s", got)
 	}
-	a.refused(`mutation { deleteStock(id: "3") }`, "no such row")
+	a.refused(`mutation { deleteStock(id: "3") }`, "NOT_FOUND", "not found")
 }
 
 // placeOrder is all or nothing: the order, its items at today's price, and
@@ -419,7 +424,7 @@ func TestPlaceOrderIsOneTransaction(t *testing.T) {
 	// The whole order fails, and the board taken for the first line is put
 	// back: no order, no items, stock unchanged.
 	a.refused(`mutation { placeOrder(input: {customerID: "1", warehouseID: "1", items: [
-		{productID: "1", quantity: 1}, {productID: "2", quantity: 1}]}) { id } }`, "items[1]: kb-2: not enough in stock")
+		{productID: "1", quantity: 1}, {productID: "2", quantity: 1}]}) { id } }`, "FAILED_PRECONDITION", "items[1]: kb-2: not enough in stock")
 	if got := stock(); got != `{"stocks":[{"quantity":1},{"quantity":0}]}` {
 		t.Errorf("a failed order changed stock: %s", got)
 	}
@@ -443,15 +448,15 @@ func TestOrderLifecycle(t *testing.T) {
 	a.data(placeTwoBoardsAndKeycaps) // 1
 	a.data(placeTwoBoardsAndKeycaps) // 2
 
-	a.refused(`mutation { shipOrder(id: "1") { status } }`, "order 1 is PENDING")
+	a.refused(`mutation { shipOrder(id: "1") { status } }`, "FAILED_PRECONDITION", "order 1 is PENDING")
 	if got := a.data(`mutation { payOrder(id: "1") { status } }`); got != `{"payOrder":{"status":"PAID"}}` {
 		t.Errorf("payOrder = %s", got)
 	}
-	a.refused(`mutation { payOrder(id: "1") { status } }`, "order 1 is PAID")
+	a.refused(`mutation { payOrder(id: "1") { status } }`, "FAILED_PRECONDITION", "order 1 is PAID")
 	if got := a.data(`mutation { shipOrder(id: "1") { status } }`); got != `{"shipOrder":{"status":"SHIPPED"}}` {
 		t.Errorf("shipOrder = %s", got)
 	}
-	a.refused(`mutation { cancelOrder(id: "1") { status } }`, "order 1 is SHIPPED")
+	a.refused(`mutation { cancelOrder(id: "1") { status } }`, "FAILED_PRECONDITION", "order 1 is SHIPPED")
 
 	stock := `{ stocks { quantity } }`
 	if got := a.data(stock); got != `{"stocks":[{"quantity":6},{"quantity":8}]}` {
@@ -463,8 +468,8 @@ func TestOrderLifecycle(t *testing.T) {
 	if got := a.data(stock); got != `{"stocks":[{"quantity":8},{"quantity":9}]}` {
 		t.Errorf("cancelling did not return the stock: %s", got)
 	}
-	a.refused(`mutation { cancelOrder(id: "2") { status } }`, "order 2 is CANCELLED")
-	a.refused(`mutation { payOrder(id: "999") { status } }`, "not found")
+	a.refused(`mutation { cancelOrder(id: "2") { status } }`, "FAILED_PRECONDITION", "order 2 is CANCELLED")
+	a.refused(`mutation { payOrder(id: "999") { status } }`, "NOT_FOUND", "not found")
 }
 
 // Twenty orders race for five units: exactly five are placed, the other
@@ -509,18 +514,18 @@ func TestStockOnlyMovesByDelta(t *testing.T) {
 	if got := a.data(`mutation { adjustStock(id: "1", delta: 4) { quantity } }`); got != `{"adjustStock":{"quantity":7}}` {
 		t.Errorf("adjustStock(+4) = %s", got)
 	}
-	a.refused(`mutation { adjustStock(id: "1", delta: -8) { quantity } }`, "holds 7, cannot remove 8")
+	a.refused(`mutation { adjustStock(id: "1", delta: -8) { quantity } }`, "FAILED_PRECONDITION", "holds 7, cannot remove 8")
 	if got := a.data(`mutation { adjustStock(id: "1", delta: -7) { quantity } }`); got != `{"adjustStock":{"quantity":0}}` {
 		t.Errorf("adjustStock(-7) = %s", got)
 	}
-	a.refused(`mutation { createStock(input: {quantity: 1, warehouseID: "1", productID: "1"}) { id } }`, "already stocks this product")
+	a.refused(`mutation { createStock(input: {quantity: 1, warehouseID: "1", productID: "1"}) { id } }`, "CONFLICT", "already exists")
 }
 
 // A constraint velox enforces reaches the client as a GraphQL error on the
 // field, not as a failed request.
 func TestORMValidationIsAFieldError(t *testing.T) {
 	a := start(t)
-	a.refused(`mutation { createCategory(input: {name: ""}) { id } }`, "name")
+	a.refused(`mutation { createCategory(input: {name: ""}) { id } }`, "BAD_USER_INPUT", "name")
 }
 
 // A domain module left out of the app is a failed start that names what it
@@ -601,5 +606,22 @@ func TestStopWaitsOutAnUnusedConnection(t *testing.T) {
 	a.RequireStop()
 	if d := time.Since(start); d >= shutdownTimeout {
 		t.Errorf("stop took %v, the whole shutdownTimeout", d)
+	}
+}
+
+// An error nothing classified -- here the driver's own, from a closed
+// database -- reaches the client as INTERNAL_SERVER_ERROR with a fixed
+// message, never with the driver's text, which is logged instead.
+func TestUnclassifiedErrorsAreMasked(t *testing.T) {
+	a := start(t, fx.Decorate(func(*velox.Client) (*velox.Client, error) {
+		closed, err := velox.Open("sqlite", dsn(t))
+		if err != nil {
+			return nil, err
+		}
+		return closed, closed.Close()
+	}))
+	r := a.post(`{ categories { name } }`)
+	if len(r.Errors) != 1 || r.Errors[0].Extensions.Code != "INTERNAL_SERVER_ERROR" || r.Errors[0].Message != "internal error" {
+		t.Fatalf("errors = %+v", r.Errors)
 	}
 }

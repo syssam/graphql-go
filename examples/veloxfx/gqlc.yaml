@@ -7,6 +7,10 @@ output: graph
 package: github.com/syssam/graphql-go/examples/veloxfx/graph
 models:
   Time: time.Time
+  # velox keys every row by int, and the engine writes an int ID as a
+  # string; mapped here, ids bind to the entities' own ID fields and
+  # arrive in arguments as the int velox takes.
+  ID: int
 # velox writes @goModel on every type it owns; reading it keeps the SDL the
 # only place those bindings are stated.
 modelDirective: { name: goModel, arg: model }

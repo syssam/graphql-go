@@ -7,7 +7,6 @@ import (
 	"context"
 
 	"github.com/syssam/graphql-go"
-	ordermodel "github.com/syssam/graphql-go/examples/veloxfx/graph/model/order"
 	warehouse "github.com/syssam/graphql-go/examples/veloxfx/velox/client/warehouse"
 	entity "github.com/syssam/graphql-go/examples/veloxfx/velox/entity"
 	filter "github.com/syssam/graphql-go/examples/veloxfx/velox/filter"
@@ -19,16 +18,16 @@ type CreateWarehouseArgs struct {
 }
 
 type UpdateWarehouseArgs struct {
-	ID    graphql.ID                     `graphql:"id"`
+	ID    int                            `graphql:"id"`
 	Input warehouse.UpdateWarehouseInput `graphql:"input"`
 }
 
 type DeleteWarehouseArgs struct {
-	ID graphql.ID `graphql:"id"`
+	ID int `graphql:"id"`
 }
 
 type WarehouseArgs struct {
-	ID graphql.ID `graphql:"id"`
+	ID int `graphql:"id"`
 }
 
 type WarehouseOrdersArgs struct {
@@ -36,7 +35,7 @@ type WarehouseOrdersArgs struct {
 	First   *int                    `graphql:"first"`
 	Before  *gqlrelay.Cursor        `graphql:"before"`
 	Last    *int                    `graphql:"last"`
-	OrderBy *ordermodel.OrderOrder  `graphql:"orderBy"`
+	OrderBy *entity.OrderOrder      `graphql:"orderBy"`
 	Where   *filter.OrderWhereInput `graphql:"where"`
 }
 
@@ -44,11 +43,9 @@ type WarehouseOrdersArgs struct {
 type Resolver interface {
 	CreateWarehouse(ctx context.Context, args CreateWarehouseArgs) (*entity.Warehouse, error)
 	UpdateWarehouse(ctx context.Context, args UpdateWarehouseArgs) (*entity.Warehouse, error)
-	DeleteWarehouse(ctx context.Context, args DeleteWarehouseArgs) (graphql.ID, error)
+	DeleteWarehouse(ctx context.Context, args DeleteWarehouseArgs) (int, error)
 	Warehouses(ctx context.Context) ([]*entity.Warehouse, error)
 	Warehouse(ctx context.Context, args WarehouseArgs) (*entity.Warehouse, error)
-	WarehouseID(ctx context.Context, obj *entity.Warehouse) (graphql.ID, error)
-	WarehouseOrders(ctx context.Context, obj *entity.Warehouse, args WarehouseOrdersArgs) (*entity.OrderConnection, error)
 }
 
 func Bindings(r Resolver) graphql.SchemaOption {
@@ -56,11 +53,11 @@ func Bindings(r Resolver) graphql.SchemaOption {
 		graphql.Input[warehouse.CreateWarehouseInput]("CreateWarehouseInput", graphql.ZeroForNull()),
 		graphql.Input[warehouse.UpdateWarehouseInput]("UpdateWarehouseInput", graphql.ZeroForNull()),
 		graphql.Object[entity.Warehouse]("Warehouse",
-			graphql.Resolve("id", func(ctx context.Context, v *entity.Warehouse) (graphql.ID, error) { return r.WarehouseID(ctx, v) }),
+			graphql.Field("id", func(v *entity.Warehouse) int { return v.ID }),
 			graphql.Field("name", func(v *entity.Warehouse) string { return v.Name }),
 			graphql.Resolve("stocks", func(ctx context.Context, v *entity.Warehouse) ([]*entity.Stock, error) { return v.Stocks(ctx) }),
 			graphql.ResolveArgs("orders", func(ctx context.Context, v *entity.Warehouse, a WarehouseOrdersArgs) (*entity.OrderConnection, error) {
-				return r.WarehouseOrders(ctx, v, a)
+				return v.Orders(ctx, a.After, a.First, a.Before, a.Last, a.OrderBy, a.Where)
 			}),
 		),
 		graphql.Query(
@@ -76,7 +73,7 @@ func Bindings(r Resolver) graphql.SchemaOption {
 			graphql.ResolveArgs("updateWarehouse", func(ctx context.Context, _ graphql.Root, a UpdateWarehouseArgs) (*entity.Warehouse, error) {
 				return r.UpdateWarehouse(ctx, a)
 			}),
-			graphql.ResolveArgs("deleteWarehouse", func(ctx context.Context, _ graphql.Root, a DeleteWarehouseArgs) (graphql.ID, error) {
+			graphql.ResolveArgs("deleteWarehouse", func(ctx context.Context, _ graphql.Root, a DeleteWarehouseArgs) (int, error) {
 				return r.DeleteWarehouse(ctx, a)
 			}),
 		),

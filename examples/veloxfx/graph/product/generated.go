@@ -7,7 +7,6 @@ import (
 	"context"
 
 	"github.com/syssam/graphql-go"
-	productmodel "github.com/syssam/graphql-go/examples/veloxfx/graph/model/product"
 	product "github.com/syssam/graphql-go/examples/veloxfx/velox/client/product"
 	entity "github.com/syssam/graphql-go/examples/veloxfx/velox/entity"
 	filter "github.com/syssam/graphql-go/examples/veloxfx/velox/filter"
@@ -19,50 +18,45 @@ type CreateProductArgs struct {
 }
 
 type UpdateProductArgs struct {
-	ID    graphql.ID                 `graphql:"id"`
+	ID    int                        `graphql:"id"`
 	Input product.UpdateProductInput `graphql:"input"`
 }
 
 type DeleteProductArgs struct {
-	ID graphql.ID `graphql:"id"`
+	ID int `graphql:"id"`
 }
 
 type ProductsArgs struct {
-	After   *gqlrelay.Cursor           `graphql:"after"`
-	First   *int                       `graphql:"first"`
-	Before  *gqlrelay.Cursor           `graphql:"before"`
-	Last    *int                       `graphql:"last"`
-	OrderBy *productmodel.ProductOrder `graphql:"orderBy"`
-	Where   *filter.ProductWhereInput  `graphql:"where"`
+	After   *gqlrelay.Cursor          `graphql:"after"`
+	First   *int                      `graphql:"first"`
+	Before  *gqlrelay.Cursor          `graphql:"before"`
+	Last    *int                      `graphql:"last"`
+	OrderBy *entity.ProductOrder      `graphql:"orderBy"`
+	Where   *filter.ProductWhereInput `graphql:"where"`
 }
 
 type ProductArgs struct {
-	ID graphql.ID `graphql:"id"`
+	ID int `graphql:"id"`
 }
 
 // Resolver holds methods for fields that are not struct data.
 type Resolver interface {
 	CreateProduct(ctx context.Context, args CreateProductArgs) (*entity.Product, error)
 	UpdateProduct(ctx context.Context, args UpdateProductArgs) (*entity.Product, error)
-	DeleteProduct(ctx context.Context, args DeleteProductArgs) (graphql.ID, error)
-	ProductID(ctx context.Context, obj *entity.Product) (graphql.ID, error)
+	DeleteProduct(ctx context.Context, args DeleteProductArgs) (int, error)
 	Products(ctx context.Context, args ProductsArgs) (*entity.ProductConnection, error)
 	Product(ctx context.Context, args ProductArgs) (*entity.Product, error)
 }
 
 func Bindings(r Resolver) graphql.SchemaOption {
 	return graphql.Options(
-		graphql.Enum[productmodel.ProductOrderField]("ProductOrderField", map[productmodel.ProductOrderField]string{
-			productmodel.ProductOrderFieldSku:   "SKU",
-			productmodel.ProductOrderFieldName:  "NAME",
-			productmodel.ProductOrderFieldPrice: "PRICE",
-		}),
+		graphql.EnumMarshaler[entity.ProductOrderField]("ProductOrderField"),
 		graphql.Input[product.CreateProductInput]("CreateProductInput", graphql.ZeroForNull()),
-		graphql.Input[productmodel.ProductOrder]("ProductOrder", graphql.ZeroForNull()),
+		graphql.Input[entity.ProductOrder]("ProductOrder", graphql.ZeroForNull()),
 		graphql.Input[filter.ProductWhereInput]("ProductWhereInput", graphql.ZeroForNull()),
 		graphql.Input[product.UpdateProductInput]("UpdateProductInput", graphql.ZeroForNull()),
 		graphql.Object[entity.Product]("Product",
-			graphql.Resolve("id", func(ctx context.Context, v *entity.Product) (graphql.ID, error) { return r.ProductID(ctx, v) }),
+			graphql.Field("id", func(v *entity.Product) int { return v.ID }),
 			graphql.Field("sku", func(v *entity.Product) string { return v.Sku }),
 			graphql.Field("name", func(v *entity.Product) string { return v.Name }),
 			graphql.Field("priceCents", func(v *entity.Product) int { return v.PriceCents }),
@@ -94,7 +88,7 @@ func Bindings(r Resolver) graphql.SchemaOption {
 			graphql.ResolveArgs("updateProduct", func(ctx context.Context, _ graphql.Root, a UpdateProductArgs) (*entity.Product, error) {
 				return r.UpdateProduct(ctx, a)
 			}),
-			graphql.ResolveArgs("deleteProduct", func(ctx context.Context, _ graphql.Root, a DeleteProductArgs) (graphql.ID, error) {
+			graphql.ResolveArgs("deleteProduct", func(ctx context.Context, _ graphql.Root, a DeleteProductArgs) (int, error) {
 				return r.DeleteProduct(ctx, a)
 			}),
 		),

@@ -14,22 +14,28 @@ import (
 
 	graphql "github.com/syssam/graphql-go"
 	"github.com/syssam/graphql-go/examples/veloxfx/graph"
-	"github.com/syssam/graphql-go/examples/veloxfx/internal/resolve"
 	"github.com/syssam/graphql-go/transport/drain"
 	"github.com/syssam/graphql-go/transport/gqlecho"
 	"github.com/syssam/graphql-go/transport/gqlsse"
 	"github.com/syssam/graphql-go/transport/gqlws"
 )
 
-// NewSchema takes whatever bindings the entity modules registered. It does not
-// name them: a module that is not in the app leaves its types unbound, and
-// graph.NewSchema says which.
-func NewSchema(r resolve.Registered) (*graphql.Schema, error) {
-	return graph.NewSchema(append(r.Bindings, scalars)...)
+// Bindings is every group's bindings, as the domain modules contribute them
+// to the "graphql" value group.
+type Bindings struct {
+	fx.In
+	Groups []graphql.SchemaOption `group:"graphql"`
+}
+
+// NewSchema takes whatever bindings the domain modules registered. It does
+// not name them: a module that is not in the app leaves its types unbound,
+// and graph.NewSchema says which.
+func NewSchema(b Bindings) (*graphql.Schema, error) {
+	return graph.NewSchema(append(b.Groups, scalars)...)
 }
 
 func NewExecutor(s *graphql.Schema) *graphql.Executor {
-	return graphql.NewExecutor(s)
+	return graphql.NewExecutor(s, graphql.WithErrorPresenter(presentError))
 }
 
 // NewEcho registers every route with Any, for the reason examples/echo

@@ -13,7 +13,7 @@
 // services: internal/catalog, internal/sales and internal/inventory each hold a
 // Resolver per entity group they own and one Module registering them. Nothing
 // here lists entities; a new entity changes its domain, and a new domain
-// changes Domains by one line. examples/README.md walks through adding one.
+// changes Domains by one line. GUIDE.md walks through adding one.
 //
 // fx runs start hooks in dependency order and stop hooks in reverse: the
 // database is migrated before the server listens, and the server has drained

@@ -11,12 +11,11 @@ import (
 )
 
 type OrderItemArgs struct {
-	ID graphql.ID `graphql:"id"`
+	ID int `graphql:"id"`
 }
 
 // Resolver holds methods for fields that are not struct data.
 type Resolver interface {
-	OrderItemID(ctx context.Context, obj *entity.OrderItem) (graphql.ID, error)
 	OrderItems(ctx context.Context) ([]*entity.OrderItem, error)
 	OrderItem(ctx context.Context, args OrderItemArgs) (*entity.OrderItem, error)
 }
@@ -24,7 +23,7 @@ type Resolver interface {
 func Bindings(r Resolver) graphql.SchemaOption {
 	return graphql.Options(
 		graphql.Object[entity.OrderItem]("OrderItem",
-			graphql.Resolve("id", func(ctx context.Context, v *entity.OrderItem) (graphql.ID, error) { return r.OrderItemID(ctx, v) }),
+			graphql.Field("id", func(v *entity.OrderItem) int { return v.ID }),
 			graphql.Field("quantity", func(v *entity.OrderItem) int { return v.Quantity }),
 			graphql.Field("unitPriceCents", func(v *entity.OrderItem) int { return v.UnitPriceCents }),
 			graphql.Resolve("order", func(ctx context.Context, v *entity.OrderItem) (*entity.Order, error) { return v.Order(ctx) }),

@@ -20,19 +20,19 @@ type PlaceOrderArgs struct {
 }
 
 type PayOrderArgs struct {
-	ID graphql.ID `graphql:"id"`
+	ID int `graphql:"id"`
 }
 
 type ShipOrderArgs struct {
-	ID graphql.ID `graphql:"id"`
+	ID int `graphql:"id"`
 }
 
 type CancelOrderArgs struct {
-	ID graphql.ID `graphql:"id"`
+	ID int `graphql:"id"`
 }
 
 type DeleteOrderArgs struct {
-	ID graphql.ID `graphql:"id"`
+	ID int `graphql:"id"`
 }
 
 type OrdersArgs struct {
@@ -40,12 +40,12 @@ type OrdersArgs struct {
 	First   *int                    `graphql:"first"`
 	Before  *gqlrelay.Cursor        `graphql:"before"`
 	Last    *int                    `graphql:"last"`
-	OrderBy *ordermodel.OrderOrder  `graphql:"orderBy"`
+	OrderBy *entity.OrderOrder      `graphql:"orderBy"`
 	Where   *filter.OrderWhereInput `graphql:"where"`
 }
 
 type OrderArgs struct {
-	ID graphql.ID `graphql:"id"`
+	ID int `graphql:"id"`
 }
 
 // Resolver holds methods for fields that are not struct data.
@@ -54,8 +54,7 @@ type Resolver interface {
 	PayOrder(ctx context.Context, args PayOrderArgs) (*entity.Order, error)
 	ShipOrder(ctx context.Context, args ShipOrderArgs) (*entity.Order, error)
 	CancelOrder(ctx context.Context, args CancelOrderArgs) (*entity.Order, error)
-	DeleteOrder(ctx context.Context, args DeleteOrderArgs) (graphql.ID, error)
-	OrderID(ctx context.Context, obj *entity.Order) (graphql.ID, error)
+	DeleteOrder(ctx context.Context, args DeleteOrderArgs) (int, error)
 	OrderTotalCents(ctx context.Context, obj *entity.Order) (int, error)
 	Orders(ctx context.Context, args OrdersArgs) (*entity.OrderConnection, error)
 	Order(ctx context.Context, args OrderArgs) (*entity.Order, error)
@@ -63,23 +62,14 @@ type Resolver interface {
 
 func Bindings(r Resolver) graphql.SchemaOption {
 	return graphql.Options(
-		graphql.Enum[ordermodel.OrderOrderField]("OrderOrderField", map[ordermodel.OrderOrderField]string{
-			ordermodel.OrderOrderFieldCreated_at: "CREATED_AT",
-			ordermodel.OrderOrderFieldUpdated_at: "UPDATED_AT",
-			ordermodel.OrderOrderFieldStatus:     "STATUS",
-		}),
-		graphql.Enum[order.Status]("OrderStatus", map[order.Status]string{
-			order.StatusPENDING:   "PENDING",
-			order.StatusPAID:      "PAID",
-			order.StatusSHIPPED:   "SHIPPED",
-			order.StatusCANCELLED: "CANCELLED",
-		}),
-		graphql.Input[ordermodel.OrderOrder]("OrderOrder", graphql.ZeroForNull()),
+		graphql.EnumMarshaler[entity.OrderOrderField]("OrderOrderField"),
+		graphql.EnumMarshaler[order.Status]("OrderStatus"),
+		graphql.Input[entity.OrderOrder]("OrderOrder", graphql.ZeroForNull()),
 		graphql.Input[filter.OrderWhereInput]("OrderWhereInput", graphql.ZeroForNull()),
 		graphql.Input[ordermodel.PlaceOrderInput]("PlaceOrderInput", graphql.ZeroForNull()),
 		graphql.Input[ordermodel.PlaceOrderItemInput]("PlaceOrderItemInput", graphql.ZeroForNull()),
 		graphql.Object[entity.Order]("Order",
-			graphql.Resolve("id", func(ctx context.Context, v *entity.Order) (graphql.ID, error) { return r.OrderID(ctx, v) }),
+			graphql.Field("id", func(v *entity.Order) int { return v.ID }),
 			graphql.Field("createdAt", func(v *entity.Order) time.Time { return v.CreatedAt }),
 			graphql.Field("updatedAt", func(v *entity.Order) time.Time { return v.UpdatedAt }),
 			graphql.Field("status", func(v *entity.Order) order.Status { return v.Status }),
@@ -116,7 +106,7 @@ func Bindings(r Resolver) graphql.SchemaOption {
 			graphql.ResolveArgs("cancelOrder", func(ctx context.Context, _ graphql.Root, a CancelOrderArgs) (*entity.Order, error) {
 				return r.CancelOrder(ctx, a)
 			}),
-			graphql.ResolveArgs("deleteOrder", func(ctx context.Context, _ graphql.Root, a DeleteOrderArgs) (graphql.ID, error) {
+			graphql.ResolveArgs("deleteOrder", func(ctx context.Context, _ graphql.Root, a DeleteOrderArgs) (int, error) {
 				return r.DeleteOrder(ctx, a)
 			}),
 		),

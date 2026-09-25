@@ -14,6 +14,7 @@ func Bindings() graphql.SchemaOption {
 			gqlrelay.OrderDirectionAsc:  "ASC",
 			gqlrelay.OrderDirectionDesc: "DESC",
 		}),
+		graphql.ScalarMarshaler[gqlrelay.Cursor]("Cursor"),
 		graphql.Object[gqlrelay.PageInfo]("PageInfo",
 			graphql.Field("hasNextPage", func(v *gqlrelay.PageInfo) bool { return v.HasNextPage }),
 			graphql.Field("hasPreviousPage", func(v *gqlrelay.PageInfo) bool { return v.HasPreviousPage }),

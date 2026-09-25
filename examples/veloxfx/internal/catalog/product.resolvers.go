@@ -1,0 +1,56 @@
+package catalog
+
+import (
+	"context"
+
+	productgql "github.com/syssam/graphql-go/examples/veloxfx/graph/product"
+	"github.com/syssam/graphql-go/examples/veloxfx/velox"
+	"github.com/syssam/graphql-go/examples/veloxfx/velox/entity"
+)
+
+// ProductResolver implements the product group's Resolver.
+type ProductResolver struct{ client *velox.Client }
+
+var _ productgql.Resolver = (*ProductResolver)(nil)
+
+func NewProductResolver(client *velox.Client) *ProductResolver {
+	return &ProductResolver{client: client}
+}
+
+// Products is a Relay connection: products(first: 10, after: $cursor,
+// where: {priceCentsLT: 2000}, orderBy: {field: PRICE}). The arguments are
+// velox's own types, so they go straight to Paginate.
+func (r *ProductResolver) Products(ctx context.Context, args productgql.ProductsArgs) (*entity.ProductConnection, error) {
+	opts := []entity.ProductPaginateOption{entity.WithProductOrder(args.OrderBy)}
+	if args.Where != nil {
+		opts = append(opts, entity.WithProductFilter(args.Where.Filter))
+	}
+	q := r.client.Product.Query().WithCategory()
+	return q.(entity.ProductPaginatable).Paginate(ctx, args.After, args.First, args.Before, args.Last, opts...)
+}
+
+func (r *ProductResolver) Product(ctx context.Context, args productgql.ProductArgs) (*entity.Product, error) {
+	p, err := r.client.Product.Get(ctx, args.ID)
+	return p, velox.MaskNotFound(err)
+}
+
+// CreateProduct reads the row back rather than returning what Save returned:
+// velox's create marks the category edge loaded with a stub holding only the
+// id, so product { category { name } } would answer an empty name.
+func (r *ProductResolver) CreateProduct(ctx context.Context, args productgql.CreateProductArgs) (*entity.Product, error) {
+	p, err := r.client.Product.Create().SetInput(args.Input).Save(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return r.client.Product.Get(ctx, p.ID)
+}
+
+func (r *ProductResolver) UpdateProduct(ctx context.Context, args productgql.UpdateProductArgs) (*entity.Product, error) {
+	return r.client.Product.UpdateOneID(args.ID).SetInput(args.Input).Save(ctx)
+}
+
+// DeleteProduct is declared in sdl/product.graphql: velox generates no
+// delete. A product that is stocked or ordered is refused by the foreign key.
+func (r *ProductResolver) DeleteProduct(ctx context.Context, args productgql.DeleteProductArgs) (int, error) {
+	return args.ID, r.client.Product.DeleteOneID(args.ID).Exec(ctx)
+}

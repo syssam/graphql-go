@@ -7,7 +7,6 @@ import (
 	"context"
 
 	"github.com/syssam/graphql-go"
-	productmodel "github.com/syssam/graphql-go/examples/veloxfx/graph/model/product"
 	category "github.com/syssam/graphql-go/examples/veloxfx/velox/client/category"
 	entity "github.com/syssam/graphql-go/examples/veloxfx/velox/entity"
 	filter "github.com/syssam/graphql-go/examples/veloxfx/velox/filter"
@@ -15,12 +14,12 @@ import (
 )
 
 type CategoryProductsArgs struct {
-	After   *gqlrelay.Cursor           `graphql:"after"`
-	First   *int                       `graphql:"first"`
-	Before  *gqlrelay.Cursor           `graphql:"before"`
-	Last    *int                       `graphql:"last"`
-	OrderBy *productmodel.ProductOrder `graphql:"orderBy"`
-	Where   *filter.ProductWhereInput  `graphql:"where"`
+	After   *gqlrelay.Cursor          `graphql:"after"`
+	First   *int                      `graphql:"first"`
+	Before  *gqlrelay.Cursor          `graphql:"before"`
+	Last    *int                      `graphql:"last"`
+	OrderBy *entity.ProductOrder      `graphql:"orderBy"`
+	Where   *filter.ProductWhereInput `graphql:"where"`
 }
 
 type CreateCategoryArgs struct {
@@ -28,25 +27,23 @@ type CreateCategoryArgs struct {
 }
 
 type UpdateCategoryArgs struct {
-	ID    graphql.ID                   `graphql:"id"`
+	ID    int                          `graphql:"id"`
 	Input category.UpdateCategoryInput `graphql:"input"`
 }
 
 type DeleteCategoryArgs struct {
-	ID graphql.ID `graphql:"id"`
+	ID int `graphql:"id"`
 }
 
 type CategoryArgs struct {
-	ID graphql.ID `graphql:"id"`
+	ID int `graphql:"id"`
 }
 
 // Resolver holds methods for fields that are not struct data.
 type Resolver interface {
-	CategoryID(ctx context.Context, obj *entity.Category) (graphql.ID, error)
-	CategoryProducts(ctx context.Context, obj *entity.Category, args CategoryProductsArgs) (*entity.ProductConnection, error)
 	CreateCategory(ctx context.Context, args CreateCategoryArgs) (*entity.Category, error)
 	UpdateCategory(ctx context.Context, args UpdateCategoryArgs) (*entity.Category, error)
-	DeleteCategory(ctx context.Context, args DeleteCategoryArgs) (graphql.ID, error)
+	DeleteCategory(ctx context.Context, args DeleteCategoryArgs) (int, error)
 	Categories(ctx context.Context) ([]*entity.Category, error)
 	Category(ctx context.Context, args CategoryArgs) (*entity.Category, error)
 }
@@ -57,10 +54,10 @@ func Bindings(r Resolver) graphql.SchemaOption {
 		graphql.Input[category.CreateCategoryInput]("CreateCategoryInput", graphql.ZeroForNull()),
 		graphql.Input[category.UpdateCategoryInput]("UpdateCategoryInput", graphql.ZeroForNull()),
 		graphql.Object[entity.Category]("Category",
-			graphql.Resolve("id", func(ctx context.Context, v *entity.Category) (graphql.ID, error) { return r.CategoryID(ctx, v) }),
+			graphql.Field("id", func(v *entity.Category) int { return v.ID }),
 			graphql.Field("name", func(v *entity.Category) string { return v.Name }),
 			graphql.ResolveArgs("products", func(ctx context.Context, v *entity.Category, a CategoryProductsArgs) (*entity.ProductConnection, error) {
-				return r.CategoryProducts(ctx, v, a)
+				return v.Products(ctx, a.After, a.First, a.Before, a.Last, a.OrderBy, a.Where)
 			}),
 		),
 		graphql.Query(
@@ -76,7 +73,7 @@ func Bindings(r Resolver) graphql.SchemaOption {
 			graphql.ResolveArgs("updateCategory", func(ctx context.Context, _ graphql.Root, a UpdateCategoryArgs) (*entity.Category, error) {
 				return r.UpdateCategory(ctx, a)
 			}),
-			graphql.ResolveArgs("deleteCategory", func(ctx context.Context, _ graphql.Root, a DeleteCategoryArgs) (graphql.ID, error) {
+			graphql.ResolveArgs("deleteCategory", func(ctx context.Context, _ graphql.Root, a DeleteCategoryArgs) (int, error) {
 				return r.DeleteCategory(ctx, a)
 			}),
 		),

@@ -3,31 +3,13 @@
 // Package order holds the types generated from the GraphQL schema.
 package order
 
-import (
-	"github.com/syssam/graphql-go"
-	gqlrelay "github.com/syssam/velox/contrib/graphql/gqlrelay"
-)
-
-type OrderOrderField string
-
-const (
-	OrderOrderFieldCreated_at OrderOrderField = "CREATED_AT"
-	OrderOrderFieldUpdated_at OrderOrderField = "UPDATED_AT"
-	OrderOrderFieldStatus     OrderOrderField = "STATUS"
-)
-
-type OrderOrder struct {
-	Direction gqlrelay.OrderDirection `graphql:"direction"`
-	Field     OrderOrderField         `graphql:"field"`
-}
-
 type PlaceOrderInput struct {
-	CustomerID  graphql.ID            `graphql:"customerID"`
-	WarehouseID graphql.ID            `graphql:"warehouseID"`
+	CustomerID  int                   `graphql:"customerID"`
+	WarehouseID int                   `graphql:"warehouseID"`
 	Items       []PlaceOrderItemInput `graphql:"items"`
 }
 
 type PlaceOrderItemInput struct {
-	ProductID graphql.ID `graphql:"productID"`
-	Quantity  int        `graphql:"quantity"`
+	ProductID int `graphql:"productID"`
+	Quantity  int `graphql:"quantity"`
 }
