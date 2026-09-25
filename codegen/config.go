@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 // Config drives Generate. A Manifest is not required: SDL types without a
@@ -25,8 +26,21 @@ type Config struct {
 	// function groups by the SDL file stem. Names schema, model and the
 	// output package are remapped so they do not collide with embed or
 	// model directories. One group stays flat in Output; two or more
-	// become subpackages plus a Resolvers struct.
+	// become subpackages, each registered with NewSchema by its Bindings.
 	GroupFunc func(typeName, sdlFile string) string
+	// RootFieldGroup assigns one field of the query, mutation or subscription
+	// root to a group. Empty, or a nil function, means the group GroupFunc
+	// (or the file stem) gives the SDL file the field is declared in, so
+	// `extend type Query { ... }` in user.graphql lands in the user group.
+	//
+	// Roots are grouped per field, not per type, because a root is the one
+	// type every group adds to: grouped as a type, every root resolver of a
+	// large schema ends up in one package, which is the monolith grouping is
+	// there to split. A generator that declares every root field in one file
+	// (velox does) can follow the returned type instead:
+	//
+	//	RootFieldGroup: func(f codegen.RootField) string { return f.ReturnGroup }
+	RootFieldGroup func(RootField) string
 	// Models maps a GraphQL named type to a Go type expression
 	// (for example Time → time.Time). Unmapped custom scalars become
 	// named string types in the model package.
@@ -139,13 +153,46 @@ func Generate(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
+	// Written concurrently: each write first reads the old file to leave an
+	// unchanged one alone, and with a package per group that is thousands of
+	// opens, which on Windows was most of a generate.
 	outDir := filepath.Join(dir, cfg.Output)
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		errs []error
+		sem  = make(chan struct{}, 16)
+	)
 	for rel, src := range files {
-		if err := writeGo(filepath.Join(outDir, rel), src); err != nil {
-			return err
-		}
+		wg.Go(func() {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			if err := writeGo(filepath.Join(outDir, rel), src); err != nil {
+				mu.Lock()
+				errs = append(errs, err)
+				mu.Unlock()
+			}
+		})
 	}
-	return nil
+	wg.Wait()
+	return errors.Join(errs...)
+}
+
+// RootField is what Config.RootFieldGroup is told about a root field.
+type RootField struct {
+	// Root is the root type's name, usually Query, Mutation or Subscription.
+	Root string
+	// Name is the field's name.
+	Name string
+	// SDLFile is the file the field is declared in, which for a field added by
+	// `extend type` is the extension's file and not the root's.
+	SDLFile string
+	// ReturnType is the named type the field returns, lists and non-null
+	// removed.
+	ReturnType string
+	// ReturnGroup is the group ReturnType is in, or empty for a built-in
+	// scalar, which belongs to no group.
+	ReturnGroup string
 }
 
 // ModelDirective identifies an SDL directive carrying a Go type binding.

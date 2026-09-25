@@ -5,7 +5,6 @@ import (
 	"slices"
 	"strings"
 	"unicode"
-	"unicode/utf8"
 
 	"github.com/vektah/gqlparser/v2/ast"
 )
@@ -51,11 +50,113 @@ func (b *builder) inGroup(typeName, group string) bool {
 	return group == "" || b.groupOf(typeName) == group
 }
 
+// fieldInGroup is inGroup for one field. It differs only on a root type,
+// whose fields are grouped one by one; see Config.RootFieldGroup.
+func (b *builder) fieldInGroup(typeName string, fd *ast.FieldDefinition, group string) bool {
+	if group == "" {
+		return true
+	}
+	if !b.isRoot(typeName) {
+		return b.groupOf(typeName) == group
+	}
+	return b.rootFieldGroup(typeName, fd) == group
+}
+
+func (b *builder) rootFieldGroup(root string, fd *ast.FieldDefinition) string {
+	key := root + "." + fd.Name
+	if g, ok := b.groupByRootField[key]; ok {
+		return g
+	}
+	g := b.rootFieldGroupUncached(root, fd)
+	if b.groupByRootField == nil {
+		b.groupByRootField = map[string]string{}
+	}
+	b.groupByRootField[key] = g
+	return g
+}
+
+func (b *builder) rootFieldGroupUncached(root string, fd *ast.FieldDefinition) string {
+	file := ""
+	if fd.Position != nil && fd.Position.Src != nil {
+		file = fd.Position.Src.Name
+	}
+	if b.cfg.RootFieldGroup != nil {
+		ret := fd.Type.Name()
+		retGroup := ""
+		if def := b.schema.Types[ret]; def != nil && !def.BuiltIn && !b.isRoot(ret) {
+			retGroup = b.groupOf(ret)
+		}
+		if g := b.cfg.RootFieldGroup(RootField{
+			Root: root, Name: fd.Name, SDLFile: file, ReturnType: ret, ReturnGroup: retGroup,
+		}); g != "" {
+			return sanitizeGroup(g, b.pkgName)
+		}
+	}
+	if b.cfg.GroupFunc != nil {
+		if g := b.cfg.GroupFunc(root, file); g != "" {
+			return sanitizeGroup(g, b.pkgName)
+		}
+	}
+	return sanitizeGroup(fileStem(file), b.pkgName)
+}
+
+// groupField is one object field and the type declaring it.
+type groupField struct {
+	typeName string
+	fd       *ast.FieldDefinition
+}
+
+// eachGroupField calls fn for every field of every object type in group, in
+// type then declaration order, skipping introspection fields.
+//
+// The fields are indexed by group once. Asking every type for every group was
+// groups times types: at 800 groups it was a fifth of a generate, and the
+// emitter asks three times per group.
+func (b *builder) eachGroupField(group string, fn func(typeName string, fd *ast.FieldDefinition)) {
+	if b.fieldsByGroup == nil {
+		b.fieldScans++
+		b.fieldsByGroup = map[string][]groupField{}
+		for _, name := range b.typeNames(ast.Object) {
+			for _, fd := range b.schema.Types[name].Fields {
+				if strings.HasPrefix(fd.Name, "__") {
+					continue
+				}
+				f := groupField{name, fd}
+				b.fieldsByGroup[""] = append(b.fieldsByGroup[""], f)
+				g := b.groupOf(name)
+				if b.isRoot(name) {
+					g = b.rootFieldGroup(name, fd)
+				}
+				b.fieldsByGroup[g] = append(b.fieldsByGroup[g], f)
+			}
+		}
+	}
+	for _, f := range b.fieldsByGroup[group] {
+		fn(f.typeName, f.fd)
+	}
+}
+
+// uniqueGroups lists the groups, once: the import block of every generated
+// file asks for it through modelPkgNames.
 func (b *builder) uniqueGroups() []string {
+	if b.groups != nil {
+		return b.groups
+	}
+	b.groupScans++
 	seen := map[string]bool{}
 	for _, kind := range []ast.DefinitionKind{ast.Object, ast.InputObject, ast.Enum, ast.Scalar, ast.Interface, ast.Union} {
 		for _, name := range b.typeNames(kind) {
 			if !b.groupEmits(name) {
+				continue
+			}
+			// A root is not emitted as a type; its fields are, each in its own
+			// group, so those are the groups it brings.
+			if b.isRoot(name) {
+				for _, fd := range b.schema.Types[name].Fields {
+					if !strings.HasPrefix(fd.Name, "__") {
+						seen[b.rootFieldGroup(name, fd)] = true
+					}
+				}
 				continue
 			}
 			seen[b.groupOf(name)] = true
@@ -66,6 +167,7 @@ func (b *builder) uniqueGroups() []string {
 		out = append(out, g)
 	}
 	slices.Sort(out)
+	b.groups = out
 	return out
 }
 
@@ -82,21 +184,13 @@ func (b *builder) groupEmits(typeName string) bool {
 }
 
 func (b *builder) hasResolver(group string) bool {
-	for _, name := range b.typeNames(ast.Object) {
-		if !b.inGroup(name, group) {
-			continue
+	found := false
+	b.eachGroupField(group, func(name string, fd *ast.FieldDefinition) {
+		if b.fieldKind(name, fd) == fieldResolve {
+			found = true
 		}
-		def := b.schema.Types[name]
-		for _, fd := range def.Fields {
-			if strings.HasPrefix(fd.Name, "__") {
-				continue
-			}
-			if b.fieldKind(name, fd) == fieldResolve {
-				return true
-			}
-		}
-	}
-	return false
+	})
+	return found
 }
 
 func fileStem(path string) string {
@@ -130,11 +224,6 @@ func sanitizeGroup(name, pkgName string) string {
 		}
 	}
 	return s
-}
-
-func groupField(name string) string {
-	r, w := utf8.DecodeRuneInString(name)
-	return string(unicode.ToUpper(r)) + name[w:]
 }
 
 // modelPkgNames lists the model packages this schema emits.

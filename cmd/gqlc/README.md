@@ -19,10 +19,19 @@ models:
 go run github.com/syssam/graphql-go/cmd/gqlc -config gqlc.yaml
 ```
 
-Then implement `graph.Resolver` (one SDL group) or `graph.Resolvers` (two or
-more groups) and call `graph.NewSchema(r, extra...)`. Custom scalars listed
-under `models` must still be bound with `graphql.Scalar` in the `NewSchema`
-options.
+With one SDL group, implement `graph.Resolver` and call
+`graph.NewSchema(r, extra...)`. With two or more, implement each group's
+`Resolver` and pass its bindings, the way a gRPC server registers each service:
+
+```go
+graph.NewSchema(user.Bindings(userResolver), post.Bindings(postResolver), extra...)
+```
+
+There is no struct aggregating the groups. A group left out fails `NewSchema`
+with the types it leaves unbound, where an unset field in an aggregate compiled,
+built, and failed on the first request to reach it. Groups with no `Resolver`
+are registered by `NewSchema` itself. Custom scalars listed under `models` must
+still be bound with `graphql.Scalar` in the `NewSchema` options.
 
 Each group is emitted as one `generated.go` holding its argument structs,
 `Resolver` interface and bindings; the compiler rebuilds per package, so extra

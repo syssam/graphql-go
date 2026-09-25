@@ -39,6 +39,15 @@ type builder struct {
 	// each of its ten-odd call sites.
 	namesByKind map[ast.DefinitionKind][]string
 	groupByType map[string]string
+	// groupByRootField memoizes rootFieldGroup, keyed "Root.field".
+	groupByRootField map[string]string
+	// fieldsByGroup indexes every object field by group, "" holding all of
+	// them; groups memoizes uniqueGroups. Both are built in emit, after the
+	// model map is final, and fieldScans and groupScans count the builds.
+	fieldsByGroup map[string][]groupField
+	groups        []string
+	fieldScans    int
+	groupScans    int
 
 	// nameScans counts how often typeNames actually scanned, which is what
 	// TestTypeNamesIsComputedOncePerKind reads: once per kind and not once
@@ -51,7 +60,9 @@ type builder struct {
 	// was references times types. setModels clears it; nothing else may write
 	// cfg.Models.
 	exprImports map[string]string
-	exprScans   int
+	// exprQualifiers is its inverse, import path to qualifier, filled with it.
+	exprQualifiers map[string]string
+	exprScans      int
 
 	// loads counts calls to packages.Load. "It reads no Go type information
 	// without AutoBind" is a promise the documentation makes and only the
@@ -91,6 +102,7 @@ func (b *builder) notef(format string, args ...any) {
 func (b *builder) setModels(models map[string]string) {
 	b.cfg.Models = models
 	b.exprImports = nil
+	b.exprQualifiers = nil
 	b.markers = nil
 }
 
@@ -455,8 +467,7 @@ func (b *builder) modelImportOf(pkg string) string {
 // every file outside the model tree.
 func (b *builder) modelName(graphqlName, selfPkg string) string {
 	if expr, ok := b.cfg.Models[graphqlName]; ok {
-		_, ref := splitModelExpr(expr)
-		return ref
+		return b.exprRef(expr)
 	}
 	switch graphqlName {
 	case "String":
@@ -564,7 +575,7 @@ func (b *builder) resolverMethod(typeName, field string) string {
 // generated model while the field types pointed at the mapped one.
 func (b *builder) modelRef(typeName, ident string) string {
 	if expr, ok := b.cfg.Models[typeName]; ok {
-		_, ref := splitModelExpr(expr)
+		ref := b.exprRef(expr)
 		if ident == typeName {
 			return ref
 		}
@@ -599,23 +610,102 @@ func splitModelExpr(expr string) (importPath, ref string) {
 
 // modelExprImports maps the package qualifier used in generated code to the
 // path it comes from, for every Config.Models entry that needs an import.
+//
+// The qualifier is decided here, once per import path, and the import block
+// always writes it as an alias. Reading it off the reference instead assumed a
+// package is named after its directory and that no two mapped paths share a
+// last element; an ORM breaks both at once, with its entity enums in
+// .../todo and its mutation inputs in .../client/todo under package
+// todoclient (TestMappedPackagesGetTheirOwnQualifier).
 func (b *builder) modelExprImports() map[string]string {
 	if b.exprImports != nil {
 		return b.exprImports
 	}
 	b.exprScans++
-	out := map[string]string{}
+	paths := map[string]bool{}
 	for _, expr := range b.cfg.Models {
-		path, ref := splitModelExpr(expr)
-		if path == "" {
-			continue
+		if path, _ := splitModelExpr(expr); path != "" {
+			paths[path] = true
 		}
-		if i := strings.Index(ref, "."); i >= 0 {
-			out[strings.TrimLeft(ref[:i], "*[]")] = path
-		}
+	}
+	out := map[string]string{}
+	b.exprQualifiers = map[string]string{}
+	for _, path := range slices.Sorted(maps.Keys(paths)) {
+		q := pathQualifier(path, out)
+		out[q] = path
+		b.exprQualifiers[path] = q
 	}
 	b.exprImports = out
 	return out
+}
+
+// reservedQualifiers are the names every generated file may already import
+// under, so no mapped package may take one.
+var reservedQualifiers = map[string]bool{"graphql": true, "context": true}
+
+// pathQualifier picks an identifier for an import path that taken and
+// reservedQualifiers do not already hold: the last path element, then the
+// last two joined, then a numeric suffix. A major-version element (v2) is
+// skipped, because it names no package.
+func pathQualifier(path string, taken map[string]string) string {
+	elems := strings.Split(path, "/")
+	if n := len(elems); n > 1 && isMajorVersion(elems[n-1]) {
+		elems = elems[:n-1]
+	}
+	base := identFrom(elems[len(elems)-1])
+	free := func(q string) bool {
+		_, used := taken[q]
+		return q != "" && !used && !reservedQualifiers[q]
+	}
+	if free(base) {
+		return base
+	}
+	if len(elems) > 1 {
+		if q := identFrom(elems[len(elems)-2]) + base; free(q) {
+			return q
+		}
+	}
+	for i := 2; ; i++ {
+		if q := base + strconv.Itoa(i); free(q) {
+			return q
+		}
+	}
+}
+
+func isMajorVersion(elem string) bool {
+	if len(elem) < 2 || elem[0] != 'v' {
+		return false
+	}
+	_, err := strconv.Atoi(elem[1:])
+	return err == nil
+}
+
+// identFrom keeps the letters and digits of a path element, lower-cased, so
+// go-yaml and yaml.v3 still give a usable identifier.
+func identFrom(elem string) string {
+	var sb strings.Builder
+	for _, r := range strings.ToLower(elem) {
+		if r == '_' || unicode.IsLetter(r) || (unicode.IsDigit(r) && sb.Len() > 0) {
+			sb.WriteRune(r)
+		}
+	}
+	if sb.Len() == 0 {
+		return "pkg"
+	}
+	return sb.String()
+}
+
+// exprRef renders a Config.Models entry as generated code refers to it, under
+// the qualifier modelExprImports chose for its package.
+func (b *builder) exprRef(expr string) string {
+	path, ref := splitModelExpr(expr)
+	if path == "" {
+		return ref
+	}
+	b.modelExprImports()
+	bare := strings.TrimLeft(ref, "*[]")
+	_, typ, _ := strings.Cut(bare, ".")
+	return ref[:len(ref)-len(bare)] + b.exprQualifiers[path] + "." + typ
 }
 
 // mapped reports whether a type is supplied by the caller through

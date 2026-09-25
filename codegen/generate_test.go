@@ -342,18 +342,18 @@ type Query { users: [User!]! user(id: ID!): User }
 	}
 	ss := string(sch)
 	for _, want := range []string{
-		`type Resolvers struct`,
-		`User user.Resolver`,
-		`Post post.Resolver`,
-		`user.Bindings(r.User)`,
-		`post.Bindings(r.Post)`,
-		`func NewSchema(r Resolvers`,
+		`func NewSchema(opts ...graphql.SchemaOption)`,
+		`user.Bindings(nil)`,
+		`post.Bindings(nil)`,
 		`"hello/graph/user"`,
 		`"hello/graph/post"`,
 	} {
 		if !strings.Contains(ss, want) {
 			t.Errorf("schema.go missing %s\n%s", want, ss)
 		}
+	}
+	if strings.Contains(ss, "Resolvers") {
+		t.Errorf("schema.go still aggregates groups in a Resolvers struct\n%s", ss)
 	}
 	resUser, err := os.ReadFile(filepath.Join(dir, "graph", "user", "generated.go"))
 	if err != nil {
@@ -374,7 +374,7 @@ type Query { users: [User!]! user(id: ID!): User }
 	}
 }
 
-func TestGenerateGroupFuncOmitsPureGroupFromResolvers(t *testing.T) {
+func TestGenerateGroupFuncRegistersPureGroupItself(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "schema.graphql"), []byte(helloSDL), 0o644); err != nil {
 		t.Fatal(err)
@@ -409,14 +409,18 @@ func TestGenerateGroupFuncOmitsPureGroupFromResolvers(t *testing.T) {
 		t.Fatal(err)
 	}
 	ss := string(sch)
-	if !strings.Contains(ss, "Query query.Resolver") {
-		t.Errorf("schema.go missing Query resolver field\n%s", ss)
+	// A group with no Resolver has nothing for the caller to supply, so
+	// NewSchema registers it; one with a Resolver is the caller's to pass,
+	// and only ValidateSchema registers it, with a nil resolver.
+	newSchema, validate, _ := strings.Cut(ss, "func ValidateSchema")
+	if !strings.Contains(newSchema, "user.Bindings()") {
+		t.Errorf("NewSchema does not register the pure user group\n%s", ss)
 	}
-	if strings.Contains(ss, "User user.Resolver") {
-		t.Errorf("pure user group should be omitted from Resolvers\n%s", ss)
+	if strings.Contains(newSchema, "query.Bindings(") {
+		t.Errorf("NewSchema registers the query group, which the caller must pass\n%s", ss)
 	}
-	if !strings.Contains(ss, "user.Bindings()") {
-		t.Errorf("schema.go missing user.Bindings()\n%s", ss)
+	if !strings.Contains(validate, "query.Bindings(nil)") || strings.Contains(validate, "user.Bindings(") {
+		t.Errorf("ValidateSchema must register exactly the groups that take a Resolver\n%s", ss)
 	}
 }
 
@@ -492,13 +496,14 @@ import (
 	"hello/graph"
 	"hello/graph/post"
 	"hello/graph/user"
+	"strings"
 	"testing"
 
 	"github.com/syssam/graphql-go"
 )
 
 func TestUsersQuery(t *testing.T) {
-	s, err := graph.NewSchema(graph.Resolvers{Post: post.Stub{}, User: user.Stub{}})
+	s, err := graph.NewSchema(post.Bindings(post.Stub{}), user.Bindings(user.Stub{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -510,6 +515,15 @@ func TestUsersQuery(t *testing.T) {
 	want := "{\"users\":[{\"id\":\"1\",\"name\":\"Ada\"}]}"
 	if string(resp.Data) != want {
 		t.Fatalf("data = %s", resp.Data)
+	}
+}
+
+// The point of registering groups one by one: forgetting one is a build
+// error naming what it left unbound, not a nil resolver found by a request.
+func TestAGroupLeftOutFailsTheBuild(t *testing.T) {
+	_, err := graph.NewSchema(post.Bindings(post.Stub{}))
+	if err == nil || !strings.Contains(err.Error(), "type User has no Object binding") {
+		t.Fatalf("NewSchema without the user group: err = %v", err)
 	}
 }
 `

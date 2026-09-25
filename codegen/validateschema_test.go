@@ -78,8 +78,8 @@ func TestSchemaIsBindable(t *testing.T) {
 	}
 }
 
-// Two or more SDL groups emit a Resolvers struct rather than a single
-// interface, so ValidateSchema has a second shape and it needs its own test:
+// Two or more SDL groups register each group separately rather than taking
+// one interface, so ValidateSchema has a second shape and it needs its own test:
 // the flat one passing says nothing about it.
 func TestValidateSchemaWithGroups(t *testing.T) {
 	if testing.Short() {
@@ -110,8 +110,8 @@ func TestValidateSchemaWithGroups(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(schema), "NewSchema(Resolvers{}") {
-		t.Fatalf("the grouped ValidateSchema does not use a zero Resolvers:\n%s", schema)
+	if !strings.Contains(string(schema), "Bindings(nil)") {
+		t.Fatalf("the grouped ValidateSchema does not register each group with a nil resolver:\n%s", schema)
 	}
 
 	testSrc := `package graph_test

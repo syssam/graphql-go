@@ -193,29 +193,23 @@ func (b *builder) emitModel(group string) string {
 
 func (b *builder) emitArgs(group string) string {
 	var body strings.Builder
-	for _, name := range b.typeNames(ast.Object) {
-		if !b.inGroup(name, group) {
-			continue
+	b.eachGroupField(group, func(name string, fd *ast.FieldDefinition) {
+		if len(fd.Arguments) == 0 {
+			return
 		}
-		def := b.schema.Types[name]
-		for _, fd := range def.Fields {
-			if strings.HasPrefix(fd.Name, "__") || len(fd.Arguments) == 0 {
-				continue
-			}
-			body.WriteString("type " + b.argsName(name, fd.Name) + " struct {\n")
-			for _, arg := range fd.Arguments {
-				// The tag pins the SDL name, for the reason the input-object
-				// emitter above gives: deriving it back from the Go name is
-				// lossy. Args structs went without one until an SDL argument
-				// arrived that does not survive the round trip -- ownerID
-				// derives to ownerId, and _lastUpdatedAt to xLastUpdatedAt.
-				body.WriteString("\t" + goIdent(arg.Name) + " " +
-					b.goType(arg.Type, "", false) +
-					" `graphql:\"" + arg.Name + "\"`\n")
-			}
-			body.WriteString("}\n\n")
+		body.WriteString("type " + b.argsName(name, fd.Name) + " struct {\n")
+		for _, arg := range fd.Arguments {
+			// The tag pins the SDL name, for the reason the input-object
+			// emitter above gives: deriving it back from the Go name is
+			// lossy. Args structs went without one until an SDL argument
+			// arrived that does not survive the round trip -- ownerID
+			// derives to ownerId, and _lastUpdatedAt to xLastUpdatedAt.
+			body.WriteString("\t" + goIdent(arg.Name) + " " +
+				b.goType(arg.Type, "", false) +
+				" `graphql:\"" + arg.Name + "\"`\n")
 		}
-	}
+		body.WriteString("}\n\n")
+	})
 	return body.String()
 }
 
@@ -232,7 +226,12 @@ func (b *builder) importBlock(src, selfPkg string) string {
 		if !used(qualifier) {
 			continue
 		}
+		// Always aliased: modelExprImports chose the qualifier without knowing
+		// the package's own name, which need not be its directory's.
 		line := "\t\"" + path + "\""
+		if path != qualifier {
+			line = "\t" + qualifier + " \"" + path + "\""
+		}
 		if strings.Contains(path, ".") {
 			rest = append(rest, line)
 		} else {
@@ -293,26 +292,18 @@ func (b *builder) importBlock(src, selfPkg string) string {
 // its Resolver interface. The collision check and the emitter share it, so the
 // two cannot disagree about what the interface contains.
 func (b *builder) eachResolverField(group string, fn func(typeName string, fd *ast.FieldDefinition)) {
-	for _, name := range b.typeNames(ast.Object) {
-		if !b.inGroup(name, group) {
-			continue
+	b.eachGroupField(group, func(name string, fd *ast.FieldDefinition) {
+		if b.fieldKind(name, fd) != fieldResolve {
+			return
 		}
-		for _, fd := range b.schema.Types[name].Fields {
-			if strings.HasPrefix(fd.Name, "__") {
-				continue
-			}
-			if b.fieldKind(name, fd) != fieldResolve {
-				continue
-			}
-			// A method binding that can fail is still scheduled like a
-			// resolver, but it is answered by the model, so asking the
-			// Resolver interface for it would demand a method nothing calls.
-			if _, ok := b.modelAnswers(name, fd); ok {
-				continue
-			}
-			fn(name, fd)
+		// A method binding that can fail is still scheduled like a
+		// resolver, but it is answered by the model, so asking the
+		// Resolver interface for it would demand a method nothing calls.
+		if _, ok := b.modelAnswers(name, fd); ok {
+			return
 		}
-	}
+		fn(name, fd)
+	})
 }
 
 func (b *builder) emitResolver(group string) string {
@@ -556,19 +547,16 @@ func (b *builder) emitBindings(group string, withResolver bool) string {
 
 	var rootFields = map[string][]string{}
 	for _, name := range b.typeNames(ast.Object) {
-		if !b.inGroup(name, group) {
-			continue
-		}
 		if b.isRoot(name) {
-			def := b.schema.Types[name]
-			var calls []string
-			for _, fd := range def.Fields {
-				if strings.HasPrefix(fd.Name, "__") {
+			for _, fd := range b.schema.Types[name].Fields {
+				if strings.HasPrefix(fd.Name, "__") || !b.fieldInGroup(name, fd, group) {
 					continue
 				}
-				calls = append(calls, b.fieldCall(name, fd, true))
+				rootFields[name] = append(rootFields[name], b.fieldCall(name, fd, true))
 			}
-			rootFields[name] = calls
+			continue
+		}
+		if !b.inGroup(name, group) {
 			continue
 		}
 		def := b.schema.Types[name]
@@ -582,46 +570,34 @@ func (b *builder) emitBindings(group string, withResolver bool) string {
 		w.WriteString("\t\t),\n")
 	}
 
-	if q := b.schema.Query; q != nil && b.inGroup(q.Name, group) {
-		w.WriteString("\t\tgraphql.Query(\n")
-		for _, c := range rootFields[q.Name] {
-			w.WriteString(c)
+	// Each group binds only its own root fields; the engine merges the
+	// several Query calls this makes across groups into one root.
+	for _, root := range []struct {
+		def  *ast.Definition
+		call string
+	}{{b.schema.Query, "Query"}, {b.schema.Mutation, "Mutation"}, {b.schema.Subscription, "Subscription"}} {
+		if root.def == nil || len(rootFields[root.def.Name]) == 0 {
+			continue
 		}
-		w.WriteString("\t\t),\n")
-	}
-	if m := b.schema.Mutation; m != nil && b.inGroup(m.Name, group) {
-		w.WriteString("\t\tgraphql.Mutation(\n")
-		for _, c := range rootFields[m.Name] {
-			w.WriteString(c)
-		}
-		w.WriteString("\t\t),\n")
-	}
-	if s := b.schema.Subscription; s != nil && b.inGroup(s.Name, group) {
-		w.WriteString("\t\tgraphql.Subscription(\n")
-		for _, c := range rootFields[s.Name] {
+		w.WriteString("\t\tgraphql." + root.call + "(\n")
+		for _, c := range rootFields[root.def.Name] {
 			w.WriteString(c)
 		}
 		w.WriteString("\t\t),\n")
 	}
 
 	seen := map[string]bool{}
-	for _, name := range b.typeNames(ast.Object) {
-		if !b.inGroup(name, group) {
-			continue
+	b.eachGroupField(group, func(name string, fd *ast.FieldDefinition) {
+		if len(fd.Arguments) == 0 {
+			return
 		}
-		def := b.schema.Types[name]
-		for _, fd := range def.Fields {
-			if strings.HasPrefix(fd.Name, "__") || len(fd.Arguments) == 0 {
-				continue
-			}
-			an := b.argsName(name, fd.Name)
-			if seen[an] {
-				continue
-			}
-			seen[an] = true
-			w.WriteString("\t\tgraphql.Args[" + an + "](),\n")
+		an := b.argsName(name, fd.Name)
+		if seen[an] {
+			return
 		}
-	}
+		seen[an] = true
+		w.WriteString("\t\tgraphql.Args[" + an + "](),\n")
+	})
 
 	w.WriteString("\t)\n}\n")
 	return w.String()
@@ -690,6 +666,21 @@ func ValidateSchema(opts ...graphql.SchemaOption) error {
 	return w.String()
 }
 
+// groupedNewSchemaDoc is written above the grouped NewSchema. Each group is
+// registered the way a gRPC server registers a service, rather than through a
+// struct with a field per group: a field left unset compiled, built, and
+// failed on the first request to reach it, where a group left unregistered
+// fails NewSchema with the fields it leaves unbound.
+const groupedNewSchemaDoc = `// NewSchema builds the schema from the embedded SDL and the bindings given.
+// Pass each group's bindings over its Resolver, as a gRPC server registers
+// each service:
+//
+//	graph.NewSchema(user.Bindings(userResolver), post.Bindings(postResolver))
+//
+// A group that is not passed leaves its fields unbound, which NewSchema
+// reports. Groups with no Resolver are included already.
+`
+
 func (b *builder) emitSchemaGrouped(groups []string) string {
 	var w strings.Builder
 	w.WriteString(b.header(b.pkgName, rootPkgDoc))
@@ -699,19 +690,11 @@ func (b *builder) emitSchemaGrouped(groups []string) string {
 	}
 	w.WriteString(")\n\n")
 	w.WriteString("//go:embed schema/*.graphql\nvar sdl embed.FS\n\n")
-	w.WriteString("type Resolvers struct {\n")
-	for _, g := range groups {
-		if b.hasResolver(g) {
-			w.WriteString("\t" + groupField(g) + " " + g + ".Resolver\n")
-		}
-	}
-	w.WriteString("}\n\n")
-	w.WriteString("func NewSchema(r Resolvers, opts ...graphql.SchemaOption) (*graphql.Schema, error) {\n")
+	w.WriteString(groupedNewSchemaDoc)
+	w.WriteString("func NewSchema(opts ...graphql.SchemaOption) (*graphql.Schema, error) {\n")
 	w.WriteString("\tall := []graphql.SchemaOption{\n")
 	for _, g := range groups {
-		if b.hasResolver(g) {
-			w.WriteString("\t\t" + g + ".Bindings(r." + groupField(g) + "),\n")
-		} else {
+		if !b.hasResolver(g) {
 			w.WriteString("\t\t" + g + ".Bindings(),\n")
 		}
 	}
@@ -721,12 +704,17 @@ func (b *builder) emitSchemaGrouped(groups []string) string {
 	w.WriteString(`
 // ValidateSchema builds the schema with no resolver behind it, so every
 // binding error surfaces before a resolver is written. Building never calls a
-// resolver -- Resolve captures it in a closure -- so the zero value is enough.
+// resolver -- Resolve captures it in a closure -- so a nil one is enough.
 func ValidateSchema(opts ...graphql.SchemaOption) error {
-	_, err := NewSchema(Resolvers{}, opts...)
-	return err
-}
+	all := []graphql.SchemaOption{
 `)
+	for _, g := range groups {
+		if b.hasResolver(g) {
+			w.WriteString("\t\t" + g + ".Bindings(nil),\n")
+		}
+	}
+	w.WriteString("\t}\n")
+	w.WriteString("\t_, err := NewSchema(append(all, opts...)...)\n\treturn err\n}\n")
 	return w.String()
 }
 

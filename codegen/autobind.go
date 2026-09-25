@@ -150,7 +150,7 @@ func autoBind(dir string, patterns []string, schema *ast.Schema, b *builder) (*M
 		if named == nil {
 			continue
 		}
-		man.Types[i].Fields = discoverFields(schema.Types[name], named, b.goType)
+		man.Types[i].Fields = discoverFields(schema.Types[name], named, b.goType, b.goQualifier)
 	}
 	if len(man.Types) == 0 {
 		return nil, nil
@@ -585,7 +585,7 @@ func objectNames(schema *ast.Schema) []string {
 // improve: AutoBind already matches these as methods, which is the correct
 // binding. Reaching through the container would only demote a correct method
 // call to a wrong field read.
-func discoverFields(def *ast.Definition, named *types.Named, want func(*ast.Type, string, bool) string) map[string]FieldBinding {
+func discoverFields(def *ast.Definition, named *types.Named, want func(*ast.Type, string, bool) string, qual types.Qualifier) map[string]FieldBinding {
 	fields := structFields(named)
 	methods := methodSet(named)
 
@@ -597,18 +597,18 @@ func discoverFields(def *ast.Definition, named *types.Named, want func(*ast.Type
 		expected := want(fd.Type, "", false)
 		if len(fd.Arguments) == 0 {
 			if f, ok := matchField(fields, fd.Name); ok {
-				if conv, usable := reconcile(f.typ, expected); usable {
+				if conv, usable := reconcile(f.typ, expected, qual); usable {
 					out[fd.Name] = FieldBinding{Kind: FieldStruct, GoName: f.name, Convert: conv}
 					continue
 				}
-				if conv, usable := reconcileValue(f.typ, expected); usable {
+				if conv, usable := reconcileValue(f.typ, expected, qual); usable {
 					out[fd.Name] = FieldBinding{Kind: FieldStruct, GoName: f.name, Convert: conv, Value: true}
 					continue
 				}
 			}
 		}
-		if m, ok := matchMethod(methods, fd.Name); ok && m.fits(fd.Arguments, want) {
-			if conv, usable := reconcile(m.result, expected); usable {
+		if m, ok := matchMethod(methods, fd.Name); ok && m.fits(fd.Arguments, want, qual) {
+			if conv, usable := reconcile(m.result, expected, qual); usable {
 				out[fd.Name] = FieldBinding{
 					Kind:    FieldMethod,
 					GoName:  m.name,
@@ -713,12 +713,12 @@ type goMethod struct {
 // argument's field on the generated struct holds. Checking only the count
 // bound an ORM edge method taking its own *ent.XOrder to an argument the
 // generator models itself, which is a compile error in generated code.
-func (m goMethod) fits(args ast.ArgumentDefinitionList, want func(*ast.Type, string, bool) string) bool {
+func (m goMethod) fits(args ast.ArgumentDefinitionList, want func(*ast.Type, string, bool) string, qual types.Qualifier) bool {
 	if !m.usable || len(m.params) != len(args) {
 		return false
 	}
 	for i, arg := range args {
-		if types.TypeString(m.params[i], packageNameQualifier) != want(arg.Type, "", false) {
+		if types.TypeString(m.params[i], qual) != want(arg.Type, "", false) {
 			return false
 		}
 	}
@@ -863,18 +863,18 @@ func mergeManifests(discovered, explicit *Manifest) *Manifest {
 // always present satisfies it, so "*float64 expected, float64 found" is a
 // match and the field is emitted returning the value type. Only the pointer
 // is dropped -- the pointee still has to reconcile.
-func reconcileValue(actual types.Type, expected string) (convert, usable bool) {
+func reconcileValue(actual types.Type, expected string, qual types.Qualifier) (convert, usable bool) {
 	if !strings.HasPrefix(expected, "*") {
 		return false, false
 	}
-	return reconcile(actual, expected[1:])
+	return reconcile(actual, expected[1:], qual)
 }
 
-func reconcile(actual types.Type, expected string) (convert, usable bool) {
+func reconcile(actual types.Type, expected string, qual types.Qualifier) (convert, usable bool) {
 	if actual == nil || expected == "" {
 		return false, false
 	}
-	if types.TypeString(actual, packageNameQualifier) == expected {
+	if types.TypeString(actual, qual) == expected {
 		return false, true
 	}
 	want, ok := basicClassOf(expected)
@@ -905,9 +905,21 @@ func basicClassOf(expr string) (types.BasicInfo, bool) {
 	return 0, false
 }
 
-// packageNameQualifier renders types the way generated code spells them, by
-// package name rather than by import path.
-func packageNameQualifier(p *types.Package) string { return p.Name() }
+// goQualifier renders a loaded type's package the way generated code spells
+// it, so a Go type and the expression the generator wants can be compared as
+// strings. A mapped package is spelled with the qualifier modelExprImports gave
+// it, which need not be its name; any other by its name, unless that name is a
+// mapped package's qualifier, when two different types would read alike.
+func (b *builder) goQualifier(p *types.Package) string {
+	imports := b.modelExprImports()
+	if q, ok := b.exprQualifiers[p.Path()]; ok {
+		return q
+	}
+	if path, taken := imports[p.Name()]; taken && path != p.Path() {
+		return p.Path()
+	}
+	return p.Name()
+}
 
 // namedIndex maps "importPath.TypeName" to the named type, over every package
 // that was loaded.

@@ -203,6 +203,53 @@ the kind, the emitted call and the `Resolver` interface -- and they now share
 `modelAnswers`, because honouring it in the call alone emits a `Resolve` for a method the
 interface never declares.
 
+**A mapped package's qualifier is chosen per import path and always written as an alias.**
+It used to be the path's last element, unaliased, which is right only while a package is
+named after its directory, no two mapped paths share a last element, and none ends in
+`graphql`. velox breaks the first two at once: entity enums in `.../velox/todo`, mutation
+inputs in `.../velox/client/todo` under `package todoclient`. The first generate of
+`examples/veloxfx` did not compile, and one of the two `todo` imports had silently won the
+qualifier map. `modelExprImports` now assigns qualifiers once (last element, then the last
+two joined, then a number, never `graphql` or `context`) and `exprRef` writes references from
+the same table. **AutoBind has to compare under that table too**: it matched a Go type to the
+generator's expression by rendering the Go side with the package *name*, so the moment the
+two could differ `Todo.status` fell through to the Resolver. `goQualifier` renders a mapped
+package by its qualifier, and an unmapped one by its path when its name is some mapped
+package's qualifier -- otherwise two different `Status` types read alike, which predates this
+change. Five breaks were each confirmed to fail
+`TestMappedPackagesGetTheirOwnQualifier` or `TestAutoBindComparesTypesUnderTheGeneratedQualifier`:
+no alias, no dedupe, `graphql` unreserved, and either half of `goQualifier`.
+`TestPathQualifierIsAnUnusedIdentifier` covers the major-version skip and `identFrom`, each
+confirmed the same way.
+
+**Groups are registered one by one, like gRPC services, not aggregated in a struct.** The
+grouped root used to emit `Resolvers { User user.Resolver; ... }`. A field left unset
+compiled, passed `NewSchema` (the zero value is what `ValidateSchema` builds with), and
+failed on the first request to reach it. Now the grouped `NewSchema(opts...)` takes each
+group's `Bindings(r)`, so a group left out fails the build with `type X has no Object
+binding`, and one passed twice fails with `bound more than once`. It also means a large
+service has no 800-field struct to fill: each domain contributes its own groups, which with
+uber/fx is a value group (`examples/veloxfx`). Groups with no Resolver are registered by
+`NewSchema` itself; `ValidateSchema` registers the rest with a nil resolver.
+`TestGeneratedTwoGroupsExecutes` and `TestGenerateGroupFuncRegistersPureGroupItself` both
+fail if `NewSchema` registers a resolver group by itself.
+
+**Root fields are grouped per field, not with their type.** `Query` is one type, so grouping by
+type put every root field in whichever group declared it, even when the SDL spread them over
+`extend type Query` in 800 files: all of a large schema's root resolvers in one package. A root
+field now goes to the group of the file declaring it (`fieldInGroup`, `eachGroupField`), and
+the engine merges the several `graphql.Query(...)` calls back into one root (`Object` merges
+by name). velox declares every root field in one shared file, which by-file grouping would
+send back to one package, so `Config.RootFieldGroup` can place a field by `ReturnGroup`
+instead. `TestRootFieldsAreGroupedByTheirOwnFile` executes one query across three groups, and
+it and `TestRootFieldGroupCanFollowTheReturnedType` fail with roots grouped by type again;
+the second alone fails with `RootFieldGroup` ignored.
+Grouping per field first made generation groups times types -- every group asked every type
+about every field, three times, and every import block recomputed the group list -- 1.8 s at
+800 groups against 0.3 s flat. `eachGroupField` indexes the fields once and `uniqueGroups` is
+memoized (`TestGroupFieldsAndGroupsAreComputedOnce`); with writes made concurrent it is 0.5 s.
+A measurement of this once compared five runs against one; time single runs.
+
 One SDL group stays flat in `Output`; two or more become subpackages plus a `Resolvers` struct, with models split the same way (`model/<group>/`) so a one-group edit
 does not invalidate every other group's compiled package — except when two groups' input
 objects reference each other, which would be an import cycle and falls back to one shared
@@ -212,7 +259,7 @@ content-equal files are not rewritten.
 **A schema can be validated with no resolvers at all, and that is why ten bugs survived.**
 Binding validation reads the resolver's *type*, never its behaviour -- `Resolve` captures the
 function in a closure that build never calls -- so `NewSchema` accepts a zero value. gqlc
-emits `ValidateSchema()` for it in both shapes (`var r Resolver` flat, `Resolvers{}` grouped).
+emits `ValidateSchema()` for it in both shapes (`var r Resolver` flat, `g.Bindings(nil)` per group).
 Before it existed, answering "is this schema bindable?" on the real schema meant faking all
 8 724 resolver methods with a 200-line AST walker, which is why nobody had ever asked: the
 question cost a day, so the answer was assumed. It costs 340 ms now and reports the same

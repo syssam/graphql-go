@@ -160,3 +160,27 @@ func TestNoPackagesAreLoadedWithoutAutoBind(t *testing.T) {
 		t.Errorf("packages.Load was called %d times with no AutoBind", b.loads)
 	}
 }
+
+// Grouping each field meant asking every type about every group, three times
+// per group, and every generated file's import block recomputed the group
+// list: groups times types, a fifth of a generate at 800 groups. Both are
+// built once per emit.
+func TestGroupFieldsAndGroupsAreComputedOnce(t *testing.T) {
+	const groups = 30
+	dir := manyGroupSchema(t, groups)
+	b, err := newBuilder(dir, Config{
+		Dir:         dir,
+		SchemaGlobs: []string{"schema/*.graphql"},
+		Output:      "graph",
+		Package:     "example.com/s/graph",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.emit(); err != nil {
+		t.Fatal(err)
+	}
+	if b.fieldScans != 1 || b.groupScans != 1 {
+		t.Errorf("fields indexed %d times and groups listed %d times; each must be once per emit", b.fieldScans, b.groupScans)
+	}
+}
