@@ -222,14 +222,15 @@ real run. In short:
   velox's own methods and a resolver takes velox's types as arguments.
 - **It is laid out like a gRPC service.** Each group has a `Resolver`
   interface and a `Bindings` function; a domain package implements its
-  groups and registers them in one fx `Module`; nothing lists every entity.
+  groups and registers each with one `gqlfx.Register` line in its fx
+  `Module`; nothing lists every entity.
 - **The API offers operations, not the ORM's raw writes.** Order and stock
   change only through `placeOrder`, `cancelOrder`, `adjustStock` and the
   like, each a conditional update or a transaction, and twenty concurrent
   orders for five units place exactly five.
 - **Errors carry `extensions.code`**, mapped in one presenter; a driver's
   message never reaches a client.
-- **Adding an entity is 36 lines by hand**, none of them a signature or a
+- **Adding an entity is 35 lines by hand**, none of them a signature or a
   conversion.
 
 It is a separate module because velox, fx and SQLite are dependencies of the

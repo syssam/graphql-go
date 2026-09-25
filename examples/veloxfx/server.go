@@ -14,24 +14,18 @@ import (
 
 	graphql "github.com/syssam/graphql-go"
 	"github.com/syssam/graphql-go/examples/veloxfx/graph"
+	"github.com/syssam/graphql-go/examples/veloxfx/internal/gqlfx"
 	"github.com/syssam/graphql-go/transport/drain"
 	"github.com/syssam/graphql-go/transport/gqlecho"
 	"github.com/syssam/graphql-go/transport/gqlsse"
 	"github.com/syssam/graphql-go/transport/gqlws"
 )
 
-// Bindings is every group's bindings, as the domain modules contribute them
-// to the "graphql" value group.
-type Bindings struct {
-	fx.In
-	Groups []graphql.SchemaOption `group:"graphql"`
-}
-
 // NewSchema takes whatever bindings the domain modules registered. It does
 // not name them: a module that is not in the app leaves its types unbound,
 // and graph.NewSchema says which.
-func NewSchema(b Bindings) (*graphql.Schema, error) {
-	return graph.NewSchema(append(b.Groups, scalars)...)
+func NewSchema(g gqlfx.Groups) (*graphql.Schema, error) {
+	return graph.NewSchema(append(g.Bindings, scalars)...)
 }
 
 func NewExecutor(s *graphql.Schema) *graphql.Executor {

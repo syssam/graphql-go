@@ -8,15 +8,11 @@ import (
 
 	stockgql "github.com/syssam/graphql-go/examples/veloxfx/graph/stock"
 	warehousegql "github.com/syssam/graphql-go/examples/veloxfx/graph/warehouse"
+	"github.com/syssam/graphql-go/examples/veloxfx/internal/gqlfx"
 )
 
-// Module provides each group's Resolver and contributes its bindings to the
-// schema; see catalog.Module.
+// Module registers each group; see catalog.Module.
 var Module = fx.Module("inventory",
-	fx.Provide(
-		fx.Annotate(NewWarehouseResolver, fx.As(new(warehousegql.Resolver))),
-		fx.Annotate(NewStockResolver, fx.As(new(stockgql.Resolver))),
-		fx.Annotate(warehousegql.Bindings, fx.ResultTags(`group:"graphql"`)),
-		fx.Annotate(stockgql.Bindings, fx.ResultTags(`group:"graphql"`)),
-	),
+	gqlfx.Register(NewWarehouseResolver, warehousegql.Bindings),
+	gqlfx.Register(NewStockResolver, stockgql.Bindings),
 )

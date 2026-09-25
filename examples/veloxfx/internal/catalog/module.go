@@ -10,16 +10,12 @@ import (
 
 	categorygql "github.com/syssam/graphql-go/examples/veloxfx/graph/category"
 	productgql "github.com/syssam/graphql-go/examples/veloxfx/graph/product"
+	"github.com/syssam/graphql-go/examples/veloxfx/internal/gqlfx"
 )
 
-// Module provides each group's Resolver and contributes its bindings to the
-// schema's value group, as RegisterXServer contributes a service to a gRPC
-// server. Nothing outside the domain lists its groups.
+// Module registers each group, as a gRPC server registers each service.
+// Nothing outside the domain lists its groups.
 var Module = fx.Module("catalog",
-	fx.Provide(
-		fx.Annotate(NewCategoryResolver, fx.As(new(categorygql.Resolver))),
-		fx.Annotate(NewProductResolver, fx.As(new(productgql.Resolver))),
-		fx.Annotate(categorygql.Bindings, fx.ResultTags(`group:"graphql"`)),
-		fx.Annotate(productgql.Bindings, fx.ResultTags(`group:"graphql"`)),
-	),
+	gqlfx.Register(NewCategoryResolver, categorygql.Bindings),
+	gqlfx.Register(NewProductResolver, productgql.Bindings),
 )

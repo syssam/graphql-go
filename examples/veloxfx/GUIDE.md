@@ -20,7 +20,7 @@ If you know gRPC, the mapping is close to one to one:
 | `.proto` messages and services | velox schema in `schema/`, plus `sdl/*.graphql` |
 | `protoc` + `protoc-gen-go-grpc` | `go generate`: velox, then `go tool gqlc` |
 | `XServer` interface | each group's `Resolver` interface, `graph/<group>` |
-| `RegisterXServer(s, impl)` | `graph/<group>.Bindings(impl)`, contributed by a domain's fx `Module` |
+| `RegisterXServer(s, impl)` | `gqlfx.Register(NewImpl, <group>gql.Bindings)` in a domain's fx `Module` |
 | `status.Error(codes.NotFound, ...)` | `extensions.code: "NOT_FOUND"`, from `errors.go` |
 
 ## Prerequisites
@@ -212,14 +212,15 @@ its services:
 ```go
 // internal/catalog/module.go
 var Module = fx.Module("catalog",
-	fx.Provide(
-		fx.Annotate(NewCategoryResolver, fx.As(new(categorygql.Resolver))),
-		fx.Annotate(NewProductResolver, fx.As(new(productgql.Resolver))),
-		fx.Annotate(categorygql.Bindings, fx.ResultTags(`group:"graphql"`)),
-		fx.Annotate(productgql.Bindings, fx.ResultTags(`group:"graphql"`)),
-	),
+	gqlfx.Register(NewCategoryResolver, categorygql.Bindings),
+	gqlfx.Register(NewProductResolver, productgql.Bindings),
 )
 ```
+
+`Register` (`internal/gqlfx`, 10 lines) provides the Resolver and adds the
+group's bindings to the `graphql` value group. It takes the Resolver interface
+from `Bindings`, so a constructor for the wrong group fails when the app is
+built: `*catalog.ProductResolver does not implement category.Resolver`.
 
 `NewSchema` collects the `graphql` group without naming a single entity, and
 `veloxfx.go` lists the domains:
@@ -309,11 +310,10 @@ func (r *SupplierResolver) Suppliers(ctx context.Context) ([]*entity.Supplier, e
 }
 ```
 
--- and two lines in `internal/inventory/module.go`:
+-- and one line in `internal/inventory/module.go`:
 
 ```go
-fx.Annotate(NewSupplierResolver, fx.As(new(suppliergql.Resolver))),
-fx.Annotate(suppliergql.Bindings, fx.ResultTags(`group:"graphql"`)),
+gqlfx.Register(NewSupplierResolver, suppliergql.Bindings),
 ```
 
 **Green, and it answers:**
@@ -323,7 +323,7 @@ fx.Annotate(suppliergql.Bindings, fx.ResultTags(`group:"graphql"`)),
 Running `go generate` again leaves the filled-in file byte for byte as it was;
 a field added later arrives as one new stub at its end.
 
-**36 lines by hand:** 22 of schema, 4 of configuration and registration, 9 of
+**35 lines by hand:** 22 of schema, 3 of configuration and registration, 9 of
 bodies and constructor, and one in the test that pins the group list. No
 signature typed, no type converted. (The first version of this example took
 55 for the same entity, every signature copied from the interface and every

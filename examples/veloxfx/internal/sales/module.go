@@ -12,17 +12,12 @@ import (
 	customergql "github.com/syssam/graphql-go/examples/veloxfx/graph/customer"
 	ordergql "github.com/syssam/graphql-go/examples/veloxfx/graph/order"
 	orderitemgql "github.com/syssam/graphql-go/examples/veloxfx/graph/orderitem"
+	"github.com/syssam/graphql-go/examples/veloxfx/internal/gqlfx"
 )
 
-// Module provides each group's Resolver and contributes its bindings to the
-// schema; see catalog.Module.
+// Module registers each group; see catalog.Module.
 var Module = fx.Module("sales",
-	fx.Provide(
-		fx.Annotate(NewCustomerResolver, fx.As(new(customergql.Resolver))),
-		fx.Annotate(NewOrderResolver, fx.As(new(ordergql.Resolver))),
-		fx.Annotate(NewOrderItemResolver, fx.As(new(orderitemgql.Resolver))),
-		fx.Annotate(customergql.Bindings, fx.ResultTags(`group:"graphql"`)),
-		fx.Annotate(ordergql.Bindings, fx.ResultTags(`group:"graphql"`)),
-		fx.Annotate(orderitemgql.Bindings, fx.ResultTags(`group:"graphql"`)),
-	),
+	gqlfx.Register(NewCustomerResolver, customergql.Bindings),
+	gqlfx.Register(NewOrderResolver, ordergql.Bindings),
+	gqlfx.Register(NewOrderItemResolver, orderitemgql.Bindings),
 )
