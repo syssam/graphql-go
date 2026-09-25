@@ -2,7 +2,7 @@
 # Run the standard gate across every module in the repository.
 #
 # `go vet ./... && go test -race ./...` reaches only the module it is run in,
-# and this repository has four. benchmarks, compare and lint have been covered
+# and this repository has five. benchmarks, compare and lint have been covered
 # by whoever remembered to check them, which during one audit meant almost not
 # at all. This walks every go.mod so that stops being a matter of memory.
 #

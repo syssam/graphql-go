@@ -23,11 +23,11 @@ If you need a subsystem's rules before touching a file in it, read the rule file
 go vet ./... && go test -race -count=1 ./...   # root module; the per-change gate
 go test -race -run TestExecNestedLists .       # one test
 go test -short ./codegen                       # skip the ~20s subprocess compile tests
-sh scripts/gate.sh [-short]                    # vet + test EVERY module (there are four)
+sh scripts/gate.sh [-short]                    # vet + test EVERY module (there are five)
 GATE_REQUIRE_ALL=1 sh scripts/gate.sh          # and fail on a skipped module, as CI does
 ```
 
-`go test ./...` reaches one module of four: `benchmarks/`, `compare/` and `lint/` are separate
+`go test ./...` reaches one module of five: `benchmarks/`, `compare/`, `lint/` and `examples/veloxfx/` are separate
 modules. **Run `scripts/gate.sh` before calling a change clean.** `compare/` is generated and
 gitignored; the gate skips it unless you run `cd compare && go run gen.go -n 25` first.
 
@@ -172,7 +172,8 @@ The root package is ~32 files on purpose, because Go scopes encapsulation to the
   been measured. `docs/benchmarks.md`: the comparison with gqlgen and the per-transport costs.
   `docs/module-layout.md`: why this stays one module until publication.
 - Examples: `quickstart` (smallest), `blog` (layering, codegen; `echo`/`fiber` serve it),
-  `storefront` (authorization and production wiring), `federation`, `relaynode`.
+  `storefront` (authorization and production wiring), `federation`, `relaynode`, and
+  `veloxfx` (velox ORM + uber/fx + Echo; its own module, so the library never requires them).
 - **Status:** phases 1-4 are merged. **Not built:** `ext/authz` (only a batched `Guard` is
   left; `@policy` and `@authenticated` are already one option call each). **Declined:**
   `@defer`/`@stream`, which `introspection.go` strips on purpose, so adding them reverses a

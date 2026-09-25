@@ -64,10 +64,10 @@ jobs:
       - name: Generated code is current
         shell: bash
         run: |
-          cd examples/blog && go generate ./...
-          cd "$GITHUB_WORKSPACE"
+          (cd examples/blog && go generate ./...)
+          (cd examples/veloxfx && go generate .)
           if ! git diff --quiet; then
-            echo "generated code is stale; run go generate in examples/blog"
+            echo "generated code is stale; run go generate in examples/blog or examples/veloxfx"
             git diff --stat; exit 1
           fi
 
@@ -98,7 +98,9 @@ jobs:
       - name: Lint every other module
         shell: bash
         run: |
-          for mod in benchmarks compare lint; do
+          # Found, not listed: a list is how examples/veloxfx, the fifth module,
+          # would have gone unlinted.
+          for mod in $(find . -name go.mod -not -path "./ref/*" -not -path "./go.mod" | sed "s|/go.mod$||"); do
             echo "== $mod"
             (cd "$mod" && golangci-lint run ./...)
           done

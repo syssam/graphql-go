@@ -153,7 +153,7 @@ CI job had no `working-directory` and `golangci-lint` lints the directory it is 
 for a long time it covered the root and reported success over a quarter of the repository --
 `benchmarks/` was carrying 18 findings under this very config and `compare/` 4. The job now
 loops over `benchmarks compare lint` the way `scripts/gate.sh` loops over every `go.mod`.
-Run it the same way locally; `./...` from the root still reaches one module of four.
+Run it the same way locally; `./...` from the root still reaches one module of five.
 `golangci-lint` refuses to run twice at once ("parallel golangci-lint is running"), so loop
 rather than launching them together.
 

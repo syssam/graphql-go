@@ -9,6 +9,7 @@
 | [`relaynode`](relaynode) | The Relay contract: global ids, `Query.node` re-fetch, and cursor connections. |
 | [`echo`](echo) | Serving `blog` through Echo v5 — routing and shutdown wiring only. |
 | [`fiber`](fiber) | Serving `blog` through Fiber v3 — routing and shutdown wiring only. |
+| [`veloxfx`](veloxfx) | An ORM-generated schema: velox writes the ORM and the SDL, gqlc binds one to the other, uber/fx assembles it behind Echo. Its own module. |
 
 `storefront` is the one to read for anything about authorization, limits or
 shutdown; `blog` is the one to read for layering and codegen. They do not
@@ -199,6 +200,75 @@ support at all, since an unbound interface resolves from the dynamic Go type.
     # the id from that response, handed straight back
     $GQL -d '{"query":"query($id:ID!){ node(id:$id){ __typename ... on User { name } } }","variables":{"id":"VXNlcjox"}}'
 
+## velox, fx and Echo in `veloxfx`
+
+`blog` writes its SDL by hand and generates models from it. `veloxfx` goes the
+other way, which is how an ORM-backed service is usually built: the velox
+schema in `schema/` is the only source, and both the ORM and the SDL are
+output.
+
+    schema/*.go              --velox-->          velox/ (ORM) + velox/schema/*.graphql
+    velox/schema/*.graphql   --gqlc AutoBind-->  graph/<entity>/ (Resolver, Bindings)
+    internal/<entity>/        implements graph/<entity>.Resolver, registers itself
+
+`generate.go` runs both steps. The SDL carries `@goModel` on every type velox
+owns, and gqlc reads it (`ModelDirective`), so `graph/` holds no `User` or
+`Todo` of its own: `Object[entity.User]` binds the ORM type, a resolver returns
+what a velox query returns, and there is no mapping layer. What is left in each
+`Resolver` interface is that entity's roots and mutations, and `id` -- velox
+keys rows by `int` and `ID` is a string on the wire.
+
+**It is laid out the way a gRPC service is.** velox writes one SDL file per
+entity and gqlc makes each one a group: `graph/todo` holds the todo group's
+`Resolver` interface and a `Bindings(r)` function, as `protoc-gen-go-grpc`
+holds a `TodoServer` interface and `RegisterTodoServer`. `internal/todo`
+implements it and registers it in one line of its own fx `Module`, into a
+value group the schema collects. No struct lists every entity, so the file
+that wires the application does not grow with the schema; adding an entity is
+a package and one line in `Entities`.
+
+Two gqlc settings make that work for velox's output. `GroupFunc` names each
+group after its entity. `RootFieldGroup` puts each root field in the group of
+the type it returns, because velox declares every root field in one shared
+file and grouping by file would put all of them in one package -- the monolith
+groups exist to split. `createTodo` lands next to `Todo`.
+
+Leaving an entity's module out of the app is a failed start that names what it
+left unbound (`type User has no Object binding`), not a schema that builds and
+fails the first request to reach a User. `TestAMissingEntityModuleFailsStart`
+pins it.
+
+Three things the ORM does that the resolver has to answer for. Undoing the
+first or the third fails `veloxfx_test.go`; the second changes query counts,
+not answers, and nothing asserts it:
+
+- **An empty table is `nil`.** The engine writes a nil slice as `null`, which
+  `[User!]!` refuses, so the list resolvers return `[]` instead.
+- **Edges query per row unless loaded.** `User.todos` and `Todo.owner` bind to
+  velox's edge methods, which fall back to one query each; the roots
+  eager-load them.
+- **A created row's edges are stubs.** velox marks the owner edge of a new
+  todo loaded with `&User{ID: ownerID}`, so `createTodo { owner { name } }`
+  would answer an empty name. `CreateTodo` reads the row back.
+
+fx owns the order. Start hooks run in dependency order -- migrate the
+database, then listen -- and stop hooks in reverse, so the server has drained
+and shut down before the database closes. `Server` listens in `OnStart`, so a
+port already in use fails start and the process exits non-zero.
+
+It is a separate module because velox, fx and SQLite are dependencies of the
+example, not of the library. `scripts/gate.sh` finds it like every other
+`go.mod`.
+
+    cd examples/veloxfx
+    go generate            # after editing schema/
+    go run ./cmd/server
+
+    GQL='curl -s localhost:8080/graphql -H content-type:application/json'
+    $GQL -d '{"query":"mutation { createUser(input:{name:\"Ada\",email:\"ada@example.com\"}) { id } }"}'
+    $GQL -d '{"query":"mutation { createTodo(input:{title:\"ship it\",ownerID:\"1\"}) { id status owner { name } } }"}'
+    $GQL -d '{"query":"{ users { name todos { title status } } }"}'
+
 ## Running
 
     go run ./examples/quickstart            # :8080 /graphql, /graphql/stream
@@ -208,3 +278,4 @@ support at all, since an unbound interface resolves from the dynamic Go type.
     go run ./examples/fiber                 # same schema, Fiber v3
     go run ./examples/federation/cmd/subgraphs # two subgraphs on two paths
     go run ./examples/relaynode/cmd/server   # global ids and connections
+    (cd examples/veloxfx && go run ./cmd/server) # velox + fx + Echo, own module

@@ -97,7 +97,7 @@ passes, so that `gqlecho` and `gqlfiber` are not created in the root module and
 moved out a month later.
 
 **The cheap half is done.** `scripts/gate.sh` walks every `go.mod` and is the
-gate for all four modules, so `benchmarks/`, `compare/` and `lint/` are no
+gate for every module, so `benchmarks/`, `compare/` and `lint/` are no
 longer tested by memory. That was the stated prerequisite, which makes the
 split a mechanical change at the first tag rather than one that has to invent
 its own safety net. The trigger is the first tagged release; there is nothing
