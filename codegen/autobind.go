@@ -82,7 +82,9 @@ func autoBind(dir string, patterns []string, schema *ast.Schema, b *builder) (*M
 	// A declared binding the loaded packages show cannot work is dropped
 	// before anything reads it, so the enum is modelled by the generator and
 	// every field of it agrees.
-	if dropped := unbindableTypes(schema, b.cfg.Models, idx); len(dropped) > 0 {
+	dropped, marshalers := unbindableTypes(schema, b.cfg.Models, idx)
+	b.marshalers = marshalers
+	if len(dropped) > 0 {
 		kept := maps.Clone(b.cfg.Models)
 		for _, name := range dropped {
 			delete(kept, name)
@@ -324,7 +326,7 @@ func modelPkgs(dir string, schema *ast.Schema, models map[string]string, loaded 
 	}
 	var want []string
 	seen := map[string]bool{}
-	for _, name := range slices.Concat(enumNames(schema), inputNames(schema)) {
+	for _, name := range slices.Concat(enumNames(schema), inputNames(schema), scalarNames(schema)) {
 		path, _ := splitModelExpr(models[name])
 		if path == "" || have[path] || seen[path] {
 			continue
@@ -524,6 +526,18 @@ func inputNames(schema *ast.Schema) []string {
 	var out []string
 	for name, def := range schema.Types {
 		if def.Kind == ast.InputObject && !def.BuiltIn && !strings.HasPrefix(name, "__") {
+			out = append(out, name)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// scalarNames lists the schema's custom scalars, sorted.
+func scalarNames(schema *ast.Schema) []string {
+	var out []string
+	for name, def := range schema.Types {
+		if def.Kind == ast.Scalar && !def.BuiltIn && !strings.HasPrefix(name, "__") {
 			out = append(out, name)
 		}
 	}
@@ -965,13 +979,29 @@ func namedIndex(pkgs []*packages.Package) map[string]*types.Named {
 // The test is narrow on purpose: only a Go type whose underlying type is not
 // basic is refused. A named string type with no constants found is left alone,
 // because the constants may simply be somewhere this pass did not load.
-func unbindableTypes(schema *ast.Schema, models map[string]string, named map[string]*types.Named) []string {
+func unbindableTypes(schema *ast.Schema, models map[string]string, named map[string]*types.Named) (dropped []string, marshalers map[string]bool) {
 	bad := map[string]bool{} // Go types nothing can bind, by "path.Name"
 	out := map[string]bool{} // SDL types to drop
+	marshalers = map[string]bool{}
+	// A type that encodes itself -- MarshalGQL and UnmarshalGQL, the contract
+	// gqlgen defines and ent and velox generate -- binds through
+	// EnumMarshaler or ScalarMarshaler whatever its underlying type. entgql's
+	// OrderField is exactly this: a struct holding a func, dropped until the
+	// engine could take it, which sent every orderBy argument and every edge
+	// method taking one through a hand-written conversion.
+	for _, name := range scalarNames(schema) {
+		if n := declaredNamed(models, named, name); n != nil && isGQLMarshaler(n) {
+			marshalers[name] = true
+		}
+	}
 	for _, name := range enumNames(schema) {
 		n := declaredNamed(models, named, name)
 		if n == nil {
 			continue // not declared, or not loaded, so nothing is known about it
+		}
+		if isGQLMarshaler(n) {
+			marshalers[name] = true
+			continue
 		}
 		if _, basic := n.Underlying().(*types.Basic); !basic {
 			out[name] = true
@@ -979,7 +1009,7 @@ func unbindableTypes(schema *ast.Schema, models map[string]string, named map[str
 		}
 	}
 	if len(out) == 0 {
-		return nil
+		return nil, marshalers
 	}
 
 	// A dropped Go type takes its holders with it. entgql puts the
@@ -1007,7 +1037,7 @@ func unbindableTypes(schema *ast.Schema, models map[string]string, named map[str
 			break
 		}
 	}
-	return sortedKeys(out)
+	return sortedKeys(out), marshalers
 }
 
 // declaredNames lists every schema type Models binds, sorted, so the fixpoint
@@ -1097,4 +1127,31 @@ func summarize(names []string, n int) string {
 		return strings.Join(names, ", ")
 	}
 	return fmt.Sprintf("%s and %d more", strings.Join(names[:n], ", "), len(names)-n)
+}
+
+// isGQLMarshaler reports whether *n has MarshalGQL(io.Writer) and
+// UnmarshalGQL(any) error, the pair graphql.Marshaler requires. MarshalGQL may
+// have either receiver, which is why the pointer's method set is the one read.
+func isGQLMarshaler(n *types.Named) bool {
+	ptr := types.NewPointer(n)
+	sig := func(name string) *types.Signature {
+		obj, _, _ := types.LookupFieldOrMethod(ptr, true, n.Obj().Pkg(), name)
+		fn, ok := obj.(*types.Func)
+		if !ok {
+			return nil
+		}
+		return fn.Type().(*types.Signature)
+	}
+	m, u := sig("MarshalGQL"), sig("UnmarshalGQL")
+	if m == nil || u == nil {
+		return false
+	}
+	if m.Params().Len() != 1 || m.Results().Len() != 0 || types.TypeString(m.Params().At(0).Type(), nil) != "io.Writer" {
+		return false
+	}
+	if u.Params().Len() != 1 || u.Results().Len() != 1 || types.TypeString(u.Results().At(0).Type(), nil) != "error" {
+		return false
+	}
+	_, isIface := u.Params().At(0).Type().Underlying().(*types.Interface)
+	return isIface
 }

@@ -172,6 +172,7 @@ graphql: func DirectiveArgs[A any](name string, fn func(next FieldFunc, args A) 
 graphql: func DisableIntrospection() SchemaOption
 graphql: func DisableSuggestions() ExecutorOption
 graphql: func Drop() Outcome
+graphql: func EnumMarshaler[T any, PT Marshaler[T]](name string) SchemaOption
 graphql: func Enum[T comparable](name string, values map[T]string) SchemaOption
 graphql: func Errorf(format string, args ...any) *Error
 graphql: func FieldArgs[P, A, R any](name string, fn func(P, A) R, opts ...FieldSchedule) FieldOption
@@ -203,6 +204,7 @@ graphql: func Resolve[P, R any](name string, fn func(context.Context, P) (R, err
 graphql: func SDL(s string) Source
 graphql: func SDLBytes(b []byte) Source
 graphql: func SDLFS(fsys fs.FS, patterns ...string) Source
+graphql: func ScalarMarshaler[T any, PT Marshaler[T]](name string) SchemaOption
 graphql: func Scalar[T any](name string, marshal func(*Writer, T) error, unmarshal func(any) (T, error)) SchemaOption
 graphql: func ScopeAuthorizer(held func(context.Context) map[string]bool) Authorizer
 graphql: func SelectionFrom(ctx context.Context) Selection
@@ -259,6 +261,7 @@ graphql: type ID string
 graphql: type InputFieldOption interface { applyInput(*inputBinding) }
 graphql: type InputKey struct { Path []string Enum string Null bool }
 graphql: type Location struct { Line int `json:"line"` Column int `json:"column"` }
+graphql: type Marshaler[T any] interface { *T MarshalGQL(w io.Writer) UnmarshalGQL(v any) error }
 graphql: type ObjectAuthorizer interface { AuthorizeObjects(ctx context.Context, checks []ObjectCheck) ([]Outcome, error) }
 graphql: type ObjectCheck struct { Site AuthSite Type string Object any }
 graphql: type Omittable[T any] struct { }

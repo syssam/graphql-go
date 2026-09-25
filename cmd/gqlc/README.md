@@ -57,6 +57,14 @@ groups:
 rootFields: returnType       # Query.products goes to the group of Product
 ```
 
+An ORM that keys rows by `int` should also map `ID: int` under `models`: the engine writes an
+int ID as a string, so ids bind straight to the entities' own `ID` fields and arguments arrive
+as the int the ORM takes, where `graphql.ID` would need a resolver per type and a parse per
+argument. A leaf type that encodes itself -- `MarshalGQL` and `UnmarshalGQL`, as ent and velox
+generate for order fields and cursors -- is bound with `graphql.EnumMarshaler` or
+`graphql.ScalarMarshaler` automatically, so an ORM's order input and the edge methods taking it
+bind as they are.
+
 `rootFields` defaults to `file`: a root field belongs to the group of the file
 declaring it, so `extend type Query { ... }` in `user.graphql` is the user
 group. `returnType` is for a generator that declares every root field in one

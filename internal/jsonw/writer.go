@@ -314,6 +314,13 @@ func (w *Writer) Raw(b []byte) {
 	w.buf = append(w.buf, b...)
 }
 
+// RawContinue appends more of the value the last Raw began, with no
+// separator: an encoder that writes one value in several calls, as an
+// io.Writer-based MarshalGQL does, starts it with Raw and continues here.
+func (w *Writer) RawContinue(b []byte) {
+	w.buf = append(w.buf, b...)
+}
+
 // Splice writes sub's bytes as the next value. The bytes sub already reported
 // against a shared limit become w's, so they are counted once: sub is
 // typically put back only after every sibling is spliced, and a checkpoint on

@@ -521,6 +521,10 @@ func (b *builder) emitBindings(group string, withResolver bool) string {
 		if !b.inGroup(name, group) {
 			continue
 		}
+		if b.marshalers[name] {
+			w.WriteString("\t\tgraphql.EnumMarshaler[" + b.modelRef(name, name) + "](\"" + name + "\"),\n")
+			continue
+		}
 		def := b.schema.Types[name]
 		w.WriteString("\t\tgraphql.Enum[" + b.modelRef(name, name) + "](\"" + name + "\", map[" + b.modelRef(name, name) + "]string{\n")
 		for _, ev := range def.EnumValues {
@@ -540,6 +544,13 @@ func (b *builder) emitBindings(group string, withResolver bool) string {
 				w.WriteString("\t\t\t" + e.consts[ev.Name] + ": \"" + ev.Name + "\",\n")
 			}
 			w.WriteString("\t\t}),\n")
+		}
+	}
+	// A scalar is bound here only when its type encodes itself; any other
+	// custom scalar is the author's to bind, and reportUnboundScalars says so.
+	for _, name := range b.typeNames(ast.Scalar) {
+		if b.marshalers[name] && b.inGroup(name, group) {
+			w.WriteString("\t\tgraphql.ScalarMarshaler[" + b.modelRef(name, name) + "](\"" + name + "\"),\n")
 		}
 	}
 	for _, name := range b.typeNames(ast.InputObject) {
@@ -819,6 +830,9 @@ func (b *builder) reportUnboundScalars() {
 	}
 	parts := make([]string, 0, len(names))
 	for _, name := range names {
+		if b.marshalers[name] {
+			continue
+		}
 		goType := "model." + name
 		if expr, ok := b.cfg.Models[name]; ok {
 			_, ref := splitModelExpr(expr)
@@ -826,6 +840,9 @@ func (b *builder) reportUnboundScalars() {
 		}
 		parts = append(parts, fmt.Sprintf("%s (%s)", name, goType))
 	}
+	if len(parts) == 0 {
+		return
+	}
 	b.notef("%d custom scalar(s) need a binding at NewSchema, or the schema will not build: %s. Add graphql.Scalar[GoType](%q, marshal, unmarshal) for each; a Models entry chooses the Go type but does not bind it.",
-		len(parts), strings.Join(parts, ", "), names[0])
+		len(parts), strings.Join(parts, ", "), strings.SplitN(parts[0], " ", 2)[0])
 }

@@ -48,6 +48,10 @@ type builder struct {
 	groups        []string
 	fieldScans    int
 	groupScans    int
+	// marshalers are the SDL enums and scalars whose declared Go type encodes
+	// itself; they bind through EnumMarshaler and ScalarMarshaler. Only
+	// AutoBind loads the types that can say so.
+	marshalers map[string]bool
 
 	// nameScans counts how often typeNames actually scanned, which is what
 	// TestTypeNamesIsComputedOncePerKind reads: once per kind and not once

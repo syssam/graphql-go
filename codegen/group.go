@@ -177,8 +177,10 @@ func (b *builder) groupEmits(typeName string) bool {
 		return false
 	}
 	if def.Kind == ast.Scalar {
+		// A mapped scalar has no model, but one that encodes itself has a
+		// binding, and its group has to exist to carry it.
 		_, mapped := b.cfg.Models[typeName]
-		return !mapped
+		return !mapped || b.marshalers[typeName]
 	}
 	return true
 }

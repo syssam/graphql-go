@@ -121,6 +121,17 @@ under that path already, so registering it a second time is a redeclaration in a
 DO NOT EDIT. `extraQualifier` settles the qualifier and the import together, once, because
 deciding them twice is how a reference and its import disagree.
 
+**A type that encodes itself binds as it is.** entgql and velox generate order fields as a
+struct holding a cursor func, with `MarshalGQL` and `UnmarshalGQL` -- gqlgen's contract. They
+used to be dropped below, the order input holding one with them, and every edge method taking
+an order fell to a hand-written resolver converting a generated string enum back. The engine
+now binds such a type directly (`EnumMarshaler`, `ScalarMarshaler`; output of an enum is still
+checked against its declared values), and `isGQLMarshaler` makes AutoBind emit that binding
+instead of dropping, for scalars as well: velox's `Cursor` no longer needs a hand-written
+`graphql.Scalar`. In `examples/veloxfx` it removed the orderBy conversion package and every
+connection-edge resolver. `TestAutoBindBindsTypesThatEncodeThemselves` fails with detection or
+emission removed.
+
 **An enum whose declared Go type cannot back an enum is modelled instead, and the drop is
 reported.** entgql binds an SDL enum to a struct holding a func: not comparable, so
 `Enum[T comparable]` cannot take it, and its values are unexported package vars, so nothing
