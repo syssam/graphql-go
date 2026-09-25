@@ -24,6 +24,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/syssam/graphql-go/codegen"
 	"gopkg.in/yaml.v3"
@@ -58,6 +59,55 @@ type fileConfig struct {
 		Name             string `yaml:"name"`
 		ForceResolverArg string `yaml:"forceResolverArg"`
 	} `yaml:"fieldDirective"`
+	// autoBind binds SDL types to existing Go types found in these package
+	// patterns, instead of generating models for them:
+	//
+	//	autoBind: [./ent]
+	AutoBind []string `yaml:"autoBind"`
+	// groups names the group each SDL file becomes. The file stem is the
+	// name; trimPrefix is removed from it first, and rename then maps what is
+	// left, so an ORM's velox_product.graphql and its shared schema.graphql
+	// can be product and root:
+	//
+	//	groups:
+	//	  trimPrefix: velox_
+	//	  rename: { schema: root }
+	Groups struct {
+		TrimPrefix string            `yaml:"trimPrefix"`
+		Rename     map[string]string `yaml:"rename"`
+	} `yaml:"groups"`
+	// rootFields decides the group of each Query, Mutation and Subscription
+	// field: "file" (the default) is the file declaring it, "returnType" the
+	// group of the type it returns, for a generator that declares every root
+	// field in one shared file. A field returning a scalar keeps its file's.
+	RootFields string `yaml:"rootFields"`
+}
+
+// groupFunc turns the groups key into a codegen.GroupFunc, or nil when the
+// key is absent, so the generator's own default stays in charge.
+func (fc *fileConfig) groupFunc() func(typeName, sdlFile string) string {
+	g := fc.Groups
+	if g.TrimPrefix == "" && len(g.Rename) == 0 {
+		return nil
+	}
+	return func(_, sdlFile string) string {
+		stem := strings.TrimSuffix(filepath.Base(sdlFile), filepath.Ext(sdlFile))
+		stem = strings.TrimPrefix(stem, g.TrimPrefix)
+		if to, ok := g.Rename[stem]; ok {
+			return to
+		}
+		return stem
+	}
+}
+
+func (fc *fileConfig) rootFieldGroup() (func(codegen.RootField) string, error) {
+	switch fc.RootFields {
+	case "", "file":
+		return nil, nil
+	case "returnType":
+		return func(f codegen.RootField) string { return f.ReturnGroup }, nil
+	}
+	return nil, fmt.Errorf("rootFields: %q is not file or returnType", fc.RootFields)
 }
 
 func main() {
@@ -107,7 +157,14 @@ func run(args []string) error {
 	if err := dec.Decode(&fc); err != nil && !errors.Is(err, io.EOF) {
 		return fmt.Errorf("gqlc: parse %s: %w", *configPath, err)
 	}
+	rootFieldGroup, err := fc.rootFieldGroup()
+	if err != nil {
+		return fmt.Errorf("gqlc: %s: %w", *configPath, err)
+	}
 	cfg := codegen.Config{
+		AutoBind:               fc.AutoBind,
+		GroupFunc:              fc.groupFunc(),
+		RootFieldGroup:         rootFieldGroup,
 		Dir:                    filepath.Dir(*configPath),
 		SchemaGlobs:            fc.Schema,
 		Output:                 fc.Output,

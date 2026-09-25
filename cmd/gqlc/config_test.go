@@ -146,6 +146,95 @@ type Query { users: [User!]! }
 			t.Fatalf("nickname was a resolver without fieldDirective being set:\n%s", src)
 		}
 	})
+
+	// The shape an ORM hands over: one SDL file per entity, prefixed, and a
+	// shared file declaring every root field.
+	ormSchema := func(t *testing.T, yml string) string {
+		t.Helper()
+		dir := t.TempDir()
+		for name, body := range map[string]string{
+			"schema.graphql":        "type Query { products: [Product!]! version: String! }\n",
+			"velox_product.graphql": "type Product { id: ID! name: String! }\n",
+		} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		cfg := filepath.Join(dir, "gqlc.yaml")
+		if err := os.WriteFile(cfg, []byte("schema: ['*.graphql']\noutput: graph\npackage: example/graph\n"+yml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := run([]string{"-config", cfg}); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	exists := func(dir, rel string) bool {
+		_, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel)))
+		return err == nil
+	}
+
+	t.Run("groups names each file's group", func(t *testing.T) {
+		dir := ormSchema(t, "groups:\n  trimPrefix: velox_\n  rename:\n    schema: root\n")
+		if !exists(dir, "graph/product/generated.go") || !exists(dir, "graph/root/generated.go") {
+			t.Fatal("groups did not reach the generator: want graph/product and graph/root")
+		}
+		// And the default without the key, or the assertion above proves nothing.
+		dir2 := ormSchema(t, "")
+		if !exists(dir2, "graph/veloxproduct/generated.go") {
+			t.Fatal("without groups the file stem velox_product should name the group")
+		}
+	})
+
+	t.Run("rootFields: returnType follows the returned type", func(t *testing.T) {
+		dir := ormSchema(t, "groups:\n  trimPrefix: velox_\n  rename:\n    schema: root\nrootFields: returnType\n")
+		if src := generated(t, dir, "graph/product/generated.go"); !strings.Contains(src, "Products(ctx") {
+			t.Fatalf("Query.products did not follow Product into its group:\n%s", src)
+		}
+		// A scalar has no group to follow and keeps its file's.
+		if src := generated(t, dir, "graph/root/generated.go"); !strings.Contains(src, "Version(ctx") {
+			t.Fatalf("Query.version left the shared file's group:\n%s", src)
+		}
+		dir2 := ormSchema(t, "groups:\n  trimPrefix: velox_\n  rename:\n    schema: root\n")
+		if src := generated(t, dir2, "graph/root/generated.go"); !strings.Contains(src, "Products(ctx") {
+			t.Fatalf("without rootFields a root field should stay in its file's group:\n%s", src)
+		}
+	})
+
+	t.Run("autoBind binds an existing Go type", func(t *testing.T) {
+		if testing.Short() {
+			t.Skip("skipping package load")
+		}
+		dir := t.TempDir()
+		for rel, body := range map[string]string{
+			"go.mod":         "module example\n\ngo 1.27\n",
+			"ent/user.go":    "package ent\n\ntype User struct {\n\tID   string\n\tName string\n}\n",
+			"schema.graphql": "type User { id: ID! name: String! }\ntype Query { users: [User!]! }\n",
+			"gqlc.yaml":      "schema: [schema.graphql]\noutput: graph\npackage: example/graph\nautoBind: [./ent]\n",
+		} {
+			p := filepath.Join(dir, filepath.FromSlash(rel))
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := run([]string{"-config", filepath.Join(dir, "gqlc.yaml")}); err != nil {
+			t.Fatal(err)
+		}
+		if src := generated(t, dir, "graph/generated.go"); !strings.Contains(src, "graphql.Object[ent.User]") {
+			t.Fatalf("autoBind did not reach the generator; User is not bound to ent.User:\n%s", src)
+		}
+	})
+}
+
+func TestRootFieldsRejectsAnUnknownMode(t *testing.T) {
+	_, cfg := write(t, "schema: [schema.graphql]\noutput: graph\npackage: example/graph\nrootFields: byName\n", "type Query { a: String }\n")
+	err := run([]string{"-config", cfg})
+	if err == nil || !strings.Contains(err.Error(), "rootFields") || !strings.Contains(err.Error(), "byName") {
+		t.Fatalf("err = %v, want one naming rootFields and the value", err)
+	}
 }
 
 // A CLI's error messages are its whole interface when something is wrong, so
