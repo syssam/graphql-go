@@ -39,8 +39,10 @@ func (s *Schema) coerceVariables(op *ast.OperationDefinition, raw map[string]any
 			out[vd.Variable] = nil
 			continue
 		}
-		if err := s.validateInput(vd.Type, v, "$"+vd.Variable); err != nil {
-			return nil, variableError(vd, "got invalid value %s; %v", describeJSON(v), err)
+		if !s.validInput(vd.Type, v) {
+			if err := s.validateInput(vd.Type, v, "$"+vd.Variable); err != nil {
+				return nil, variableError(vd, "got invalid value %s; %v", describeJSON(v), err)
+			}
 		}
 		out[vd.Variable] = v
 	}
@@ -53,6 +55,76 @@ func variableError(vd *ast.VariableDefinition, format string, args ...any) *Erro
 		e.Locations = []Location{{Line: vd.Position.Line, Column: vd.Position.Column}}
 	}
 	return e
+}
+
+// validInput is validateInput's verdict without its message: it builds no
+// path, and visits an input object's own keys rather than every declared
+// field, which for an ent-style WhereInput is two against a hundred. It may
+// refuse more than validateInput does, never less; a refusal is re-checked
+// there, which also gives the error the same wording and order as ever.
+func (s *Schema) validInput(t *ast.Type, v any) bool {
+	if v == nil {
+		return !t.NonNull
+	}
+	if t.Elem != nil {
+		items, isList := v.([]any)
+		if !isList {
+			return s.validInput(t.Elem, v)
+		}
+		for _, it := range items {
+			if !s.validInput(t.Elem, it) {
+				return false
+			}
+		}
+		return true
+	}
+	in := s.inputs[t.NamedType]
+	if in == nil {
+		// Not an input object: scalars and enums hold no path to build,
+		// so the full check costs nothing extra.
+		return s.validateInput(t, v, "") == nil
+	}
+	m, ok := v.(map[string]any)
+	if !ok || (in.oneOf && len(m) != 1) {
+		return false
+	}
+	for name, fv := range m {
+		fd := in.fields[name]
+		if fd == nil || (in.oneOf && fv == nil) || !s.validInput(fd.Type, fv) {
+			return false
+		}
+	}
+	for _, name := range in.required {
+		if _, present := m[name]; !present {
+			return false
+		}
+	}
+	return true
+}
+
+// inputInfo is what validInput needs of an input object, indexed once.
+type inputInfo struct {
+	fields   map[string]*ast.FieldDefinition
+	required []string // non-null with no default
+	oneOf    bool
+}
+
+func indexInputs(schema *ast.Schema) map[string]*inputInfo {
+	out := map[string]*inputInfo{}
+	for name, def := range schema.Types {
+		if def.Kind != ast.InputObject {
+			continue
+		}
+		in := &inputInfo{fields: make(map[string]*ast.FieldDefinition, len(def.Fields)), oneOf: def.Directives.ForName("oneOf") != nil}
+		for _, fd := range def.Fields {
+			in.fields[fd.Name] = fd
+			if fd.Type.NonNull && fd.DefaultValue == nil {
+				in.required = append(in.required, fd.Name)
+			}
+		}
+		out[name] = in
+	}
+	return out
 }
 
 // validateInput checks a raw JSON-shaped value against an input type without

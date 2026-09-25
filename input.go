@@ -25,6 +25,10 @@ type inputBinding struct {
 	// zeroForNull lets a Go type that cannot be null back a nullable input
 	// position, decoding absent and null alike to the zero value.
 	zeroForNull bool
+	// derived is set when every field was derived from the struct, so each
+	// setter writes its own struct field and the order they run in cannot
+	// matter. A hand-written InputField is arbitrary code, and may.
+	derived bool
 }
 
 // inputFlag is an Input option that configures the binding rather than
@@ -55,6 +59,13 @@ type inputDecoder struct {
 	newValue    func() any
 	setters     []*inputSetter
 	argsBinding *inputBinding
+	// byName and absent exist when the setters are order-independent (see
+	// inputBinding.derived): decode then visits the fields the value has, and
+	// of the rest only those an absent value means something for -- a
+	// default to apply or a required field to refuse. An ent-style WhereInput
+	// declares a hundred fields and a request sends two.
+	byName map[string]*inputSetter
+	absent []*inputSetter
 }
 
 // inputSetter decodes one input field or argument into its struct field.
@@ -83,7 +94,48 @@ func newSetter(name string, typ *ast.Type, def *ast.Value, set func(target, raw 
 // decode applies every setter to a freshly allocated *T. Absent fields fall
 // back to their SDL default; absent nullable fields without a default are
 // left at their zero value and, for OmittableField, remain unset.
+//
+// With byName it visits the value's own keys instead of every declared field.
+// A map has no order, so on any failure it decodes again in declared order,
+// which is what reports the error: the same one, every time, as before.
 func (d *inputDecoder) decode(m map[string]any) (any, error) {
+	if d.byName != nil {
+		if v, ok := d.decodePresent(m); ok {
+			return v, nil
+		}
+	}
+	return d.decodeOrdered(m)
+}
+
+func (d *inputDecoder) decodePresent(m map[string]any) (any, bool) {
+	target := d.newValue()
+	for name, raw := range m {
+		st := d.byName[name]
+		if st == nil {
+			continue
+		}
+		if raw == nil && st.typ.NonNull {
+			return nil, false
+		}
+		if st.set(target, raw) != nil {
+			return nil, false
+		}
+	}
+	for _, st := range d.absent {
+		if _, present := m[st.name]; present {
+			continue
+		}
+		if !st.hasDefault || (st.defaultRaw == nil && st.typ.NonNull) {
+			return nil, false
+		}
+		if st.set(target, st.defaultRaw) != nil {
+			return nil, false
+		}
+	}
+	return target, true
+}
+
+func (d *inputDecoder) decodeOrdered(m map[string]any) (any, error) {
 	target := d.newValue()
 	for _, st := range d.setters {
 		raw, present := m[st.name]
@@ -135,6 +187,7 @@ func Input[T any](name string, fields ...InputFieldOption) SchemaOption {
 			for _, f := range autoInputFields(tT, ib.zeroForNull, declaredInputFields(def)) {
 				f.applyInput(ib)
 			}
+			ib.derived = true
 		}
 		b.inputs = append(b.inputs, ib)
 		b.reg.inputsByName[name] = dec
@@ -266,6 +319,16 @@ func (ib *inputBinding) resolve(b *schemaBuilder) {
 	for _, fdef := range def.Fields {
 		if !seen[fdef.Name] {
 			b.errorf("input field %s has no binding", coordinate(ib.name, fdef.Name))
+		}
+	}
+	if ib.derived {
+		d := ib.dec
+		d.byName = make(map[string]*inputSetter, len(d.setters))
+		for _, st := range d.setters {
+			d.byName[st.name] = st
+			if st.hasDefault || st.typ.NonNull {
+				d.absent = append(d.absent, st)
+			}
 		}
 	}
 }

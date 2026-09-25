@@ -125,3 +125,20 @@ null, which is an error at `Time!` the value did not cause; here it is
 time and `2006-01-02 15:04:05` as UTC; both are refused. A year outside 0-9999 is a field
 error rather than a string no RFC 3339 reader accepts. `TestTimeIsRFC3339` fails with output
 forced to UTC, `""` accepted, or the year check removed.
+
+**An input object is validated and decoded by the keys it has, not the fields it declares**
+(`validInput` in `coerce.go`, `decodePresent` in `input.go`). An ent-style WhereInput declares
+a hundred fields and a request sends two; walking every declared field, and building an error
+path string per field on success, cost 26% of a 123-field variable's request and 8% of a nested
+one (`BenchmarkExecuteInputVariable`, interleaved, p=0.000). Two things keep it exact. A map
+has no order, so **any failure re-runs the declared-order walk**, which is what words and
+chooses the error -- the same one as before, every run (`TestInputErrorsDoNotDependOnMapOrder`,
+which fails when the fast path reports its own error). And the key-driven decode is used only
+when every setter was derived from the struct, since each then writes its own field; a
+hand-written `InputField` is arbitrary code and keeps declared order
+(`TestHandWrittenInputFieldsRunInDeclaredOrder`). An absent field's default and an absent
+required field are handled from a precomputed list (`TestAbsentInputFieldsKeepTheirMeaning`,
+which fails with either list emptied). `validInput` may refuse more than `validateInput`,
+never less. Replacing `encoding/json` for the variables map was measured and dropped: v2 into
+`any` with a `json.Number` hook was level with v1, and a `jsontext` token walk was -18% inside
+±22% noise with more bytes.

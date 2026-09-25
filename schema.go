@@ -87,6 +87,7 @@ type Schema struct {
 	// when more than one of those objects is a possible type.
 	goTypes       map[reflect.Type][]*objectType
 	abstracts     map[string]*abstractType
+	inputs        map[string]*inputInfo
 	introspection bool
 
 	query, mutation, subscription *objectType
@@ -216,6 +217,7 @@ func (b *schemaBuilder) build() *Schema {
 		objects:       make(map[string]*objectType, len(b.objects)),
 		goTypes:       make(map[reflect.Type][]*objectType, len(b.objects)*2),
 		abstracts:     make(map[string]*abstractType),
+		inputs:        indexInputs(b.ast),
 		introspection: b.introspection,
 	}
 
