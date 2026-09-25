@@ -8,8 +8,13 @@ import (
 	"fmt"
 	"log/slog"
 
-	todoclient "github.com/syssam/graphql-go/examples/veloxfx/velox/client/todo"
-	userclient "github.com/syssam/graphql-go/examples/veloxfx/velox/client/user"
+	categoryclient "github.com/syssam/graphql-go/examples/veloxfx/velox/client/category"
+	customerclient "github.com/syssam/graphql-go/examples/veloxfx/velox/client/customer"
+	orderclient "github.com/syssam/graphql-go/examples/veloxfx/velox/client/order"
+	orderitemclient "github.com/syssam/graphql-go/examples/veloxfx/velox/client/orderitem"
+	productclient "github.com/syssam/graphql-go/examples/veloxfx/velox/client/product"
+	stockclient "github.com/syssam/graphql-go/examples/veloxfx/velox/client/stock"
+	warehouseclient "github.com/syssam/graphql-go/examples/veloxfx/velox/client/warehouse"
 	entity "github.com/syssam/graphql-go/examples/veloxfx/velox/entity"
 	migrate "github.com/syssam/graphql-go/examples/veloxfx/velox/migrate"
 	_ "github.com/syssam/graphql-go/examples/veloxfx/velox/query"
@@ -27,9 +32,14 @@ var ErrTxStarted = velox.ErrTxStarted
 type Client struct {
 	config
 	// Schema is the client for creating, migrating and dropping schema.
-	Schema *migrate.Schema
-	Todo   *todoclient.TodoClient
-	User   *userclient.UserClient
+	Schema    *migrate.Schema
+	Category  *categoryclient.CategoryClient
+	Customer  *customerclient.CustomerClient
+	Order     *orderclient.OrderClient
+	OrderItem *orderitemclient.OrderItemClient
+	Product   *productclient.ProductClient
+	Stock     *stockclient.StockClient
+	Warehouse *warehouseclient.WarehouseClient
 }
 
 // config holds the configuration of the client.
@@ -139,7 +149,7 @@ func (c *Client) Close() error {
 
 // Use adds the mutation hooks to all the entity clients.
 //
-// In order to add hooks to a specific client, call: `client.Todo.Use(...)`.
+// In order to add hooks to a specific client, call: `client.Category.Use(...)`.
 //
 // All Use calls must complete before concurrent query or mutation
 // execution begins. Use is intended for application startup (e.g. in
@@ -151,8 +161,8 @@ func (c *Client) Use(hooks ...Hook) {
 
 // Intercept adds the query interceptors to all the entity clients.
 //
-// In order to add interceptors to a specific client, call: `client.Todo.Intercept(...)`.
-// Typed interceptors from the intercept package (e.g. intercept.TraverseTodo)
+// In order to add interceptors to a specific client, call: `client.Category.Intercept(...)`.
+// Typed interceptors from the intercept package (e.g. intercept.TraverseCategory)
 // MUST be registered this way — registering one here applies it to every
 // entity, and it will reject the first query of any other type.
 //
@@ -176,8 +186,13 @@ func (c *Client) Mutate(ctx context.Context, m Mutation) (Value, error) {
 // init constructs per-entity client fields directly.
 func (c *Client) init() {
 	cfg := c.config.runtimeConfig()
-	c.Todo = todoclient.NewTodoClient(cfg)
-	c.User = userclient.NewUserClient(cfg)
+	c.Category = categoryclient.NewCategoryClient(cfg)
+	c.Customer = customerclient.NewCustomerClient(cfg)
+	c.Order = orderclient.NewOrderClient(cfg)
+	c.OrderItem = orderitemclient.NewOrderItemClient(cfg)
+	c.Product = productclient.NewProductClient(cfg)
+	c.Stock = stockclient.NewStockClient(cfg)
+	c.Warehouse = warehouseclient.NewWarehouseClient(cfg)
 }
 
 // Option function to configure the client.

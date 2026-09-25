@@ -1,0 +1,5 @@
+# A computed field. velox's Order has no totalCents, so AutoBind leaves it
+# to the order group's Resolver, which sums the items.
+extend type Order {
+  totalCents: Int!
+}

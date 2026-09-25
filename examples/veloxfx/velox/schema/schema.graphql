@@ -28,12 +28,24 @@ enum OrderDirection {
 }
 
 type Query {
-  todos: [Todo!]!
-  users: [User!]!
+  categories: [Category!]!
+  customers: [Customer!]!
+  orders: [Order!]!
+  orderItems: [OrderItem!]!
+  products: [Product!]!
+  stocks: [Stock!]!
+  warehouses: [Warehouse!]!
 }
 
 type Mutation {
-  createTodo(input: CreateTodoInput!): Todo!
-  updateTodo(id: ID!, input: UpdateTodoInput!): Todo!
-  createUser(input: CreateUserInput!): User!
+  createCategory(input: CreateCategoryInput!): Category!
+  createCustomer(input: CreateCustomerInput!): Customer!
+  createOrder(input: CreateOrderInput!): Order!
+  updateOrder(id: ID!, input: UpdateOrderInput!): Order!
+  createOrderItem(input: CreateOrderItemInput!): OrderItem!
+  createProduct(input: CreateProductInput!): Product!
+  updateProduct(id: ID!, input: UpdateProductInput!): Product!
+  createStock(input: CreateStockInput!): Stock!
+  updateStock(id: ID!, input: UpdateStockInput!): Stock!
+  createWarehouse(input: CreateWarehouseInput!): Warehouse!
 }

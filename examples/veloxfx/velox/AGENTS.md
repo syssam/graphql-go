@@ -13,19 +13,19 @@ entities stays incrementally compilable. Consequence for the reader:
 | Package | Holds |
 |---|---|
 | `.` (root) | `Client`, `Tx`, `Open`, and the fan-out `Use`/`Intercept` |
-| `entity/` | entity structs, edge methods (`(*Todo).QueryXxx()`), shared stores |
-| `client/todo/` | CRUD builders, mutations, **per-entity `Use`/`Intercept`** |
-| `query/` | query builders (`TodoQuery`) |
-| `todo/` | column constants, predicates (`todo.NameField.EQ(...)`) |
+| `entity/` | entity structs, edge methods (`(*Category).QueryXxx()`), shared stores |
+| `client/category/` | CRUD builders, mutations, **per-entity `Use`/`Intercept`** |
+| `query/` | query builders (`CategoryQuery`) |
+| `category/` | column constants, predicates (`category.NameField.EQ(...)`) |
 | `predicate/` | predicate types |
 
 Registering a hook or interceptor for ONE entity uses the per-entity
 client, not the root one:
 
 ```go
-client.Todo.Intercept(...)   // this entity only
-client.Intercept(...)       // every entity — a typed intercept.TraverseTodo
-                            // registered here rejects the first query of any other type
+client.Category.Intercept(...)   // this entity only
+client.Intercept(...)           // every entity — a typed intercept.TraverseCategory
+                                // registered here rejects the first query of any other type
 ```
 
 ## Row-level authorization: use `Policy()`, not interceptors
@@ -87,10 +87,15 @@ expect may simply be absent rather than renamed.
 
 - `namedges`
 
-## Entities (2)
+## Entities (7)
 
 | Entity | Table | Package dir | Edges |
 |---|---|---|---|
-| `Todo` | `todos` | `todo/` | owner→User |
-| `User` | `users` | `user/` | todos→Todo |
+| `Category` | `categories` | `category/` | products→Product |
+| `Customer` | `customers` | `customer/` | orders→Order |
+| `Order` | `orders` | `order/` | customer→Customer, items→OrderItem |
+| `OrderItem` | `order_items` | `orderitem/` | order→Order, product→Product |
+| `Product` | `products` | `product/` | category→Category, stocks→Stock, order_items→OrderItem |
+| `Stock` | `stocks` | `stock/` | warehouse→Warehouse, product→Product |
+| `Warehouse` | `warehouses` | `warehouse/` | stocks→Stock |
 

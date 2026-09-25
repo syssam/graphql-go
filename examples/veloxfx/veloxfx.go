@@ -6,13 +6,14 @@
 // types, one group per entity, so no second model type exists and a resolver
 // returns what the ORM returns:
 //
-//	schema/*.go --velox--> velox/ (ORM) + velox/schema/*.graphql
-//	velox/schema/*.graphql --gqlc AutoBind--> graph/<entity>/ (Resolver, Bindings)
+//	schema/*.go --velox (generate.go)--> velox/ (ORM) + velox/schema/*.graphql
+//	velox/schema/*.graphql + sdl/*.graphql --gqlc (gqlc.yaml)--> graph/<entity>/
 //
-// Each entity is implemented in its own package, internal/<entity>, the way a
-// gRPC server implements each service: its own Resolver, its own Module, and
-// one line registering its bindings. Nothing here lists the entities' fields,
-// and a new entity changes this file by one line.
+// Entities are implemented by domain, the way a gRPC server package implements
+// services: internal/catalog, internal/sales and internal/inventory each hold a
+// Resolver per entity group they own and one Module registering them. Nothing
+// here lists entities; a new entity changes its domain, and a new domain
+// changes Domains by one line. examples/README.md walks through adding one.
 //
 // fx runs start hooks in dependency order and stop hooks in reverse: the
 // database is migrated before the server listens, and the server has drained
@@ -20,12 +21,14 @@
 package veloxfx
 
 //go:generate go run generate.go
+//go:generate go tool gqlc -config gqlc.yaml
 
 import (
 	"go.uber.org/fx"
 
-	"github.com/syssam/graphql-go/examples/veloxfx/internal/todo"
-	"github.com/syssam/graphql-go/examples/veloxfx/internal/user"
+	"github.com/syssam/graphql-go/examples/veloxfx/internal/catalog"
+	"github.com/syssam/graphql-go/examples/veloxfx/internal/inventory"
+	"github.com/syssam/graphql-go/examples/veloxfx/internal/sales"
 	"github.com/syssam/graphql-go/transport/drain"
 )
 
@@ -38,17 +41,19 @@ type Config struct {
 	DSN string
 }
 
-// Entities is one Module per entity package.
-var Entities = fx.Options(
-	todo.Module,
-	user.Module,
+// Domains is one Module per domain package. Each registers the groups it
+// implements; this list is all that grows when a domain is added.
+var Domains = fx.Options(
+	catalog.Module,
+	sales.Module,
+	inventory.Module,
 )
 
 // Module is the application, minus its Config.
-var Module = fx.Module("veloxfx", Entities, app)
+var Module = fx.Module("veloxfx", Domains, appCore)
 
-// app is everything but the entities.
-var app = fx.Options(
+// appCore is everything but the domains.
+var appCore = fx.Options(
 	fx.Provide(
 		NewClient,
 		NewSchema,

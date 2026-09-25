@@ -11,11 +11,26 @@ import (
 )
 
 func init() {
-	runtime.RegisterQueryFactory("Todo", func(cfg runtime.Config) any {
-		return NewTodoQuery(cfg)
+	runtime.RegisterQueryFactory("Category", func(cfg runtime.Config) any {
+		return NewCategoryQuery(cfg)
 	})
-	runtime.RegisterQueryFactory("User", func(cfg runtime.Config) any {
-		return NewUserQuery(cfg)
+	runtime.RegisterQueryFactory("Customer", func(cfg runtime.Config) any {
+		return NewCustomerQuery(cfg)
+	})
+	runtime.RegisterQueryFactory("Order", func(cfg runtime.Config) any {
+		return NewOrderQuery(cfg)
+	})
+	runtime.RegisterQueryFactory("OrderItem", func(cfg runtime.Config) any {
+		return NewOrderItemQuery(cfg)
+	})
+	runtime.RegisterQueryFactory("Product", func(cfg runtime.Config) any {
+		return NewProductQuery(cfg)
+	})
+	runtime.RegisterQueryFactory("Stock", func(cfg runtime.Config) any {
+		return NewStockQuery(cfg)
+	})
+	runtime.RegisterQueryFactory("Warehouse", func(cfg runtime.Config) any {
+		return NewWarehouseQuery(cfg)
 	})
 }
 

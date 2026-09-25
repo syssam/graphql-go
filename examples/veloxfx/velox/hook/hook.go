@@ -7,33 +7,98 @@ import (
 	"fmt"
 
 	velox "github.com/syssam/graphql-go/examples/veloxfx/velox"
-	todo "github.com/syssam/graphql-go/examples/veloxfx/velox/client/todo"
-	user "github.com/syssam/graphql-go/examples/veloxfx/velox/client/user"
+	category "github.com/syssam/graphql-go/examples/veloxfx/velox/client/category"
+	customer "github.com/syssam/graphql-go/examples/veloxfx/velox/client/customer"
+	order "github.com/syssam/graphql-go/examples/veloxfx/velox/client/order"
+	orderitem "github.com/syssam/graphql-go/examples/veloxfx/velox/client/orderitem"
+	product "github.com/syssam/graphql-go/examples/veloxfx/velox/client/product"
+	stock "github.com/syssam/graphql-go/examples/veloxfx/velox/client/stock"
+	warehouse "github.com/syssam/graphql-go/examples/veloxfx/velox/client/warehouse"
 	velox1 "github.com/syssam/velox"
 )
 
-// The TodoFunc type is an adapter to allow the use of ordinary
-// function as Todo mutator.
-type TodoFunc func(context.Context, *todo.TodoMutation) (velox.Value, error)
+// The CategoryFunc type is an adapter to allow the use of ordinary
+// function as Category mutator.
+type CategoryFunc func(context.Context, *category.CategoryMutation) (velox.Value, error)
 
 // Mutate calls f(ctx, m).
-func (f TodoFunc) Mutate(ctx context.Context, m velox1.Mutation) (velox1.Value, error) {
-	if mv, ok := m.(*todo.TodoMutation); ok {
+func (f CategoryFunc) Mutate(ctx context.Context, m velox1.Mutation) (velox1.Value, error) {
+	if mv, ok := m.(*category.CategoryMutation); ok {
 		return f(ctx, mv)
 	}
-	return nil, fmt.Errorf("unexpected mutation type %T. expect *github.com/syssam/graphql-go/examples/veloxfx/velox/client/todo.TodoMutation", m)
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *github.com/syssam/graphql-go/examples/veloxfx/velox/client/category.CategoryMutation", m)
 }
 
-// The UserFunc type is an adapter to allow the use of ordinary
-// function as User mutator.
-type UserFunc func(context.Context, *user.UserMutation) (velox.Value, error)
+// The CustomerFunc type is an adapter to allow the use of ordinary
+// function as Customer mutator.
+type CustomerFunc func(context.Context, *customer.CustomerMutation) (velox.Value, error)
 
 // Mutate calls f(ctx, m).
-func (f UserFunc) Mutate(ctx context.Context, m velox1.Mutation) (velox1.Value, error) {
-	if mv, ok := m.(*user.UserMutation); ok {
+func (f CustomerFunc) Mutate(ctx context.Context, m velox1.Mutation) (velox1.Value, error) {
+	if mv, ok := m.(*customer.CustomerMutation); ok {
 		return f(ctx, mv)
 	}
-	return nil, fmt.Errorf("unexpected mutation type %T. expect *github.com/syssam/graphql-go/examples/veloxfx/velox/client/user.UserMutation", m)
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *github.com/syssam/graphql-go/examples/veloxfx/velox/client/customer.CustomerMutation", m)
+}
+
+// The OrderFunc type is an adapter to allow the use of ordinary
+// function as Order mutator.
+type OrderFunc func(context.Context, *order.OrderMutation) (velox.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f OrderFunc) Mutate(ctx context.Context, m velox1.Mutation) (velox1.Value, error) {
+	if mv, ok := m.(*order.OrderMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *github.com/syssam/graphql-go/examples/veloxfx/velox/client/order.OrderMutation", m)
+}
+
+// The OrderItemFunc type is an adapter to allow the use of ordinary
+// function as OrderItem mutator.
+type OrderItemFunc func(context.Context, *orderitem.OrderItemMutation) (velox.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f OrderItemFunc) Mutate(ctx context.Context, m velox1.Mutation) (velox1.Value, error) {
+	if mv, ok := m.(*orderitem.OrderItemMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *github.com/syssam/graphql-go/examples/veloxfx/velox/client/orderitem.OrderItemMutation", m)
+}
+
+// The ProductFunc type is an adapter to allow the use of ordinary
+// function as Product mutator.
+type ProductFunc func(context.Context, *product.ProductMutation) (velox.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f ProductFunc) Mutate(ctx context.Context, m velox1.Mutation) (velox1.Value, error) {
+	if mv, ok := m.(*product.ProductMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *github.com/syssam/graphql-go/examples/veloxfx/velox/client/product.ProductMutation", m)
+}
+
+// The StockFunc type is an adapter to allow the use of ordinary
+// function as Stock mutator.
+type StockFunc func(context.Context, *stock.StockMutation) (velox.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f StockFunc) Mutate(ctx context.Context, m velox1.Mutation) (velox1.Value, error) {
+	if mv, ok := m.(*stock.StockMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *github.com/syssam/graphql-go/examples/veloxfx/velox/client/stock.StockMutation", m)
+}
+
+// The WarehouseFunc type is an adapter to allow the use of ordinary
+// function as Warehouse mutator.
+type WarehouseFunc func(context.Context, *warehouse.WarehouseMutation) (velox.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f WarehouseFunc) Mutate(ctx context.Context, m velox1.Mutation) (velox1.Value, error) {
+	if mv, ok := m.(*warehouse.WarehouseMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *github.com/syssam/graphql-go/examples/veloxfx/velox/client/warehouse.WarehouseMutation", m)
 }
 
 // Condition is a hook condition function.

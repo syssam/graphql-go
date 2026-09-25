@@ -1,0 +1,6 @@
+# Hand-written beside velox's output: velox generates no delete mutation.
+# The file is named after the entity, so GroupFunc puts it in the product
+# group; deleteProduct returns an ID, which has no ReturnGroup to follow.
+extend type Mutation {
+  deleteProduct(id: ID!): ID!
+}

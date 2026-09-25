@@ -9,7 +9,7 @@
 | [`relaynode`](relaynode) | The Relay contract: global ids, `Query.node` re-fetch, and cursor connections. |
 | [`echo`](echo) | Serving `blog` through Echo v5 — routing and shutdown wiring only. |
 | [`fiber`](fiber) | Serving `blog` through Fiber v3 — routing and shutdown wiring only. |
-| [`veloxfx`](veloxfx) | An ORM-generated schema: velox writes the ORM and the SDL, gqlc binds one to the other, uber/fx assembles it behind Echo. Its own module. |
+| [`veloxfx`](veloxfx) | A real service layout: velox writes the ORM and the SDL for seven entities in three domains, gqlc binds them, uber/fx assembles each domain like a gRPC service behind Echo. Includes the add-an-entity walkthrough. Its own module. |
 
 `storefront` is the one to read for anything about authorization, limits or
 shutdown; `blog` is the one to read for layering and codegen. They do not
@@ -205,51 +205,132 @@ support at all, since an unbound interface resolves from the dynamic Go type.
 `blog` writes its SDL by hand and generates models from it. `veloxfx` goes the
 other way, which is how an ORM-backed service is usually built: the velox
 schema in `schema/` is the only source, and both the ORM and the SDL are
-output.
+output. Seven entities in three domains:
 
-    schema/*.go              --velox-->          velox/ (ORM) + velox/schema/*.graphql
-    velox/schema/*.graphql   --gqlc AutoBind-->  graph/<entity>/ (Resolver, Bindings)
-    internal/<entity>/        implements graph/<entity>.Resolver, registers itself
+| Domain | Entities | Package |
+|---|---|---|
+| catalog | Category, Product | `internal/catalog` |
+| sales | Customer, Order, OrderItem | `internal/sales` |
+| inventory | Warehouse, Stock | `internal/inventory` |
 
-`generate.go` runs both steps. The SDL carries `@goModel` on every type velox
-owns, and gqlc reads it (`ModelDirective`), so `graph/` holds no `User` or
-`Todo` of its own: `Object[entity.User]` binds the ORM type, a resolver returns
-what a velox query returns, and there is no mapping layer. What is left in each
-`Resolver` interface is that entity's roots and mutations, and `id` -- velox
-keys rows by `int` and `ID` is a string on the wire.
+`go generate` runs two steps, both declared in `veloxfx.go`:
 
-**It is laid out the way a gRPC service is.** velox writes one SDL file per
-entity and gqlc makes each one a group: `graph/todo` holds the todo group's
-`Resolver` interface and a `Bindings(r)` function, as `protoc-gen-go-grpc`
-holds a `TodoServer` interface and `RegisterTodoServer`. `internal/todo`
-implements it and registers it in one line of its own fx `Module`, into a
-value group the schema collects. No struct lists every entity, so the file
-that wires the application does not grow with the schema; adding an entity is
-a package and one line in `Entities`.
+    schema/*.go                   --velox (generate.go)-->   velox/ (ORM) + velox/schema/*.graphql
+    velox/schema/*.graphql + sdl/ --go tool gqlc-->          graph/<entity>/ (Resolver, Bindings)
 
-Two gqlc settings make that work for velox's output. `GroupFunc` names each
-group after its entity. `RootFieldGroup` puts each root field in the group of
-the type it returns, because velox declares every root field in one shared
-file and grouping by file would put all of them in one package -- the monolith
-groups exist to split. `createTodo` lands next to `Todo`.
+The second step is the same `gqlc` every other example uses, configured in
+`gqlc.yaml`. Four of its keys are what an ORM's output needs:
 
-Leaving an entity's module out of the app is a failed start that names what it
-left unbound (`type User has no Object binding`), not a schema that builds and
-fails the first request to reach a User. `TestAMissingEntityModuleFailsStart`
-pins it.
+| Key | Why |
+|---|---|
+| `modelDirective: goModel` | velox writes `@goModel` on every type it owns, so `graph/` holds no second `Product` |
+| `autoBind: [./velox/entity]` | fields velox's structs and edge methods already answer are bound to them; `Order.customer` calls velox's `Order.Customer(ctx)` |
+| `groups` | `velox_product.graphql` and `sdl/product.graphql` are the product group; velox's shared file is root |
+| `rootFields: returnType` | velox declares every root field in the shared file; `createProduct` goes beside `Product` instead of into root |
 
-Three things the ORM does that the resolver has to answer for. Undoing the
-first or the third fails `veloxfx_test.go`; the second changes query counts,
-not answers, and nothing asserts it:
+What is left in each group's `Resolver` is that entity's roots and mutations,
+its `id` (velox keys rows by `int`, and `ID` is a string on the wire), and
+whatever the hand-written SDL in `sdl/` adds: `deleteProduct(id: ID!): ID!`,
+which velox does not generate, and the computed `Order.totalCents`.
+
+**It is laid out the way a gRPC service is.** `graph/product` holds the
+product group's `Resolver` interface and `Bindings(r)`, as `protoc-gen-go-grpc`
+holds a `ProductServer` interface and `RegisterProductServer`. A domain package
+implements the groups it owns and registers each one in a line of its fx
+`Module`, into a value group `NewSchema` collects. Nothing lists every entity:
+the wiring in `veloxfx.go` names three domains and does not grow with the
+schema.
+
+Leaving a domain out is a failed start that names what it left unbound, not a
+schema that builds and fails the first request to reach it.
+`TestAMissingDomainFailsStart` pins it.
+
+### Adding an entity
+
+This is the loop a developer runs, done for real on a copy of the example --
+adding a `Supplier` to the inventory domain, with `Product.supplier` pointing
+at it. The outputs are what it printed.
+
+**1. Declare it in the velox schema.** A `Supplier` type in
+`schema/inventory.go` (21 lines), and one edge on `Product`:
+
+```go
+edge.From("supplier", Supplier.Type).Ref("products").Unique(),
+```
+
+**2. `go generate`** (about 6 s: velox, then gqlc). A new group appears:
+
+    graph/supplier/generated.go
+
+and `Product.supplier` is already bound, because velox generated the edge
+method and AutoBind found it:
+
+```go
+graphql.Resolve("supplier", func(ctx context.Context, v *entity.Product) (*entity.Supplier, error) { return v.Supplier(ctx) }),
+```
+
+**3. `go build` passes.** Nothing refers to the new group yet.
+
+**4. `go test` says what is missing**, at start, before any request:
+
+    failed to build *graphql.Schema: ... graphql: field Product.supplier: type Supplier has no Object binding
+
+fx prints the whole constructor chain above it; the line that matters is the
+last one.
+
+**5. Implement the interface gqlc wrote** in `graph/supplier/generated.go`:
+
+```go
+type Resolver interface {
+	CreateSupplier(ctx context.Context, args CreateSupplierArgs) (*entity.Supplier, error)
+	Suppliers(ctx context.Context) ([]*entity.Supplier, error)
+	SupplierID(ctx context.Context, obj *entity.Supplier) (graphql.ID, error)
+}
+```
+
+in `internal/inventory`, and register it -- one constructor and one line:
+
+```go
+fx.Provide(NewWarehouseResolver, NewStockResolver, NewSupplierResolver),
+...
+resolve.Bindings(func(r *SupplierResolver) graphql.SchemaOption { return suppliergql.Bindings(r) }),
+```
+
+**6. Green**, and it answers:
+
+    $ curl ... '{ suppliers { name products { sku category { name } } } }'
+    {"data":{"suppliers":[{"name":"Keychron","products":[{"sku":"kb-1","category":{"name":"Keyboards"}}]}]}}
+
+46 lines written by hand in all, three of them wiring. `TestEveryEntityIsItsOwnGroup`
+pins the group list and needed the new name too, which is what it is for.
+
+### What velox does that a resolver answers for
+
+Each of these fails a test if its handling is removed:
 
 - **An empty table is `nil`.** The engine writes a nil slice as `null`, which
-  `[User!]!` refuses, so the list resolvers return `[]` instead.
-- **Edges query per row unless loaded.** `User.todos` and `Todo.owner` bind to
-  velox's edge methods, which fall back to one query each; the roots
-  eager-load them.
-- **A created row's edges are stubs.** velox marks the owner edge of a new
-  todo loaded with `&User{ID: ownerID}`, so `createTodo { owner { name } }`
-  would answer an empty name. `CreateTodo` reads the row back.
+  `[Product!]!` refuses, so the list resolvers return `[]` instead.
+- **Edges query per row unless loaded.** The list roots eager-load what their
+  type exposes, across domains: `orders { customer items { product } }` over
+  three orders of two items is 4 queries, not 13
+  (`TestOrdersAreAFixedNumberOfQueries`; without the nested `WithProduct` it
+  is 9).
+- **A created row's edges are stubs.** velox marks each required edge of a new
+  row loaded with `&Category{ID: id}`, so `createProduct { category { name } }`
+  would answer an empty name. Every create reads its row back.
+- **`clearItems: Boolean` is a Go `bool`.** velox's update inputs read false as
+  "leave the items alone", so absent, null and false are one value; that is
+  what `zeroForNullInputs` is for, and without it `NewSchema` refuses the
+  binding.
+
+### What the layout costs
+
+Building the schema from eight separately registered groups takes about a
+millisecond (`go test -bench NewSchema`; 0.6--1.4 ms, 5 113 allocations).
+At nextapp's scale the trade was measured on a synthetic 800-entity schema:
+a package per entity rebuilt 3.5x faster after editing one resolver and 17x
+faster after an SDL change than one resolver package, and its cold build was
+about 2x slower.
 
 fx owns the order. Start hooks run in dependency order -- migrate the
 database, then listen -- and stop hooks in reverse, so the server has drained
@@ -261,13 +342,16 @@ example, not of the library. `scripts/gate.sh` finds it like every other
 `go.mod`.
 
     cd examples/veloxfx
-    go generate            # after editing schema/
+    go generate            # after editing schema/ or sdl/
     go run ./cmd/server
 
     GQL='curl -s localhost:8080/graphql -H content-type:application/json'
-    $GQL -d '{"query":"mutation { createUser(input:{name:\"Ada\",email:\"ada@example.com\"}) { id } }"}'
-    $GQL -d '{"query":"mutation { createTodo(input:{title:\"ship it\",ownerID:\"1\"}) { id status owner { name } } }"}'
-    $GQL -d '{"query":"{ users { name todos { title status } } }"}'
+    $GQL -d '{"query":"mutation { createCategory(input:{name:\"Keyboards\"}) { id } }"}'
+    $GQL -d '{"query":"mutation { createProduct(input:{sku:\"kb-1\",name:\"Board\",priceCents:5000,categoryID:\"1\"}) { sku category { name } } }"}'
+    $GQL -d '{"query":"mutation { createCustomer(input:{name:\"Ada\",email:\"ada@example.com\"}) { id } }"}'
+    $GQL -d '{"query":"mutation { createOrder(input:{customerID:\"1\"}) { id } }"}'
+    $GQL -d '{"query":"mutation { createOrderItem(input:{quantity:2,unitPriceCents:5000,orderID:\"1\",productID:\"1\"}) { id } }"}'
+    $GQL -d '{"query":"{ orders { status totalCents customer { name } items { quantity product { sku } } } }"}'
 
 ## Running
 

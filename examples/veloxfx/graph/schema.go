@@ -7,9 +7,14 @@ import (
 	"embed"
 
 	"github.com/syssam/graphql-go"
+	"github.com/syssam/graphql-go/examples/veloxfx/graph/category"
+	"github.com/syssam/graphql-go/examples/veloxfx/graph/customer"
+	"github.com/syssam/graphql-go/examples/veloxfx/graph/order"
+	"github.com/syssam/graphql-go/examples/veloxfx/graph/orderitem"
+	"github.com/syssam/graphql-go/examples/veloxfx/graph/product"
 	"github.com/syssam/graphql-go/examples/veloxfx/graph/root"
-	"github.com/syssam/graphql-go/examples/veloxfx/graph/todo"
-	"github.com/syssam/graphql-go/examples/veloxfx/graph/user"
+	"github.com/syssam/graphql-go/examples/veloxfx/graph/stock"
+	"github.com/syssam/graphql-go/examples/veloxfx/graph/warehouse"
 )
 
 //go:embed schema/*.graphql
@@ -36,8 +41,13 @@ func NewSchema(opts ...graphql.SchemaOption) (*graphql.Schema, error) {
 // resolver -- Resolve captures it in a closure -- so a nil one is enough.
 func ValidateSchema(opts ...graphql.SchemaOption) error {
 	all := []graphql.SchemaOption{
-		todo.Bindings(nil),
-		user.Bindings(nil),
+		category.Bindings(nil),
+		customer.Bindings(nil),
+		order.Bindings(nil),
+		orderitem.Bindings(nil),
+		product.Bindings(nil),
+		stock.Bindings(nil),
+		warehouse.Bindings(nil),
 	}
 	_, err := NewSchema(append(all, opts...)...)
 	return err

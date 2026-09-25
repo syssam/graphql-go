@@ -13,14 +13,24 @@ import velox "github.com/syssam/velox"
 // not for runtime registration. No synchronization is provided
 // on the hook slices — this matches Ent's design.
 type HookStore struct {
-	Todo []velox.Hook
-	User []velox.Hook
+	Category  []velox.Hook
+	Customer  []velox.Hook
+	Order     []velox.Hook
+	OrderItem []velox.Hook
+	Product   []velox.Hook
+	Stock     []velox.Hook
+	Warehouse []velox.Hook
 }
 
 // AppendAll appends the given hooks to every entity's hook slice.
 func (s *HookStore) AppendAll(hooks ...velox.Hook) {
-	s.Todo = append(s.Todo, hooks...)
-	s.User = append(s.User, hooks...)
+	s.Category = append(s.Category, hooks...)
+	s.Customer = append(s.Customer, hooks...)
+	s.Order = append(s.Order, hooks...)
+	s.OrderItem = append(s.OrderItem, hooks...)
+	s.Product = append(s.Product, hooks...)
+	s.Stock = append(s.Stock, hooks...)
+	s.Warehouse = append(s.Warehouse, hooks...)
 }
 
 // InterceptorStore holds query interceptors for all entities.
@@ -32,12 +42,22 @@ func (s *HookStore) AppendAll(hooks ...velox.Hook) {
 // runtime registration. No synchronization is provided on the
 // interceptor slices — this matches Ent's design.
 type InterceptorStore struct {
-	Todo []velox.Interceptor
-	User []velox.Interceptor
+	Category  []velox.Interceptor
+	Customer  []velox.Interceptor
+	Order     []velox.Interceptor
+	OrderItem []velox.Interceptor
+	Product   []velox.Interceptor
+	Stock     []velox.Interceptor
+	Warehouse []velox.Interceptor
 }
 
 // AppendAll appends the given interceptors to every entity's interceptor slice.
 func (s *InterceptorStore) AppendAll(interceptors ...velox.Interceptor) {
-	s.Todo = append(s.Todo, interceptors...)
-	s.User = append(s.User, interceptors...)
+	s.Category = append(s.Category, interceptors...)
+	s.Customer = append(s.Customer, interceptors...)
+	s.Order = append(s.Order, interceptors...)
+	s.OrderItem = append(s.OrderItem, interceptors...)
+	s.Product = append(s.Product, interceptors...)
+	s.Stock = append(s.Stock, interceptors...)
+	s.Warehouse = append(s.Warehouse, interceptors...)
 }

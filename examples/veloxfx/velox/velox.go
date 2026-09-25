@@ -236,8 +236,13 @@ func First[T any](items []T, pred func(T) bool) (T, bool) {
 
 // Node type constants.
 const (
-	TypeTodo = "Todo"
-	TypeUser = "User"
+	TypeCategory  = "Category"
+	TypeCustomer  = "Customer"
+	TypeOrder     = "Order"
+	TypeOrderItem = "OrderItem"
+	TypeProduct   = "Product"
+	TypeStock     = "Stock"
+	TypeWarehouse = "Warehouse"
 )
 
 // Operation constants for mutations.

@@ -5,8 +5,23 @@ package predicate
 import sql "github.com/syssam/velox/dialect/sql"
 
 // Package predicate contains type definitions for all predicates.
-// Todo is the predicate function for Todo builders.
-type Todo func(*sql.Selector)
+// Category is the predicate function for Category builders.
+type Category func(*sql.Selector)
 
-// User is the predicate function for User builders.
-type User func(*sql.Selector)
+// Customer is the predicate function for Customer builders.
+type Customer func(*sql.Selector)
+
+// Order is the predicate function for Order builders.
+type Order func(*sql.Selector)
+
+// OrderItem is the predicate function for OrderItem builders.
+type OrderItem func(*sql.Selector)
+
+// Product is the predicate function for Product builders.
+type Product func(*sql.Selector)
+
+// Stock is the predicate function for Stock builders.
+type Stock func(*sql.Selector)
+
+// Warehouse is the predicate function for Warehouse builders.
+type Warehouse func(*sql.Selector)

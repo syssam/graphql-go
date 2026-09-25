@@ -1,0 +1,30 @@
+# Step two of go generate: bind the SDL velox wrote (and the hand-written
+# extensions in sdl/) to velox's own entity types.
+schema:
+  - velox/schema/*.graphql
+  - sdl/*.graphql
+output: graph
+package: github.com/syssam/graphql-go/examples/veloxfx/graph
+models:
+  Time: time.Time
+# velox writes @goModel on every type it owns; reading it keeps the SDL the
+# only place those bindings are stated.
+modelDirective: { name: goModel, arg: model }
+fieldDirective: { name: goField, forceResolverArg: forceResolver }
+# Fields velox's structs and edge methods already answer are bound to them;
+# the rest is left to each group's Resolver.
+autoBind: [./velox/entity]
+# velox_product.graphql and sdl/product.graphql are both the product group;
+# velox's shared file, which declares the roots and scalars, is root.
+groups:
+  trimPrefix: velox_
+  rename: { schema: root }
+# velox declares every root field in the shared file, so by file they would
+# all be root. createProduct goes beside Product instead; deleteProduct
+# returns an ID, has no type to follow, and keeps sdl/product.graphql's group.
+rootFields: returnType
+# velox's update inputs carry clearItems: Boolean over a Go bool, and read
+# false as "leave the items alone" -- absent, null and false are one value,
+# which is the case graphql.ZeroForNull exists for. Without it NewSchema
+# refuses the binding, as it should for a bool whose false means something.
+zeroForNullInputs: true

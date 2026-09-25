@@ -1,12 +1,22 @@
-// Package resolve is what every entity's resolver package shares: how its
+// Package resolve is what every domain package shares: how its groups'
 // bindings reach the schema, and the conversions between velox's rows and the
 // wire.
 //
-// Registration works the way a gRPC server registers services. Each entity
-// package provides its own bindings into an fx value group, and the schema
-// collects whatever is there. Adding an entity means adding a package and one
-// line in its Module; nothing central lists every entity, so nothing central
-// grows with the schema.
+// Registration works the way a gRPC server registers services. Each domain
+// provides its groups' bindings into an fx value group, and the schema
+// collects whatever is there. Adding an entity means a Resolver type and one
+// line in its domain's Module; nothing central lists every entity, so
+// nothing central grows with the schema.
+//
+// Three things velox does that every resolver has to answer for:
+//
+//   - A query with no rows returns nil, which the engine writes as null and
+//     a [T!]! field refuses. List turns it into an empty list.
+//   - An edge method (Order.Customer) queries once per row unless the edge
+//     was loaded, so the root resolvers eager-load what their type exposes.
+//   - Create marks each required edge loaded with a stub holding only the id
+//     (&entity.Customer{ID: id}), so returning what Save returned answers
+//     `customer { name }` with an empty name. Every create reads its row back.
 package resolve
 
 import (

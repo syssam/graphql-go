@@ -5,9 +5,14 @@ package query
 import (
 	"context"
 
+	"github.com/syssam/graphql-go/examples/veloxfx/velox/category"
+	"github.com/syssam/graphql-go/examples/veloxfx/velox/customer"
 	entity "github.com/syssam/graphql-go/examples/veloxfx/velox/entity"
-	"github.com/syssam/graphql-go/examples/veloxfx/velox/todo"
-	"github.com/syssam/graphql-go/examples/veloxfx/velox/user"
+	"github.com/syssam/graphql-go/examples/veloxfx/velox/order"
+	"github.com/syssam/graphql-go/examples/veloxfx/velox/orderitem"
+	"github.com/syssam/graphql-go/examples/veloxfx/velox/product"
+	"github.com/syssam/graphql-go/examples/veloxfx/velox/stock"
+	"github.com/syssam/graphql-go/examples/veloxfx/velox/warehouse"
 	"github.com/syssam/velox/contrib/graphql/gqlrelay"
 	"github.com/syssam/velox/runtime"
 )
@@ -17,13 +22,13 @@ import (
 // reads. Call it in resolvers that return entities; Paginate collects
 // on its own. It is part of the entity's Querier interface, so it is
 // reachable from Query() without a type assertion.
-func (q *TodoQuery) CollectFields(ctx context.Context, satisfies ...string) (entity.TodoQuerier, error) {
-	return q, gqlrelay.CollectFields(ctx, q, &todo.TodoCollectMeta, satisfies...)
+func (q *CategoryQuery) CollectFields(ctx context.Context, satisfies ...string) (entity.CategoryQuerier, error) {
+	return q, gqlrelay.CollectFields(ctx, q, &category.CategoryCollectMeta, satisfies...)
 }
 
-// CollectMeta returns the GraphQL field collection metadata of Todo.
-func (q *TodoQuery) CollectMeta() *runtime.CollectMeta {
-	return &todo.TodoCollectMeta
+// CollectMeta returns the GraphQL field collection metadata of Category.
+func (q *CategoryQuery) CollectMeta() *runtime.CollectMeta {
+	return &category.CategoryCollectMeta
 }
 
 // CollectFields tells the query-builder to project the columns and
@@ -31,11 +36,81 @@ func (q *TodoQuery) CollectMeta() *runtime.CollectMeta {
 // reads. Call it in resolvers that return entities; Paginate collects
 // on its own. It is part of the entity's Querier interface, so it is
 // reachable from Query() without a type assertion.
-func (q *UserQuery) CollectFields(ctx context.Context, satisfies ...string) (entity.UserQuerier, error) {
-	return q, gqlrelay.CollectFields(ctx, q, &user.UserCollectMeta, satisfies...)
+func (q *CustomerQuery) CollectFields(ctx context.Context, satisfies ...string) (entity.CustomerQuerier, error) {
+	return q, gqlrelay.CollectFields(ctx, q, &customer.CustomerCollectMeta, satisfies...)
 }
 
-// CollectMeta returns the GraphQL field collection metadata of User.
-func (q *UserQuery) CollectMeta() *runtime.CollectMeta {
-	return &user.UserCollectMeta
+// CollectMeta returns the GraphQL field collection metadata of Customer.
+func (q *CustomerQuery) CollectMeta() *runtime.CollectMeta {
+	return &customer.CustomerCollectMeta
+}
+
+// CollectFields tells the query-builder to project the columns and
+// eager-load the edges the GraphQL selection of the resolver in ctx
+// reads. Call it in resolvers that return entities; Paginate collects
+// on its own. It is part of the entity's Querier interface, so it is
+// reachable from Query() without a type assertion.
+func (q *OrderQuery) CollectFields(ctx context.Context, satisfies ...string) (entity.OrderQuerier, error) {
+	return q, gqlrelay.CollectFields(ctx, q, &order.OrderCollectMeta, satisfies...)
+}
+
+// CollectMeta returns the GraphQL field collection metadata of Order.
+func (q *OrderQuery) CollectMeta() *runtime.CollectMeta {
+	return &order.OrderCollectMeta
+}
+
+// CollectFields tells the query-builder to project the columns and
+// eager-load the edges the GraphQL selection of the resolver in ctx
+// reads. Call it in resolvers that return entities; Paginate collects
+// on its own. It is part of the entity's Querier interface, so it is
+// reachable from Query() without a type assertion.
+func (q *OrderItemQuery) CollectFields(ctx context.Context, satisfies ...string) (entity.OrderItemQuerier, error) {
+	return q, gqlrelay.CollectFields(ctx, q, &orderitem.OrderItemCollectMeta, satisfies...)
+}
+
+// CollectMeta returns the GraphQL field collection metadata of OrderItem.
+func (q *OrderItemQuery) CollectMeta() *runtime.CollectMeta {
+	return &orderitem.OrderItemCollectMeta
+}
+
+// CollectFields tells the query-builder to project the columns and
+// eager-load the edges the GraphQL selection of the resolver in ctx
+// reads. Call it in resolvers that return entities; Paginate collects
+// on its own. It is part of the entity's Querier interface, so it is
+// reachable from Query() without a type assertion.
+func (q *ProductQuery) CollectFields(ctx context.Context, satisfies ...string) (entity.ProductQuerier, error) {
+	return q, gqlrelay.CollectFields(ctx, q, &product.ProductCollectMeta, satisfies...)
+}
+
+// CollectMeta returns the GraphQL field collection metadata of Product.
+func (q *ProductQuery) CollectMeta() *runtime.CollectMeta {
+	return &product.ProductCollectMeta
+}
+
+// CollectFields tells the query-builder to project the columns and
+// eager-load the edges the GraphQL selection of the resolver in ctx
+// reads. Call it in resolvers that return entities; Paginate collects
+// on its own. It is part of the entity's Querier interface, so it is
+// reachable from Query() without a type assertion.
+func (q *StockQuery) CollectFields(ctx context.Context, satisfies ...string) (entity.StockQuerier, error) {
+	return q, gqlrelay.CollectFields(ctx, q, &stock.StockCollectMeta, satisfies...)
+}
+
+// CollectMeta returns the GraphQL field collection metadata of Stock.
+func (q *StockQuery) CollectMeta() *runtime.CollectMeta {
+	return &stock.StockCollectMeta
+}
+
+// CollectFields tells the query-builder to project the columns and
+// eager-load the edges the GraphQL selection of the resolver in ctx
+// reads. Call it in resolvers that return entities; Paginate collects
+// on its own. It is part of the entity's Querier interface, so it is
+// reachable from Query() without a type assertion.
+func (q *WarehouseQuery) CollectFields(ctx context.Context, satisfies ...string) (entity.WarehouseQuerier, error) {
+	return q, gqlrelay.CollectFields(ctx, q, &warehouse.WarehouseCollectMeta, satisfies...)
+}
+
+// CollectMeta returns the GraphQL field collection metadata of Warehouse.
+func (q *WarehouseQuery) CollectMeta() *runtime.CollectMeta {
+	return &warehouse.WarehouseCollectMeta
 }

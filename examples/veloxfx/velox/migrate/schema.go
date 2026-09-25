@@ -7,46 +7,28 @@ import (
 	"github.com/syssam/velox/schema/field"
 )
 
-// TodoColumns holds the columns for the "todos" table.
-var TodoColumns = []*schema.Column{{
+// CategoryColumns holds the columns for the "categories" table.
+var CategoryColumns = []*schema.Column{{
 	Increment: true,
 	Name:      "id",
 	Type:      field.TypeInt,
 }, {
-	Name: "created_at",
-	Type: field.TypeTime,
-}, {
-	Name: "updated_at",
-	Type: field.TypeTime,
-}, {
-	Name: "title",
-	Type: field.TypeString,
-}, {
-	Default: "TODO",
-	Enums:   []string{"TODO", "DONE"},
-	Name:    "status",
-	Type:    field.TypeEnum,
-}, {
-	Name: "user_todos",
-	Type: field.TypeInt,
+	Name:   "name",
+	Type:   field.TypeString,
+	Unique: true,
 }}
 
-// TodoTable holds the schema information for the "todos" table.
-var TodoTable = &schema.Table{
-	Columns: TodoColumns,
-	ForeignKeys: []*schema.ForeignKey{{
-		Columns:    []*schema.Column{TodoColumns[5]},
-		OnDelete:   schema.NoAction,
-		RefColumns: []*schema.Column{UserColumns[0]},
-		Symbol:     "todos_users_todos",
-	}},
-	Indexes:    nil,
-	Name:       "todos",
-	PrimaryKey: []*schema.Column{TodoColumns[0]},
+// CategoryTable holds the schema information for the "categories" table.
+var CategoryTable = &schema.Table{
+	Columns:     CategoryColumns,
+	ForeignKeys: nil,
+	Indexes:     nil,
+	Name:        "categories",
+	PrimaryKey:  []*schema.Column{CategoryColumns[0]},
 }
 
-// UserColumns holds the columns for the "users" table.
-var UserColumns = []*schema.Column{{
+// CustomerColumns holds the columns for the "customers" table.
+var CustomerColumns = []*schema.Column{{
 	Increment: true,
 	Name:      "id",
 	Type:      field.TypeInt,
@@ -59,18 +41,185 @@ var UserColumns = []*schema.Column{{
 	Unique: true,
 }}
 
-// UserTable holds the schema information for the "users" table.
-var UserTable = &schema.Table{
-	Columns:     UserColumns,
+// CustomerTable holds the schema information for the "customers" table.
+var CustomerTable = &schema.Table{
+	Columns:     CustomerColumns,
 	ForeignKeys: nil,
 	Indexes:     nil,
-	Name:        "users",
-	PrimaryKey:  []*schema.Column{UserColumns[0]},
+	Name:        "customers",
+	PrimaryKey:  []*schema.Column{CustomerColumns[0]},
+}
+
+// OrderColumns holds the columns for the "orders" table.
+var OrderColumns = []*schema.Column{{
+	Increment: true,
+	Name:      "id",
+	Type:      field.TypeInt,
+}, {
+	Name: "created_at",
+	Type: field.TypeTime,
+}, {
+	Name: "updated_at",
+	Type: field.TypeTime,
+}, {
+	Default: "PENDING",
+	Enums:   []string{"PENDING", "PAID", "SHIPPED", "CANCELLED"},
+	Name:    "status",
+	Type:    field.TypeEnum,
+}, {
+	Name: "customer_orders",
+	Type: field.TypeInt,
+}}
+
+// OrderTable holds the schema information for the "orders" table.
+var OrderTable = &schema.Table{
+	Columns: OrderColumns,
+	ForeignKeys: []*schema.ForeignKey{{
+		Columns:    []*schema.Column{OrderColumns[4]},
+		OnDelete:   schema.NoAction,
+		RefColumns: []*schema.Column{CustomerColumns[0]},
+		Symbol:     "orders_customers_orders",
+	}},
+	Indexes:    nil,
+	Name:       "orders",
+	PrimaryKey: []*schema.Column{OrderColumns[0]},
+}
+
+// OrderItemColumns holds the columns for the "order_items" table.
+var OrderItemColumns = []*schema.Column{{
+	Increment: true,
+	Name:      "id",
+	Type:      field.TypeInt,
+}, {
+	Name: "quantity",
+	Type: field.TypeInt,
+}, {
+	Name: "unit_price_cents",
+	Type: field.TypeInt,
+}, {
+	Name: "order_items",
+	Type: field.TypeInt,
+}, {
+	Name: "product_order_items",
+	Type: field.TypeInt,
+}}
+
+// OrderItemTable holds the schema information for the "order_items" table.
+var OrderItemTable = &schema.Table{
+	Columns: OrderItemColumns,
+	ForeignKeys: []*schema.ForeignKey{{
+		Columns:    []*schema.Column{OrderItemColumns[3]},
+		OnDelete:   schema.NoAction,
+		RefColumns: []*schema.Column{OrderColumns[0]},
+		Symbol:     "order_items_orders_items",
+	}, {
+		Columns:    []*schema.Column{OrderItemColumns[4]},
+		OnDelete:   schema.NoAction,
+		RefColumns: []*schema.Column{ProductColumns[0]},
+		Symbol:     "order_items_products_order_items",
+	}},
+	Indexes:    nil,
+	Name:       "order_items",
+	PrimaryKey: []*schema.Column{OrderItemColumns[0]},
+}
+
+// ProductColumns holds the columns for the "products" table.
+var ProductColumns = []*schema.Column{{
+	Increment: true,
+	Name:      "id",
+	Type:      field.TypeInt,
+}, {
+	Name:   "sku",
+	Type:   field.TypeString,
+	Unique: true,
+}, {
+	Name: "name",
+	Type: field.TypeString,
+}, {
+	Name: "price_cents",
+	Type: field.TypeInt,
+}, {
+	Name: "category_products",
+	Type: field.TypeInt,
+}}
+
+// ProductTable holds the schema information for the "products" table.
+var ProductTable = &schema.Table{
+	Columns: ProductColumns,
+	ForeignKeys: []*schema.ForeignKey{{
+		Columns:    []*schema.Column{ProductColumns[4]},
+		OnDelete:   schema.NoAction,
+		RefColumns: []*schema.Column{CategoryColumns[0]},
+		Symbol:     "products_categories_products",
+	}},
+	Indexes:    nil,
+	Name:       "products",
+	PrimaryKey: []*schema.Column{ProductColumns[0]},
+}
+
+// StockColumns holds the columns for the "stocks" table.
+var StockColumns = []*schema.Column{{
+	Increment: true,
+	Name:      "id",
+	Type:      field.TypeInt,
+}, {
+	Name: "quantity",
+	Type: field.TypeInt,
+}, {
+	Name: "warehouse_stocks",
+	Type: field.TypeInt,
+}, {
+	Name: "product_stocks",
+	Type: field.TypeInt,
+}}
+
+// StockTable holds the schema information for the "stocks" table.
+var StockTable = &schema.Table{
+	Columns: StockColumns,
+	ForeignKeys: []*schema.ForeignKey{{
+		Columns:    []*schema.Column{StockColumns[2]},
+		OnDelete:   schema.NoAction,
+		RefColumns: []*schema.Column{WarehouseColumns[0]},
+		Symbol:     "stocks_warehouses_stocks",
+	}, {
+		Columns:    []*schema.Column{StockColumns[3]},
+		OnDelete:   schema.NoAction,
+		RefColumns: []*schema.Column{ProductColumns[0]},
+		Symbol:     "stocks_products_stocks",
+	}},
+	Indexes:    nil,
+	Name:       "stocks",
+	PrimaryKey: []*schema.Column{StockColumns[0]},
+}
+
+// WarehouseColumns holds the columns for the "warehouses" table.
+var WarehouseColumns = []*schema.Column{{
+	Increment: true,
+	Name:      "id",
+	Type:      field.TypeInt,
+}, {
+	Name:   "name",
+	Type:   field.TypeString,
+	Unique: true,
+}}
+
+// WarehouseTable holds the schema information for the "warehouses" table.
+var WarehouseTable = &schema.Table{
+	Columns:     WarehouseColumns,
+	ForeignKeys: nil,
+	Indexes:     nil,
+	Name:        "warehouses",
+	PrimaryKey:  []*schema.Column{WarehouseColumns[0]},
 }
 
 // Tables holds all the tables in the schema.
-var Tables = []*schema.Table{TodoTable, UserTable}
+var Tables = []*schema.Table{CategoryTable, CustomerTable, OrderTable, OrderItemTable, ProductTable, StockTable, WarehouseTable}
 
 func init() {
-	TodoTable.ForeignKeys[0].RefTable = UserTable
+	OrderTable.ForeignKeys[0].RefTable = CustomerTable
+	OrderItemTable.ForeignKeys[0].RefTable = OrderTable
+	OrderItemTable.ForeignKeys[1].RefTable = ProductTable
+	ProductTable.ForeignKeys[0].RefTable = CategoryTable
+	StockTable.ForeignKeys[0].RefTable = WarehouseTable
+	StockTable.ForeignKeys[1].RefTable = ProductTable
 }

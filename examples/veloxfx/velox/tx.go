@@ -9,8 +9,13 @@ import (
 	"fmt"
 	"sync"
 
-	todoclient "github.com/syssam/graphql-go/examples/veloxfx/velox/client/todo"
-	userclient "github.com/syssam/graphql-go/examples/veloxfx/velox/client/user"
+	categoryclient "github.com/syssam/graphql-go/examples/veloxfx/velox/client/category"
+	customerclient "github.com/syssam/graphql-go/examples/veloxfx/velox/client/customer"
+	orderclient "github.com/syssam/graphql-go/examples/veloxfx/velox/client/order"
+	orderitemclient "github.com/syssam/graphql-go/examples/veloxfx/velox/client/orderitem"
+	productclient "github.com/syssam/graphql-go/examples/veloxfx/velox/client/product"
+	stockclient "github.com/syssam/graphql-go/examples/veloxfx/velox/client/stock"
+	warehouseclient "github.com/syssam/graphql-go/examples/veloxfx/velox/client/warehouse"
 	dialect "github.com/syssam/velox/dialect"
 )
 
@@ -73,8 +78,13 @@ type RollbackHook func(Rollbacker) Rollbacker
 // Tx is a transactional client.
 type Tx struct {
 	config
-	Todo *todoclient.TodoClient
-	User *userclient.UserClient
+	Category  *categoryclient.CategoryClient
+	Customer  *customerclient.CustomerClient
+	Order     *orderclient.OrderClient
+	OrderItem *orderitemclient.OrderItemClient
+	Product   *productclient.ProductClient
+	Stock     *stockclient.StockClient
+	Warehouse *warehouseclient.WarehouseClient
 	// lazily loaded.
 	client     *Client
 	clientOnce sync.Once
@@ -119,8 +129,13 @@ func newTxWithOptions(ctx context.Context, c config, opts *sql.TxOptions) (*Tx, 
 // init constructs per-entity client fields directly.
 func (tx *Tx) init() {
 	cfg := tx.config.runtimeConfig()
-	tx.Todo = todoclient.NewTodoClient(cfg)
-	tx.User = userclient.NewUserClient(cfg)
+	tx.Category = categoryclient.NewCategoryClient(cfg)
+	tx.Customer = customerclient.NewCustomerClient(cfg)
+	tx.Order = orderclient.NewOrderClient(cfg)
+	tx.OrderItem = orderitemclient.NewOrderItemClient(cfg)
+	tx.Product = productclient.NewProductClient(cfg)
+	tx.Stock = stockclient.NewStockClient(cfg)
+	tx.Warehouse = warehouseclient.NewWarehouseClient(cfg)
 }
 
 // Commit commits the transaction.
