@@ -300,3 +300,13 @@ func TestRunErrors(t *testing.T) {
 		}
 	})
 }
+
+func TestScaffoldKeyReachesTheGenerator(t *testing.T) {
+	dir, cfg := write(t, "schema: [schema.graphql]\noutput: graph\npackage: example/graph\nscaffold:\n  graph: server.Resolver\n", "type Query { hello: String! }\n")
+	if err := run([]string{"-config", cfg}); err != nil {
+		t.Fatal(err)
+	}
+	if src := generated(t, dir, "server/graph.resolvers.go"); !strings.Contains(src, ") Hello(ctx context.Context) (string, error)") {
+		t.Fatalf("scaffold did not reach the generator:\n%s", src)
+	}
+}

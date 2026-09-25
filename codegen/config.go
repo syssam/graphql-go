@@ -41,6 +41,18 @@ type Config struct {
 	//
 	//	RootFieldGroup: func(f codegen.RootField) string { return f.ReturnGroup }
 	RootFieldGroup func(RootField) string
+	// Scaffold writes a stub for every Resolver method an implementation does
+	// not have yet. It maps a group -- the output package name when there is
+	// one group -- to the Go type implementing it, as "dir.Type" with dir
+	// relative to Dir:
+	//
+	//	Scaffold: map[string]string{"product": "internal/catalog.ProductResolver"}
+	//
+	// Missing methods are appended to dir/<group>.resolvers.go, created with the
+	// type and a var _ Resolver assertion if the type does not exist yet. Methods
+	// that exist are never touched, wherever they are declared; the package is
+	// parsed, not loaded. Empty means no scaffolding.
+	Scaffold map[string]string
 	// Models maps a GraphQL named type to a Go type expression
 	// (for example Time → time.Time). Unmapped custom scalars become
 	// named string types in the model package.
@@ -175,7 +187,10 @@ func Generate(ctx context.Context, cfg Config) error {
 		})
 	}
 	wg.Wait()
-	return errors.Join(errs...)
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+	return b.scaffold(b.uniqueGroups())
 }
 
 // RootField is what Config.RootFieldGroup is told about a root field.

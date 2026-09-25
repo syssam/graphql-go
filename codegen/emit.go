@@ -310,31 +310,51 @@ func (b *builder) emitResolver(group string) string {
 	var body strings.Builder
 	body.WriteString("// Resolver holds methods for fields that are not struct data.\n")
 	body.WriteString("type Resolver interface {\n")
-	b.eachResolverField(group, func(name string, fd *ast.FieldDefinition) {
-		{
-			ret := b.goType(fd.Type, "", false)
-			meth := b.resolverMethod(name, fd.Name)
-			if b.isRoot(name) {
-				if b.isSubscriptionRoot(name) {
-					ret = "<-chan " + ret
-				}
-				if len(fd.Arguments) > 0 {
-					fmt.Fprintf(&body, "\t%s(ctx context.Context, args %s) (%s, error)\n", meth, b.argsName(name, fd.Name), ret)
-				} else {
-					fmt.Fprintf(&body, "\t%s(ctx context.Context) (%s, error)\n", meth, ret)
-				}
-				return
-			}
-			parent := "*" + b.modelRef(name, name)
-			if len(fd.Arguments) > 0 {
-				fmt.Fprintf(&body, "\t%s(ctx context.Context, obj %s, args %s) (%s, error)\n", meth, parent, b.argsName(name, fd.Name), ret)
-			} else {
-				fmt.Fprintf(&body, "\t%s(ctx context.Context, obj %s) (%s, error)\n", meth, parent, ret)
-			}
-		}
-	})
+	for _, m := range b.resolverSignatures(group, "") {
+		fmt.Fprintf(&body, "\t%s%s\n", m.name, m.signature)
+	}
 	body.WriteString("}\n")
 	return body.String()
+}
+
+// resolverSig is one method of a group's Resolver interface.
+type resolverSig struct {
+	name      string
+	signature string // "(ctx context.Context, args XArgs) (T, error)"
+	coord     string // "Query.products", for messages and stub comments
+	doc       string // the field's SDL description
+}
+
+// resolverSignatures renders the group's Resolver methods. The interface
+// and the scaffolded stubs both come from here, so a stub always has the
+// signature the interface asks for. argsQual qualifies the args structs,
+// which live in the group package: empty inside it, "productgql." outside.
+func (b *builder) resolverSignatures(group, argsQual string) []resolverSig {
+	var out []resolverSig
+	b.eachResolverField(group, func(name string, fd *ast.FieldDefinition) {
+		ret := b.goType(fd.Type, "", false)
+		args := ""
+		if len(fd.Arguments) > 0 {
+			args = ", args " + argsQual + b.argsName(name, fd.Name)
+		}
+		var sig string
+		switch {
+		case b.isRoot(name):
+			if b.isSubscriptionRoot(name) {
+				ret = "<-chan " + ret
+			}
+			sig = fmt.Sprintf("(ctx context.Context%s) (%s, error)", args, ret)
+		default:
+			sig = fmt.Sprintf("(ctx context.Context, obj *%s%s) (%s, error)", b.modelRef(name, name), args, ret)
+		}
+		out = append(out, resolverSig{
+			name:      b.resolverMethod(name, fd.Name),
+			signature: sig,
+			coord:     name + "." + fd.Name,
+			doc:       fd.Description,
+		})
+	})
+	return out
 }
 
 // checkNameCollisions refuses a schema whose generated names would collide.

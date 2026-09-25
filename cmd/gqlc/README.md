@@ -63,6 +63,24 @@ group. `returnType` is for a generator that declares every root field in one
 shared file; a field returning a scalar has no type to follow and keeps its
 file's group.
 
+`scaffold` writes the methods an implementation does not have yet, so a new
+field is generate-then-fill-in rather than copy a signature out of
+`generated.go`:
+
+```yaml
+scaffold:
+  product: internal/catalog.ProductResolver   # group: dir.Type
+```
+
+Each missing method becomes a stub with the interface's exact signature and a
+`panic("not implemented: Query.products")` body, appended to
+`internal/catalog/product.resolvers.go`; a new file opens with the type, if it
+does not exist yet, and `var _ productgql.Resolver = (*ProductResolver)(nil)`.
+A method that exists is never touched, whichever file declares it, and a run
+with nothing new changes nothing. The implementation's package is parsed, not
+loaded, so gqlc still type-checks no Go code of yours. With one group, the key
+is the output package's name.
+
 `codegen.Config` also offers `Manifest` (explicit bindings), and Go functions
 where these keys take a rule; call `codegen.Generate` from a small program for
 those. An unknown key in `gqlc.yaml` is an error rather than being ignored.

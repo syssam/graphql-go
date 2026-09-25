@@ -81,6 +81,12 @@ type fileConfig struct {
 	// group of the type it returns, for a generator that declares every root
 	// field in one shared file. A field returning a scalar keeps its file's.
 	RootFields string `yaml:"rootFields"`
+	// scaffold writes a stub for every Resolver method an implementation does
+	// not have yet, into dir/<group>.resolvers.go; see codegen.Config.Scaffold.
+	//
+	//	scaffold:
+	//	  product: internal/catalog.ProductResolver
+	Scaffold map[string]string `yaml:"scaffold"`
 }
 
 // groupFunc turns the groups key into a codegen.GroupFunc, or nil when the
@@ -165,6 +171,7 @@ func run(args []string) error {
 		AutoBind:               fc.AutoBind,
 		GroupFunc:              fc.groupFunc(),
 		RootFieldGroup:         rootFieldGroup,
+		Scaffold:               fc.Scaffold,
 		Dir:                    filepath.Dir(*configPath),
 		SchemaGlobs:            fc.Schema,
 		Output:                 fc.Output,

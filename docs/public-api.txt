@@ -4,7 +4,7 @@ codegen: const FieldStruct
 codegen: func (d FieldDirective) IsZero() bool
 codegen: func (d ModelDirective) IsZero() bool
 codegen: func Generate(ctx context.Context, cfg Config) error
-codegen: type Config struct { Dir string SchemaGlobs []string Output string Package string GroupFunc func(typeName, sdlFile string) string RootFieldGroup func(RootField) string Models map[string]string ModelDirective ModelDirective FieldDirective FieldDirective Manifest *Manifest AutoBind []string Notef func(format string, args ...any) ZeroForNullInputs bool NullableInputOmittable bool }
+codegen: type Config struct { Dir string SchemaGlobs []string Output string Package string GroupFunc func(typeName, sdlFile string) string RootFieldGroup func(RootField) string Scaffold map[string]string Models map[string]string ModelDirective ModelDirective FieldDirective FieldDirective Manifest *Manifest AutoBind []string Notef func(format string, args ...any) ZeroForNullInputs bool NullableInputOmittable bool }
 codegen: type FieldBinding struct { Kind FieldKind GoName string Context bool Error bool Convert bool Value bool }
 codegen: type FieldDirective struct { Name string ForceResolverArg string }
 codegen: type FieldKind int

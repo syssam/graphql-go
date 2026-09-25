@@ -250,6 +250,19 @@ about every field, three times, and every import block recomputed the group list
 memoized (`TestGroupFieldsAndGroupsAreComputedOnce`); with writes made concurrent it is 0.5 s.
 A measurement of this once compared five runs against one; time single runs.
 
+**`Config.Scaffold` writes the Resolver methods an implementation lacks, and nothing else.**
+Without it every new field meant reading `generated.go` and copying a signature by hand, which
+is where gqlgen's stub generation was the better experience. It parses the target package with
+`go/parser` only (method names on one type; nothing loaded), appends stubs to
+`<group>.resolvers.go`, and opens a new file with `var _ Resolver = (*T)(nil)` so a signature
+the SDL changes is a compile error next to the stubs. The signatures come from
+`resolverSignatures`, the same function that renders the interface, so the two cannot differ.
+It never edits or removes an existing method; a stale one is the compiler's to report. The
+first version imported the group package unconditionally and did not compile when the type
+was declared elsewhere and no stub took args -- `TestScaffoldKeepsWhatExists` builds that case.
+Four breaks (ignore existing methods, overwrite instead of append, not called, no group check)
+each fail a `TestScaffold*` test.
+
 One SDL group stays flat in `Output`; two or more become subpackages plus a `Resolvers` struct, with models split the same way (`model/<group>/`) so a one-group edit
 does not invalidate every other group's compiled package — except when two groups' input
 objects reference each other, which would be an import cycle and falls back to one shared
