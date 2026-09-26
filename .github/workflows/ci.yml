@@ -66,7 +66,10 @@ jobs:
         run: |
           (cd examples/blog && go generate ./...)
           (cd examples/veloxfx && go generate .)
-          if ! git diff --quiet; then
+          # velox writes its manifest with the host's path separator, so the
+          # committed copy is stale on every other OS by construction. The
+          # files it lists are still compared; only the list itself is not.
+          if ! git diff --quiet -- . ':!examples/veloxfx/velox/.velox-manifest'; then
             echo "generated code is stale; run go generate in examples/blog or examples/veloxfx"
             git diff --stat; exit 1
           fi
@@ -86,9 +89,14 @@ jobs:
       # Go version". If this job is the only red one and that is the message,
       # pin a version built with the current toolchain rather than debugging
       # the config.
-      - uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
+      #
+      # golangci-lint-action@v6 installs only v1 releases (v1.64.8, built with
+      # go1.24), which refuse this module and the v2 config outright. Built
+      # from source here, it is always compiled by the toolchain go.mod names.
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
+      - name: Lint the root module
+        run: golangci-lint run ./...
       # The action lints the directory it runs in, and this repository has four
       # modules. Without this it linted the root and reported success, the same
       # shape as `go test ./...` reaching one module of four: benchmarks/ was
@@ -159,6 +167,10 @@ jobs:
       # and reports nothing useful, the same failure staticcheck has here.
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      # compare/ imports its generated engines, which are gitignored; without
+      # them govulncheck cannot load the module and fails before scanning.
+      - name: Generate compare fixtures
+        run: cd compare && go run gen.go -n 25
       # Every module, for the same reason scripts/gate.sh walks every module.
       - name: Scan
         run: |
