@@ -71,6 +71,32 @@ jobs:
             git diff --stat; exit 1
           fi
 
+  postgres:
+    # The velox example on a real server: projection, per-parent limits
+    # (ROW_NUMBER), the ownership filter and error classification all meet a
+    # planner that is not SQLite's. The first run here found a foreign-key
+    # violation reported as a duplicate.
+    name: veloxfx on PostgreSQL
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: pass
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test examples/veloxfx on PostgreSQL
+        env:
+          VELOXFX_POSTGRES: postgres://postgres:pass@localhost:5432/postgres?sslmode=disable
+        run: go -C examples/veloxfx test -race -count=1 ./...
+
   lint:
     name: lint
     runs-on: ubuntu-latest

@@ -37,8 +37,14 @@ type Config struct {
 	// Addr is the listen address. ":0" picks a free port; Server.Addr
 	// reports the one chosen.
 	Addr string
-	// DSN is a modernc.org/sqlite data source.
+	// Driver is "sqlite" (modernc.org/sqlite, the default) or "postgres"
+	// (github.com/lib/pq).
+	Driver string
+	// DSN is the driver's data source.
 	DSN string
+	// MaxConns bounds the database connections the replica holds, open and
+	// idle alike; zero is 20. See configurePool.
+	MaxConns int
 }
 
 // Domains is one Module per domain package. Each registers the groups it

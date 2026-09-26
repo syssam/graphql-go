@@ -281,6 +281,18 @@ middleware reads anything but the `Viewer`.
     $GQL -d '{"query":"mutation { placeOrder(input:{customerID:\"1\",warehouseID:\"1\",items:[{productID:\"1\",quantity:2}]}) { totalCents } }"}'
     $GQL -d '{"query":"{ orders(first:10) { totalCount edges { node { status totalCents customer { name } items { quantity product { sku } } } } } stocks { quantity } }"}'
 
+On PostgreSQL instead of the in-memory SQLite:
+
+    go run ./cmd/server -driver postgres -dsn 'postgres://user:pass@localhost/veloxfx?sslmode=disable'
+
+The pool keeps as many connections idle as it may open (`configurePool`,
+20 by default, `Config.MaxConns`); `database/sql` keeps two, and on
+PostgreSQL the reconnects that follow cost 9% of a replica's CPU and 37% of
+a page's time under concurrent load (`BenchmarkOrderHistoryPageParallel`).
+The whole suite runs on a server too, one database per test:
+
+    VELOXFX_POSTGRES='postgres://postgres:pass@localhost:5432/postgres?sslmode=disable' go test -race ./...
+
 The last one answers:
 
     {"data":{"orders":{"totalCount":1,"edges":[{"node":{"status":"PENDING","totalCents":10000,

@@ -95,7 +95,7 @@ func start(t *testing.T, opts ...fx.Option) *app {
 	var srv *Server
 	a := fxtest.New(t, append([]fx.Option{
 		Module,
-		fx.Supply(Config{Addr: "127.0.0.1:0", DSN: dsn(t)}),
+		fx.Supply(testConfig(t)),
 		fx.Populate(&srv),
 		fx.NopLogger,
 	}, opts...)...)
@@ -106,10 +106,6 @@ func start(t *testing.T, opts ...fx.Option) *app {
 	// that (TestStopWaitsOutAnUnusedConnection); tests need not pay for it.
 	t.Cleanup(http.DefaultClient.CloseIdleConnections)
 	return &app{t: t, url: "http://" + srv.Addr() + "/graphql", viewer: "staff"}
-}
-
-func dsn(t *testing.T) string {
-	return "file:" + t.Name() + "?mode=memory&cache=shared&_pragma=foreign_keys(1)"
 }
 
 type response struct {
@@ -295,7 +291,7 @@ func TestServesThroughEveryDomain(t *testing.T) {
 func TestOrdersAreAFixedNumberOfQueries(t *testing.T) {
 	var queries, counting atomic.Int64
 	a := start(t, fx.Decorate(func(*velox.Client) (*velox.Client, error) {
-		counted, err := velox.Open("sqlite", dsn(t), velox.Debug(), velox.Log(func(v ...any) {
+		counted, err := openDB(t, velox.Debug(), velox.Log(func(v ...any) {
 			if counting.Load() == 1 && strings.Contains(fmt.Sprint(v...), "driver.Query") {
 				queries.Add(1)
 			}
@@ -555,7 +551,7 @@ func TestAMissingDomainFailsStart(t *testing.T) {
 	a := fx.New(
 		catalog.Module, sales.Module, // inventory.Module left out
 		appCore,
-		fx.Supply(Config{Addr: "127.0.0.1:0", DSN: dsn(t)}),
+		fx.Supply(testConfig(t)),
 		fx.NopLogger,
 	)
 	err := a.Err()
@@ -570,7 +566,7 @@ func TestStopClosesTheListener(t *testing.T) {
 	var srv *Server
 	a := fxtest.New(t,
 		Module,
-		fx.Supply(Config{Addr: "127.0.0.1:0", DSN: dsn(t)}),
+		fx.Supply(testConfig(t)),
 		fx.Populate(&srv),
 		fx.NopLogger,
 	)
@@ -612,7 +608,7 @@ func TestStopWaitsOutAnUnusedConnection(t *testing.T) {
 	var srv *Server
 	a := fxtest.New(t,
 		Module,
-		fx.Supply(Config{Addr: "127.0.0.1:0", DSN: dsn(t)}),
+		fx.Supply(testConfig(t)),
 		fx.Populate(&srv),
 		fx.NopLogger,
 	)
@@ -634,7 +630,7 @@ func TestStopWaitsOutAnUnusedConnection(t *testing.T) {
 // message, never with the driver's text, which is logged instead.
 func TestUnclassifiedErrorsAreMasked(t *testing.T) {
 	a := start(t, fx.Decorate(func(*velox.Client) (*velox.Client, error) {
-		closed, err := velox.Open("sqlite", dsn(t))
+		closed, err := openDB(t)
 		if err != nil {
 			return nil, err
 		}

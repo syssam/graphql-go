@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"strings"
 
 	graphql "github.com/syssam/graphql-go"
 	"github.com/syssam/graphql-go/examples/veloxfx/velox"
+	"github.com/syssam/velox/dialect/sql/sqlgraph"
 )
 
 // presentError is what a client sees of an error, and the one place that
@@ -34,10 +34,13 @@ func presentError(ctx context.Context, err error) *graphql.Error {
 		return coded(err, "NOT_FOUND", "not found")
 	case velox.IsValidationError(err):
 		return coded(err, "BAD_USER_INPUT", err.Error())
+	// By SQLSTATE or driver code, not message text: SQLite says "FOREIGN
+	// KEY constraint failed" and PostgreSQL "violates foreign key
+	// constraint", and matching the first classified every PostgreSQL
+	// delete of a referenced row as a duplicate.
+	case sqlgraph.IsForeignKeyConstraintError(err):
+		return coded(err, "FAILED_PRECONDITION", "still referenced; delete what refers to it first")
 	case velox.IsConstraintError(err):
-		if strings.Contains(err.Error(), "FOREIGN KEY") {
-			return coded(err, "FAILED_PRECONDITION", "still referenced; delete what refers to it first")
-		}
 		return coded(err, "CONFLICT", "already exists")
 	}
 	slog.ErrorContext(ctx, "graphql: internal error", "error", err)

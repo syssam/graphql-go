@@ -35,7 +35,7 @@ func startRecording(t *testing.T) *sqlApp {
 	t.Helper()
 	s := &sqlApp{}
 	s.app = start(t, fx.Decorate(func(*velox.Client) (*velox.Client, error) {
-		c, err := velox.Open("sqlite", dsn(t), velox.Debug(), velox.Log(func(v ...any) {
+		c, err := openDB(t, velox.Debug(), velox.Log(func(v ...any) {
 			if !s.recording.Load() {
 				return
 			}

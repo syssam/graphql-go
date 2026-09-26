@@ -22,7 +22,7 @@ func benchApp(b *testing.B, orders int, extra ...graphql.ExecutorOption) (*graph
 		schema *graphql.Schema
 	)
 	a := fxtest.New(b, Module, fx.Populate(&schema),
-		fx.Supply(Config{Addr: "127.0.0.1:0", DSN: "file:" + b.Name() + "?mode=memory&cache=shared&_pragma=foreign_keys(1)"}),
+		fx.Supply(testConfig(b)),
 		fx.Populate(&exec), fx.NopLogger)
 	a.RequireStart()
 	b.Cleanup(a.RequireStop)
@@ -72,13 +72,7 @@ func BenchmarkOrderHistoryPage(b *testing.B) {
 func benchOrderHistory(b *testing.B, extra ...graphql.ExecutorOption) {
 	exec, ctx := benchApp(b, 50, extra...)
 	vars, _ := json.Marshal(map[string]any{"first": 50})
-	req := &graphql.Request{Query: `
-		query OrderHistory($first: Int!) {
-			orders(first: $first) { edges { node { id ...OrderRow_order } } pageInfo { hasNextPage endCursor } }
-		}
-		fragment OrderRow_order on Order { status totalCents customer { ...CustomerBadge_customer } items { ...LineItem_item } }
-		fragment CustomerBadge_customer on Customer { name }
-		fragment LineItem_item on OrderItem { quantity product { sku } }`, Variables: vars}
+	req := &graphql.Request{Query: orderHistoryQuery, Variables: vars}
 	b.ReportAllocs()
 	for b.Loop() {
 		if r := exec.Execute(ctx, req); len(r.Errors) > 0 {
@@ -86,3 +80,29 @@ func benchOrderHistory(b *testing.B, extra ...graphql.ExecutorOption) {
 		}
 	}
 }
+
+// BenchmarkOrderHistoryPageParallel is the same page from as many clients at
+// once as the machine has cores: what a replica does under load, where the
+// connection pool and the plan cache are shared.
+func BenchmarkOrderHistoryPageParallel(b *testing.B) {
+	exec, ctx := benchApp(b, 50)
+	vars, _ := json.Marshal(map[string]any{"first": 50})
+	req := &graphql.Request{Query: orderHistoryQuery, Variables: vars}
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if r := exec.Execute(ctx, req); len(r.Errors) > 0 {
+				b.Error(r.Errors)
+				return
+			}
+		}
+	})
+}
+
+const orderHistoryQuery = `
+		query OrderHistory($first: Int!) {
+			orders(first: $first) { edges { node { id ...OrderRow_order } } pageInfo { hasNextPage endCursor } }
+		}
+		fragment OrderRow_order on Order { status totalCents customer { ...CustomerBadge_customer } items { ...LineItem_item } }
+		fragment CustomerBadge_customer on Customer { name }
+		fragment LineItem_item on OrderItem { quantity product { sku } }`

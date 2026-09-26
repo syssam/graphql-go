@@ -16,11 +16,12 @@ import (
 
 func main() {
 	addr := flag.String("addr", ":8080", "listen address")
-	dsn := flag.String("dsn", "file:veloxfx?mode=memory&cache=shared&_pragma=foreign_keys(1)", "sqlite data source")
+	driver := flag.String("driver", "sqlite", "database driver: sqlite or postgres")
+	dsn := flag.String("dsn", "file:veloxfx?mode=memory&cache=shared&_pragma=foreign_keys(1)", "data source, e.g. postgres://user:pass@localhost/veloxfx?sslmode=disable")
 	flag.Parse()
 
 	fx.New(
 		veloxfx.Module,
-		fx.Supply(veloxfx.Config{Addr: *addr, DSN: *dsn}),
+		fx.Supply(veloxfx.Config{Addr: *addr, Driver: *driver, DSN: *dsn}),
 	).Run()
 }
