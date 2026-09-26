@@ -528,11 +528,15 @@ func TestInstanceOutcomesOnASingleObject(t *testing.T) {
 		query    string
 		wantData string
 		wantErr  string
+		// wantOneErr: a refusal is one error, not one plus the non-null
+		// violation it caused.
+		wantOneErr bool
 	}{
 		{name: "allow", outcome: Allow(), query: `{ maybe { id } }`, wantData: `{"maybe":{"id":"c1"}}`},
 		{name: "null", outcome: Null(), query: `{ maybe { id } }`, wantData: `{"maybe":null}`},
 		{name: "deny", outcome: Deny("customer:read", "Customer"), query: `{ maybe { id } }`, wantData: `{"maybe":null}`, wantErr: "denied"},
 		{name: "drop outside a list", outcome: Drop(), query: `{ maybe { id } }`, wantData: `{"maybe":null}`, wantErr: "Drop is valid only for a list element"},
+		{name: "drop at a non-null position", outcome: Drop(), query: `{ required { id } }`, wantData: `null`, wantErr: "Drop is valid only for a list element", wantOneErr: true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -540,6 +544,9 @@ func TestInstanceOutcomesOnASingleObject(t *testing.T) {
 			resp := run(t, e, c.query, "")
 			assertJSON(t, resp.Data, c.wantData)
 			assertErrorContains(t, resp.Errors, c.wantErr)
+			if c.wantOneErr && len(resp.Errors) != 1 {
+				t.Errorf("got %d errors, want 1: %s", len(resp.Errors), errorsJSON(resp.Errors))
+			}
 		})
 	}
 }

@@ -1534,3 +1534,41 @@ func TestOutcomeThatSkipsTheResolverIsNotObserved(t *testing.T) {
 		})
 	}
 }
+
+// enforceAuth has no Drop case, so a Drop that reached a field site would
+// resolve the field as if the policy had allowed it. validFor is the only
+// thing standing between the two.
+func TestDropRejectedOnFieldSite(t *testing.T) {
+	s := shapeSchema(t)
+	var setErr error
+	e := NewExecutor(s, WithAuthorizer(AuthorizerFunc(
+		func(ctx context.Context, shape *AuthShape, d *Decision) error {
+			setErr = d.Set(0, Drop())
+			return setErr
+		})))
+	resp := run(t, e, `{ me { salary } }`, "")
+	if setErr == nil || !strings.Contains(setErr.Error(), "Drop is valid only for an instance site") {
+		t.Fatalf("Set(Drop) = %v, want it refused", setErr)
+	}
+	if strings.Contains(string(resp.Data), "100") {
+		t.Fatalf("salary was served: %s", resp.Data)
+	}
+}
+
+// A policy that ignores Set's error must not be left with the zero Outcome,
+// which allows: the refused outcome is recorded as a denial instead.
+func TestRejectedOutcomeFailsClosedWhenErrorIgnored(t *testing.T) {
+	for _, o := range []Outcome{Drop(), Null()} {
+		s := shapeSchema(t)
+		e := NewExecutor(s, WithAuthorizer(AuthorizerFunc(
+			func(ctx context.Context, shape *AuthShape, d *Decision) error {
+				_ = d.Set(0, o)
+				return nil
+			})))
+		resp := run(t, e, `{ me { salary } }`, "")
+		if strings.Contains(string(resp.Data), "100") {
+			t.Fatalf("outcome %v: salary was served: %s", o.act, resp.Data)
+		}
+		assertErrorContains(t, resp.Errors, "denied")
+	}
+}

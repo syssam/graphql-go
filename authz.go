@@ -389,8 +389,8 @@ func Zero() Outcome { return Outcome{act: actionZero} }
 // Redact resolves the field and rewrites the result.
 func Redact(fn func(any) any) Outcome { return Outcome{act: actionRedact, redact: fn} }
 
-// Drop omits the value from its enclosing list. It is valid only at a list
-// element position; dropping renumbers the indices that follow, so a later
+// Drop omits the value from its enclosing list. It is valid only for an
+// instance site at a list element position; dropping renumbers the indices that follow, so a later
 // denial is reported at the index the client actually sees.
 func Drop() Outcome { return Outcome{act: actionDrop} }
 
@@ -442,6 +442,12 @@ func (o Outcome) validFor(site AuthSite) error {
 	if site.Kind == SiteInstance && o.act != actionAllow && o.act != actionDeny &&
 		o.act != actionNull && o.act != actionDrop {
 		return Errorf("authorization: only Allow, Null, Deny and Drop are valid for %s, an instance site", site.Coord)
+	}
+	// Drop removes a list element, and only an instance site is decided per
+	// element. enforceAuth has no Drop case, so letting one through here
+	// would resolve the field as if the policy had said Allow.
+	if site.Kind != SiteInstance && o.act == actionDrop {
+		return Errorf("authorization: Drop is valid only for an instance site, not %s", site.Coord)
 	}
 	switch o.act {
 	case actionNull:
@@ -606,7 +612,8 @@ func newDecision(shape *AuthShape) *Decision {
 
 // Set records the outcome for one site. It reports an error for an outcome
 // the site cannot represent, so a policy mistake surfaces once per request
-// with the coordinate attached rather than as a null-bubbled parent.
+// with the coordinate attached rather than as a null-bubbled parent, and
+// records a denial in its place so the mistake never widens access.
 func (d *Decision) Set(site int, o Outcome) error {
 	if d == nil || site < 0 || site >= len(d.outcomes) {
 		return Errorf("authorization: site %d is out of range", site)
@@ -618,6 +625,9 @@ func (d *Decision) Set(site int, o Outcome) error {
 		return Errorf("authorization: %s is an instance site; its outcome comes from the ObjectAuthorizer, not from Decision.Set", s.Coord)
 	}
 	if err := o.validFor(d.src.shape.sites[site]); err != nil {
+		// Fail closed: an Authorizer that drops this error must not leave
+		// the site at its zero Outcome, which allows.
+		d.outcomes[site] = Deny("access", d.src.shape.sites[site].Coord)
 		return err
 	}
 	d.outcomes[site] = o

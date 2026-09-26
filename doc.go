@@ -66,10 +66,13 @@
 // (an AIP-211-worded error that reveals neither the value nor whether the
 // resource exists), Null, Zero (a non-null field's zero value, for
 // withholding without null-bubbling its parent), or Redact (resolves the
-// field and rewrites the value); Drop is defined but always rejected as not
-// yet implemented. Deny, Null and Zero write their response without calling
-// the resolver, so a FieldInterceptor never observes those fields; Redact
-// does resolve, so a FieldInterceptor sees the pre-redaction value.
+// field and rewrites the value). Drop is valid only as an ObjectAuthorizer's
+// reply for an instance site at a list element; Decision.Set rejects it
+// everywhere else. An outcome Set rejects is recorded as a denial, so a
+// policy that ignores the error still fails closed. Deny, Null and Zero
+// write their response without calling the resolver, so a FieldInterceptor
+// never observes those fields; Redact does resolve, so a FieldInterceptor
+// sees the pre-redaction value.
 //
 // WithSubscriptionInterceptor wraps the opening of a subscription's stream,
 // the way OperationInterceptor wraps a query or mutation -- gRPC's
