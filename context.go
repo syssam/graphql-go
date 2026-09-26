@@ -263,7 +263,38 @@ type SelectedField struct {
 	Alias string
 	// Args holds the decoded argument struct pointer when the arguments are
 	// literal, or nil when they depend on variables or the field has none.
+	// ArgumentMap answers both cases.
 	Args any
+
+	field *planField
+}
+
+// Selection returns the sub-selection requested beneath the field, empty for
+// a leaf. Two aliases of one field are two SelectedFields, each with its own
+// sub-selection, where Sub returns only the first.
+func (f SelectedField) Selection() Selection {
+	if f.field == nil {
+		return Selection{}
+	}
+	return Selection{set: f.field.sub}
+}
+
+// ArgumentMap returns the field's argument values as the request gave them,
+// before binding: variables substituted from vars, defaults applied, and an
+// absent argument without a default left out. A number is a json.Number
+// whether it was written in the query or sent as a variable, because the
+// executor decodes variables with precision kept. It is nil for a field with
+// no arguments.
+//
+// It is for code that cannot know the field's argument struct, such as an ORM
+// planning which rows the selection will read. vars is the operation's
+// variables, OperationFrom(ctx).Variables; the plan is shared by every
+// request with the same query text, so it holds none.
+func (f SelectedField) ArgumentMap(vars map[string]any) (map[string]any, error) {
+	if f.field == nil || f.field.ast == nil || f.field.ast.Definition == nil {
+		return nil, nil
+	}
+	return fieldArguments(f.field.ast, vars)
 }
 
 // IsEmpty reports whether nothing is selected.
@@ -297,7 +328,7 @@ func (s Selection) Fields() iter.Seq[SelectedField] {
 					}
 					seen[f.alias] = true
 				}
-				if !yield(SelectedField{Name: f.name, Alias: f.alias, Args: f.args}) {
+				if !yield(SelectedField{Name: f.name, Alias: f.alias, Args: f.args, field: f}) {
 					return false
 				}
 			}
@@ -324,6 +355,18 @@ func (s Selection) Collect[T any](fn func(SelectedField) T) []T {
 		out = append(out, fn(f))
 	}
 	return out
+}
+
+// ForType returns what is selected when the value is of the named object
+// type: for an abstract parent, the fields that apply to that type, fragments
+// on it and on the interfaces it implements included; empty when typeName is
+// not one of the parent's possible types. A concrete parent's selection
+// already applies to its one type and is returned as it is.
+func (s Selection) ForType(typeName string) Selection {
+	if s.set == nil || s.set.byType == nil {
+		return s
+	}
+	return Selection{set: s.set.byType[typeName]}
 }
 
 // Sub returns the selection beneath the named field. The second result is

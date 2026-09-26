@@ -111,6 +111,8 @@ graphql: func (f FieldInfo) Path() Path
 graphql: func (f FieldInterceptorFunc) InterceptField(ctx context.Context, fc *FieldContext, next FieldHandler) (any, error)
 graphql: func (f OperationInterceptorFunc) InterceptOperation(ctx context.Context, oc *OperationContext, next OperationHandler) *Response
 graphql: func (f RequestInterceptorFunc) InterceptRequest(ctx context.Context, req *Request, next RequestHandler) *Response
+graphql: func (f SelectedField) ArgumentMap(vars map[string]any) (map[string]any, error)
+graphql: func (f SelectedField) Selection() Selection
 graphql: func (f SubscriptionInterceptorFunc) InterceptSubscription(ctx context.Context, oc *OperationContext, next SubscriptionHandler) (<-chan *Response, error)
 graphql: func (fc *FieldContext) Path() Path
 graphql: func (fc *FieldContext) Selection() Selection
@@ -146,6 +148,7 @@ graphql: func (s *Schema) AST() *ast.Schema
 graphql: func (s *Schema) IntrospectionEnabled() bool
 graphql: func (s Selection) Collect[T any](fn func(SelectedField) T) []T
 graphql: func (s Selection) Fields() iter.Seq[SelectedField]
+graphql: func (s Selection) ForType(typeName string) Selection
 graphql: func (s Selection) Has(name string) bool
 graphql: func (s Selection) IsEmpty() bool
 graphql: func (s Selection) Sub(name string) (Selection, bool)
