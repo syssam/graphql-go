@@ -60,6 +60,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/syssam/graphql-go"
 	"github.com/syssam/graphql-go/transport/gqlhttp"
@@ -94,7 +95,15 @@ func main() {
 		log.Fatal(err)
 	}
 
-	http.Handle("/graphql", gqlhttp.New(graphql.NewExecutor(s)))
+	// Depth, cost and timeout limits are off by default because the right
+	// numbers depend on the schema; set them before serving anything
+	// untrusted. docs/operations.md has how to choose them.
+	exec := graphql.NewExecutor(s,
+		graphql.WithMaxDepth(10),
+		graphql.WithQueryCost(graphql.QueryCost{Max: 10_000, DefaultListSize: 20}),
+		graphql.WithOperationTimeout(5*time.Second),
+	)
+	http.Handle("/graphql", gqlhttp.New(exec))
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 ```

@@ -46,7 +46,13 @@ func run() error {
 		return fmt.Errorf("building schema: %w", err)
 	}
 
-	exec := graphql.NewExecutor(s)
+	// Off by default because the right numbers depend on the schema; these
+	// fit this one. docs/operations.md has how to choose them for yours.
+	exec := graphql.NewExecutor(s,
+		graphql.WithMaxDepth(10),
+		graphql.WithQueryCost(graphql.QueryCost{Max: 10_000, DefaultListSize: 20}),
+		graphql.WithOperationTimeout(5*time.Second),
+	)
 	mux := http.NewServeMux()
 	mux.Handle("/graphql", gqlhttp.New(exec))
 	// The drain ends open subscription streams on shutdown; without it the
