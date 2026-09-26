@@ -10,7 +10,7 @@ import (
 
 	"github.com/syssam/velox/compiler"
 	"github.com/syssam/velox/compiler/gen"
-	veloxgql "github.com/syssam/velox/contrib/graphql"
+	veloxgql "github.com/syssam/velox/contrib/graphql/graphqlgen"
 )
 
 func main() {

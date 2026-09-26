@@ -6,8 +6,9 @@ replace github.com/syssam/graphql-go => ../..
 
 require (
 	github.com/labstack/echo/v5 v5.3.1
+	github.com/lib/pq v1.12.3
 	github.com/syssam/graphql-go v0.0.0-20260926154251-135bb6be891a
-	github.com/syssam/velox v0.3.1-0.20260926154702-4c87d1c7765b
+	github.com/syssam/velox v0.3.1-0.20260926184113-78e48d54f407
 	github.com/syssam/velox/contrib/graphqlgo v0.0.0-20260926164035-2c304ca4362e
 	go.uber.org/fx v1.24.0
 	modernc.org/sqlite v1.37.1
@@ -21,13 +22,11 @@ require (
 	github.com/apparentlymart/go-textseg/v15 v15.0.0 // indirect
 	github.com/bmatcuk/doublestar v1.3.4 // indirect
 	github.com/coder/websocket v1.8.15 // indirect
-	github.com/dave/jennifer v1.7.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-openapi/inflect v0.21.5 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/hcl/v2 v2.24.0 // indirect
-	github.com/lib/pq v1.12.3 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mitchellh/go-wordwrap v1.0.1 // indirect
 	github.com/ncruces/go-strftime v0.1.9 // indirect

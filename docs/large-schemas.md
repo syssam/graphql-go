@@ -21,7 +21,7 @@ velox's entity types with `autoBind` and runs edge accessors inline.
 | Cold build | 4 min 31 s wall, 13 min 45 s CPU |
 | `NewSchema` | 114 ms, 24 MB retained |
 | Full introspection query | 4.3 MB, 27-67 ms |
-| Binary | 215 MB (152 MB text) |
+| Binary | 198 MB (137 MB text); 215 MB before velox split its generator out |
 
 Start-up and requests are not where a schema this size hurts. The edit loop is.
 
@@ -29,7 +29,7 @@ Start-up and requests are not where a schema this size hurts. The edit loop is.
 
 | Change | Rebuild | Why |
 |---|---|---|
-| A resolver body | ~7 s | One package recompiles; the rest is linking a 215 MB binary |
+| A resolver body | ~6.5 s | One package recompiles; the rest is linking a 198 MB binary |
 | A hand-written SDL field in one group | one group package plus the link | gqlc regenerates only that group |
 | A field on one entity | **3 min 3 s**, 589 s CPU, 608 packages | Below |
 
@@ -67,10 +67,15 @@ cores. More cores should divide it; by how much on 16 was not measured.
 - **Import a group package, not the graph root, from domain code.** The root
   (`graph`) imports every group; a domain package that imports it recompiles
   whenever any group does.
-- **Expect a resolver edit to cost the link.** Seven seconds here is the
-  linker writing 215 MB. 11 MB of that text is velox's code generator and its
-  dependencies, which reach the server through the schema package's
-  annotations import; that is a velox issue being split out.
+- **Expect a resolver edit to cost the link**, about 6.5 s here. The binary
+  was 215 MB and carried velox's code generator -- the compiler, jennifer,
+  `golang.org/x/tools/go/packages`, gqlgen's codegen -- because the schema
+  package imports velox's GraphQL annotations and velox's runtime imports the
+  schema package, and the annotations and the generator were one package.
+  velox has split them (`contrib/graphql` is annotations only, the generator is
+  `contrib/graphql/graphqlgen`), and the same server is 198 MB and links
+  1 214 packages instead of 1 280. `examples/veloxfx`'s server links none of
+  the tooling.
 - **Leave limits on.** `WithMaxDepth`, `WithMaxComplexity` and `QueryCost` do
   not charge introspection, so GraphiQL and client generators still work
   against a production configuration, and introspection is bounded by its own
