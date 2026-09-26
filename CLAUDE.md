@@ -171,6 +171,7 @@ The root package is ~32 files on purpose, because Go scopes encapsulation to the
   version here. `docs/operations.md`: deployment limits and sizing, ending with what has not
   been measured. `docs/benchmarks.md`: the comparison with gqlgen and the per-transport costs.
   `docs/module-layout.md`: why this stays one module until publication.
+  `docs/production-readiness.md`: what adoption at a large company is blocked on, with evidence.
 - Examples: `quickstart` (smallest), `blog` (layering, codegen; `echo`/`fiber` serve it),
   `storefront` (authorization and production wiring), `federation`, `relaynode`, and
   `veloxfx` (velox ORM + uber/fx + Echo; its own module, so the library never requires them).
