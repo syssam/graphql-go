@@ -64,6 +64,10 @@ github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWD
 github.com/stretchr/testify v1.12.1/go.mod h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUmoNlxoYthg=
 github.com/syssam/velox v0.3.0 h1:zAQO2p49dzb4FRMbiKh8gdeBLvAVAgACWbrg0uEjx5E=
 github.com/syssam/velox v0.3.0/go.mod h1:Qsu7Zbl+gH8p1mtxvaxvaoU6ZcXGx4lPkPtfmMFUXEY=
+github.com/syssam/velox v0.3.1-0.20260926142227-1115064d1250 h1:MksaS+UdoeDGJN+zQ3/iulY1BiZcNn8IX/FIb1lXHEM=
+github.com/syssam/velox v0.3.1-0.20260926142227-1115064d1250/go.mod h1:Qsu7Zbl+gH8p1mtxvaxvaoU6ZcXGx4lPkPtfmMFUXEY=
+github.com/syssam/velox v0.3.1-0.20260926143913-4c611f892717 h1:MGvTt92PzZsOUqLo2xTdv0eGKIkre5EGmCIzerBjSQ0=
+github.com/syssam/velox v0.3.1-0.20260926143913-4c611f892717/go.mod h1:Qsu7Zbl+gH8p1mtxvaxvaoU6ZcXGx4lPkPtfmMFUXEY=
 github.com/vektah/gqlparser/v2 v2.5.58 h1:yHxQ3EjU2OGuDMh6noxxmZova1HkBM3CbdGtL+rvjOc=
 github.com/vektah/gqlparser/v2 v2.5.58/go.mod h1:9O4Ox6Ngd3Y12bMD3w6i3CRQXh8W1oC1q0m6olCymDM=
 github.com/vmihailenco/msgpack/v5 v5.4.1 h1:cQriyiUvjTwOHg8QZaPihLWeRAAVoCpE00IUPn0Bjt8=

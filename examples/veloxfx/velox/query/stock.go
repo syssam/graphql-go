@@ -74,6 +74,7 @@ func (q *StockQuery) WithEdgeLoad(name string, opts ...runtime.LoadOption) runti
 		if q.withWarehouse == nil {
 			q.withWarehouse = NewWarehouseQuery(q.config)
 			q.withWarehouse.inters = q.inters
+			q.withWarehouse.ctx.EdgeLoadCreated = true
 		}
 		q.withFKs = true
 		q.withWarehouse.applyLoad(runtime.NewLoadConfig(opts...), false)
@@ -82,6 +83,7 @@ func (q *StockQuery) WithEdgeLoad(name string, opts ...runtime.LoadOption) runti
 		if q.withProduct == nil {
 			q.withProduct = NewProductQuery(q.config)
 			q.withProduct.inters = q.inters
+			q.withProduct.ctx.EdgeLoadCreated = true
 		}
 		q.withFKs = true
 		q.withProduct.applyLoad(runtime.NewLoadConfig(opts...), false)
@@ -186,6 +188,9 @@ func (q *StockQuery) QueryWarehouse() entity.WarehouseQuerier {
 	tq := NewWarehouseQuery(q.config)
 	tq.inters = q.inters
 	tq.path = func(ctx context.Context) (*sql.Selector, error) {
+		if err := q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
 		from, err := q.buildQuery(ctx)
 		if err != nil {
 			return nil, err
@@ -202,6 +207,9 @@ func (q *StockQuery) QueryProduct() entity.ProductQuerier {
 	tq := NewProductQuery(q.config)
 	tq.inters = q.inters
 	tq.path = func(ctx context.Context) (*sql.Selector, error) {
+		if err := q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
 		from, err := q.buildQuery(ctx)
 		if err != nil {
 			return nil, err
@@ -265,6 +273,16 @@ func (q *StockQuery) eagerLoad(ctx context.Context, nodes []*entity.Stock) error
 // Traversers from the interceptor list. Privacy is invoked
 // explicitly here — it is NOT part of the interceptor chain.
 func (q *StockQuery) prepareQuery(ctx context.Context) error {
+	for _, f := range q.ctx.Fields {
+		if !stock.ValidColumn(f) {
+			return &runtime.ValidationError{
+				Entity: "Stock",
+				Err:    fmt.Errorf("invalid field %q for query", f),
+				Field:  f,
+				Name:   f,
+			}
+		}
+	}
 	return runtime.RunTraversers(ctx, q, q.inters.Stock)
 }
 
@@ -350,7 +368,7 @@ func (q *StockQuery) sqlCount(ctx context.Context) (int, error) {
 		}
 	}
 	spec := q.querySpec()
-	spec.Node.Columns = nil
+	spec.Node.Columns = q.ctx.Fields
 	spec.From = from
 	return sqlgraph.CountNodes(ctx, q.config.Driver, spec)
 }
@@ -476,9 +494,6 @@ func (q *StockQuery) sqlIDs(ctx context.Context) ([]int, error) {
 		from, err = q.path(ctx)
 		if err != nil {
 			return nil, err
-		}
-		if q.ctx.Unique == nil {
-			q.Unique(true)
 		}
 	}
 	spec := q.querySpec()
@@ -799,6 +814,16 @@ func (g *StockGroupBy) Aggregate(fns ...runtime.AggregateFunc) entity.StockGroup
 // Scan applies the group-by query and scans the result into the given value.
 func (g *StockGroupBy) Scan(ctx context.Context, v any) error {
 	ctx = setContextOp(ctx, g.build.ctx, velox.OpQueryGroupBy)
+	for _, f := range g.fields {
+		if !stock.ValidColumn(f) {
+			return &runtime.ValidationError{
+				Entity: "Stock",
+				Err:    fmt.Errorf("invalid field %q for query", f),
+				Field:  f,
+				Name:   f,
+			}
+		}
+	}
 	if g.build == nil {
 		return g.sqlScan(ctx, v)
 	}
@@ -837,6 +862,9 @@ func (q *StockQuery) loadWarehouse(ctx context.Context, query *WarehouseQuery, n
 	fkSeen := make(map[int]struct{}, len(nodes))
 	var fks []any
 	for _, n := range nodes {
+		if init != nil {
+			init(n)
+		}
 		fkRaw := n.FKValue("warehouse_stocks")
 		if fkRaw == nil {
 			continue
@@ -845,9 +873,6 @@ func (q *StockQuery) loadWarehouse(ctx context.Context, query *WarehouseQuery, n
 		if _, ok := fkSeen[fkVal]; !ok {
 			fkSeen[fkVal] = struct{}{}
 			fks = append(fks, any(fkVal))
-		}
-		if init != nil {
-			init(n)
 		}
 	}
 	if len(fks) == 0 {
@@ -883,6 +908,9 @@ func (q *StockQuery) loadProduct(ctx context.Context, query *ProductQuery, nodes
 	fkSeen := make(map[int]struct{}, len(nodes))
 	var fks []any
 	for _, n := range nodes {
+		if init != nil {
+			init(n)
+		}
 		fkRaw := n.FKValue("product_stocks")
 		if fkRaw == nil {
 			continue
@@ -891,9 +919,6 @@ func (q *StockQuery) loadProduct(ctx context.Context, query *ProductQuery, nodes
 		if _, ok := fkSeen[fkVal]; !ok {
 			fkSeen[fkVal] = struct{}{}
 			fks = append(fks, any(fkVal))
-		}
-		if init != nil {
-			init(n)
 		}
 	}
 	if len(fks) == 0 {

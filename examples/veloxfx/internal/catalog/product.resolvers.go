@@ -25,7 +25,8 @@ func (r *ProductResolver) Products(ctx context.Context, args productgql.Products
 	if args.Where != nil {
 		opts = append(opts, entity.WithProductFilter(args.Where.Filter))
 	}
-	q := r.client.Product.Query().WithCategory()
+	// Paginate loads what the page's nodes select, category included.
+	q := r.client.Product.Query()
 	return q.(entity.ProductPaginatable).Paginate(ctx, args.After, args.First, args.Before, args.Last, opts...)
 }
 

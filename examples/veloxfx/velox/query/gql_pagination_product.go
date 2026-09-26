@@ -31,7 +31,9 @@ func (q *ProductQuery) Paginate(ctx context.Context, after *gqlrelay.Cursor, fir
 	}
 	var totalCount int
 	if gqlrelay.TotalCountSelected(ctx) {
-		n, err := q.Clone().Count(ctx)
+		c := q.clone()
+		c.ctx.Fields = nil
+		n, err := c.Count(ctx)
 		if err != nil {
 			return nil, err
 		}

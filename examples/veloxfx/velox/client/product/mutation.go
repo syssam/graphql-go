@@ -26,6 +26,7 @@ type ProductMutation struct {
 	oldValue          func(context.Context) (*entity.Product, error)
 	oldLoaded         bool
 	oldCache          *entity.Product
+	done              bool
 	category          map[int]struct{}
 	removedCategory   map[int]struct{}
 	clearedCategory   bool
@@ -94,6 +95,9 @@ func (m *ProductMutation) loadOld(ctx context.Context) (*entity.Product, error) 
 	}
 	if m.oldLoaded {
 		return m.oldCache, nil
+	}
+	if m.done {
+		return nil, fmt.Errorf("%w: call Product.OldXxx in the hook before next.Mutate", runtime.ErrOldValueAfterMutation)
 	}
 	old, err := m.oldValue(ctx)
 	if err != nil {
@@ -196,10 +200,7 @@ func (m *ProductMutation) ResetPriceCents() {
 
 // SetCategoryID sets the "category" edge to the Category entity by id.
 func (m *ProductMutation) SetCategoryID(id int) {
-	if m.category == nil {
-		m.category = make(map[int]struct{})
-	}
-	m.category[id] = struct{}{}
+	m.category = map[int]struct{}{id: {}}
 }
 
 // ClearCategory clears the "category" edge.
@@ -593,7 +594,7 @@ func (m *ProductMutation) ClearEdge(name string) error {
 		m.ClearOrderItems()
 		return nil
 	}
-	return fmt.Errorf("unknown Product unique edge %s", name)
+	return fmt.Errorf("unknown Product edge %s", name)
 }
 
 // ResetEdge resets all changes for the edge with the given name.

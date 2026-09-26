@@ -33,10 +33,13 @@ type StockEdges struct {
 	totalCount  map[string]int
 }
 
-// WarehouseOrErr returns the warehouse value or an error if the edge was not loaded.
+// WarehouseOrErr returns the warehouse value or an error if the edge was not loaded
+// in eager-loading, or loaded but was not found.
 func (e StockEdges) WarehouseOrErr() (*Warehouse, error) {
-	if e.loadedTypes[0] {
+	if e.Warehouse != nil {
 		return e.Warehouse, nil
+	} else if e.loadedTypes[0] {
+		return nil, velox.NewNotFoundError("Warehouse")
 	}
 	return nil, runtime.NewNotLoadedError("warehouse")
 }
@@ -70,10 +73,13 @@ func (e StockEdges) GetWarehouse() any {
 	return e.Warehouse
 }
 
-// ProductOrErr returns the product value or an error if the edge was not loaded.
+// ProductOrErr returns the product value or an error if the edge was not loaded
+// in eager-loading, or loaded but was not found.
 func (e StockEdges) ProductOrErr() (*Product, error) {
-	if e.loadedTypes[1] {
+	if e.Product != nil {
 		return e.Product, nil
+	} else if e.loadedTypes[1] {
+		return nil, velox.NewNotFoundError("Product")
 	}
 	return nil, runtime.NewNotLoadedError("product")
 }
@@ -184,9 +190,15 @@ func (e *Stock) Value(name string) (velox.Value, error) {
 func (e *Stock) FKValue(column string) any {
 	switch column {
 	case "product_stocks":
-		return e.product_stocks
+		if e.product_stocks == nil {
+			return nil
+		}
+		return *e.product_stocks
 	case "warehouse_stocks":
-		return e.warehouse_stocks
+		if e.warehouse_stocks == nil {
+			return nil
+		}
+		return *e.warehouse_stocks
 	default:
 		return nil
 	}

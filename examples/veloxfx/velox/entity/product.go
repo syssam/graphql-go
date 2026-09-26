@@ -38,10 +38,13 @@ type ProductEdges struct {
 	totalCount      map[string]int
 }
 
-// CategoryOrErr returns the category value or an error if the edge was not loaded.
+// CategoryOrErr returns the category value or an error if the edge was not loaded
+// in eager-loading, or loaded but was not found.
 func (e ProductEdges) CategoryOrErr() (*Category, error) {
-	if e.loadedTypes[0] {
+	if e.Category != nil {
 		return e.Category, nil
+	} else if e.loadedTypes[0] {
+		return nil, velox.NewNotFoundError("Category")
 	}
 	return nil, runtime.NewNotLoadedError("category")
 }
@@ -279,7 +282,10 @@ func (e *Product) Value(name string) (velox.Value, error) {
 func (e *Product) FKValue(column string) any {
 	switch column {
 	case "category_products":
-		return e.category_products
+		if e.category_products == nil {
+			return nil
+		}
+		return *e.category_products
 	default:
 		return nil
 	}

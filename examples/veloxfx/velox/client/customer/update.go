@@ -475,6 +475,7 @@ func (_u *CustomerUpdateOne) sqlSave(ctx context.Context) (*entity.Customer, err
 		}
 		return nil, runtime.MayWrapConstraintError(err)
 	}
+	_u.mutation.done = true
 	columns := customer.Columns
 	if len(_u.selectFields) > 0 {
 		columns = make([]string, 0, len(_u.selectFields)+1)

@@ -262,16 +262,12 @@ func TestServesThroughEveryDomain(t *testing.T) {
 	}
 }
 
-// Every list root eager-loads what its type exposes, across domains, so one
-// request is a fixed number of queries however many rows it returns. Three
-// orders of two items each, loaded one edge at a time, is 1 + 3 customers +
-// 3 item lists + 6 products = 13 queries; loaded eagerly it is 4, and
-// totalCents reuses the items already loaded.
-//
-// Plus one: velox's Paginate runs SELECT COUNT(*) unless gqlgen's request
-// context says totalCount was not selected, and under this engine there is no
-// gqlgen context, so it always counts. graphql.SelectionFrom(ctx) knows the
-// answer; velox has no way to be told it yet. When it does, this is 4.
+// Every list root loads what the query selects beneath it, across domains,
+// so one request is a fixed number of queries however many rows it returns.
+// Three orders of two items each, loaded one edge at a time, is 1 + 3
+// customers + 3 item lists + 6 products = 13 queries; collected it is 4, and
+// totalCents reuses the items already loaded. No COUNT(*): totalCount is not
+// selected, and velox reads that from this engine through internal/veloxgql.
 func TestOrdersAreAFixedNumberOfQueries(t *testing.T) {
 	var queries, counting atomic.Int64
 	a := start(t, fx.Decorate(func(*velox.Client) (*velox.Client, error) {
@@ -291,8 +287,8 @@ func TestOrdersAreAFixedNumberOfQueries(t *testing.T) {
 	counting.Store(1)
 	a.data(`{ orders { edges { node { totalCents customer { name } items { product { name } } } } } }`)
 	counting.Store(0)
-	if n := queries.Load(); n != 5 {
-		t.Errorf("orders ran %d queries, want 5 (count, orders, customers, items, products)", n)
+	if n := queries.Load(); n != 4 {
+		t.Errorf("orders ran %d queries, want 4 (orders, customers, items, products)", n)
 	}
 }
 

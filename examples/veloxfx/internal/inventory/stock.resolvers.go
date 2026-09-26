@@ -18,8 +18,13 @@ func NewStockResolver(client *velox.Client) *StockResolver {
 	return &StockResolver{client: client}
 }
 
+// Stocks loads what the query selects beneath it and nothing else.
 func (r *StockResolver) Stocks(ctx context.Context) ([]*entity.Stock, error) {
-	return r.client.Stock.Query().WithWarehouse().WithProduct().All(ctx)
+	q, err := r.client.Stock.Query().CollectFields(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return q.All(ctx)
 }
 
 func (r *StockResolver) Stock(ctx context.Context, args stockgql.StockArgs) (*entity.Stock, error) {

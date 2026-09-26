@@ -77,6 +77,7 @@ func (q *OrderQuery) WithEdgeLoad(name string, opts ...runtime.LoadOption) runti
 		if q.withCustomer == nil {
 			q.withCustomer = NewCustomerQuery(q.config)
 			q.withCustomer.inters = q.inters
+			q.withCustomer.ctx.EdgeLoadCreated = true
 		}
 		q.withFKs = true
 		q.withCustomer.applyLoad(runtime.NewLoadConfig(opts...), false)
@@ -85,6 +86,7 @@ func (q *OrderQuery) WithEdgeLoad(name string, opts ...runtime.LoadOption) runti
 		if q.withWarehouse == nil {
 			q.withWarehouse = NewWarehouseQuery(q.config)
 			q.withWarehouse.inters = q.inters
+			q.withWarehouse.ctx.EdgeLoadCreated = true
 		}
 		q.withFKs = true
 		q.withWarehouse.applyLoad(runtime.NewLoadConfig(opts...), false)
@@ -93,6 +95,7 @@ func (q *OrderQuery) WithEdgeLoad(name string, opts ...runtime.LoadOption) runti
 		if q.withItems == nil {
 			q.withItems = NewOrderItemQuery(q.config)
 			q.withItems.inters = q.inters
+			q.withItems.ctx.EdgeLoadCreated = true
 		}
 		q.withItems.applyLoad(runtime.NewLoadConfig(opts...), true)
 		return q.withItems
@@ -222,6 +225,9 @@ func (q *OrderQuery) QueryCustomer() entity.CustomerQuerier {
 	tq := NewCustomerQuery(q.config)
 	tq.inters = q.inters
 	tq.path = func(ctx context.Context) (*sql.Selector, error) {
+		if err := q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
 		from, err := q.buildQuery(ctx)
 		if err != nil {
 			return nil, err
@@ -238,6 +244,9 @@ func (q *OrderQuery) QueryWarehouse() entity.WarehouseQuerier {
 	tq := NewWarehouseQuery(q.config)
 	tq.inters = q.inters
 	tq.path = func(ctx context.Context) (*sql.Selector, error) {
+		if err := q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
 		from, err := q.buildQuery(ctx)
 		if err != nil {
 			return nil, err
@@ -254,6 +263,9 @@ func (q *OrderQuery) QueryItems() entity.OrderItemQuerier {
 	tq := NewOrderItemQuery(q.config)
 	tq.inters = q.inters
 	tq.path = func(ctx context.Context) (*sql.Selector, error) {
+		if err := q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
 		from, err := q.buildQuery(ctx)
 		if err != nil {
 			return nil, err
@@ -336,6 +348,16 @@ func (q *OrderQuery) eagerLoad(ctx context.Context, nodes []*entity.Order) error
 // Traversers from the interceptor list. Privacy is invoked
 // explicitly here — it is NOT part of the interceptor chain.
 func (q *OrderQuery) prepareQuery(ctx context.Context) error {
+	for _, f := range q.ctx.Fields {
+		if !order.ValidColumn(f) {
+			return &runtime.ValidationError{
+				Entity: "Order",
+				Err:    fmt.Errorf("invalid field %q for query", f),
+				Field:  f,
+				Name:   f,
+			}
+		}
+	}
 	return runtime.RunTraversers(ctx, q, q.inters.Order)
 }
 
@@ -421,7 +443,7 @@ func (q *OrderQuery) sqlCount(ctx context.Context) (int, error) {
 		}
 	}
 	spec := q.querySpec()
-	spec.Node.Columns = nil
+	spec.Node.Columns = q.ctx.Fields
 	spec.From = from
 	return sqlgraph.CountNodes(ctx, q.config.Driver, spec)
 }
@@ -558,9 +580,6 @@ func (q *OrderQuery) sqlIDs(ctx context.Context) ([]int, error) {
 		from, err = q.path(ctx)
 		if err != nil {
 			return nil, err
-		}
-		if q.ctx.Unique == nil {
-			q.Unique(true)
 		}
 	}
 	spec := q.querySpec()
@@ -881,6 +900,16 @@ func (g *OrderGroupBy) Aggregate(fns ...runtime.AggregateFunc) entity.OrderGroup
 // Scan applies the group-by query and scans the result into the given value.
 func (g *OrderGroupBy) Scan(ctx context.Context, v any) error {
 	ctx = setContextOp(ctx, g.build.ctx, velox.OpQueryGroupBy)
+	for _, f := range g.fields {
+		if !order.ValidColumn(f) {
+			return &runtime.ValidationError{
+				Entity: "Order",
+				Err:    fmt.Errorf("invalid field %q for query", f),
+				Field:  f,
+				Name:   f,
+			}
+		}
+	}
 	if g.build == nil {
 		return g.sqlScan(ctx, v)
 	}
@@ -926,6 +955,9 @@ func (q *OrderQuery) loadCustomer(ctx context.Context, query *CustomerQuery, nod
 	fkSeen := make(map[int]struct{}, len(nodes))
 	var fks []any
 	for _, n := range nodes {
+		if init != nil {
+			init(n)
+		}
 		fkRaw := n.FKValue("customer_orders")
 		if fkRaw == nil {
 			continue
@@ -934,9 +966,6 @@ func (q *OrderQuery) loadCustomer(ctx context.Context, query *CustomerQuery, nod
 		if _, ok := fkSeen[fkVal]; !ok {
 			fkSeen[fkVal] = struct{}{}
 			fks = append(fks, any(fkVal))
-		}
-		if init != nil {
-			init(n)
 		}
 	}
 	if len(fks) == 0 {
@@ -972,6 +1001,9 @@ func (q *OrderQuery) loadWarehouse(ctx context.Context, query *WarehouseQuery, n
 	fkSeen := make(map[int]struct{}, len(nodes))
 	var fks []any
 	for _, n := range nodes {
+		if init != nil {
+			init(n)
+		}
 		fkRaw := n.FKValue("warehouse_orders")
 		if fkRaw == nil {
 			continue
@@ -980,9 +1012,6 @@ func (q *OrderQuery) loadWarehouse(ctx context.Context, query *WarehouseQuery, n
 		if _, ok := fkSeen[fkVal]; !ok {
 			fkSeen[fkVal] = struct{}{}
 			fks = append(fks, any(fkVal))
-		}
-		if init != nil {
-			init(n)
 		}
 	}
 	if len(fks) == 0 {

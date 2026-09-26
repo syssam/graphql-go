@@ -17,10 +17,16 @@ func NewCategoryResolver(client *velox.Client) *CategoryResolver {
 	return &CategoryResolver{client: client}
 }
 
-// Categories eager-loads products, so Category.products -- velox's edge
-// method, bound as it is -- answers a first page from memory.
+// Categories loads what the query selects beneath it: products(first: n)
+// is one query for every category, n+1 rows per category, and
+// Category.products -- velox's edge method, bound as it is -- answers each
+// page from memory.
 func (r *CategoryResolver) Categories(ctx context.Context) ([]*entity.Category, error) {
-	return r.client.Category.Query().WithProducts().All(ctx)
+	q, err := r.client.Category.Query().CollectFields(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return q.All(ctx)
 }
 
 func (r *CategoryResolver) Category(ctx context.Context, args categorygql.CategoryArgs) (*entity.Category, error) {

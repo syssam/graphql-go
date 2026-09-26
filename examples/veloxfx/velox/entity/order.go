@@ -40,10 +40,13 @@ type OrderEdges struct {
 	totalCount  map[string]int
 }
 
-// CustomerOrErr returns the customer value or an error if the edge was not loaded.
+// CustomerOrErr returns the customer value or an error if the edge was not loaded
+// in eager-loading, or loaded but was not found.
 func (e OrderEdges) CustomerOrErr() (*Customer, error) {
-	if e.loadedTypes[0] {
+	if e.Customer != nil {
 		return e.Customer, nil
+	} else if e.loadedTypes[0] {
+		return nil, velox.NewNotFoundError("Customer")
 	}
 	return nil, runtime.NewNotLoadedError("customer")
 }
@@ -77,10 +80,13 @@ func (e OrderEdges) GetCustomer() any {
 	return e.Customer
 }
 
-// WarehouseOrErr returns the warehouse value or an error if the edge was not loaded.
+// WarehouseOrErr returns the warehouse value or an error if the edge was not loaded
+// in eager-loading, or loaded but was not found.
 func (e OrderEdges) WarehouseOrErr() (*Warehouse, error) {
-	if e.loadedTypes[1] {
+	if e.Warehouse != nil {
 		return e.Warehouse, nil
+	} else if e.loadedTypes[1] {
+		return nil, velox.NewNotFoundError("Warehouse")
 	}
 	return nil, runtime.NewNotLoadedError("warehouse")
 }
@@ -271,9 +277,15 @@ func (e *Order) Value(name string) (velox.Value, error) {
 func (e *Order) FKValue(column string) any {
 	switch column {
 	case "customer_orders":
-		return e.customer_orders
+		if e.customer_orders == nil {
+			return nil
+		}
+		return *e.customer_orders
 	case "warehouse_orders":
-		return e.warehouse_orders
+		if e.warehouse_orders == nil {
+			return nil
+		}
+		return *e.warehouse_orders
 	default:
 		return nil
 	}

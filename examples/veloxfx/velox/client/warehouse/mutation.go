@@ -23,6 +23,7 @@ type WarehouseMutation struct {
 	oldValue      func(context.Context) (*entity.Warehouse, error)
 	oldLoaded     bool
 	oldCache      *entity.Warehouse
+	done          bool
 	stocks        map[int]struct{}
 	removedStocks map[int]struct{}
 	clearedStocks bool
@@ -88,6 +89,9 @@ func (m *WarehouseMutation) loadOld(ctx context.Context) (*entity.Warehouse, err
 	}
 	if m.oldLoaded {
 		return m.oldCache, nil
+	}
+	if m.done {
+		return nil, fmt.Errorf("%w: call Warehouse.OldXxx in the hook before next.Mutate", runtime.ErrOldValueAfterMutation)
 	}
 	old, err := m.oldValue(ctx)
 	if err != nil {
@@ -422,7 +426,7 @@ func (m *WarehouseMutation) ClearEdge(name string) error {
 		m.ClearOrders()
 		return nil
 	}
-	return fmt.Errorf("unknown Warehouse unique edge %s", name)
+	return fmt.Errorf("unknown Warehouse edge %s", name)
 }
 
 // ResetEdge resets all changes for the edge with the given name.

@@ -507,6 +507,7 @@ func (_u *StockUpdateOne) sqlSave(ctx context.Context) (*entity.Stock, error) {
 		}
 		return nil, runtime.MayWrapConstraintError(err)
 	}
+	_u.mutation.done = true
 	columns := stock.Columns
 	if len(_u.selectFields) > 0 {
 		columns = make([]string, 0, len(_u.selectFields)+1)

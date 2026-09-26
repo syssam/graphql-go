@@ -18,8 +18,13 @@ func NewOrderItemResolver(client *velox.Client) *OrderItemResolver {
 	return &OrderItemResolver{client: client}
 }
 
+// OrderItems loads what the query selects beneath it and nothing else.
 func (r *OrderItemResolver) OrderItems(ctx context.Context) ([]*entity.OrderItem, error) {
-	return r.client.OrderItem.Query().WithOrder().WithProduct().All(ctx)
+	q, err := r.client.OrderItem.Query().CollectFields(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return q.All(ctx)
 }
 
 func (r *OrderItemResolver) OrderItem(ctx context.Context, args orderitemgql.OrderItemArgs) (*entity.OrderItem, error) {

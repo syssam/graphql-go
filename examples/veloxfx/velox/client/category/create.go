@@ -238,6 +238,7 @@ func (_cb *CategoryCreateBulk) saveChunk(ctx context.Context, builders []*Catego
 	for i := range builders {
 		func(i int, root context.Context) {
 			builder := builders[i]
+			allHooks := builder.hooks
 			var mut runtime.Mutator = runtime.MutateFunc(func(ctx context.Context, m runtime.Mutation) (runtime.Value, error) {
 				mutation, ok := m.(*CategoryMutation)
 				if !ok {
@@ -268,7 +269,6 @@ func (_cb *CategoryCreateBulk) saveChunk(ctx context.Context, builders []*Catego
 				}
 				return nodes[i], nil
 			})
-			allHooks := builder.hooks
 			for j := len(allHooks) - 1; j >= 0; j-- {
 				mut = allHooks[j](mut)
 			}

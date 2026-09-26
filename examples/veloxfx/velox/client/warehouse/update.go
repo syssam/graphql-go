@@ -593,6 +593,7 @@ func (_u *WarehouseUpdateOne) sqlSave(ctx context.Context) (*entity.Warehouse, e
 		}
 		return nil, runtime.MayWrapConstraintError(err)
 	}
+	_u.mutation.done = true
 	columns := warehouse.Columns
 	if len(_u.selectFields) > 0 {
 		columns = make([]string, 0, len(_u.selectFields)+1)

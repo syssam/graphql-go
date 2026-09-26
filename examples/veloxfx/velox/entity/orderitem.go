@@ -34,10 +34,13 @@ type OrderItemEdges struct {
 	totalCount  map[string]int
 }
 
-// OrderOrErr returns the order value or an error if the edge was not loaded.
+// OrderOrErr returns the order value or an error if the edge was not loaded
+// in eager-loading, or loaded but was not found.
 func (e OrderItemEdges) OrderOrErr() (*Order, error) {
-	if e.loadedTypes[0] {
+	if e.Order != nil {
 		return e.Order, nil
+	} else if e.loadedTypes[0] {
+		return nil, velox.NewNotFoundError("Order")
 	}
 	return nil, runtime.NewNotLoadedError("order")
 }
@@ -71,10 +74,13 @@ func (e OrderItemEdges) GetOrder() any {
 	return e.Order
 }
 
-// ProductOrErr returns the product value or an error if the edge was not loaded.
+// ProductOrErr returns the product value or an error if the edge was not loaded
+// in eager-loading, or loaded but was not found.
 func (e OrderItemEdges) ProductOrErr() (*Product, error) {
-	if e.loadedTypes[1] {
+	if e.Product != nil {
 		return e.Product, nil
+	} else if e.loadedTypes[1] {
+		return nil, velox.NewNotFoundError("Product")
 	}
 	return nil, runtime.NewNotLoadedError("product")
 }
@@ -193,9 +199,15 @@ func (e *OrderItem) Value(name string) (velox.Value, error) {
 func (e *OrderItem) FKValue(column string) any {
 	switch column {
 	case "order_items":
-		return e.order_items
+		if e.order_items == nil {
+			return nil
+		}
+		return *e.order_items
 	case "product_order_items":
-		return e.product_order_items
+		if e.product_order_items == nil {
+			return nil
+		}
+		return *e.product_order_items
 	default:
 		return nil
 	}

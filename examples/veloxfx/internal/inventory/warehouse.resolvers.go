@@ -17,12 +17,14 @@ func NewWarehouseResolver(client *velox.Client) *WarehouseResolver {
 	return &WarehouseResolver{client: client}
 }
 
-// Warehouses eager-loads each stock row's product, crossing into catalog, so
+// Warehouses loads what the query selects beneath it, across domains:
 // warehouses { stocks { product { name } } } is three queries in all.
 func (r *WarehouseResolver) Warehouses(ctx context.Context) ([]*entity.Warehouse, error) {
-	return r.client.Warehouse.Query().
-		WithStocks(func(q entity.StockQuerier) { q.WithProduct() }).
-		All(ctx)
+	q, err := r.client.Warehouse.Query().CollectFields(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return q.All(ctx)
 }
 
 func (r *WarehouseResolver) Warehouse(ctx context.Context, args warehousegql.WarehouseArgs) (*entity.Warehouse, error) {

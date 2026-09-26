@@ -26,6 +26,7 @@ type OrderItemMutation struct {
 	oldValue             func(context.Context) (*entity.OrderItem, error)
 	oldLoaded            bool
 	oldCache             *entity.OrderItem
+	done                 bool
 	_order               map[int]struct{}
 	removedOrder         map[int]struct{}
 	clearedOrder         bool
@@ -91,6 +92,9 @@ func (m *OrderItemMutation) loadOld(ctx context.Context) (*entity.OrderItem, err
 	}
 	if m.oldLoaded {
 		return m.oldCache, nil
+	}
+	if m.done {
+		return nil, fmt.Errorf("%w: call OrderItem.OldXxx in the hook before next.Mutate", runtime.ErrOldValueAfterMutation)
 	}
 	old, err := m.oldValue(ctx)
 	if err != nil {
@@ -193,10 +197,7 @@ func (m *OrderItemMutation) ResetUnitPriceCents() {
 
 // SetOrderID sets the "order" edge to the Order entity by id.
 func (m *OrderItemMutation) SetOrderID(id int) {
-	if m._order == nil {
-		m._order = make(map[int]struct{})
-	}
-	m._order[id] = struct{}{}
+	m._order = map[int]struct{}{id: {}}
 }
 
 // ClearOrder clears the "order" edge.
@@ -226,10 +227,7 @@ func (m *OrderItemMutation) OrderIDs() (ids []int) {
 
 // SetProductID sets the "product" edge to the Product entity by id.
 func (m *OrderItemMutation) SetProductID(id int) {
-	if m.product == nil {
-		m.product = make(map[int]struct{})
-	}
-	m.product[id] = struct{}{}
+	m.product = map[int]struct{}{id: {}}
 }
 
 // ClearProduct clears the "product" edge.
@@ -487,7 +485,7 @@ func (m *OrderItemMutation) ClearEdge(name string) error {
 		m.ClearProduct()
 		return nil
 	}
-	return fmt.Errorf("unknown OrderItem unique edge %s", name)
+	return fmt.Errorf("unknown OrderItem edge %s", name)
 }
 
 // ResetEdge resets all changes for the edge with the given name.

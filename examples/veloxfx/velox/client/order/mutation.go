@@ -27,6 +27,7 @@ type OrderMutation struct {
 	oldValue         func(context.Context) (*entity.Order, error)
 	oldLoaded        bool
 	oldCache         *entity.Order
+	done             bool
 	customer         map[int]struct{}
 	removedCustomer  map[int]struct{}
 	clearedCustomer  bool
@@ -95,6 +96,9 @@ func (m *OrderMutation) loadOld(ctx context.Context) (*entity.Order, error) {
 	}
 	if m.oldLoaded {
 		return m.oldCache, nil
+	}
+	if m.done {
+		return nil, fmt.Errorf("%w: call Order.OldXxx in the hook before next.Mutate", runtime.ErrOldValueAfterMutation)
 	}
 	old, err := m.oldValue(ctx)
 	if err != nil {
@@ -178,10 +182,7 @@ func (m *OrderMutation) ResetStatus() {
 
 // SetCustomerID sets the "customer" edge to the Customer entity by id.
 func (m *OrderMutation) SetCustomerID(id int) {
-	if m.customer == nil {
-		m.customer = make(map[int]struct{})
-	}
-	m.customer[id] = struct{}{}
+	m.customer = map[int]struct{}{id: {}}
 }
 
 // ClearCustomer clears the "customer" edge.
@@ -211,10 +212,7 @@ func (m *OrderMutation) CustomerIDs() (ids []int) {
 
 // SetWarehouseID sets the "warehouse" edge to the Warehouse entity by id.
 func (m *OrderMutation) SetWarehouseID(id int) {
-	if m.warehouse == nil {
-		m.warehouse = make(map[int]struct{})
-	}
-	m.warehouse[id] = struct{}{}
+	m.warehouse = map[int]struct{}{id: {}}
 }
 
 // ClearWarehouse clears the "warehouse" edge.
@@ -539,7 +537,7 @@ func (m *OrderMutation) ClearEdge(name string) error {
 		m.ClearItems()
 		return nil
 	}
-	return fmt.Errorf("unknown Order unique edge %s", name)
+	return fmt.Errorf("unknown Order edge %s", name)
 }
 
 // ResetEdge resets all changes for the edge with the given name.

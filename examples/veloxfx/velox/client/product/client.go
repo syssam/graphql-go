@@ -235,9 +235,25 @@ func (c *ProductClient) mutate(ctx context.Context, m *ProductMutation) (any, er
 	case runtime.OpUpdateOne:
 		builder := NewProductUpdateOne(c.config, m, c.Hooks())
 		return builder.Save(ctx)
-	case runtime.OpDelete, runtime.OpDeleteOne:
+	case runtime.OpDelete:
 		builder := NewProductDelete(c.config, m, c.Hooks())
 		return builder.Exec(ctx)
+	case runtime.OpDeleteOne:
+		if m.id == nil {
+			return nil, fmt.Errorf("velox: missing ID for %s DeleteOne mutation", "Product")
+		}
+		id := *m.id
+		m.Where(func(s *sql.Selector) {
+			s.Where(sql.EQ(s.C(product.FieldID), id))
+		})
+		n, err := NewProductDelete(c.config, m, c.Hooks()).Exec(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if n == 0 {
+			return nil, velox.NewNotFoundError("Product")
+		}
+		return n, nil
 	default:
 		return nil, fmt.Errorf("unknown %s mutation op: %q", "Product", m.Op())
 	}

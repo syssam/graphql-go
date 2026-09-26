@@ -24,6 +24,7 @@ type CustomerMutation struct {
 	oldValue      func(context.Context) (*entity.Customer, error)
 	oldLoaded     bool
 	oldCache      *entity.Customer
+	done          bool
 	orders        map[int]struct{}
 	removedOrders map[int]struct{}
 	clearedOrders bool
@@ -86,6 +87,9 @@ func (m *CustomerMutation) loadOld(ctx context.Context) (*entity.Customer, error
 	}
 	if m.oldLoaded {
 		return m.oldCache, nil
+	}
+	if m.done {
+		return nil, fmt.Errorf("%w: call Customer.OldXxx in the hook before next.Mutate", runtime.ErrOldValueAfterMutation)
 	}
 	old, err := m.oldValue(ctx)
 	if err != nil {
@@ -376,7 +380,7 @@ func (m *CustomerMutation) ClearEdge(name string) error {
 		m.ClearOrders()
 		return nil
 	}
-	return fmt.Errorf("unknown Customer unique edge %s", name)
+	return fmt.Errorf("unknown Customer edge %s", name)
 }
 
 // ResetEdge resets all changes for the edge with the given name.

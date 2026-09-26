@@ -839,6 +839,7 @@ func (_u *ProductUpdateOne) sqlSave(ctx context.Context) (*entity.Product, error
 		}
 		return nil, runtime.MayWrapConstraintError(err)
 	}
+	_u.mutation.done = true
 	columns := product.Columns
 	if len(_u.selectFields) > 0 {
 		columns = make([]string, 0, len(_u.selectFields)+1)

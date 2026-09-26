@@ -160,7 +160,7 @@ func (r *ProductResolver) Products(ctx context.Context, args productgql.Products
 	if args.Where != nil {
 		opts = append(opts, entity.WithProductFilter(args.Where.Filter))
 	}
-	q := r.client.Product.Query().WithCategory()
+	q := r.client.Product.Query() // Paginate loads what the page selects
 	return q.(entity.ProductPaginatable).Paginate(ctx, args.After, args.First, args.Before, args.Last, opts...)
 }
 
@@ -170,12 +170,21 @@ func (r *ProductResolver) Product(ctx context.Context, args productgql.ProductAr
 }
 ```
 
-Three habits, each because of something velox does:
+Four habits, each because of something velox does:
 
-- **Eager-load what the type exposes** (`WithCategory()`), or each edge
-  queries once per row. `orders { edges { node { customer items { product }
-  } } }` over three orders of two items is five queries; one edge at a time
-  it would be fourteen.
+- **Let the query decide what loads.** `Paginate` reads the page's
+  selection, and a list resolver calls `CollectFields(ctx)` before `All`:
+  each selected edge is one query for every row, only selected columns are
+  read, and there is no `COUNT(*)` unless `totalCount` is asked for.
+  `orders { edges { node { customer items { product } } } }` over three
+  orders of two items is four queries; one edge at a time it would be
+  thirteen. velox reads the selection through `internal/veloxgql`, which
+  `server.go` installs with one `WithOperationInterceptor`.
+- **Load what a hand-written field reads.** velox cannot see inside
+  `Order.totalCents`, which sums every item's price. `Orders` loads the
+  items itself when a node selects it (`veloxgql.NodeSelects`), and velox
+  leaves an edge the resolver loaded whole; left to the selection, the items
+  are read with only the columns the client asked for, and the total is 0.
 - **Read a created row back** (`Save`, then `Get`). velox marks a new row's
   required edges loaded with an id-only stub, so `createProduct { category {
   name } }` would answer an empty name.
@@ -306,7 +315,11 @@ body for each stub --
 
 ```go
 func (r *SupplierResolver) Suppliers(ctx context.Context) ([]*entity.Supplier, error) {
-	return r.client.Supplier.Query().WithProducts().All(ctx)
+	q, err := r.client.Supplier.Query().CollectFields(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return q.All(ctx)
 }
 ```
 
@@ -323,8 +336,10 @@ gqlfx.Register(NewSupplierResolver, suppliergql.Bindings),
 Running `go generate` again leaves the filled-in file byte for byte as it was;
 a field added later arrives as one new stub at its end.
 
-**35 lines by hand:** 22 of schema, 3 of configuration and registration, 9 of
-bodies and constructor, and one in the test that pins the group list. No
+**39 lines by hand:** 22 of schema, 3 of configuration and registration, 13
+of bodies and constructor, and one in the test that pins the group list.
+(35 when `Suppliers` named its eager loads, `WithProducts().All(ctx)`; the
+four more lines are what makes it load only what a query selects.) No
 signature typed, no type converted. (The first version of this example took
 55 for the same entity, every signature copied from the interface and every
 id and order argument converted by hand.)
@@ -344,7 +359,8 @@ removing the rule and watching the test fail:
 | `TestOrderLifecycle` | the state machine, and stock returned on cancel |
 | `TestConcurrentOrdersCannotOversell` | twenty racing orders for five units place five |
 | `TestReadAndDeleteByID` | null for a missing id; what a delete may take with it |
-| `TestOrdersAreAFixedNumberOfQueries` | eager loading across domains |
+| `TestOrdersAreAFixedNumberOfQueries` | eager loading across domains, and no COUNT nobody asked for |
+| `TestScenario*` (`scenarios_test.go`) | what large clients send: Relay fragments and variables over fifty orders, projected columns in the SQL, a count badge beside a list, a nested connection, a computed field under projection |
 | `TestUnclassifiedErrorsAreMasked` | a driver's error never reaches a client |
 | `TestAMissingDomainFailsStart` | a missing registration fails start |
 | `TestStopWaitsOutAnUnusedConnection` | shutdown survives a client's idle pre-connection |
@@ -360,9 +376,5 @@ These belong in velox; the example states each where it copes.
 - **Its GraphQL extension's files are not in `.velox-manifest`**, so one it
   no longer writes is never deleted and stops compiling. `generate.go`
   deletes `velox/` first.
-- **`Paginate` always counts outside gqlgen**: it asks gqlgen's request
-  context whether `totalCount` was selected, and there is none here. One
-  extra `COUNT(*)` per connection; `TestOrdersAreAFixedNumberOfQueries`
-  asserts it, so the test fails when velox can be told.
 - **A created row's edges are id-only stubs**, and **`NonNegative()` does not
   check `AddQuantity`** -- covered in section 3.

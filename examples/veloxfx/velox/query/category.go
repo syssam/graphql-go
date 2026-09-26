@@ -72,6 +72,7 @@ func (q *CategoryQuery) WithEdgeLoad(name string, opts ...runtime.LoadOption) ru
 		if q.withProducts == nil {
 			q.withProducts = NewProductQuery(q.config)
 			q.withProducts.inters = q.inters
+			q.withProducts.ctx.EdgeLoadCreated = true
 		}
 		q.withProducts.applyLoad(runtime.NewLoadConfig(opts...), true)
 		return q.withProducts
@@ -177,6 +178,9 @@ func (q *CategoryQuery) QueryProducts() entity.ProductQuerier {
 	tq := NewProductQuery(q.config)
 	tq.inters = q.inters
 	tq.path = func(ctx context.Context) (*sql.Selector, error) {
+		if err := q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
 		from, err := q.buildQuery(ctx)
 		if err != nil {
 			return nil, err
@@ -241,6 +245,16 @@ func (q *CategoryQuery) eagerLoad(ctx context.Context, nodes []*entity.Category)
 // Traversers from the interceptor list. Privacy is invoked
 // explicitly here — it is NOT part of the interceptor chain.
 func (q *CategoryQuery) prepareQuery(ctx context.Context) error {
+	for _, f := range q.ctx.Fields {
+		if !category.ValidColumn(f) {
+			return &runtime.ValidationError{
+				Entity: "Category",
+				Err:    fmt.Errorf("invalid field %q for query", f),
+				Field:  f,
+				Name:   f,
+			}
+		}
+	}
 	return runtime.RunTraversers(ctx, q, q.inters.Category)
 }
 
@@ -326,7 +340,7 @@ func (q *CategoryQuery) sqlCount(ctx context.Context) (int, error) {
 		}
 	}
 	spec := q.querySpec()
-	spec.Node.Columns = nil
+	spec.Node.Columns = q.ctx.Fields
 	spec.From = from
 	return sqlgraph.CountNodes(ctx, q.config.Driver, spec)
 }
@@ -441,9 +455,6 @@ func (q *CategoryQuery) sqlIDs(ctx context.Context) ([]int, error) {
 		from, err = q.path(ctx)
 		if err != nil {
 			return nil, err
-		}
-		if q.ctx.Unique == nil {
-			q.Unique(true)
 		}
 	}
 	spec := q.querySpec()
@@ -764,6 +775,16 @@ func (g *CategoryGroupBy) Aggregate(fns ...runtime.AggregateFunc) entity.Categor
 // Scan applies the group-by query and scans the result into the given value.
 func (g *CategoryGroupBy) Scan(ctx context.Context, v any) error {
 	ctx = setContextOp(ctx, g.build.ctx, velox.OpQueryGroupBy)
+	for _, f := range g.fields {
+		if !category.ValidColumn(f) {
+			return &runtime.ValidationError{
+				Entity: "Category",
+				Err:    fmt.Errorf("invalid field %q for query", f),
+				Field:  f,
+				Name:   f,
+			}
+		}
+	}
 	if g.build == nil {
 		return g.sqlScan(ctx, v)
 	}

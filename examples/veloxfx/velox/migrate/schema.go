@@ -20,11 +20,9 @@ var CategoryColumns = []*schema.Column{{
 
 // CategoryTable holds the schema information for the "categories" table.
 var CategoryTable = &schema.Table{
-	Columns:     CategoryColumns,
-	ForeignKeys: nil,
-	Indexes:     nil,
-	Name:        "categories",
-	PrimaryKey:  []*schema.Column{CategoryColumns[0]},
+	Columns:    CategoryColumns,
+	Name:       "categories",
+	PrimaryKey: []*schema.Column{CategoryColumns[0]},
 }
 
 // CustomerColumns holds the columns for the "customers" table.
@@ -43,11 +41,9 @@ var CustomerColumns = []*schema.Column{{
 
 // CustomerTable holds the schema information for the "customers" table.
 var CustomerTable = &schema.Table{
-	Columns:     CustomerColumns,
-	ForeignKeys: nil,
-	Indexes:     nil,
-	Name:        "customers",
-	PrimaryKey:  []*schema.Column{CustomerColumns[0]},
+	Columns:    CustomerColumns,
+	Name:       "customers",
+	PrimaryKey: []*schema.Column{CustomerColumns[0]},
 }
 
 // OrderColumns holds the columns for the "orders" table.
@@ -88,7 +84,6 @@ var OrderTable = &schema.Table{
 		RefColumns: []*schema.Column{WarehouseColumns[0]},
 		Symbol:     "orders_warehouses_orders",
 	}},
-	Indexes:    nil,
 	Name:       "orders",
 	PrimaryKey: []*schema.Column{OrderColumns[0]},
 }
@@ -126,7 +121,6 @@ var OrderItemTable = &schema.Table{
 		RefColumns: []*schema.Column{ProductColumns[0]},
 		Symbol:     "order_items_products_order_items",
 	}},
-	Indexes:    nil,
 	Name:       "order_items",
 	PrimaryKey: []*schema.Column{OrderItemColumns[0]},
 }
@@ -160,7 +154,6 @@ var ProductTable = &schema.Table{
 		RefColumns: []*schema.Column{CategoryColumns[0]},
 		Symbol:     "products_categories_products",
 	}},
-	Indexes:    nil,
 	Name:       "products",
 	PrimaryKey: []*schema.Column{ProductColumns[0]},
 }
@@ -174,10 +167,10 @@ var StockColumns = []*schema.Column{{
 	Name: "quantity",
 	Type: field.TypeInt,
 }, {
-	Name: "warehouse_stocks",
+	Name: "product_stocks",
 	Type: field.TypeInt,
 }, {
-	Name: "product_stocks",
+	Name: "warehouse_stocks",
 	Type: field.TypeInt,
 }}
 
@@ -187,16 +180,16 @@ var StockTable = &schema.Table{
 	ForeignKeys: []*schema.ForeignKey{{
 		Columns:    []*schema.Column{StockColumns[2]},
 		OnDelete:   schema.NoAction,
-		RefColumns: []*schema.Column{WarehouseColumns[0]},
-		Symbol:     "stocks_warehouses_stocks",
+		RefColumns: []*schema.Column{ProductColumns[0]},
+		Symbol:     "stocks_products_stocks",
 	}, {
 		Columns:    []*schema.Column{StockColumns[3]},
 		OnDelete:   schema.NoAction,
-		RefColumns: []*schema.Column{ProductColumns[0]},
-		Symbol:     "stocks_products_stocks",
+		RefColumns: []*schema.Column{WarehouseColumns[0]},
+		Symbol:     "stocks_warehouses_stocks",
 	}},
 	Indexes: []*schema.Index{{
-		Columns: []*schema.Column{StockColumns[2], StockColumns[3]},
+		Columns: []*schema.Column{StockColumns[3], StockColumns[2]},
 		Name:    "stock_warehouse_stocks_product_stocks",
 		Unique:  true,
 	}},
@@ -217,11 +210,9 @@ var WarehouseColumns = []*schema.Column{{
 
 // WarehouseTable holds the schema information for the "warehouses" table.
 var WarehouseTable = &schema.Table{
-	Columns:     WarehouseColumns,
-	ForeignKeys: nil,
-	Indexes:     nil,
-	Name:        "warehouses",
-	PrimaryKey:  []*schema.Column{WarehouseColumns[0]},
+	Columns:    WarehouseColumns,
+	Name:       "warehouses",
+	PrimaryKey: []*schema.Column{WarehouseColumns[0]},
 }
 
 // Tables holds all the tables in the schema.
@@ -233,6 +224,6 @@ func init() {
 	OrderItemTable.ForeignKeys[0].RefTable = OrderTable
 	OrderItemTable.ForeignKeys[1].RefTable = ProductTable
 	ProductTable.ForeignKeys[0].RefTable = CategoryTable
-	StockTable.ForeignKeys[0].RefTable = WarehouseTable
-	StockTable.ForeignKeys[1].RefTable = ProductTable
+	StockTable.ForeignKeys[0].RefTable = ProductTable
+	StockTable.ForeignKeys[1].RefTable = WarehouseTable
 }

@@ -78,6 +78,7 @@ func (q *ProductQuery) WithEdgeLoad(name string, opts ...runtime.LoadOption) run
 		if q.withCategory == nil {
 			q.withCategory = NewCategoryQuery(q.config)
 			q.withCategory.inters = q.inters
+			q.withCategory.ctx.EdgeLoadCreated = true
 		}
 		q.withFKs = true
 		q.withCategory.applyLoad(runtime.NewLoadConfig(opts...), false)
@@ -86,6 +87,7 @@ func (q *ProductQuery) WithEdgeLoad(name string, opts ...runtime.LoadOption) run
 		if q.withStocks == nil {
 			q.withStocks = NewStockQuery(q.config)
 			q.withStocks.inters = q.inters
+			q.withStocks.ctx.EdgeLoadCreated = true
 		}
 		q.withStocks.applyLoad(runtime.NewLoadConfig(opts...), true)
 		return q.withStocks
@@ -93,6 +95,7 @@ func (q *ProductQuery) WithEdgeLoad(name string, opts ...runtime.LoadOption) run
 		if q.withOrderItems == nil {
 			q.withOrderItems = NewOrderItemQuery(q.config)
 			q.withOrderItems.inters = q.inters
+			q.withOrderItems.ctx.EdgeLoadCreated = true
 		}
 		q.withOrderItems.applyLoad(runtime.NewLoadConfig(opts...), true)
 		return q.withOrderItems
@@ -236,6 +239,9 @@ func (q *ProductQuery) QueryCategory() entity.CategoryQuerier {
 	tq := NewCategoryQuery(q.config)
 	tq.inters = q.inters
 	tq.path = func(ctx context.Context) (*sql.Selector, error) {
+		if err := q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
 		from, err := q.buildQuery(ctx)
 		if err != nil {
 			return nil, err
@@ -252,6 +258,9 @@ func (q *ProductQuery) QueryStocks() entity.StockQuerier {
 	tq := NewStockQuery(q.config)
 	tq.inters = q.inters
 	tq.path = func(ctx context.Context) (*sql.Selector, error) {
+		if err := q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
 		from, err := q.buildQuery(ctx)
 		if err != nil {
 			return nil, err
@@ -268,6 +277,9 @@ func (q *ProductQuery) QueryOrderItems() entity.OrderItemQuerier {
 	tq := NewOrderItemQuery(q.config)
 	tq.inters = q.inters
 	tq.path = func(ctx context.Context) (*sql.Selector, error) {
+		if err := q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
 		from, err := q.buildQuery(ctx)
 		if err != nil {
 			return nil, err
@@ -360,6 +372,16 @@ func (q *ProductQuery) eagerLoad(ctx context.Context, nodes []*entity.Product) e
 // Traversers from the interceptor list. Privacy is invoked
 // explicitly here — it is NOT part of the interceptor chain.
 func (q *ProductQuery) prepareQuery(ctx context.Context) error {
+	for _, f := range q.ctx.Fields {
+		if !product.ValidColumn(f) {
+			return &runtime.ValidationError{
+				Entity: "Product",
+				Err:    fmt.Errorf("invalid field %q for query", f),
+				Field:  f,
+				Name:   f,
+			}
+		}
+	}
 	return runtime.RunTraversers(ctx, q, q.inters.Product)
 }
 
@@ -445,7 +467,7 @@ func (q *ProductQuery) sqlCount(ctx context.Context) (int, error) {
 		}
 	}
 	spec := q.querySpec()
-	spec.Node.Columns = nil
+	spec.Node.Columns = q.ctx.Fields
 	spec.From = from
 	return sqlgraph.CountNodes(ctx, q.config.Driver, spec)
 }
@@ -582,9 +604,6 @@ func (q *ProductQuery) sqlIDs(ctx context.Context) ([]int, error) {
 		from, err = q.path(ctx)
 		if err != nil {
 			return nil, err
-		}
-		if q.ctx.Unique == nil {
-			q.Unique(true)
 		}
 	}
 	spec := q.querySpec()
@@ -905,6 +924,16 @@ func (g *ProductGroupBy) Aggregate(fns ...runtime.AggregateFunc) entity.ProductG
 // Scan applies the group-by query and scans the result into the given value.
 func (g *ProductGroupBy) Scan(ctx context.Context, v any) error {
 	ctx = setContextOp(ctx, g.build.ctx, velox.OpQueryGroupBy)
+	for _, f := range g.fields {
+		if !product.ValidColumn(f) {
+			return &runtime.ValidationError{
+				Entity: "Product",
+				Err:    fmt.Errorf("invalid field %q for query", f),
+				Field:  f,
+				Name:   f,
+			}
+		}
+	}
 	if g.build == nil {
 		return g.sqlScan(ctx, v)
 	}
@@ -956,6 +985,9 @@ func (q *ProductQuery) loadCategory(ctx context.Context, query *CategoryQuery, n
 	fkSeen := make(map[int]struct{}, len(nodes))
 	var fks []any
 	for _, n := range nodes {
+		if init != nil {
+			init(n)
+		}
 		fkRaw := n.FKValue("category_products")
 		if fkRaw == nil {
 			continue
@@ -964,9 +996,6 @@ func (q *ProductQuery) loadCategory(ctx context.Context, query *CategoryQuery, n
 		if _, ok := fkSeen[fkVal]; !ok {
 			fkSeen[fkVal] = struct{}{}
 			fks = append(fks, any(fkVal))
-		}
-		if init != nil {
-			init(n)
 		}
 	}
 	if len(fks) == 0 {

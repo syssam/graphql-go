@@ -211,9 +211,25 @@ func (c *OrderItemClient) mutate(ctx context.Context, m *OrderItemMutation) (any
 	case runtime.OpUpdateOne:
 		builder := NewOrderItemUpdateOne(c.config, m, c.Hooks())
 		return builder.Save(ctx)
-	case runtime.OpDelete, runtime.OpDeleteOne:
+	case runtime.OpDelete:
 		builder := NewOrderItemDelete(c.config, m, c.Hooks())
 		return builder.Exec(ctx)
+	case runtime.OpDeleteOne:
+		if m.id == nil {
+			return nil, fmt.Errorf("velox: missing ID for %s DeleteOne mutation", "OrderItem")
+		}
+		id := *m.id
+		m.Where(func(s *sql.Selector) {
+			s.Where(sql.EQ(s.C(orderitem.FieldID), id))
+		})
+		n, err := NewOrderItemDelete(c.config, m, c.Hooks()).Exec(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if n == 0 {
+			return nil, velox.NewNotFoundError("OrderItem")
+		}
+		return n, nil
 	default:
 		return nil, fmt.Errorf("unknown %s mutation op: %q", "OrderItem", m.Op())
 	}

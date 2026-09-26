@@ -236,7 +236,6 @@ func (c *ProductCreate) createSpec() (*entity.Product, *sqlgraph.CreateSpec) {
 		for _, k := range nodes {
 			edge.Target.Nodes = append(edge.Target.Nodes, k)
 		}
-		_node.Edges.SetCategory(&entity.Category{ID: nodes[0]})
 		_spec.Edges = append(_spec.Edges, edge)
 	}
 	if nodes := c.mutation.StocksIDs(); len(nodes) > 0 {
@@ -375,6 +374,7 @@ func (_cb *ProductCreateBulk) saveChunk(ctx context.Context, builders []*Product
 	for i := range builders {
 		func(i int, root context.Context) {
 			builder := builders[i]
+			allHooks := builder.hooks
 			var mut runtime.Mutator = runtime.MutateFunc(func(ctx context.Context, m runtime.Mutation) (runtime.Value, error) {
 				mutation, ok := m.(*ProductMutation)
 				if !ok {
@@ -405,7 +405,6 @@ func (_cb *ProductCreateBulk) saveChunk(ctx context.Context, builders []*Product
 				}
 				return nodes[i], nil
 			})
-			allHooks := builder.hooks
 			for j := len(allHooks) - 1; j >= 0; j-- {
 				mut = allHooks[j](mut)
 			}

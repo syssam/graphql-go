@@ -211,9 +211,25 @@ func (c *StockClient) mutate(ctx context.Context, m *StockMutation) (any, error)
 	case runtime.OpUpdateOne:
 		builder := NewStockUpdateOne(c.config, m, c.Hooks())
 		return builder.Save(ctx)
-	case runtime.OpDelete, runtime.OpDeleteOne:
+	case runtime.OpDelete:
 		builder := NewStockDelete(c.config, m, c.Hooks())
 		return builder.Exec(ctx)
+	case runtime.OpDeleteOne:
+		if m.id == nil {
+			return nil, fmt.Errorf("velox: missing ID for %s DeleteOne mutation", "Stock")
+		}
+		id := *m.id
+		m.Where(func(s *sql.Selector) {
+			s.Where(sql.EQ(s.C(stock.FieldID), id))
+		})
+		n, err := NewStockDelete(c.config, m, c.Hooks()).Exec(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if n == 0 {
+			return nil, velox.NewNotFoundError("Stock")
+		}
+		return n, nil
 	default:
 		return nil, fmt.Errorf("unknown %s mutation op: %q", "Stock", m.Op())
 	}

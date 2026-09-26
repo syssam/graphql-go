@@ -211,9 +211,25 @@ func (c *WarehouseClient) mutate(ctx context.Context, m *WarehouseMutation) (any
 	case runtime.OpUpdateOne:
 		builder := NewWarehouseUpdateOne(c.config, m, c.Hooks())
 		return builder.Save(ctx)
-	case runtime.OpDelete, runtime.OpDeleteOne:
+	case runtime.OpDelete:
 		builder := NewWarehouseDelete(c.config, m, c.Hooks())
 		return builder.Exec(ctx)
+	case runtime.OpDeleteOne:
+		if m.id == nil {
+			return nil, fmt.Errorf("velox: missing ID for %s DeleteOne mutation", "Warehouse")
+		}
+		id := *m.id
+		m.Where(func(s *sql.Selector) {
+			s.Where(sql.EQ(s.C(warehouse.FieldID), id))
+		})
+		n, err := NewWarehouseDelete(c.config, m, c.Hooks()).Exec(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if n == 0 {
+			return nil, velox.NewNotFoundError("Warehouse")
+		}
+		return n, nil
 	default:
 		return nil, fmt.Errorf("unknown %s mutation op: %q", "Warehouse", m.Op())
 	}

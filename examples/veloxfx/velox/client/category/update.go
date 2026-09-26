@@ -421,6 +421,7 @@ func (_u *CategoryUpdateOne) sqlSave(ctx context.Context) (*entity.Category, err
 		}
 		return nil, runtime.MayWrapConstraintError(err)
 	}
+	_u.mutation.done = true
 	columns := category.Columns
 	if len(_u.selectFields) > 0 {
 		columns = make([]string, 0, len(_u.selectFields)+1)

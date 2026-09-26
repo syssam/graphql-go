@@ -10,6 +10,7 @@ import (
 	ordermodel "github.com/syssam/graphql-go/examples/veloxfx/graph/model/order"
 	ordergql "github.com/syssam/graphql-go/examples/veloxfx/graph/order"
 	"github.com/syssam/graphql-go/examples/veloxfx/internal/inventory"
+	"github.com/syssam/graphql-go/examples/veloxfx/internal/veloxgql"
 	"github.com/syssam/graphql-go/examples/veloxfx/velox"
 	"github.com/syssam/graphql-go/examples/veloxfx/velox/entity"
 	"github.com/syssam/graphql-go/examples/veloxfx/velox/order"
@@ -25,17 +26,23 @@ func NewOrderResolver(client *velox.Client) *OrderResolver {
 	return &OrderResolver{client: client}
 }
 
-// Orders is a connection that eager-loads two levels, one of them crossing
-// into catalog: orders { edges { node { items { product } } } } is a fixed
-// number of queries, not one per item.
+// Orders is a connection whose page loads what its nodes select, across
+// domains: orders { edges { node { items { product } } } } is a fixed number
+// of queries, not one per item, and no COUNT unless totalCount is asked for.
+//
+// totalCents is the one thing Paginate cannot see: it is sdl/order.graphql's,
+// and it reads every item's price whatever the client selected beneath
+// items. Loading the items here, when a node asks for it, is what tells
+// velox to leave them whole.
 func (r *OrderResolver) Orders(ctx context.Context, args ordergql.OrdersArgs) (*entity.OrderConnection, error) {
 	opts := []entity.OrderPaginateOption{entity.WithOrderOrder(args.OrderBy)}
 	if args.Where != nil {
 		opts = append(opts, entity.WithOrderFilter(args.Where.Filter))
 	}
-	q := r.client.Order.Query().
-		WithCustomer().
-		WithItems(func(q entity.OrderItemQuerier) { q.WithProduct() })
+	q := r.client.Order.Query()
+	if veloxgql.NodeSelects(ctx, "totalCents") {
+		q = q.WithItems()
+	}
 	return q.(entity.OrderPaginatable).Paginate(ctx, args.After, args.First, args.Before, args.Last, opts...)
 }
 

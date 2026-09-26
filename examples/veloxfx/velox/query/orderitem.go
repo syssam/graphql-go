@@ -74,6 +74,7 @@ func (q *OrderItemQuery) WithEdgeLoad(name string, opts ...runtime.LoadOption) r
 		if q.withOrder == nil {
 			q.withOrder = NewOrderQuery(q.config)
 			q.withOrder.inters = q.inters
+			q.withOrder.ctx.EdgeLoadCreated = true
 		}
 		q.withFKs = true
 		q.withOrder.applyLoad(runtime.NewLoadConfig(opts...), false)
@@ -82,6 +83,7 @@ func (q *OrderItemQuery) WithEdgeLoad(name string, opts ...runtime.LoadOption) r
 		if q.withProduct == nil {
 			q.withProduct = NewProductQuery(q.config)
 			q.withProduct.inters = q.inters
+			q.withProduct.ctx.EdgeLoadCreated = true
 		}
 		q.withFKs = true
 		q.withProduct.applyLoad(runtime.NewLoadConfig(opts...), false)
@@ -186,6 +188,9 @@ func (q *OrderItemQuery) QueryOrder() entity.OrderQuerier {
 	tq := NewOrderQuery(q.config)
 	tq.inters = q.inters
 	tq.path = func(ctx context.Context) (*sql.Selector, error) {
+		if err := q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
 		from, err := q.buildQuery(ctx)
 		if err != nil {
 			return nil, err
@@ -202,6 +207,9 @@ func (q *OrderItemQuery) QueryProduct() entity.ProductQuerier {
 	tq := NewProductQuery(q.config)
 	tq.inters = q.inters
 	tq.path = func(ctx context.Context) (*sql.Selector, error) {
+		if err := q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
 		from, err := q.buildQuery(ctx)
 		if err != nil {
 			return nil, err
@@ -265,6 +273,16 @@ func (q *OrderItemQuery) eagerLoad(ctx context.Context, nodes []*entity.OrderIte
 // Traversers from the interceptor list. Privacy is invoked
 // explicitly here — it is NOT part of the interceptor chain.
 func (q *OrderItemQuery) prepareQuery(ctx context.Context) error {
+	for _, f := range q.ctx.Fields {
+		if !orderitem.ValidColumn(f) {
+			return &runtime.ValidationError{
+				Entity: "OrderItem",
+				Err:    fmt.Errorf("invalid field %q for query", f),
+				Field:  f,
+				Name:   f,
+			}
+		}
+	}
 	return runtime.RunTraversers(ctx, q, q.inters.OrderItem)
 }
 
@@ -350,7 +368,7 @@ func (q *OrderItemQuery) sqlCount(ctx context.Context) (int, error) {
 		}
 	}
 	spec := q.querySpec()
-	spec.Node.Columns = nil
+	spec.Node.Columns = q.ctx.Fields
 	spec.From = from
 	return sqlgraph.CountNodes(ctx, q.config.Driver, spec)
 }
@@ -476,9 +494,6 @@ func (q *OrderItemQuery) sqlIDs(ctx context.Context) ([]int, error) {
 		from, err = q.path(ctx)
 		if err != nil {
 			return nil, err
-		}
-		if q.ctx.Unique == nil {
-			q.Unique(true)
 		}
 	}
 	spec := q.querySpec()
@@ -799,6 +814,16 @@ func (g *OrderItemGroupBy) Aggregate(fns ...runtime.AggregateFunc) entity.OrderI
 // Scan applies the group-by query and scans the result into the given value.
 func (g *OrderItemGroupBy) Scan(ctx context.Context, v any) error {
 	ctx = setContextOp(ctx, g.build.ctx, velox.OpQueryGroupBy)
+	for _, f := range g.fields {
+		if !orderitem.ValidColumn(f) {
+			return &runtime.ValidationError{
+				Entity: "OrderItem",
+				Err:    fmt.Errorf("invalid field %q for query", f),
+				Field:  f,
+				Name:   f,
+			}
+		}
+	}
 	if g.build == nil {
 		return g.sqlScan(ctx, v)
 	}
@@ -837,6 +862,9 @@ func (q *OrderItemQuery) loadOrder(ctx context.Context, query *OrderQuery, nodes
 	fkSeen := make(map[int]struct{}, len(nodes))
 	var fks []any
 	for _, n := range nodes {
+		if init != nil {
+			init(n)
+		}
 		fkRaw := n.FKValue("order_items")
 		if fkRaw == nil {
 			continue
@@ -845,9 +873,6 @@ func (q *OrderItemQuery) loadOrder(ctx context.Context, query *OrderQuery, nodes
 		if _, ok := fkSeen[fkVal]; !ok {
 			fkSeen[fkVal] = struct{}{}
 			fks = append(fks, any(fkVal))
-		}
-		if init != nil {
-			init(n)
 		}
 	}
 	if len(fks) == 0 {
@@ -883,6 +908,9 @@ func (q *OrderItemQuery) loadProduct(ctx context.Context, query *ProductQuery, n
 	fkSeen := make(map[int]struct{}, len(nodes))
 	var fks []any
 	for _, n := range nodes {
+		if init != nil {
+			init(n)
+		}
 		fkRaw := n.FKValue("product_order_items")
 		if fkRaw == nil {
 			continue
@@ -891,9 +919,6 @@ func (q *OrderItemQuery) loadProduct(ctx context.Context, query *ProductQuery, n
 		if _, ok := fkSeen[fkVal]; !ok {
 			fkSeen[fkVal] = struct{}{}
 			fks = append(fks, any(fkVal))
-		}
-		if init != nil {
-			init(n)
 		}
 	}
 	if len(fks) == 0 {

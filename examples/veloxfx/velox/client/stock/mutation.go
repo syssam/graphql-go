@@ -24,6 +24,7 @@ type StockMutation struct {
 	oldValue         func(context.Context) (*entity.Stock, error)
 	oldLoaded        bool
 	oldCache         *entity.Stock
+	done             bool
 	warehouse        map[int]struct{}
 	removedWarehouse map[int]struct{}
 	clearedWarehouse bool
@@ -90,6 +91,9 @@ func (m *StockMutation) loadOld(ctx context.Context) (*entity.Stock, error) {
 	if m.oldLoaded {
 		return m.oldCache, nil
 	}
+	if m.done {
+		return nil, fmt.Errorf("%w: call Stock.OldXxx in the hook before next.Mutate", runtime.ErrOldValueAfterMutation)
+	}
 	old, err := m.oldValue(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("querying old values: %w", err)
@@ -153,10 +157,7 @@ func (m *StockMutation) ResetQuantity() {
 
 // SetWarehouseID sets the "warehouse" edge to the Warehouse entity by id.
 func (m *StockMutation) SetWarehouseID(id int) {
-	if m.warehouse == nil {
-		m.warehouse = make(map[int]struct{})
-	}
-	m.warehouse[id] = struct{}{}
+	m.warehouse = map[int]struct{}{id: {}}
 }
 
 // ClearWarehouse clears the "warehouse" edge.
@@ -186,10 +187,7 @@ func (m *StockMutation) WarehouseIDs() (ids []int) {
 
 // SetProductID sets the "product" edge to the Product entity by id.
 func (m *StockMutation) SetProductID(id int) {
-	if m.product == nil {
-		m.product = make(map[int]struct{})
-	}
-	m.product[id] = struct{}{}
+	m.product = map[int]struct{}{id: {}}
 }
 
 // ClearProduct clears the "product" edge.
@@ -415,7 +413,7 @@ func (m *StockMutation) ClearEdge(name string) error {
 		m.ClearProduct()
 		return nil
 	}
-	return fmt.Errorf("unknown Stock unique edge %s", name)
+	return fmt.Errorf("unknown Stock edge %s", name)
 }
 
 // ResetEdge resets all changes for the edge with the given name.

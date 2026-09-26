@@ -17,8 +17,13 @@ func NewCustomerResolver(client *velox.Client) *CustomerResolver {
 	return &CustomerResolver{client: client}
 }
 
+// Customers loads what the query selects beneath it and nothing else.
 func (r *CustomerResolver) Customers(ctx context.Context) ([]*entity.Customer, error) {
-	return r.client.Customer.Query().WithOrders().All(ctx)
+	q, err := r.client.Customer.Query().CollectFields(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return q.All(ctx)
 }
 
 func (r *CustomerResolver) Customer(ctx context.Context, args customergql.CustomerArgs) (*entity.Customer, error) {

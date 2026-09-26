@@ -23,6 +23,7 @@ type CategoryMutation struct {
 	oldValue        func(context.Context) (*entity.Category, error)
 	oldLoaded       bool
 	oldCache        *entity.Category
+	done            bool
 	products        map[int]struct{}
 	removedProducts map[int]struct{}
 	clearedProducts bool
@@ -85,6 +86,9 @@ func (m *CategoryMutation) loadOld(ctx context.Context) (*entity.Category, error
 	}
 	if m.oldLoaded {
 		return m.oldCache, nil
+	}
+	if m.done {
+		return nil, fmt.Errorf("%w: call Category.OldXxx in the hook before next.Mutate", runtime.ErrOldValueAfterMutation)
 	}
 	old, err := m.oldValue(ctx)
 	if err != nil {
@@ -339,7 +343,7 @@ func (m *CategoryMutation) ClearEdge(name string) error {
 		m.ClearProducts()
 		return nil
 	}
-	return fmt.Errorf("unknown Category unique edge %s", name)
+	return fmt.Errorf("unknown Category edge %s", name)
 }
 
 // ResetEdge resets all changes for the edge with the given name.

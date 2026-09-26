@@ -687,6 +687,7 @@ func (_u *OrderUpdateOne) sqlSave(ctx context.Context) (*entity.Order, error) {
 		}
 		return nil, runtime.MayWrapConstraintError(err)
 	}
+	_u.mutation.done = true
 	columns := order.Columns
 	if len(_u.selectFields) > 0 {
 		columns = make([]string, 0, len(_u.selectFields)+1)

@@ -15,6 +15,7 @@ import (
 	graphql "github.com/syssam/graphql-go"
 	"github.com/syssam/graphql-go/examples/veloxfx/graph"
 	"github.com/syssam/graphql-go/examples/veloxfx/internal/gqlfx"
+	"github.com/syssam/graphql-go/examples/veloxfx/internal/veloxgql"
 	"github.com/syssam/graphql-go/transport/drain"
 	"github.com/syssam/graphql-go/transport/gqlecho"
 	"github.com/syssam/graphql-go/transport/gqlsse"
@@ -34,7 +35,10 @@ func NewSchema(g gqlfx.Groups) (*graphql.Schema, error) {
 }
 
 func NewExecutor(s *graphql.Schema) *graphql.Executor {
-	return graphql.NewExecutor(s, graphql.WithErrorPresenter(presentError))
+	return graphql.NewExecutor(s,
+		graphql.WithErrorPresenter(presentError),
+		graphql.WithOperationInterceptor(veloxgql.Collect),
+	)
 }
 
 // NewEcho registers every route with Any, for the reason examples/echo
