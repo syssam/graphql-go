@@ -69,6 +69,18 @@ That list is the argument for the adoption path above: every item passed a
 green unit suite and failed the first time something shaped like real traffic
 touched it.
 
+## A large schema without federation
+
+`docs/large-schemas.md` measures a 300-entity monolith through velox, gqlc
+and graphql-go. Start-up (114 ms) and introspection (4.3 MB, under 70 ms) are
+fine; the edit loop is the cost, three minutes on 4 cores for an entity edit.
+It found that graphql-go's generic binding functions were half of that
+rebuild's CPU (fixed, -35% on the group packages), that the documented depth
+limit locked IDEs and client generators out of introspection (fixed), and
+that gqlparser's default `MaxIntrospectionDepth` rule is exponential in
+fragment spreads -- a 1.1 KB document cost two seconds of validation, with or
+without introspection enabled (replaced here; gqlgen uses the same rule).
+
 ## What is still unmeasured or open
 
 - Latency percentiles and throughput of the combined stack on production
