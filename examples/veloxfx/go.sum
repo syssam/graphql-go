@@ -68,6 +68,10 @@ github.com/syssam/velox v0.3.1-0.20260926142227-1115064d1250 h1:MksaS+UdoeDGJN+z
 github.com/syssam/velox v0.3.1-0.20260926142227-1115064d1250/go.mod h1:Qsu7Zbl+gH8p1mtxvaxvaoU6ZcXGx4lPkPtfmMFUXEY=
 github.com/syssam/velox v0.3.1-0.20260926143913-4c611f892717 h1:MGvTt92PzZsOUqLo2xTdv0eGKIkre5EGmCIzerBjSQ0=
 github.com/syssam/velox v0.3.1-0.20260926143913-4c611f892717/go.mod h1:Qsu7Zbl+gH8p1mtxvaxvaoU6ZcXGx4lPkPtfmMFUXEY=
+github.com/syssam/velox v0.3.1-0.20260926145745-2f2e8d37399e h1:m9GvXZ+vmxXYAfxITTR3ZO7veMqW2g0Uv6l2Fn5N4RE=
+github.com/syssam/velox v0.3.1-0.20260926145745-2f2e8d37399e/go.mod h1:Qsu7Zbl+gH8p1mtxvaxvaoU6ZcXGx4lPkPtfmMFUXEY=
+github.com/syssam/velox/contrib/graphqlgo v0.0.0-20260926145745-2f2e8d37399e h1:Ynbxe+oqKxt0Bjh9HLYxq9tFVXQQ6RPt5G86RaWBpds=
+github.com/syssam/velox/contrib/graphqlgo v0.0.0-20260926145745-2f2e8d37399e/go.mod h1:ysPP3njq7nA0ye+jqYI+UNZ+Ki46e4D7iM7lY4REfWc=
 github.com/vektah/gqlparser/v2 v2.5.58 h1:yHxQ3EjU2OGuDMh6noxxmZova1HkBM3CbdGtL+rvjOc=
 github.com/vektah/gqlparser/v2 v2.5.58/go.mod h1:9O4Ox6Ngd3Y12bMD3w6i3CRQXh8W1oC1q0m6olCymDM=
 github.com/vmihailenco/msgpack/v5 v5.4.1 h1:cQriyiUvjTwOHg8QZaPihLWeRAAVoCpE00IUPn0Bjt8=

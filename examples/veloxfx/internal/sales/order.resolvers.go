@@ -10,11 +10,11 @@ import (
 	ordermodel "github.com/syssam/graphql-go/examples/veloxfx/graph/model/order"
 	ordergql "github.com/syssam/graphql-go/examples/veloxfx/graph/order"
 	"github.com/syssam/graphql-go/examples/veloxfx/internal/inventory"
-	"github.com/syssam/graphql-go/examples/veloxfx/internal/veloxgql"
 	"github.com/syssam/graphql-go/examples/veloxfx/velox"
 	"github.com/syssam/graphql-go/examples/veloxfx/velox/entity"
 	"github.com/syssam/graphql-go/examples/veloxfx/velox/order"
 	"github.com/syssam/graphql-go/examples/veloxfx/velox/orderitem"
+	"github.com/syssam/velox/contrib/graphqlgo"
 )
 
 // OrderResolver implements the order group's Resolver.
@@ -40,7 +40,7 @@ func (r *OrderResolver) Orders(ctx context.Context, args ordergql.OrdersArgs) (*
 		opts = append(opts, entity.WithOrderFilter(args.Where.Filter))
 	}
 	q := r.client.Order.Query()
-	if veloxgql.NodeSelects(ctx, "totalCents") {
+	if graphqlgo.NodeSelects(ctx, "totalCents") {
 		q = q.WithItems()
 	}
 	return q.(entity.OrderPaginatable).Paginate(ctx, args.After, args.First, args.Before, args.Last, opts...)

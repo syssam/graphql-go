@@ -15,11 +15,11 @@ import (
 	graphql "github.com/syssam/graphql-go"
 	"github.com/syssam/graphql-go/examples/veloxfx/graph"
 	"github.com/syssam/graphql-go/examples/veloxfx/internal/gqlfx"
-	"github.com/syssam/graphql-go/examples/veloxfx/internal/veloxgql"
 	"github.com/syssam/graphql-go/transport/drain"
 	"github.com/syssam/graphql-go/transport/gqlecho"
 	"github.com/syssam/graphql-go/transport/gqlsse"
 	"github.com/syssam/graphql-go/transport/gqlws"
+	"github.com/syssam/velox/contrib/graphqlgo"
 )
 
 // scalars binds Time, the one custom scalar gqlc does not: a models entry
@@ -37,7 +37,7 @@ func NewSchema(g gqlfx.Groups) (*graphql.Schema, error) {
 func NewExecutor(s *graphql.Schema) *graphql.Executor {
 	return graphql.NewExecutor(s,
 		graphql.WithErrorPresenter(presentError),
-		graphql.WithOperationInterceptor(veloxgql.Collect),
+		graphqlgo.Collect(), // velox reads each query's selection
 	)
 }
 

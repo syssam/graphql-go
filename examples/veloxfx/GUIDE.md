@@ -178,11 +178,11 @@ Four habits, each because of something velox does:
   read, and there is no `COUNT(*)` unless `totalCount` is asked for.
   `orders { edges { node { customer items { product } } } }` over three
   orders of two items is four queries; one edge at a time it would be
-  thirteen. velox reads the selection through `internal/veloxgql`, which
-  `server.go` installs with one `WithOperationInterceptor`.
+  thirteen. velox reads the selection through its `contrib/graphqlgo`
+  module, which `server.go` installs with one `graphqlgo.Collect()`.
 - **Load what a hand-written field reads.** velox cannot see inside
   `Order.totalCents`, which sums every item's price. `Orders` loads the
-  items itself when a node selects it (`veloxgql.NodeSelects`), and velox
+  items itself when a node selects it (`graphqlgo.NodeSelects`), and velox
   leaves an edge the resolver loaded whole; left to the selection, the items
   are read with only the columns the client asked for, and the total is 0.
 - **Read a created row back** (`Save`, then `Get`). velox marks a new row's

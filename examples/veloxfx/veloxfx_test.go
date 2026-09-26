@@ -267,7 +267,7 @@ func TestServesThroughEveryDomain(t *testing.T) {
 // Three orders of two items each, loaded one edge at a time, is 1 + 3
 // customers + 3 item lists + 6 products = 13 queries; collected it is 4, and
 // totalCents reuses the items already loaded. No COUNT(*): totalCount is not
-// selected, and velox reads that from this engine through internal/veloxgql.
+// selected, and velox reads that from this engine through graphqlgo.Collect.
 func TestOrdersAreAFixedNumberOfQueries(t *testing.T) {
 	var queries, counting atomic.Int64
 	a := start(t, fx.Decorate(func(*velox.Client) (*velox.Client, error) {
