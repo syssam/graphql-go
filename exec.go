@@ -604,6 +604,11 @@ func (e *Executor) runOperation(ctx context.Context, oc *OperationContext) *Resp
 	if err != nil {
 		return e.requestError(ctx, authorizerError(ctx, err))
 	}
+	if decision != nil {
+		// SelectedField.Withheld reads it, so code planning what a subtree
+		// loads can skip one this request will not resolve.
+		ctx = withDecision(ctx, oc, decision)
+	}
 	if oc.event != nil {
 		return e.runSubscriptionEvent(ctx, oc, decision)
 	}

@@ -200,8 +200,48 @@ func (fc *FieldContext) Selection() Selection {
 type operationCtxKey struct{}
 type fieldCtxKey struct{}
 
+// opCtx carries an operation's OperationContext and, once the Authorizer
+// has decided, its Decision. It is the one context node an operation
+// allocates for them: 32 bytes where context.WithValue took 48 for the
+// OperationContext alone, and nothing more for the Decision.
+type opCtx struct {
+	context.Context
+	oc       *OperationContext
+	decision *Decision
+}
+
+// opCtxKey finds the operation's own opCtx, so runOperation can record the
+// Decision on it.
+type opCtxKey struct{}
+
+func (c *opCtx) Value(key any) any {
+	switch key.(type) {
+	case operationCtxKey:
+		return c.oc
+	case opCtxKey:
+		return c
+	case decisionCtxKey:
+		if c.decision != nil {
+			return c.decision
+		}
+	}
+	return c.Context.Value(key)
+}
+
 func withOperation(ctx context.Context, oc *OperationContext) context.Context {
-	return context.WithValue(ctx, operationCtxKey{}, oc)
+	return &opCtx{Context: ctx, oc: oc}
+}
+
+// withDecision makes d visible to SelectedField.Withheld for the operation
+// oc. It is recorded on the operation's own context node, set before any
+// resolver starts, so it costs no allocation; a context that does not carry
+// that node -- an operation interceptor that replaced it -- gets a new one.
+func withDecision(ctx context.Context, oc *OperationContext, d *Decision) context.Context {
+	if c, ok := ctx.Value(opCtxKey{}).(*opCtx); ok && c.oc == oc {
+		c.decision = d
+		return ctx
+	}
+	return context.WithValue(ctx, decisionCtxKey{}, d)
 }
 
 // fieldValueCtx carries a FieldContext by value so a resolver field pays one
@@ -355,6 +395,32 @@ func (s Selection) Collect[T any](fn func(SelectedField) T) []T {
 		out = append(out, fn(f))
 	}
 	return out
+}
+
+// decisionCtxKey carries the operation's authorization Decision to
+// SelectedField.Withheld.
+type decisionCtxKey struct{}
+
+// Withheld reports whether authorization withholds the field in this
+// request: the Authorizer's Outcome for it is Deny, Null or Zero, so it is
+// never resolved and nothing beneath it is read. Code that loads data for a
+// selection ahead of the resolvers -- an ORM eager-loading edges -- skips
+// such a field, so a subtree the caller may not see costs no query and never
+// enters memory. ctx is the executing resolver's or interceptor's.
+//
+// A Redact outcome resolves the field and is not withheld. Instance-level
+// decisions (ObjectAuthorizer) are made per object as values arrive, after
+// loading is planned, and are not reflected here.
+func (f SelectedField) Withheld(ctx context.Context) bool {
+	if f.field == nil || f.field.authIdx < 0 {
+		return false
+	}
+	d, _ := ctx.Value(decisionCtxKey{}).(*Decision)
+	switch d.Outcome(int(f.field.authIdx)).act {
+	case actionDeny, actionNull, actionZero:
+		return true
+	}
+	return false
 }
 
 // ForType returns what is selected when the value is of the named object
