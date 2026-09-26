@@ -48,3 +48,24 @@ func TestBatchContextDeadlineIsTheLatestWaiters(t *testing.T) {
 		t.Error("a batch with a waiter that has no deadline was given one")
 	}
 }
+
+// Under Execute every resolver's context is a value-only wrapper around the
+// request's, so no two waiters share an identity. They share a Done channel,
+// and deduplicating on it keeps the common batch on the path that builds no
+// context and registers no AfterFunc per waiter: the first waiter's context
+// is used as it is.
+func TestBatchContextSharesOneCancellationWithoutWrapping(t *testing.T) {
+	type key struct{}
+	parent, cancel := context.WithCancel(context.Background())
+	a := context.WithValue(parent, key{}, "a")
+	b := context.WithValue(parent, key{}, "b")
+	ctx, release := batchContext([]int{1, 2}, map[int][]*waiter[int]{1: {{ctx: a}}, 2: {{ctx: b}}})
+	defer release()
+	if ctx != a {
+		t.Fatalf("batch context was wrapped; want the first waiter's own")
+	}
+	cancel()
+	if ctx.Err() == nil {
+		t.Error("batch not cancelled with the waiters' shared parent")
+	}
+}

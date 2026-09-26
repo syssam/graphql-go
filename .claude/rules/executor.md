@@ -182,7 +182,11 @@ launching sibling tasks (`pushWave`), which is what makes DataLoader batching wo
 request** (`batchContext`): values from one waiter, cancelled only once every waiter has given
 up, deadline the latest of theirs. The scope used to keep the first `Load`'s context, so a
 resolver that wrapped its own in `WithTimeout` and returned failed every later wave with
-`context.Canceled` (`TestALaterWaveDoesNotInheritAnEarlierLoadsContext`). Outside `Execute` a
+`context.Canceled` (`TestALaterWaveDoesNotInheritAnEarlierLoadsContext`). **Waiters are
+deduplicated by `Done()` channel, not identity**: every resolver's context is its own value-only
+wrapper, so an identity check sent every batch down the `AfterFunc`-per-waiter path and cost
+~300 allocs per 100-row request (`TestBatchContextSharesOneCancellationWithoutWrapping`,
+`BenchmarkLoader*`). Outside `Execute` a
 `Loader` caches only under `loader.WithScope`; the unscoped fallback is shared by the whole
 process and must not cache (`TestOnlyAScopedLoadIsCachedOutsideExecute`).
 **The coordinator counts the whole operation, not a stack of waves.** It keeps three numbers:

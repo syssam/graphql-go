@@ -372,13 +372,22 @@ func (s *requestScope[K, V]) flush() {
 // wraps its context in a timeout and returns cancels it, and every later batch
 // in the request then failed with context.Canceled.
 func batchContext[K comparable, V any](keys []K, waiters map[K][]*waiter[V]) (context.Context, func()) {
-	// Waiters overwhelmingly share one context, so a linear scan over the
-	// distinct ones beats a map.
-	var ctxs []context.Context
+	// Distinct by Done channel, not by identity: under Execute every
+	// resolver's context is its own value-only wrapper around the request's,
+	// so identities never repeat, while their cancellation is one channel.
+	// Two contexts sharing a Done channel are cancelled together, so either
+	// stands for both. Waiters overwhelmingly share one, so a linear scan
+	// over a stack buffer beats a map.
+	var buf [4]context.Context
+	var dones [4]<-chan struct{}
+	ctxs, doneOf := buf[:0], dones[:0]
 	for _, k := range keys {
 		for _, w := range waiters[k] {
-			if w.ctx != nil && !slices.Contains(ctxs, w.ctx) {
-				ctxs = append(ctxs, w.ctx)
+			if w.ctx == nil {
+				continue
+			}
+			if d := w.ctx.Done(); !slices.Contains(doneOf, d) {
+				ctxs, doneOf = append(ctxs, w.ctx), append(doneOf, d)
 			}
 		}
 	}
