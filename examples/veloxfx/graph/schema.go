@@ -4,6 +4,7 @@
 package graph
 
 import (
+	"context"
 	"embed"
 
 	"github.com/syssam/graphql-go"
@@ -15,6 +16,7 @@ import (
 	"github.com/syssam/graphql-go/examples/veloxfx/graph/root"
 	"github.com/syssam/graphql-go/examples/veloxfx/graph/stock"
 	"github.com/syssam/graphql-go/examples/veloxfx/graph/warehouse"
+	"github.com/syssam/graphql-go/fed"
 )
 
 //go:embed schema/*.graphql
@@ -28,12 +30,21 @@ var sdl embed.FS
 //
 // A group that is not passed leaves its fields unbound, which NewSchema
 // reports. Groups with no Resolver are included already.
-func NewSchema(opts ...graphql.SchemaOption) (*graphql.Schema, error) {
+//
+// The schema is an Apollo Federation subgraph: entities resolves each @key
+// type the router reaches through _entities, and _service returns the
+// embedded SDL.
+func NewSchema(entities []fed.Entity, opts ...graphql.SchemaOption) (*graphql.Schema, error) {
+	src, subgraph, err := fed.SubgraphFS(sdl, []string{"schema/*.graphql"}, entities...)
+	if err != nil {
+		return nil, err
+	}
 	all := []graphql.SchemaOption{
+		subgraph,
 		root.Bindings(),
 	}
 	all = append(all, opts...)
-	return graphql.NewSchema(graphql.SDLFS(sdl, "schema/*.graphql"), all...)
+	return graphql.NewSchema(src, all...)
 }
 
 // ValidateSchema builds the schema with no resolver behind it, so every
@@ -49,6 +60,17 @@ func ValidateSchema(opts ...graphql.SchemaOption) error {
 		stock.Bindings(nil),
 		warehouse.Bindings(nil),
 	}
-	_, err := NewSchema(append(all, opts...)...)
+	_, err := NewSchema(placeholderEntities(), append(all, opts...)...)
 	return err
+}
+
+// placeholderEntities stands in for every @key type's resolver in
+// ValidateSchema, which builds the schema and resolves nothing.
+func placeholderEntities() []fed.Entity {
+	none := func(context.Context, fed.Representation) (*struct{}, error) { return nil, nil }
+	return []fed.Entity{
+		fed.Resolver("Customer", none),
+		fed.Resolver("Order", none),
+		fed.Resolver("Product", none),
+	}
 }

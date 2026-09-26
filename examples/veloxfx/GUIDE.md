@@ -268,6 +268,17 @@ The viewer comes from an `X-Viewer` header -- `staff` or `customer:<id>` --
 which stands in for verifying a token (`internal/viewer`); nothing past the
 middleware reads anything but the `Viewer`.
 
+### A federation subgraph
+
+Other services in a federated graph refer to this one's products, customers
+and orders. `key("id")` in `schema/*.go` puts `@key` on them, velox adds the
+Federation v2 `@link`, and `gqlc.yaml`'s `federation: true` makes
+`graph.NewSchema` take the entity resolvers in `entities.go`, one
+`graphqlgo.Entities` per type. A router's batch of references is one query
+per type, collected for what it selected, and an order fetched through the
+router passes the same ownership filter as one fetched by a client
+(`federation_scenarios_test.go`).
+
 ## 6. Call it
 
     go run ./cmd/server
@@ -398,6 +409,7 @@ removing the rule and watching the test fail:
 | `TestReadAndDeleteByID` | null for a missing id; what a delete may take with it |
 | `TestOrdersAreAFixedNumberOfQueries` | eager loading across domains, and no COUNT nobody asked for |
 | `TestScenario*` (`scenarios_test.go`) | what large clients send: Relay fragments and variables over fifty orders, projected columns in the SQL, a count badge beside a list, a nested connection, a computed field under projection and in a nested page |
+| `TestScenarioRouter*`, `TestScenarioServiceSDLIsComposable` (`federation_scenarios_test.go`) | a router's batch of thirteen references is two queries; several types, one query each; ownership holds through `_entities`; `_service` carries one federation link and every key |
 | `TestScenario*` (`authz_scenarios_test.go`) | a withheld edge costs no query; masked personal data; a customer's orders filtered in SQL, by list, count, id and edge; anonymous reads fail closed; deep and wide queries refused with no SQL, and an ordinary page is not |
 | `TestUnclassifiedErrorsAreMasked` | a driver's error never reaches a client |
 | `TestAMissingDomainFailsStart` | a missing registration fails start |

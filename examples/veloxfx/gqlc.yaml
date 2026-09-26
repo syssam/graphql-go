@@ -51,3 +51,6 @@ scaffold:
   orderitem: internal/sales.OrderItemResolver
   warehouse: internal/inventory.WarehouseResolver
   stock:     internal/inventory.StockResolver
+# An Apollo Federation subgraph: @key needs no declaration, and
+# graph.NewSchema takes the entity resolvers (entities.go).
+federation: true

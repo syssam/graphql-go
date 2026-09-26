@@ -76,6 +76,7 @@ func (Product) Edges() []velox.Edge {
 
 func (Product) Annotations() []schema.Annotation {
 	return []schema.Annotation{
+		key("id"), // a federation entity: other subgraphs refer to it by id
 		// products(first, after, where, orderBy) is a Relay connection. Filtering
 		// is opt-in per field: a column is not filterable until it is listed.
 		graphql.RelayConnection(),

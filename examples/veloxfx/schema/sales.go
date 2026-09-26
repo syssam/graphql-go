@@ -28,6 +28,7 @@ func (Customer) Edges() []velox.Edge {
 
 func (Customer) Annotations() []schema.Annotation {
 	return []schema.Annotation{
+		key("id"), // a federation entity: other subgraphs refer to it by id
 		graphql.QueryField(),
 		graphql.Mutations(graphql.MutationCreate(), graphql.MutationUpdate()),
 	}
@@ -60,6 +61,7 @@ func (Order) Edges() []velox.Edge {
 
 func (Order) Annotations() []schema.Annotation {
 	return []schema.Annotation{
+		key("id"), // a federation entity: other subgraphs refer to it by id
 		graphql.RelayConnection(),
 		graphql.WhereInputFields("status"),
 		graphql.WhereInputEdges("customer"),

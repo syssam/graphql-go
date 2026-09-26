@@ -34,7 +34,7 @@ Everything below is what makes that fork cheap.
 | Persisted and trusted documents (Meta and Shopify style) | `ext/apq`, `ext/trusted` |
 | Rate limiting by cost | `ext/throttle` |
 | Tracing and metrics | `ext/otel`, velox `contrib/otelvelox` |
-| Federation (Apollo router) | `fed/` |
+| Federation (Apollo router), including gqlc-generated subgraphs | `fed/` (`SubgraphFS`), gqlc `federation: true`; velox `graphqlgo.Entities` answers a router's batch in one query per type |
 | Graceful drain of HTTP, SSE and WebSocket | `transport/drain` |
 | Introspection off in production | `DisableIntrospection()` |
 | N+1 prevention without DataLoaders for edges | velox field collection, now engine-neutral |
@@ -59,6 +59,11 @@ ran:
   `Connections: true`).
 - Directives on velox edges were **dropped**, so an edge "guarded" by
   `@requiresScopes` was served unguarded (velox, fixed).
+- A **gqlc-generated schema could not be a federation subgraph**: `fed` took
+  one SDL string, and gqlc could not parse `@key`. Now `federation: true`.
+- gqlc **never deleted an SDL copy** whose source was removed, so a deleted
+  file's types stayed in the served schema -- found when a removed
+  federation link kept the subgraph carrying two (fixed).
 
 That list is the argument for the adoption path above: every item passed a
 green unit suite and failed the first time something shaped like real traffic

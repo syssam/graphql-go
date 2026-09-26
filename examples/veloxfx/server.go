@@ -16,6 +16,7 @@ import (
 	"github.com/syssam/graphql-go/examples/veloxfx/graph"
 	"github.com/syssam/graphql-go/examples/veloxfx/internal/gqlfx"
 	"github.com/syssam/graphql-go/examples/veloxfx/internal/viewer"
+	"github.com/syssam/graphql-go/examples/veloxfx/velox"
 	"github.com/syssam/graphql-go/transport/drain"
 	"github.com/syssam/graphql-go/transport/gqlecho"
 	"github.com/syssam/graphql-go/transport/gqlsse"
@@ -31,8 +32,8 @@ var scalars = graphql.Time("Time")
 // NewSchema takes whatever bindings the domain modules registered. It does
 // not name them: a module that is not in the app leaves its types unbound,
 // and graph.NewSchema says which.
-func NewSchema(g gqlfx.Groups) (*graphql.Schema, error) {
-	return graph.NewSchema(append(g.Bindings, scalars)...)
+func NewSchema(g gqlfx.Groups, client *velox.Client) (*graphql.Schema, error) {
+	return graph.NewSchema(entities(client), append(g.Bindings, scalars)...)
 }
 
 func NewExecutor(s *graphql.Schema) *graphql.Executor {
