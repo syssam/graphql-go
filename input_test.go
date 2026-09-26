@@ -528,3 +528,87 @@ func TestVariableDefaultKinds(t *testing.T) {
 	expectData(t, resp,
 		`{"echo":"s=\"def\" nil=null block=\"blk\" i=1 f=2.5 b=false c=RED list=[4 5] nested=(s=absent nil=absent i=2)"}`)
 }
+
+// Every Go shape an input object can be decoded into, derived and
+// hand-written: the decoders behind them are type-erased, and a hand-written
+// InputField reaches them through a typed adapter of its own.
+func TestInputObjectShapes(t *testing.T) {
+	const sdl = `
+		input Nested { tag: String! }
+		input Shapes { vals: [Nested!], ptrs: [Nested], one: Nested!, opt: Nested }
+		input Hand { vals: [Nested!] }
+		type Query { q(s: Shapes!, h: Hand!): Int }
+	`
+	type shapes struct {
+		Vals []nestedIn
+		Ptrs []*nestedIn
+		One  nestedIn
+		Opt  *nestedIn
+	}
+	type hand struct{ Vals []nestedIn }
+	s, err := NewSchema(SDL(sdl),
+		Input[nestedIn]("Nested"),
+		Input[shapes]("Shapes"),
+		Input[hand]("Hand", InputField("vals", func(h *hand, v []nestedIn) { h.Vals = v })),
+		Query(ResolveArgs("q", func(context.Context, Root, struct {
+			S shapes
+			H hand
+		}) (*int, error) {
+			return nil, nil
+		})),
+		Args[struct {
+			S shapes
+			H hand
+		}](),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decode := func(name string, raw map[string]any) (any, error) {
+		t.Helper()
+		return s.reg.inputsByName[name].decode(raw)
+	}
+	tag := func(s string) map[string]any { return map[string]any{"tag": s} }
+
+	v, err := decode("Shapes", map[string]any{
+		"vals": []any{tag("a"), tag("b")},
+		"ptrs": []any{tag("c"), nil},
+		"one":  tag("d"),
+		"opt":  nil,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := v.(*shapes)
+	if len(got.Vals) != 2 || got.Vals[0].Tag != "a" || got.Vals[1].Tag != "b" {
+		t.Errorf("[Nested!] into []T: %+v", got.Vals)
+	}
+	if len(got.Ptrs) != 2 || got.Ptrs[0].Tag != "c" || got.Ptrs[1] != nil {
+		t.Errorf("[Nested] into []*T keeps a null element as nil: %+v", got.Ptrs)
+	}
+	if got.One.Tag != "d" || got.Opt != nil {
+		t.Errorf("Nested! into T, null into *T: %+v", got)
+	}
+
+	// A single value coerces to a one-element list.
+	v, err = decode("Shapes", map[string]any{"vals": tag("x"), "one": tag("d")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := v.(*shapes).Vals; len(got) != 1 || got[0].Tag != "x" {
+		t.Errorf("list coercion into []T: %+v", got)
+	}
+
+	// A null element of [Nested!] names its index.
+	if _, err := decode("Shapes", map[string]any{"vals": []any{tag("a"), nil}, "one": tag("d")}); err == nil || !strings.Contains(err.Error(), "[1]") {
+		t.Errorf("null element of [Nested!]: %v", err)
+	}
+
+	v, err = decode("Hand", map[string]any{"vals": []any{tag("h1"), tag("h2")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := v.(*hand).Vals; len(got) != 2 || got[1].Tag != "h2" {
+		t.Errorf("InputField of []T: %+v", got)
+	}
+}

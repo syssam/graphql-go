@@ -45,7 +45,10 @@ type fieldSpec struct {
 	pure       bool
 	inline     bool
 	concurrent bool
-	compose    func(b *schemaBuilder, s *Schema, obj *objectType, def *ast.FieldDefinition, fd *fieldDef) error
+	calls      func(obj *objectType) (fieldCalls, error)
+	// compose, when set, replaces composeField: a subscription field is
+	// composed as a Root field and then given its stream opener.
+	compose func(b *schemaBuilder, s *Schema, obj *objectType, def *ast.FieldDefinition, fd *fieldDef) error
 }
 
 func (f *fieldSpec) applyField(ob *objectBinding) { ob.fields = append(ob.fields, f) }
@@ -116,24 +119,27 @@ func (fd *fieldDef) wrap(wrapper func(FieldFunc) FieldFunc) {
 // pointer type. Several Object calls for the same name are merged.
 func Object[T any](name string, fields ...FieldOption) SchemaOption {
 	return schemaOptionFunc(func(b *schemaBuilder) {
-		tE := reflect.TypeFor[T]()
-		if tE.Kind() == reflect.Pointer {
-			b.errorf("Object %q: bind the element type %s, not the pointer type %s", name, tE.Elem(), tE)
-			return
-		}
-		ob := b.objects[name]
-		if ob == nil {
-			ob = &objectBinding{name: name, shapes: registerObjectShapes[T](b.reg), attempted: make(map[string]bool)}
-			b.objects[name] = ob
-			b.objectOrder = append(b.objectOrder, name)
-		} else if ob.shapes.elem != tE {
-			b.errorf("Object %q: bound to both %s and %s", name, ob.shapes.elem, tE)
-			return
-		}
-		for _, f := range fields {
-			f.applyField(ob)
-		}
+		bindObject(b, name, reflect.TypeFor[T](), func() objectShapes { return registerObjectShapes[T](b.reg) }, fields)
 	})
+}
+
+func bindObject(b *schemaBuilder, name string, tE reflect.Type, shapes func() objectShapes, fields []FieldOption) {
+	if tE.Kind() == reflect.Pointer {
+		b.errorf("Object %q: bind the element type %s, not the pointer type %s", name, tE.Elem(), tE)
+		return
+	}
+	ob := b.objects[name]
+	if ob == nil {
+		ob = &objectBinding{name: name, shapes: shapes(), attempted: make(map[string]bool)}
+		b.objects[name] = ob
+		b.objectOrder = append(b.objectOrder, name)
+	} else if ob.shapes.elem != tE {
+		b.errorf("Object %q: bound to both %s and %s", name, ob.shapes.elem, tE)
+		return
+	}
+	for _, f := range fields {
+		f.applyField(ob)
+	}
 }
 
 // Field binds a pure field: fn reads data from the parent without I/O. Pure
@@ -170,6 +176,11 @@ func ResolveArgs[P, A, R any](name string, fn func(context.Context, P, A) (R, er
 	})
 }
 
+// newFieldSpec is the generic half of a field binding: the closures that call
+// the bound function with its parent converted to P and write or box its R.
+// Everything else about composing a field is composeField, which is not
+// generic -- a package binding hundreds of fields, as generated code does,
+// would otherwise compile that logic again for every one of them.
 func newFieldSpec[P, R any](name string, argsType reflect.Type, pure bool, opts []FieldSchedule, call func(context.Context, P, any) (R, error)) *fieldSpec {
 	spec := &fieldSpec{
 		name:     name,
@@ -181,63 +192,85 @@ func newFieldSpec[P, R any](name string, argsType reflect.Type, pure bool, opts 
 	for _, o := range opts {
 		o(spec)
 	}
-	spec.compose = func(b *schemaBuilder, s *Schema, obj *objectType, def *ast.FieldDefinition, fd *fieldDef) error {
-		coord := coordinate(obj.name, def.Name)
-
+	spec.calls = func(obj *objectType) (fieldCalls, error) {
 		getParent, err := parentGetter[P](obj)
 		if err != nil {
-			return fmt.Errorf("field %s: %w", coord, err)
+			return fieldCalls{}, err
 		}
-
-		if argsType != nil {
-			if len(def.Arguments) == 0 {
-				return fmt.Errorf("field %s: binding declares arguments %s but the field has none", coord, argsType)
-			}
-			ab := b.reg.argsDecoders[argsType]
-			if ab == nil {
-				return fmt.Errorf("field %s: no Args[%s] registered", coord, argsType)
-			}
-			dec, err := ab.build(b, def.Arguments, coord)
-			if err != nil {
-				return err
-			}
-			fd.args = dec
-		}
-
-		fd.anyResolve = func(ctx context.Context, parent, args any) (any, error) {
-			return call(ctx, getParent(parent), args)
-		}
-
-		if isLeaf(b.ast, def.Type) {
-			fd.leaf = true
-			key := typeKey{def.Type.Name(), spec.result}
-			if err := checkOutputLeafShape(b.reg, key, def.Type, b.ast.Types[def.Type.Name()].Kind); err != nil {
-				return fmt.Errorf("field %s: %w", coord, err)
-			}
-			lw := b.reg.leafWriters[key].(func(*jsonw.Writer, R, *ast.Type) error)
-			typ := def.Type
-			fd.writeLeaf = func(ctx context.Context, w *jsonw.Writer, parent, args any, _ *FieldContext) error {
-				v, err := call(ctx, getParent(parent), args)
-				if err != nil {
-					return err
+		return fieldCalls{
+			anyResolve: func(ctx context.Context, parent, args any) (any, error) {
+				return call(ctx, getParent(parent), args)
+			},
+			resolve: func(ctx context.Context, parent, args any, _ *FieldContext) (any, error) {
+				return call(ctx, getParent(parent), args)
+			},
+			writeLeaf: func(leafWriter any, typ *ast.Type) func(context.Context, *jsonw.Writer, any, any, *FieldContext) error {
+				lw := leafWriter.(func(*jsonw.Writer, R, *ast.Type) error)
+				return func(ctx context.Context, w *jsonw.Writer, parent, args any, _ *FieldContext) error {
+					v, err := call(ctx, getParent(parent), args)
+					if err != nil {
+						return err
+					}
+					return lw(w, v, typ)
 				}
-				return lw(w, v, typ)
-			}
-			fd.writeAny = b.reg.leafWritersAny[key]
-			return nil
-		}
-
-		target, err := checkOutputCompositeShape(s, spec.result, def.Type)
-		if err != nil {
-			return fmt.Errorf("field %s: %w", coord, err)
-		}
-		fd.resolve = func(ctx context.Context, parent, args any, _ *FieldContext) (any, error) {
-			return call(ctx, getParent(parent), args)
-		}
-		fd.shape = b.reg.shapeFor(spec.result, def.Type, target)
-		return nil
+			},
+		}, nil
 	}
 	return spec
+}
+
+// fieldCalls are a field's typed closures, bound to its object type.
+type fieldCalls struct {
+	anyResolve FieldFunc
+	resolve    func(ctx context.Context, parent, args any, fc *FieldContext) (any, error)
+	// writeLeaf takes the registry's typed writer for the field's leaf type
+	// and shape, func(*jsonw.Writer, R, *ast.Type) error.
+	writeLeaf func(leafWriter any, typ *ast.Type) func(ctx context.Context, w *jsonw.Writer, parent, args any, fc *FieldContext) error
+}
+
+// composeField binds spec to its SDL definition def on obj.
+func composeField(spec *fieldSpec, b *schemaBuilder, s *Schema, obj *objectType, def *ast.FieldDefinition, fd *fieldDef) error {
+	coord := coordinate(obj.name, def.Name)
+	calls, err := spec.calls(obj)
+	if err != nil {
+		return fmt.Errorf("field %s: %w", coord, err)
+	}
+
+	if argsType := spec.argsType; argsType != nil {
+		if len(def.Arguments) == 0 {
+			return fmt.Errorf("field %s: binding declares arguments %s but the field has none", coord, argsType)
+		}
+		ab := b.reg.argsDecoders[argsType]
+		if ab == nil {
+			return fmt.Errorf("field %s: no Args[%s] registered", coord, argsType)
+		}
+		dec, err := ab.build(b, def.Arguments, coord)
+		if err != nil {
+			return err
+		}
+		fd.args = dec
+	}
+
+	fd.anyResolve = calls.anyResolve
+
+	if isLeaf(b.ast, def.Type) {
+		fd.leaf = true
+		key := typeKey{def.Type.Name(), spec.result}
+		if err := checkOutputLeafShape(b.reg, key, def.Type, b.ast.Types[def.Type.Name()].Kind); err != nil {
+			return fmt.Errorf("field %s: %w", coord, err)
+		}
+		fd.writeLeaf = calls.writeLeaf(b.reg.leafWriters[key], def.Type)
+		fd.writeAny = b.reg.leafWritersAny[key]
+		return nil
+	}
+
+	target, err := checkOutputCompositeShape(s, spec.result, def.Type)
+	if err != nil {
+		return fmt.Errorf("field %s: %w", coord, err)
+	}
+	fd.resolve = calls.resolve
+	fd.shape = b.reg.shapeFor(spec.result, def.Type, target)
+	return nil
 }
 
 // parentGetter returns a typed accessor converting the executor's canonical
@@ -275,7 +308,13 @@ func (b *schemaBuilder) resolveFields(s *Schema, obj *objectType, ob *objectBind
 			pure:   spec.pure,
 		}
 		fd.schedulable = (!spec.pure || spec.concurrent) && !spec.inline
-		if err := spec.compose(b, s, obj, def, fd); err != nil {
+		var err error
+		if spec.compose != nil {
+			err = spec.compose(b, s, obj, def, fd)
+		} else {
+			err = composeField(spec, b, s, obj, def, fd)
+		}
+		if err != nil {
 			b.errs = append(b.errs, fmt.Errorf("graphql: %w", err))
 			continue
 		}

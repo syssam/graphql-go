@@ -29,33 +29,56 @@ type Marshaler[T any] interface {
 // as it is for Enum.
 func EnumMarshaler[T any, PT Marshaler[T]](name string) SchemaOption {
 	return schemaOptionFunc(func(b *schemaBuilder) {
-		def := b.ast.Types[name]
-		if def == nil || def.Kind != ast.Enum {
-			b.errorf("EnumMarshaler %q: type is not an enum in the schema", name)
+		declared := declaredEnumValues(b, name)
+		if declared == nil {
 			return
-		}
-		declared := make(map[string]bool, len(def.EnumValues))
-		for _, ev := range def.EnumValues {
-			declared[string(jsonw.AppendString(nil, ev.Name))] = true
 		}
 		registerLeaf(b.reg, name, ast.Enum, func(w *jsonw.Writer, v T) error {
 			start := w.Len()
-			if err := marshalGQL[T, PT](w, v); err != nil {
-				return fmt.Errorf("enum %s: %w", name, err)
-			}
-			if out := w.Bytes()[start:]; !declared[string(trimSep(out))] {
-				return fmt.Errorf("enum %s cannot represent value: %s", name, trimSep(out))
-			}
-			return nil
+			return checkEnumOutput(w, start, marshalGQL[T, PT](w, v), declared, name)
 		}, func(raw any) (T, error) {
 			var v T
-			if _, ok := raw.(string); !ok {
-				return v, fmt.Errorf("enum %s cannot represent non-string value: %s", name, describeRaw(raw))
+			if err := checkEnumInput(raw, name); err != nil {
+				return v, err
 			}
 			err := PT(&v).UnmarshalGQL(raw)
 			return v, err
 		})
 	})
+}
+
+// declaredEnumValues is the set of name's values as JSON strings, or nil
+// when name is not an enum in the schema.
+func declaredEnumValues(b *schemaBuilder, name string) map[string]bool {
+	def := b.ast.Types[name]
+	if def == nil || def.Kind != ast.Enum {
+		b.errorf("EnumMarshaler %q: type is not an enum in the schema", name)
+		return nil
+	}
+	declared := make(map[string]bool, len(def.EnumValues))
+	for _, ev := range def.EnumValues {
+		declared[string(jsonw.AppendString(nil, ev.Name))] = true
+	}
+	return declared
+}
+
+// checkEnumOutput reports what MarshalGQL wrote from start, having returned
+// err, if it is not one of the enum's declared values.
+func checkEnumOutput(w *jsonw.Writer, start int, err error, declared map[string]bool, name string) error {
+	if err != nil {
+		return fmt.Errorf("enum %s: %w", name, err)
+	}
+	if out := w.Bytes()[start:]; !declared[string(trimSep(out))] {
+		return fmt.Errorf("enum %s cannot represent value: %s", name, trimSep(out))
+	}
+	return nil
+}
+
+func checkEnumInput(raw any, name string) error {
+	if _, ok := raw.(string); !ok {
+		return fmt.Errorf("enum %s cannot represent non-string value: %s", name, describeRaw(raw))
+	}
+	return nil
 }
 
 // ScalarMarshaler binds the custom scalar name to a Go type that encodes

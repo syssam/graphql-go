@@ -142,3 +142,19 @@ which fails with either list emptied). `validInput` may refuse more than `valida
 never less. Replacing `encoding/json` for the variables map was measured and dropped: v2 into
 `any` with a `json.Number` hook was level with v1, and a `jsontext` token walk was -18% inside
 ±22% noise with more bytes.
+
+**A generic binding function carries only the typed closures; everything else is a
+non-generic function it calls** (`bindInput`, `bindArgs`, `bindObject`, `composeField`,
+`addLeafShape`, `listElementFailed`, `declaredEnumValues`). Go compiles a generic body again
+in every package that instantiates it, and generated code instantiates these once per type in
+one package per group: on a 300-entity schema, the graphql-go code in each group package was
+94% of what it compiled, and an entity edit recompiles all 300 (`docs/large-schemas.md`). Moving
+the build-time logic out took a velox-shaped group from 212 KB of instantiated code to 109 KB,
+0.92s to 0.55s of compile CPU per group, and the entity edit's group share from 330s to 214s,
+with request-path benchmarks indistinguishable (interleaved, every p > 0.05, allocations
+equal). **Input objects' shape decoders are type-erased and reflect on the slice**, which is
+where the rules already allow reflection; `inputDecoderFor` adapts one for a hand-written
+`InputField`, so `registry.decoders` holds leaf shapes only. The `*E` nil check stays a typed
+closure: a pointer GC shape cannot say `p == nil`, and `reflectIsNil` would put reflection on
+every object position. `TestBindingCodeSize` bounds the instantiated code of a generated-shaped
+group at 8% over the current figure; moving the field composition alone back fails it.

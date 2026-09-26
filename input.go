@@ -161,38 +161,45 @@ func (d *inputDecoder) decodeOrdered(m map[string]any) (any, error) {
 // Input binds the GraphQL input object type name to the Go struct T.
 func Input[T any](name string, fields ...InputFieldOption) SchemaOption {
 	return schemaOptionFunc(func(b *schemaBuilder) {
-		def := b.ast.Types[name]
-		if def == nil || def.Kind != ast.InputObject {
-			b.errorf("Input %q: type is not an input object in the schema", name)
-			return
+		if dec := bindInput(b, name, reflect.TypeFor[T](), func() any { return new(T) }, fields); dec != nil {
+			registerInputShapes(b.reg, name, reflect.TypeFor[T](), dec)
 		}
-		tT := reflect.TypeFor[T]()
-		if tT.Kind() != reflect.Struct {
-			b.errorf("Input %q: Go type %s must be a struct", name, tT)
-			return
-		}
-		if prev := b.reg.inputsByName[name]; prev != nil {
-			b.errorf("Input %q: already bound to %s", name, prev.goType)
-			return
-		}
-		dec := &inputDecoder{name: name, goType: tT, newValue: func() any { return new(T) }}
-		ib := &inputBinding{name: name, goType: tT, dec: dec}
-		// Options first: ZeroForNull declares nothing, so deriving on
-		// "no options given" would make it suppress the derivation it is
-		// meant to configure.
-		for _, f := range fields {
+	})
+}
+
+// bindInput is Input without its type parameter; it returns nil when the
+// binding is refused.
+func bindInput(b *schemaBuilder, name string, tT reflect.Type, newValue func() any, fields []InputFieldOption) *inputDecoder {
+	def := b.ast.Types[name]
+	if def == nil || def.Kind != ast.InputObject {
+		b.errorf("Input %q: type is not an input object in the schema", name)
+		return nil
+	}
+	if tT.Kind() != reflect.Struct {
+		b.errorf("Input %q: Go type %s must be a struct", name, tT)
+		return nil
+	}
+	if prev := b.reg.inputsByName[name]; prev != nil {
+		b.errorf("Input %q: already bound to %s", name, prev.goType)
+		return nil
+	}
+	dec := &inputDecoder{name: name, goType: tT, newValue: newValue}
+	ib := &inputBinding{name: name, goType: tT, dec: dec}
+	// Options first: ZeroForNull declares nothing, so deriving on
+	// "no options given" would make it suppress the derivation it is
+	// meant to configure.
+	for _, f := range fields {
+		f.applyInput(ib)
+	}
+	if len(ib.fields) == 0 {
+		for _, f := range autoInputFields(tT, ib.zeroForNull, declaredInputFields(def)) {
 			f.applyInput(ib)
 		}
-		if len(ib.fields) == 0 {
-			for _, f := range autoInputFields(tT, ib.zeroForNull, declaredInputFields(def)) {
-				f.applyInput(ib)
-			}
-			ib.derived = true
-		}
-		b.inputs = append(b.inputs, ib)
-		b.reg.inputsByName[name] = dec
-		registerInputShapes[T](b.reg, name, dec)
-	})
+		ib.derived = true
+	}
+	b.inputs = append(b.inputs, ib)
+	b.reg.inputsByName[name] = dec
+	return dec
 }
 
 // declaredInputFields is the set of field names the schema declares on def.
@@ -206,70 +213,59 @@ func declaredInputFields(def *ast.Definition) map[string]bool {
 
 // registerInputShapes registers decoders for T, *T, []T and []*T that all
 // route through dec, which is completed later by inputBinding.resolve.
-func registerInputShapes[T any](r *registry, name string, dec *inputDecoder) {
-	decodeOne := func(raw any) (*T, error) {
-		m, ok := raw.(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("expected an object for input %s, got %T", name, raw)
+//
+// They are type-erased and reflect on the slices: decoding input is where
+// reflection is allowed, and a generic decoder per shape was compiled again
+// in every package binding an input -- once per input type, in generated
+// code that binds hundreds. A hand-written InputField of one of these shapes
+// gets a typed decoder from inputDecoderFor, in the package that asked.
+func registerInputShapes(r *registry, name string, tT reflect.Type, dec *inputDecoder) {
+	tPT := reflect.PointerTo(tT)
+	tST := reflect.SliceOf(tT)
+	tSPT := reflect.SliceOf(tPT)
+	// A null decodes to a typed nil, which the setter can store.
+	nilPT, nilST, nilSPT := reflect.Zero(tPT).Interface(), reflect.Zero(tST).Interface(), reflect.Zero(tSPT).Interface()
+
+	r.addInputShape(name, []bool{false}, tT, func(raw any, _ *ast.Type) (any, error) {
+		if raw == nil {
+			return nil, errNonNull
 		}
-		v, err := dec.decode(m)
+		p, err := dec.decodeRaw(raw)
 		if err != nil {
 			return nil, err
 		}
-		return v.(*T), nil
-	}
-	tT := reflect.TypeFor[T]()
-	tPT := reflect.TypeFor[*T]()
-	tST := reflect.TypeFor[[]T]()
-	tSPT := reflect.TypeFor[[]*T]()
-
-	r.shapes[typeKey{name, tT}] = shapeInfo{depth: 0, nullable: []bool{false}}
-	r.shapes[typeKey{name, tPT}] = shapeInfo{depth: 0, nullable: []bool{true}}
-	r.shapes[typeKey{name, tST}] = shapeInfo{depth: 1, nullable: []bool{true, false}}
-	r.shapes[typeKey{name, tSPT}] = shapeInfo{depth: 1, nullable: []bool{true, true}}
-
-	setDecoder(r, name, tT, func(raw any, _ *ast.Type) (T, error) {
-		if raw == nil {
-			var zero T
-			return zero, errNonNull
-		}
-		p, err := decodeOne(raw)
-		if err != nil {
-			var zero T
-			return zero, err
-		}
-		return *p, nil
+		return reflect.ValueOf(p).Elem().Interface(), nil
 	})
-	setDecoder(r, name, tPT, func(raw any, _ *ast.Type) (*T, error) {
+	r.addInputShape(name, []bool{true}, tPT, func(raw any, _ *ast.Type) (any, error) {
 		if raw == nil {
-			return nil, nil
+			return nilPT, nil
 		}
-		return decodeOne(raw)
+		return dec.decodeRaw(raw)
 	})
-	setDecoder(r, name, tST, func(raw any, _ *ast.Type) ([]T, error) {
+	r.addInputShape(name, []bool{true, false}, tST, func(raw any, _ *ast.Type) (any, error) {
 		if raw == nil {
-			return nil, nil
+			return nilST, nil
 		}
 		items := asList(raw)
-		out := make([]T, len(items))
+		out := reflect.MakeSlice(tST, len(items), len(items))
 		for i, it := range items {
 			if it == nil {
 				return nil, &indexedError{i, errNonNull}
 			}
-			p, err := decodeOne(it)
+			p, err := dec.decodeRaw(it)
 			if err != nil {
 				return nil, &indexedError{i, err}
 			}
-			out[i] = *p
+			out.Index(i).Set(reflect.ValueOf(p).Elem())
 		}
-		return out, nil
+		return out.Interface(), nil
 	})
-	setDecoder(r, name, tSPT, func(raw any, t *ast.Type) ([]*T, error) {
+	r.addInputShape(name, []bool{true, true}, tSPT, func(raw any, t *ast.Type) (any, error) {
 		if raw == nil {
-			return nil, nil
+			return nilSPT, nil
 		}
 		items := asList(raw)
-		out := make([]*T, len(items))
+		out := reflect.MakeSlice(tSPT, len(items), len(items))
 		for i, it := range items {
 			if it == nil {
 				if t.Elem.NonNull {
@@ -277,14 +273,34 @@ func registerInputShapes[T any](r *registry, name string, dec *inputDecoder) {
 				}
 				continue
 			}
-			p, err := decodeOne(it)
+			p, err := dec.decodeRaw(it)
 			if err != nil {
 				return nil, &indexedError{i, err}
 			}
-			out[i] = p
+			out.Index(i).Set(reflect.ValueOf(p))
 		}
-		return out, nil
+		return out.Interface(), nil
 	})
+}
+
+// erased is a typed decoder's type-erased form.
+func erased[V any](dec func(any, *ast.Type) (V, error)) func(any, *ast.Type) (any, error) {
+	return func(raw any, at *ast.Type) (any, error) { return dec(raw, at) }
+}
+
+func (r *registry) addInputShape(name string, nullable []bool, t reflect.Type, dec func(any, *ast.Type) (any, error)) {
+	key := typeKey{name, t}
+	r.shapes[key] = shapeInfo{depth: len(nullable) - 1, nullable: nullable}
+	r.decodersAny[key] = dec
+}
+
+// decodeRaw decodes one input object value into a new *T, as any.
+func (d *inputDecoder) decodeRaw(raw any) (any, error) {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("expected an object for input %s, got %T", d.name, raw)
+	}
+	return d.decode(m)
 }
 
 // resolve completes the shared decoder of an Input binding once every
@@ -337,26 +353,29 @@ func (ib *inputBinding) resolve(b *schemaBuilder) {
 // The same A may be shared by several fields with identical arguments.
 func Args[A any](fields ...InputFieldOption) SchemaOption {
 	return schemaOptionFunc(func(b *schemaBuilder) {
-		tA := reflect.TypeFor[A]()
-		if tA.Kind() != reflect.Struct {
-			b.errorf("Args[%s]: Go type must be a struct", tA)
-			return
-		}
-		if _, dup := b.reg.argsDecoders[tA]; dup {
-			b.errorf("Args[%s]: registered more than once", tA)
-			return
-		}
-		ib := &inputBinding{goType: tA}
-		for _, f := range fields {
+		bindArgs(b, reflect.TypeFor[A](), func() any { return new(A) }, fields)
+	})
+}
+
+func bindArgs(b *schemaBuilder, tA reflect.Type, newValue func() any, fields []InputFieldOption) {
+	if tA.Kind() != reflect.Struct {
+		b.errorf("Args[%s]: Go type must be a struct", tA)
+		return
+	}
+	if _, dup := b.reg.argsDecoders[tA]; dup {
+		b.errorf("Args[%s]: registered more than once", tA)
+		return
+	}
+	ib := &inputBinding{goType: tA}
+	for _, f := range fields {
+		f.applyInput(ib)
+	}
+	if len(ib.fields) == 0 {
+		for _, f := range autoInputFields(tA, ib.zeroForNull, nil) {
 			f.applyInput(ib)
 		}
-		if len(ib.fields) == 0 {
-			for _, f := range autoInputFields(tA, ib.zeroForNull, nil) {
-				f.applyInput(ib)
-			}
-		}
-		b.reg.argsDecoders[tA] = &inputDecoder{goType: tA, newValue: func() any { return new(A) }, argsBinding: ib}
-	})
+	}
+	b.reg.argsDecoders[tA] = &inputDecoder{goType: tA, newValue: newValue, argsBinding: ib}
 }
 
 // build resolves an Args binding against the argument definitions of the
@@ -467,7 +486,19 @@ func inputDecoderFor[V any](r *registry, typ *ast.Type, coord string) (func(any,
 	if err := checkInputShape(r, key, typ, false); err != nil {
 		return nil, fmt.Errorf("input %s: %w", coord, err)
 	}
-	return r.decoders[key].(func(any, *ast.Type) (V, error)), nil
+	if typed, ok := r.decoders[key].(func(any, *ast.Type) (V, error)); ok {
+		return typed, nil
+	}
+	// An input object's shapes are registered type-erased.
+	dec := r.decodersAny[key]
+	return func(raw any, t *ast.Type) (V, error) {
+		v, err := dec(raw, t)
+		if err != nil {
+			var zero V
+			return zero, err
+		}
+		return v.(V), nil
+	}, nil
 }
 
 var omittablePkg = reflect.TypeFor[Omittable[int]]().PkgPath()

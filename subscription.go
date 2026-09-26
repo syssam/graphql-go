@@ -60,12 +60,11 @@ func subscribeSpec[R any](name string, argsType reflect.Type, opts []FieldSchedu
 			return zero, errSubscriptionResolved
 		})
 
-	shape := spec.compose
 	spec.compose = func(b *schemaBuilder, s *Schema, obj *objectType, def *ast.FieldDefinition, fd *fieldDef) error {
 		if b.ast.Subscription == nil || obj.name != b.ast.Subscription.Name {
 			return fmt.Errorf("field %s: Subscribe binds fields of the subscription root only", coordinate(obj.name, def.Name))
 		}
-		if err := shape(b, s, obj, def, fd); err != nil {
+		if err := composeField(spec, b, s, obj, def, fd); err != nil {
 			return err
 		}
 		fd.subscribe = func(ctx context.Context, args any) (eventStream, error) {

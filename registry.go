@@ -46,6 +46,8 @@ type shapeInfo struct {
 // registry holds the typed adapters produced by binding constructors. Values
 // in leafWriters and decoders are typed function values stored as any and
 // asserted back to their concrete signature by the generic code that knows V.
+// decoders holds leaf shapes only: an input object's shapes are in
+// decodersAny alone, and inputDecoderFor adapts them for an InputField.
 type registry struct {
 	leafWriters    map[typeKey]any // func(*jsonw.Writer, V, *ast.Type) error
 	leafWritersAny map[typeKey]func(*jsonw.Writer, any, *ast.Type) error
@@ -99,6 +101,11 @@ func nullInput(t *ast.Type) error {
 // registerLeaf registers writers and decoders for a scalar or enum bound to
 // Go type E, in the shapes E, *E, []E, []*E, [][]E and [][]*E. Deeper list
 // nesting is rare enough that it is left unsupported for leaf types.
+//
+// Only the typed closures are generic; the registry bookkeeping is
+// addLeafShape, and a list element's failure is listElementFailed. Generated
+// code binds hundreds of leaf types, each instantiating this in its own
+// package, so what is not generic here is compiled once instead of each time.
 func registerLeaf[E any](r *registry, name string, kind ast.DefinitionKind, write func(*jsonw.Writer, E) error, decode func(any) (E, error)) {
 	r.leafKinds[name] = kind
 	if _, ok := r.leafValidators[name]; !ok {
@@ -132,30 +139,64 @@ func registerLeaf[E any](r *registry, name string, kind ast.DefinitionKind, writ
 		}
 		return &v, nil
 	}
+	wSE, dSE := listWriter(wE), listDecoder(dE)
+	wSPE, dSPE := listWriter(wPE), listDecoder(dPE)
 
-	registerLeafShape(r, name, []bool{false}, wE, dE)
-	registerLeafShape(r, name, []bool{true}, wPE, dPE)
-	wSE, dSE := registerLeafShape(r, name, []bool{true, false}, listWriter(wE), listDecoder(dE))
-	wSPE, dSPE := registerLeafShape(r, name, []bool{true, true}, listWriter(wPE), listDecoder(dPE))
-	registerLeafShape(r, name, []bool{true, true, false}, listWriter(wSE), listDecoder(dSE))
-	registerLeafShape(r, name, []bool{true, true, true}, listWriter(wSPE), listDecoder(dSPE))
+	r.addLeafShape(name, []bool{false}, leafShape(name, wE, dE))
+	r.addLeafShape(name, []bool{true}, leafShape(name, wPE, dPE))
+	r.addLeafShape(name, []bool{true, false}, leafShape(name, wSE, dSE))
+	r.addLeafShape(name, []bool{true, true}, leafShape(name, wSPE, dSPE))
+	r.addLeafShape(name, []bool{true, true, false}, leafShape(name, listWriter(wSE), listDecoder(dSE)))
+	r.addLeafShape(name, []bool{true, true, true}, leafShape(name, listWriter(wSPE), listDecoder(dSPE)))
 }
 
-// registerLeafShape records one Go shape V of a leaf type. nullable has one
-// entry per list level plus the innermost value, outermost first.
-func registerLeafShape[V any](r *registry, name string, nullable []bool, write func(*jsonw.Writer, V, *ast.Type) error, decode func(any, *ast.Type) (V, error)) (func(*jsonw.Writer, V, *ast.Type) error, func(any, *ast.Type) (V, error)) {
-	tV := reflect.TypeFor[V]()
-	key := typeKey{name, tV}
-	r.shapes[key] = shapeInfo{depth: len(nullable) - 1, nullable: nullable}
-	setLeafWriter(r, name, tV, write)
-	setDecoder(r, name, tV, decode)
-	if nullable[0] {
-		r.nilChecks[tV] = func(v any) bool {
+// leafAdapters are one Go shape V of a leaf type: its typed writer and
+// decoder, stored as any, and the type-erased forms directives and variable
+// coercion use.
+type leafAdapters struct {
+	typ       reflect.Type
+	write     any // func(*jsonw.Writer, V, *ast.Type) error
+	writeAny  func(*jsonw.Writer, any, *ast.Type) error
+	decode    any // func(any, *ast.Type) (V, error)
+	decodeAny func(any, *ast.Type) (any, error)
+}
+
+func leafShape[V any](name string, write func(*jsonw.Writer, V, *ast.Type) error, decode func(any, *ast.Type) (V, error)) leafAdapters {
+	return leafAdapters{
+		typ:   reflect.TypeFor[V](),
+		write: write,
+		writeAny: func(w *jsonw.Writer, v any, at *ast.Type) error {
 			tv, ok := v.(V)
-			return !ok || reflect.ValueOf(tv).IsNil()
-		}
+			if !ok {
+				return writeMismatch(w, v, at, name)
+			}
+			return write(w, tv, at)
+		},
+		decode:    decode,
+		decodeAny: erased(decode),
 	}
-	return write, decode
+}
+
+func writeMismatch(w *jsonw.Writer, v any, at *ast.Type, name string) error {
+	if v == nil {
+		return writeNull(w, at)
+	}
+	return fmt.Errorf("cannot marshal %T as %s", v, name)
+}
+
+// addLeafShape records one Go shape of a leaf type. nullable has one entry
+// per list level plus the innermost value, outermost first.
+func (r *registry) addLeafShape(name string, nullable []bool, a leafAdapters) {
+	key := typeKey{name, a.typ}
+	r.shapes[key] = shapeInfo{depth: len(nullable) - 1, nullable: nullable}
+	r.leafWriters[key] = a.write
+	r.leafWritersAny[key] = a.writeAny
+	r.decoders[key] = a.decode
+	r.decodersAny[key] = a.decodeAny
+	if nullable[0] {
+		// Every nullable shape is a pointer or a slice.
+		r.nilChecks[a.typ] = reflectIsNil
+	}
 }
 
 // listWriter lifts an element writer to a slice writer. Element failures
@@ -165,37 +206,17 @@ func registerLeafShape[V any](r *registry, name string, nullable []bool, write f
 func listWriter[V any](elem func(*jsonw.Writer, V, *ast.Type) error) func(*jsonw.Writer, []V, *ast.Type) error {
 	return func(w *jsonw.Writer, v []V, t *ast.Type) error {
 		if v == nil {
-			if t.NonNull {
-				// See valueShape.nilIsEmpty: a nil slice is Go's empty list.
-				w.BeginArray()
-				w.EndArray()
-				return nil
-			}
-			return writeNull(w, t)
+			return writeNilList(w, t)
 		}
 		var soft *elementErrors
 		w.BeginArray()
 		for i, e := range v {
 			m := w.Mark()
-			err := elem(w, e, t.Elem)
-			if err == nil {
-				continue
-			}
-			var nested *elementErrors
-			if errors.As(err, &nested) {
-				// The element is a list that already nulled its own failing
-				// members; keep it and re-index the collected errors.
-				for _, ie := range nested.errs {
-					soft = soft.add(i, ie)
+			if err := elem(w, e, t.Elem); err != nil {
+				if soft, err = listElementFailed(w, m, soft, i, err, t); err != nil {
+					return err
 				}
-				continue
 			}
-			if t.Elem.NonNull {
-				return &indexedError{i, err}
-			}
-			w.Rewind(m)
-			w.Null()
-			soft = soft.add(i, err)
 		}
 		w.EndArray()
 		if soft != nil {
@@ -203,6 +224,37 @@ func listWriter[V any](elem func(*jsonw.Writer, V, *ast.Type) error) func(*jsonw
 		}
 		return nil
 	}
+}
+
+func writeNilList(w *jsonw.Writer, t *ast.Type) error {
+	if t.NonNull {
+		// See valueShape.nilIsEmpty: a nil slice is Go's empty list.
+		w.BeginArray()
+		w.EndArray()
+		return nil
+	}
+	return writeNull(w, t)
+}
+
+// listElementFailed handles element i of a list of type t failing with err
+// after it began writing at m. It returns the list's collected soft errors,
+// or the error that aborts the list.
+func listElementFailed(w *jsonw.Writer, m jsonw.Mark, soft *elementErrors, i int, err error, t *ast.Type) (*elementErrors, error) {
+	var nested *elementErrors
+	if errors.As(err, &nested) {
+		// The element is a list that already nulled its own failing
+		// members; keep it and re-index the collected errors.
+		for _, ie := range nested.errs {
+			soft = soft.add(i, ie)
+		}
+		return soft, nil
+	}
+	if t.Elem.NonNull {
+		return soft, &indexedError{i, err}
+	}
+	w.Rewind(m)
+	w.Null()
+	return soft.add(i, err), nil
 }
 
 // listDecoder lifts an element decoder to a slice decoder applying the
@@ -222,27 +274,6 @@ func listDecoder[V any](elem func(any, *ast.Type) (V, error)) func(any, *ast.Typ
 			out[i] = v
 		}
 		return out, nil
-	}
-}
-
-func setDecoder[V any](r *registry, name string, t reflect.Type, dec func(any, *ast.Type) (V, error)) {
-	r.decoders[typeKey{name, t}] = dec
-	r.decodersAny[typeKey{name, t}] = func(raw any, at *ast.Type) (any, error) {
-		return dec(raw, at)
-	}
-}
-
-func setLeafWriter[V any](r *registry, name string, t reflect.Type, typed func(*jsonw.Writer, V, *ast.Type) error) {
-	r.leafWriters[typeKey{name, t}] = typed
-	r.leafWritersAny[typeKey{name, t}] = func(w *jsonw.Writer, v any, at *ast.Type) error {
-		tv, ok := v.(V)
-		if !ok {
-			if v == nil {
-				return writeNull(w, at)
-			}
-			return fmt.Errorf("cannot marshal %T as %s", v, name)
-		}
-		return typed(w, tv, at)
 	}
 }
 
