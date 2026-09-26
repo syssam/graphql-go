@@ -689,6 +689,9 @@ func (b *builder) fieldCall(typeName string, fd *ast.FieldDefinition, root bool)
 }
 
 func (b *builder) emitSchema() string {
+	if b.cfg.Federation {
+		return b.emitSchemaFederated()
+	}
 	var w strings.Builder
 	w.WriteString(b.header(b.pkgName, rootPkgDoc))
 	w.WriteString(`import (
@@ -717,6 +720,46 @@ func ValidateSchema(opts ...graphql.SchemaOption) error {
 	return w.String()
 }
 
+// emitSchemaFederated is emitSchema for Config.Federation: the schema is a
+// subgraph, and NewSchema takes the entity resolvers.
+func (b *builder) emitSchemaFederated() string {
+	var w strings.Builder
+	w.WriteString(b.header(b.pkgName, rootPkgDoc))
+	w.WriteString(`import (
+	"context"
+	"embed"
+
+	"github.com/syssam/graphql-go"
+	"github.com/syssam/graphql-go/fed"
+)
+
+//go:embed schema/*.graphql
+var sdl embed.FS
+
+// NewSchema builds the subgraph: entities resolves each @key type the router
+// reaches through _entities, and _service returns the embedded SDL.
+func NewSchema(r Resolver, entities []fed.Entity, opts ...graphql.SchemaOption) (*graphql.Schema, error) {
+	src, subgraph, err := fed.SubgraphFS(sdl, []string{"schema/*.graphql"}, entities...)
+	if err != nil {
+		return nil, err
+	}
+	all := append([]graphql.SchemaOption{subgraph, Bindings(r)}, opts...)
+	return graphql.NewSchema(src, all...)
+}
+
+// ValidateSchema builds the schema with no resolver behind it, so every
+// binding error surfaces before a resolver is written. Building never calls a
+// resolver -- Resolve captures it in a closure -- so the zero value is enough.
+func ValidateSchema(opts ...graphql.SchemaOption) error {
+	var r Resolver
+	_, err := NewSchema(r, placeholderEntities(), opts...)
+	return err
+}
+`)
+	w.WriteString(b.emitPlaceholderEntities())
+	return w.String()
+}
+
 // groupedNewSchemaDoc is written above the grouped NewSchema. Each group is
 // registered the way a gRPC server registers a service, rather than through a
 // struct with a field per group: a field left unset compiled, built, and
@@ -735,15 +778,27 @@ const groupedNewSchemaDoc = `// NewSchema builds the schema from the embedded SD
 func (b *builder) emitSchemaGrouped(groups []string) string {
 	var w strings.Builder
 	w.WriteString(b.header(b.pkgName, rootPkgDoc))
-	w.WriteString("import (\n\t\"embed\"\n\n\t\"github.com/syssam/graphql-go\"\n")
+	if b.cfg.Federation {
+		w.WriteString("import (\n\t\"context\"\n\t\"embed\"\n\n\t\"github.com/syssam/graphql-go\"\n\t\"github.com/syssam/graphql-go/fed\"\n")
+	} else {
+		w.WriteString("import (\n\t\"embed\"\n\n\t\"github.com/syssam/graphql-go\"\n")
+	}
 	for _, g := range groups {
 		w.WriteString("\t\"" + b.cfg.Package + "/" + g + "\"\n")
 	}
 	w.WriteString(")\n\n")
 	w.WriteString("//go:embed schema/*.graphql\nvar sdl embed.FS\n\n")
 	w.WriteString(groupedNewSchemaDoc)
-	w.WriteString("func NewSchema(opts ...graphql.SchemaOption) (*graphql.Schema, error) {\n")
-	w.WriteString("\tall := []graphql.SchemaOption{\n")
+	if b.cfg.Federation {
+		w.WriteString(federatedNewSchemaDoc)
+		w.WriteString("func NewSchema(entities []fed.Entity, opts ...graphql.SchemaOption) (*graphql.Schema, error) {\n")
+		w.WriteString("\tsrc, subgraph, err := fed.SubgraphFS(sdl, []string{\"schema/*.graphql\"}, entities...)\n")
+		w.WriteString("\tif err != nil {\n\t\treturn nil, err\n\t}\n")
+		w.WriteString("\tall := []graphql.SchemaOption{\n\t\tsubgraph,\n")
+	} else {
+		w.WriteString("func NewSchema(opts ...graphql.SchemaOption) (*graphql.Schema, error) {\n")
+		w.WriteString("\tall := []graphql.SchemaOption{\n")
+	}
 	for _, g := range groups {
 		if !b.hasResolver(g) {
 			w.WriteString("\t\t" + g + ".Bindings(),\n")
@@ -751,7 +806,11 @@ func (b *builder) emitSchemaGrouped(groups []string) string {
 	}
 	w.WriteString("\t}\n")
 	w.WriteString("\tall = append(all, opts...)\n")
-	w.WriteString("\treturn graphql.NewSchema(graphql.SDLFS(sdl, \"schema/*.graphql\"), all...)\n}\n")
+	if b.cfg.Federation {
+		w.WriteString("\treturn graphql.NewSchema(src, all...)\n}\n")
+	} else {
+		w.WriteString("\treturn graphql.NewSchema(graphql.SDLFS(sdl, \"schema/*.graphql\"), all...)\n}\n")
+	}
 	w.WriteString(`
 // ValidateSchema builds the schema with no resolver behind it, so every
 // binding error surfaces before a resolver is written. Building never calls a
@@ -765,7 +824,45 @@ func ValidateSchema(opts ...graphql.SchemaOption) error {
 		}
 	}
 	w.WriteString("\t}\n")
-	w.WriteString("\t_, err := NewSchema(append(all, opts...)...)\n\treturn err\n}\n")
+	if b.cfg.Federation {
+		w.WriteString("\t_, err := NewSchema(placeholderEntities(), append(all, opts...)...)\n\treturn err\n}\n")
+		w.WriteString(b.emitPlaceholderEntities())
+	} else {
+		w.WriteString("\t_, err := NewSchema(append(all, opts...)...)\n\treturn err\n}\n")
+	}
+	return w.String()
+}
+
+// federatedNewSchemaDoc follows groupedNewSchemaDoc when Config.Federation is
+// set.
+const federatedNewSchemaDoc = `//
+// The schema is an Apollo Federation subgraph: entities resolves each @key
+// type the router reaches through _entities, and _service returns the
+// embedded SDL.
+`
+
+// keyedTypes returns the object types carrying @key, sorted.
+func (b *builder) keyedTypes() []string {
+	var names []string
+	for name, def := range b.schema.Types {
+		if def.Kind == ast.Object && !def.BuiltIn && def.Directives.ForName("key") != nil {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
+// emitPlaceholderEntities writes a resolver for every @key type that is
+// never called, so ValidateSchema can build a subgraph with no entity code
+// written yet.
+func (b *builder) emitPlaceholderEntities() string {
+	var w strings.Builder
+	w.WriteString("\n// placeholderEntities stands in for every @key type's resolver in\n// ValidateSchema, which builds the schema and resolves nothing.\nfunc placeholderEntities() []fed.Entity {\n\tnone := func(context.Context, fed.Representation) (*struct{}, error) { return nil, nil }\n\treturn []fed.Entity{\n")
+	for _, name := range b.keyedTypes() {
+		fmt.Fprintf(&w, "\t\tfed.Resolver(%q, none),\n", name)
+	}
+	w.WriteString("\t}\n}\n")
 	return w.String()
 }
 

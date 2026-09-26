@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"fmt"
+	"github.com/syssam/graphql-go/fed"
 	"maps"
 	"os"
 	"path/filepath"
@@ -199,7 +200,13 @@ func newBuilder(dir string, cfg Config) (*builder, error) {
 			srcs = append(srcs, &ast.Source{Name: filepath.ToSlash(path), Input: string(raw)})
 		}
 	}
-	sch, err := gqlparser.LoadSchema(srcs...)
+	load := srcs
+	if cfg.Federation {
+		// BuiltIn: the directives are the protocol's, not the author's, and
+		// nothing is generated for them.
+		load = append([]*ast.Source{{Name: "federation.graphql", Input: fed.Directives, BuiltIn: true}}, srcs...)
+	}
+	sch, err := gqlparser.LoadSchema(load...)
 	if err != nil {
 		return nil, fmt.Errorf("codegen: load schema: %w", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"slices"
 	"strings"
 
@@ -78,6 +79,44 @@ type entitiesArgs struct{ Representations []Representation }
 // either is a subgraph that answers null to router fetches it is supposed to
 // serve, and both are knowable before the server starts.
 func Subgraph(sdl string, entities ...Entity) (graphql.Source, graphql.SchemaOption, error) {
+	return subgraph(sdl, graphql.SDL(sdl), entities)
+}
+
+// SubgraphFS is Subgraph over SDL files, for a schema split across files or
+// embedded by a code generator: every file in fsys matching one of the glob
+// patterns, in path order. _service returns them joined in that order. The
+// files keep their names for NewSchema's error messages.
+func SubgraphFS(fsys fs.FS, patterns []string, entities ...Entity) (graphql.Source, graphql.SchemaOption, error) {
+	seen := map[string]bool{}
+	var names []string
+	for _, p := range patterns {
+		matches, err := fs.Glob(fsys, p)
+		if err != nil {
+			return graphql.Source{}, nil, fmt.Errorf("fed: %w", err)
+		}
+		for _, m := range matches {
+			if !seen[m] {
+				seen[m] = true
+				names = append(names, m)
+			}
+		}
+	}
+	if len(names) == 0 {
+		return graphql.Source{}, nil, fmt.Errorf("fed: no SDL file matches %v", patterns)
+	}
+	slices.Sort(names)
+	parts := make([]string, 0, len(names))
+	for _, n := range names {
+		b, err := fs.ReadFile(fsys, n)
+		if err != nil {
+			return graphql.Source{}, nil, fmt.Errorf("fed: %w", err)
+		}
+		parts = append(parts, string(b))
+	}
+	return subgraph(strings.Join(parts, "\n"), graphql.SDLFS(fsys, patterns...), entities)
+}
+
+func subgraph(sdl string, author graphql.Source, entities []Entity) (graphql.Source, graphql.SchemaOption, error) {
 	keyed, ifaces, err := keyTypes(sdl)
 	if err != nil {
 		return graphql.Source{}, nil, err
@@ -112,7 +151,7 @@ func Subgraph(sdl string, entities ...Entity) (graphql.Source, graphql.SchemaOpt
 	}
 	slices.Sort(names)
 
-	src := graphql.Sources(graphql.SDL(prelude(names)), graphql.SDL(sdl))
+	src := graphql.Sources(graphql.SDL(prelude(names)), author)
 	return src, bindings(sdl, names, byName), nil
 }
 

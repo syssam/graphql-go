@@ -92,6 +92,15 @@ parent loaded without collection queries once per row in sequence rather than
 concurrently. `inline` names fields by schema coordinate, and one that names
 no field fails generation.
 
+`federation: true` makes the schema an Apollo Federation subgraph. The SDL
+may use `@key` and the other federation directives without declaring them,
+and the generated `NewSchema` takes the entity resolvers,
+`NewSchema(entities []fed.Entity, opts...)`, serving `_service` and
+`_entities` through `fed.SubgraphFS`. `ValidateSchema` still takes no
+resolver: it supplies a placeholder for each `@key` type. With velox,
+`graphqlgo.Entities` builds an entity resolver that answers a router's whole
+batch in one query.
+
 `scaffold` writes the methods an implementation does not have yet, so a new
 field is generate-then-fill-in rather than copy a signature out of
 `generated.go`:

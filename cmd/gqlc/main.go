@@ -41,6 +41,9 @@ type fileConfig struct {
 	// inlineAccessors runs fields bound to an argument-less model method
 	// inline; see codegen.Config.InlineAccessors.
 	InlineAccessors bool `yaml:"inlineAccessors"`
+	// federation makes the schema an Apollo Federation subgraph; see
+	// codegen.Config.Federation.
+	Federation bool `yaml:"federation"`
 	// inline lists fields ("Order.totalCents") whose resolver runs inline.
 	Inline []string          `yaml:"inline"`
 	Models map[string]string `yaml:"models"`
@@ -186,6 +189,7 @@ func run(args []string) error {
 		ZeroForNullInputs:      fc.ZeroForNullInputs,
 		InlineAccessors:        fc.InlineAccessors,
 		Inline:                 fc.Inline,
+		Federation:             fc.Federation,
 		ModelDirective:         codegen.ModelDirective{Name: fc.ModelDirective.Name, Arg: fc.ModelDirective.Arg},
 		FieldDirective:         codegen.FieldDirective{Name: fc.FieldDirective.Name, ForceResolverArg: fc.FieldDirective.ForceResolverArg},
 		Notef: func(format string, args ...any) {
