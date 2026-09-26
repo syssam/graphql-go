@@ -29,7 +29,10 @@ func complexityMemo(sel *selectionSet, memo map[*selectionSet]int) int {
 	count := func(fields []*planField) int {
 		n := 0
 		for _, f := range fields {
-			n += 1 + complexityMemo(f.sub, memo)
+			n++
+			if !introspectionRootField(f) {
+				n += complexityMemo(f.sub, memo)
+			}
 		}
 		return n
 	}
@@ -43,6 +46,12 @@ func complexityMemo(sel *selectionSet, memo map[*selectionSet]int) int {
 	}
 	memo[sel] = n
 	return n
+}
+
+// introspectionRootField is one field to the limits, whatever it selects:
+// introspection is bounded by maxIntrospectionDepthRule instead.
+func introspectionRootField(f *planField) bool {
+	return f.def != nil && isIntrospectionRoot(f.def.name)
 }
 
 func depthOf(sel *selectionSet) int {
@@ -60,7 +69,7 @@ func depthMemo(sel *selectionSet, memo map[*selectionSet]int) int {
 		d := 0
 		for _, f := range fields {
 			fd := 1
-			if f.sub != nil {
+			if f.sub != nil && !introspectionRootField(f) {
 				fd += depthMemo(f.sub, memo)
 			}
 			d = max(d, fd)

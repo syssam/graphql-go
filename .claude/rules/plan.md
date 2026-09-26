@@ -136,3 +136,21 @@ Go value only for `asJSON` to rewrite it.
 `TestACustomScalarSeesLiteralsAndVariablesAlike` drives both failures across eleven shapes.
 Reverting `fieldArguments` to `ArgumentMap` fails it on the exponent, trailing-zero and
 precision cases and panics the binary on the wide-integer one.
+
+**Introspection is not charged against depth, complexity or cost, and gqlparser's
+`MaxIntrospectionDepth` is replaced.** `examples/veloxfx`, configured the way the docs
+recommend (`WithMaxDepth(10)`), refused the introspection query GraphiQL and every client
+generator send with `MAX_DEPTH_EXCEEDED`: its `TypeRef` fragment nests `ofType` seven deep. On a
+300-entity schema that query is also 4.3 MB and, priced by list sizes, costlier than any
+budget an API would set for its own queries. So `__schema` and `__type` count as one field in
+`metricWalker` (and the plan oracle, which must agree), are free in `fieldCost`, and carry no
+`costWeight` -- nor does any field of a `__` meta type, which only introspection reaches.
+What bounds introspection instead is graphql-js's rule: a path may pass through at most two of
+`fields`, `interfaces`, `possibleTypes`, `inputFields`. **gqlparser ships that rule in its
+default set without a memo**: it re-walks every path through fragment spreads, so 24 fragments
+each spreading the next twice -- 1.1 KB -- cost 2.0 s of validation, doubling per fragment, and
+it ran with introspection disabled too. `maxIntrospectionDepthRule` memoizes on (fragment,
+depth) and `ReplaceRule`s it; with introspection disabled it is removed, since
+`NoIntrospection` refuses anyway. Every half fails a test when broken, the memo and the
+replacement both through `TestMaxIntrospectionDepthIsLinearInFragments` (41 fragments, 10 s
+budget). gqlgen uses the same gqlparser rule set.

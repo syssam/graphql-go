@@ -196,7 +196,10 @@ func NewExecutor(s *Schema, opts ...ExecutorOption) *Executor {
 		}
 	}
 	if !s.introspection {
+		e.rules.RemoveRule(maxIntrospectionDepthRule.Name)
 		e.rules.AddRule(noIntrospectionRule.Name, noIntrospectionRule.RuleFunc)
+	} else {
+		e.rules.ReplaceRule(maxIntrospectionDepthRule.Name, maxIntrospectionDepthRule.RuleFunc)
 	}
 	e.buildChains()
 	return e

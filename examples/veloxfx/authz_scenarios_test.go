@@ -196,3 +196,43 @@ func TestScenarioAbusiveQueriesCostNoSQL(t *testing.T) {
 		t.Errorf("an ordinary browse page was refused: %v", errs)
 	}
 }
+
+// The introspection query GraphiQL, Apollo tooling and client generators
+// send nests its type references seven levels deep and, priced by list
+// sizes, costs more than the budget above allows any real page. It is
+// answered anyway -- introspection is bounded by its own rule, not by limits
+// set against the API's queries -- and costs no SQL. A production deployment
+// that must not describe itself sets graphql.DisableIntrospection().
+func TestScenarioToolsCanIntrospectUnderProductionLimits(t *testing.T) {
+	s := startRecording(t)
+	got, stmts, errs := s.runAs("", toolIntrospection, nil)
+	if len(errs) > 0 {
+		t.Fatalf("the standard introspection query was refused: %v", errs)
+	}
+	if !strings.Contains(got, `"name":"Order"`) || len(stmts) != 0 {
+		t.Errorf("introspection: %d statements, %.200s", len(stmts), got)
+	}
+	// Recursing through type members is what makes introspection expensive,
+	// and that is refused.
+	if _, _, errs := s.runAs("", `{ __schema { types { fields { type { fields { type { fields { name } } } } } } } }`, nil); len(errs) != 1 {
+		t.Errorf("a recursive introspection query: %v", errs)
+	}
+}
+
+const toolIntrospection = `query IntrospectionQuery {
+  __schema {
+    queryType { name } mutationType { name } subscriptionType { name }
+    types { ...FullType }
+    directives { name description locations args { ...InputValue } }
+  }
+}
+fragment FullType on __Type {
+  kind name description
+  fields(includeDeprecated: true) { name description args { ...InputValue } type { ...TypeRef } isDeprecated deprecationReason }
+  inputFields { ...InputValue }
+  interfaces { ...TypeRef }
+  enumValues(includeDeprecated: true) { name description isDeprecated deprecationReason }
+  possibleTypes { ...TypeRef }
+}
+fragment InputValue on __InputValue { name description type { ...TypeRef } defaultValue }
+fragment TypeRef on __Type { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } } } }`

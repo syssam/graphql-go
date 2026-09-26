@@ -22,6 +22,109 @@ var noIntrospectionRule = core.Rule{
 	},
 }
 
+// isIntrospectionRoot reports whether name is one of the query root's
+// introspection fields. Names beginning with __ are reserved, so no schema
+// declares another.
+func isIntrospectionRoot(name string) bool { return name == "__schema" || name == "__type" }
+
+// isIntrospection reports whether field name of object type obj is part of
+// introspection: a root introspection field, or a field of a meta type, which
+// only introspection reaches.
+func isIntrospection(obj, name string) bool {
+	return isIntrospectionRoot(name) || strings.HasPrefix(obj, "__")
+}
+
+// maxIntrospectionListDepth is graphql-js's MAX_LISTS_DEPTH: a path below
+// __schema or __type may pass through at most two of the fields that list a
+// type's members.
+const maxIntrospectionListDepth = 3
+
+// maxIntrospectionDepthRule is graphql-js's MaxIntrospectionDepthRule, and
+// replaces gqlparser's rule of the same name, which is in its default rules
+// and follows every path through fragment spreads without a memo: a 1.1 KB
+// document of 24 fragments, each spreading the next twice, cost two seconds
+// of validation, doubling with each fragment added, and it ran whether or not
+// introspection was enabled (TestMaxIntrospectionDepthIsLinearInFragments).
+//
+// It is also what bounds introspection now that WithMaxDepth,
+// WithMaxComplexity and QueryCost do not count it. Those limits are set against an API's own
+// queries, and the introspection query every IDE and client generator sends
+// is deeper -- its type references nest ofType seven times -- and, priced by
+// list sizes, costlier than any of them: a schema of three hundred entities
+// refused it at a depth limit of 10. What makes introspection expensive is
+// not depth but re-entering a type's member lists (types { fields { type {
+// fields { type { fields ... ), each multiplying the response by the width
+// of a type, and that is what this refuses. The standard query passes
+// through one.
+var maxIntrospectionDepthRule = core.Rule{
+	Name: "MaxIntrospectionDepth",
+	RuleFunc: func(observers *core.Events, addError core.AddErrFunc) {
+		observers.OnField(func(w *core.Walker, field *ast.Field) {
+			if !isIntrospectionRoot(field.Name) {
+				return
+			}
+			d := introspectionDepth{doc: w.Document, visiting: map[string]bool{}, memo: map[fragmentAtDepth]bool{}}
+			if d.exceeds(field.SelectionSet, 0) {
+				addError(core.Message("Maximum introspection depth exceeded"), core.At(field.Position))
+			}
+		})
+	},
+}
+
+type fragmentAtDepth struct {
+	name  string
+	depth int
+}
+
+type introspectionDepth struct {
+	doc      *ast.QueryDocument
+	visiting map[string]bool
+	// memo keeps the walk linear: without it, a fragment spread k times
+	// in each of n nested fragments is walked k^n times.
+	memo map[fragmentAtDepth]bool
+}
+
+func (d *introspectionDepth) exceeds(set ast.SelectionSet, depth int) bool {
+	for _, sel := range set {
+		switch sel := sel.(type) {
+		case *ast.Field:
+			n := depth
+			switch sel.Name {
+			case "fields", "interfaces", "possibleTypes", "inputFields":
+				n++
+				if n >= maxIntrospectionListDepth {
+					return true
+				}
+			}
+			if d.exceeds(sel.SelectionSet, n) {
+				return true
+			}
+		case *ast.InlineFragment:
+			if d.exceeds(sel.SelectionSet, depth) {
+				return true
+			}
+		case *ast.FragmentSpread:
+			// A cycle is NoFragmentCycles' to report.
+			frag := d.doc.Fragments.ForName(sel.Name)
+			if frag == nil || d.visiting[sel.Name] {
+				continue
+			}
+			key := fragmentAtDepth{sel.Name, depth}
+			r, ok := d.memo[key]
+			if !ok {
+				d.visiting[sel.Name] = true
+				r = d.exceeds(frag.SelectionSet, depth)
+				delete(d.visiting, sel.Name)
+				d.memo[key] = r
+			}
+			if r {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // The introspection system is implemented as ordinary bindings over the
 // meta types that gqlparser injects into every schema. Every field is pure,
 // so introspection never schedules goroutines.

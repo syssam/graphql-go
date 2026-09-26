@@ -13,7 +13,8 @@ import (
 // sub-selection multiplied by the list size. List size is the first
 // matching ListArguments value (default "first", "last"), or
 // DefaultListSize when the field returns a list and neither argument is
-// present. __typename is free.
+// present. __typename is free, and so are __schema and __type with all they
+// select: see WithMaxDepth.
 type QueryCost struct {
 	// Max is the maximum allowed cost. Zero means unlimited.
 	Max int
@@ -73,13 +74,23 @@ func (c QueryCost) weight(coord string) int {
 }
 
 // WithMaxComplexity rejects operations whose static field count (aliases
-// included) exceeds n. Zero, the default, means unlimited.
+// included) exceeds n. Zero, the default, means unlimited. __schema and
+// __type count as one field each: see WithMaxDepth.
 func WithMaxComplexity(n int) ExecutorOption {
 	return func(e *Executor) { e.maxComplexity = n }
 }
 
 // WithMaxDepth rejects operations whose selection nesting exceeds n.
 // Zero, the default, means unlimited.
+//
+// __schema and __type count as one level, whatever they select, here and in
+// WithMaxComplexity and QueryCost. These limits are set against an API's own
+// queries, and the introspection query IDEs and client generators send nests
+// its type references seven levels deep, so charging it would lock the tools
+// out of any API that sets them. Introspection is bounded instead by
+// graphql-js's MaxIntrospectionDepth rule: a path may pass through at most two
+// of fields, interfaces, possibleTypes and inputFields. A public API should
+// still DisableIntrospection.
 func WithMaxDepth(n int) ExecutorOption {
 	return func(e *Executor) { e.maxDepth = n }
 }
@@ -308,7 +319,7 @@ func queryCostMemo(sel *selectionSet, w costWalk) int {
 // multiplying with the edges list's own default and pricing a page of 200 as
 // one of 2000: the connection's page size counted those elements already.
 func fieldCost(f *planField, w costWalk) int {
-	if f.kind == fieldTypename {
+	if f.kind == fieldTypename || (f.def != nil && isIntrospectionRoot(f.def.name)) {
 		return 0
 	}
 	weight := 1

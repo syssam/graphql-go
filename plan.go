@@ -405,7 +405,7 @@ func (c *compiler) buildField(obj *objectType, g *fieldGroup) *planField {
 	pf.def = fd
 	pf.exec = fieldExec{writeLeaf: fd.writeLeaf, resolve: fd.resolve}
 	pf.schedulable = fd.schedulable
-	if c.e != nil && c.e.cost != nil && c.e.cost.Actual {
+	if c.e != nil && c.e.cost != nil && c.e.cost.Actual && !isIntrospection(obj.name, fd.name) {
 		pf.costWeight = c.e.cost.weight(coordinate(obj.name, fd.name))
 	}
 	if c.e != nil && len(c.e.fieldInterceptors) > 0 {

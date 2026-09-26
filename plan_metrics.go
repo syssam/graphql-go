@@ -114,7 +114,7 @@ func (w *metricWalker) walkConcrete(obj *objectType, sels ast.SelectionSet) plan
 			// before any oracle value exists to compare against.
 			continue
 		}
-		if fd.leaf {
+		if fd.leaf || isIntrospectionRoot(first.Name) {
 			m.complexity++
 			m.depth = max(m.depth, 1)
 			continue
