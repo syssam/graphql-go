@@ -3,6 +3,7 @@ package codegen
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
@@ -145,6 +146,14 @@ type Config struct {
 	// from memory, such as a computed field over an edge the ORM already
 	// loaded. A coordinate naming no field fails generation.
 	Inline []string
+	// Federation makes the schema an Apollo Federation subgraph. The SDL is
+	// parsed after fed.Directives, so @key and the rest need no declaration,
+	// and the generated NewSchema takes the resolvers the router reaches
+	// entities through -- NewSchema(entities []fed.Entity, opts...) -- and
+	// serves _service and _entities through fed.SubgraphFS. ValidateSchema
+	// stays argument-free: it supplies a placeholder resolver for every @key
+	// type, since building never calls one.
+	Federation bool
 	// NullableInputOmittable uses graphql.Omittable[*T] for nullable
 	// input-object fields so PATCH-style inputs distinguish absent from
 	// null. Field arguments stay pointers.
@@ -211,6 +220,9 @@ func Generate(ctx context.Context, cfg Config) error {
 	if err := errors.Join(errs...); err != nil {
 		return err
 	}
+	if err := pruneSchemaCopies(outDir, files); err != nil {
+		return err
+	}
 	return b.scaffold(b.uniqueGroups())
 }
 
@@ -253,3 +265,27 @@ type FieldDirective struct {
 
 // IsZero reports that no directive was named.
 func (d FieldDirective) IsZero() bool { return d.Name == "" || d.ForceResolverArg == "" }
+
+// pruneSchemaCopies deletes SDL copies this run did not write. The generated
+// package embeds every file matching schema/*.graphql, so a copy whose
+// source was deleted or renamed stayed embedded, and its types and fields
+// stayed in the served schema: a removed federation link kept the subgraph's
+// SDL carrying two, and a removed type kept answering. The directory is the
+// generator's own output.
+func pruneSchemaCopies(outDir string, written map[string][]byte) error {
+	matches, err := filepath.Glob(filepath.Join(outDir, "schema", "*.graphql"))
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, path := range matches {
+		rel := filepath.ToSlash(filepath.Join("schema", filepath.Base(path)))
+		if _, ok := written[rel]; ok {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
