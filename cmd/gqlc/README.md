@@ -73,6 +73,25 @@ group. `returnType` is for a generator that declares every root field in one
 shared file; a field returning a scalar has no type to follow and keeps its
 file's group.
 
+Resolver fields run concurrently, one goroutine each, which pays for itself
+only when they wait on I/O. Two keys run cheap ones in their parent's
+goroutine instead:
+
+```yaml
+inlineAccessors: true        # order.Customer(ctx), order.Items(ctx): answered from loaded edges
+inline: [Order.totalCents]   # a hand-written resolver you know answers from memory
+```
+
+`inlineAccessors` covers every field bound to a model method that takes no
+GraphQL arguments; a method with arguments, such as a Relay connection that
+may page per row, stays concurrent. For an ORM that eager-loads what a query
+selects, those accessors are memory reads, and on `examples/veloxfx`'s
+fifty-order page the two keys together took a request from 1.46ms to 0.82ms
+(`BenchmarkOrderHistoryPage`, n=10, interleaved). The price: an accessor on a
+parent loaded without collection queries once per row in sequence rather than
+concurrently. `inline` names fields by schema coordinate, and one that names
+no field fails generation.
+
 `scaffold` writes the methods an implementation does not have yet, so a new
 field is generate-then-fill-in rather than copy a signature out of
 `generated.go`:

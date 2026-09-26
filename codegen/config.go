@@ -127,6 +127,24 @@ type Config struct {
 	// a generator's convention, and every schema that keeps it set keeps a
 	// distinction the GraphQL specification makes and the Go type cannot.
 	ZeroForNullInputs bool
+	// InlineAccessors binds a field AutoBind resolved to a method on the model
+	// that takes no GraphQL arguments -- Order.Customer(ctx), Order.Items(ctx)
+	// -- with graphql.Inline(), so it runs in its parent's goroutine instead of
+	// on one of its own.
+	//
+	// For an ORM with field collection these methods answer from edges loaded
+	// with the parent, and a goroutine per list element was the largest cost
+	// of a page: on a fifty-order page with each order's customer and items,
+	// inline was 1.9x faster end to end. The price is that an accessor which
+	// does query -- a parent loaded without collection -- queries once per row
+	// in sequence rather than concurrently. Methods with arguments, such as a
+	// Relay connection that may page per row, are left concurrent.
+	InlineAccessors bool
+	// Inline names fields, as schema coordinates ("Order.totalCents"), whose
+	// resolver runs in its parent's goroutine: one the author knows answers
+	// from memory, such as a computed field over an edge the ORM already
+	// loaded. A coordinate naming no field fails generation.
+	Inline []string
 	// NullableInputOmittable uses graphql.Omittable[*T] for nullable
 	// input-object fields so PATCH-style inputs distinguish absent from
 	// null. Field arguments stay pointers.
@@ -159,6 +177,9 @@ func Generate(ctx context.Context, cfg Config) error {
 	}
 	b, err := newBuilder(dir, cfg)
 	if err != nil {
+		return err
+	}
+	if err := b.checkInline(); err != nil {
 		return err
 	}
 	files, err := b.emit()

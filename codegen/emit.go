@@ -674,17 +674,17 @@ func (b *builder) fieldCall(typeName string, fd *ast.FieldDefinition, root bool)
 	case len(fd.Arguments) > 0 && root:
 		an := b.argsName(typeName, fd.Name)
 		meth := b.resolverMethod(typeName, fd.Name)
-		return fmt.Sprintf("\t\t\tgraphql.ResolveArgs(%q, func(ctx context.Context, _ graphql.Root, a %s) (%s, error) { return r.%s(ctx, a) }),\n", fd.Name, an, goRet, meth)
+		return fmt.Sprintf("\t\t\tgraphql.ResolveArgs(%q, func(ctx context.Context, _ graphql.Root, a %s) (%s, error) { return r.%s(ctx, a) }%s),\n", fd.Name, an, goRet, meth, b.schedule(typeName, fd.Name))
 	case len(fd.Arguments) > 0:
 		an := b.argsName(typeName, fd.Name)
 		meth := b.resolverMethod(typeName, fd.Name)
-		return fmt.Sprintf("\t\t\tgraphql.ResolveArgs(%q, func(ctx context.Context, v *%s, a %s) (%s, error) { return r.%s(ctx, v, a) }),\n", fd.Name, b.modelRef(typeName, typeName), an, goRet, meth)
+		return fmt.Sprintf("\t\t\tgraphql.ResolveArgs(%q, func(ctx context.Context, v *%s, a %s) (%s, error) { return r.%s(ctx, v, a) }%s),\n", fd.Name, b.modelRef(typeName, typeName), an, goRet, meth, b.schedule(typeName, fd.Name))
 	case root:
 		meth := b.resolverMethod(typeName, fd.Name)
-		return fmt.Sprintf("\t\t\tgraphql.Resolve(%q, func(ctx context.Context, _ graphql.Root) (%s, error) { return r.%s(ctx) }),\n", fd.Name, goRet, meth)
+		return fmt.Sprintf("\t\t\tgraphql.Resolve(%q, func(ctx context.Context, _ graphql.Root) (%s, error) { return r.%s(ctx) }%s),\n", fd.Name, goRet, meth, b.schedule(typeName, fd.Name))
 	default:
 		meth := b.resolverMethod(typeName, fd.Name)
-		return fmt.Sprintf("\t\t\tgraphql.Resolve(%q, func(ctx context.Context, v *%s) (%s, error) { return r.%s(ctx, v) }),\n", fd.Name, b.modelRef(typeName, typeName), goRet, meth)
+		return fmt.Sprintf("\t\t\tgraphql.Resolve(%q, func(ctx context.Context, v *%s) (%s, error) { return r.%s(ctx, v) }%s),\n", fd.Name, b.modelRef(typeName, typeName), goRet, meth, b.schedule(typeName, fd.Name))
 	}
 }
 
@@ -878,4 +878,27 @@ func (b *builder) reportUnboundScalars() {
 	}
 	b.notef("%d custom scalar(s) need a binding at NewSchema, or the schema will not build: %s. %s; a Models entry chooses the Go type but does not bind it.",
 		len(parts), strings.Join(parts, ", "), how)
+}
+
+// schedule is the scheduling option a resolver binding for typeName.field
+// carries: graphql.Inline() when Config.Inline names it.
+func (b *builder) schedule(typeName, field string) string {
+	if slices.Contains(b.cfg.Inline, typeName+"."+field) {
+		return ", graphql.Inline()"
+	}
+	return ""
+}
+
+// checkInline refuses a Config.Inline coordinate that names no field, which
+// is what a typo produces and would otherwise leave the field concurrent
+// while the configuration reads as if it were not.
+func (b *builder) checkInline() error {
+	for _, coord := range b.cfg.Inline {
+		typeName, field, ok := strings.Cut(coord, ".")
+		def := b.schema.Types[typeName]
+		if !ok || def == nil || def.Fields.ForName(field) == nil {
+			return fmt.Errorf("codegen: inline %q names no field", coord)
+		}
+	}
+	return nil
 }

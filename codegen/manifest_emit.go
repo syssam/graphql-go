@@ -74,11 +74,17 @@ func (b *builder) manifestFieldCall(typeName string, fd *ast.FieldDefinition, fb
 	}
 
 	if hasArgs {
-		return fmt.Sprintf("\t\t\tgraphql.ResolveArgs(%q, func(%s, v %s, a %s) (%s, error) { return %s }),\n",
-			fd.Name, ctxParam, recv, b.argsName(typeName, fd.Name), goRet, call)
+		// Listed in Config.Inline or not; InlineAccessors never reaches a
+		// method with arguments.
+		return fmt.Sprintf("\t\t\tgraphql.ResolveArgs(%q, func(%s, v %s, a %s) (%s, error) { return %s }%s),\n",
+			fd.Name, ctxParam, recv, b.argsName(typeName, fd.Name), goRet, call, b.schedule(typeName, fd.Name))
 	}
-	return fmt.Sprintf("\t\t\tgraphql.Resolve(%q, func(%s, v %s) (%s, error) { return %s }),\n",
-		fd.Name, ctxParam, recv, goRet, call)
+	schedule := b.schedule(typeName, fd.Name)
+	if b.cfg.InlineAccessors {
+		schedule = ", graphql.Inline()"
+	}
+	return fmt.Sprintf("\t\t\tgraphql.Resolve(%q, func(%s, v %s) (%s, error) { return %s }%s),\n",
+		fd.Name, ctxParam, recv, goRet, call, schedule)
 }
 
 func joinArgs(parts ...string) string {

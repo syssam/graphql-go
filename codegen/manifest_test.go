@@ -358,3 +358,75 @@ func TestManifestBoundQuery(t *testing.T) {
 		t.Fatalf("go test: %v\n%s", err, out)
 	}
 }
+
+// InlineAccessors runs a field bound to an argument-less model method in its
+// parent's goroutine; a method with arguments -- a connection that may page
+// per row -- stays concurrent, and without the option nothing changes.
+func TestInlineAccessors(t *testing.T) {
+	manifest := func() *Manifest {
+		return &Manifest{Types: []TypeBinding{{
+			Name: "Product",
+			Fields: map[string]FieldBinding{
+				"related":      {Kind: FieldMethod, Context: true, Error: true},
+				"priceWithTax": {Kind: FieldMethod, Context: true, Error: true},
+			},
+		}}}
+	}
+	related := `graphql.Resolve("related", func(ctx context.Context, v *model.Product) ([]*model.Product, error) { return v.Related(ctx) }`
+
+	src := generated(t, generate(t, manifestSDL, Config{Manifest: manifest(), InlineAccessors: true}), "generated.go")
+	if !strings.Contains(src, related+`, graphql.Inline()),`) {
+		t.Errorf("an argument-less accessor should run inline:\n%s", src)
+	}
+	var withArgs string
+	for line := range strings.SplitSeq(src, "\n") {
+		if strings.Contains(line, `ResolveArgs("priceWithTax"`) {
+			withArgs = line
+		}
+	}
+	if withArgs == "" {
+		t.Fatalf("fixture no longer binds priceWithTax as a method with arguments:\n%s", src)
+	}
+	if strings.Contains(withArgs, "Inline") {
+		t.Errorf("a method with arguments must stay concurrent: %s", withArgs)
+	}
+
+	src = generated(t, generate(t, manifestSDL, Config{Manifest: manifest()}), "generated.go")
+	if !strings.Contains(src, related+`),`) || strings.Contains(src, "graphql.Inline()") {
+		t.Errorf("without the option no field is inlined:\n%s", src)
+	}
+}
+
+// Config.Inline inlines exactly the fields it names -- a resolver the author
+// knows answers from memory -- and a coordinate that names no field fails
+// generation rather than leaving the field concurrent in silence.
+func TestInlineList(t *testing.T) {
+	src := generated(t, generate(t, manifestSDL, Config{Inline: []string{"Product.related", "Query.product"}}), "generated.go")
+	// gofmt splits a long binding over lines; compare it as one.
+	flat := strings.Join(strings.Fields(src), " ")
+	for _, want := range []string{`graphql.Resolve("related", `, `graphql.ResolveArgs("product", `} {
+		i := strings.Index(flat, want)
+		if i < 0 {
+			t.Fatalf("no binding %s:\n%s", want, src)
+		}
+		// The binding ends at whichever closing comes first.
+		rest := flat[i:]
+		plain, inline := strings.Index(rest, "}),"), strings.Index(rest, "}, graphql.Inline()),")
+		if inline < 0 || (plain >= 0 && plain < inline) {
+			t.Errorf("%s should run inline: %.200s", want, rest)
+		}
+	}
+	if n := strings.Count(src, "graphql.Inline()"); n != 2 {
+		t.Errorf("exactly the two listed fields should be inline, got %d:\n%s", n, src)
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "schema.graphql"), []byte(manifestSDL), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := Generate(context.Background(), Config{Dir: dir, SchemaGlobs: []string{"schema.graphql"}, Output: "graph", Package: "hello/graph",
+		Inline: []string{"Product.stok"}})
+	if err == nil || !strings.Contains(err.Error(), `inline "Product.stok" names no field`) {
+		t.Errorf("a misspelled coordinate must fail generation, got %v", err)
+	}
+}

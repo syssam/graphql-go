@@ -37,8 +37,13 @@ type fileConfig struct {
 	NullableInputOmittable bool     `yaml:"nullableInputOmittable"`
 	// zeroForNullInputs lets a Go field that cannot be null back a nullable
 	// input position; read the graphql.ZeroForNull godoc before setting it.
-	ZeroForNullInputs bool              `yaml:"zeroForNullInputs"`
-	Models            map[string]string `yaml:"models"`
+	ZeroForNullInputs bool `yaml:"zeroForNullInputs"`
+	// inlineAccessors runs fields bound to an argument-less model method
+	// inline; see codegen.Config.InlineAccessors.
+	InlineAccessors bool `yaml:"inlineAccessors"`
+	// inline lists fields ("Order.totalCents") whose resolver runs inline.
+	Inline []string          `yaml:"inline"`
+	Models map[string]string `yaml:"models"`
 	// modelDirective reads type bindings the SDL already carries, for a schema
 	// arriving from another generator:
 	//
@@ -179,6 +184,8 @@ func run(args []string) error {
 		Models:                 fc.Models,
 		NullableInputOmittable: fc.NullableInputOmittable,
 		ZeroForNullInputs:      fc.ZeroForNullInputs,
+		InlineAccessors:        fc.InlineAccessors,
+		Inline:                 fc.Inline,
 		ModelDirective:         codegen.ModelDirective{Name: fc.ModelDirective.Name, Arg: fc.ModelDirective.Arg},
 		FieldDirective:         codegen.FieldDirective{Name: fc.FieldDirective.Name, ForceResolverArg: fc.FieldDirective.ForceResolverArg},
 		Notef: func(format string, args ...any) {
