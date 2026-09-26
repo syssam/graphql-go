@@ -27,7 +27,7 @@ import (
 
 // NewGraphQLGo builds the graphql-go executor over the generated bindings.
 func NewGraphQLGo() (*graphql.Executor, error) {
-	s, err := ourgen.NewSchema(ourgen.All(),
+	s, err := ourgen.NewSchema(append(ourgen.Bindings(),
 		graphql.Scalar("Time",
 			func(w *graphql.Writer, t time.Time) error {
 				w.String(t.Format(time.RFC3339Nano))
@@ -41,7 +41,7 @@ func NewGraphQLGo() (*graphql.Executor, error) {
 				return time.Parse(time.RFC3339Nano, s)
 			},
 		),
-	)
+	)...)
 	if err != nil {
 		return nil, err
 	}

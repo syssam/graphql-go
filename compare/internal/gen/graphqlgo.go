@@ -43,7 +43,7 @@ func graphqlGoResolvers(n int) string {
 	var b strings.Builder
 	b.WriteString(header("gen"))
 
-	imports := []string{`"context"`, "", `"` + ModulePath + `/shared"`}
+	imports := []string{`"context"`, "", `"github.com/syssam/graphql-go"`, `"` + ModulePath + `/shared"`}
 	for i := range n {
 		imports = append(imports, fmt.Sprintf(`"%s/graphqlgo/gen/%s"`, ModulePath, strings.ToLower(EntityName(i))))
 	}
@@ -56,15 +56,15 @@ func graphqlGoResolvers(n int) string {
 // all.
 type Resolver struct{}
 
-// All returns the Resolvers value NewSchema expects.
-func All() Resolvers {
+// Bindings returns every group's bindings over one Resolver, for NewSchema.
+func Bindings() []graphql.SchemaOption {
 	r := Resolver{}
-	return Resolvers{
+	return []graphql.SchemaOption{
 `)
 	for i := range n {
-		fmt.Fprintf(&b, "\t\t%s: r,\n", EntityName(i))
+		fmt.Fprintf(&b, "\t\t%s.Bindings(r),\n", strings.ToLower(EntityName(i)))
 	}
-	b.WriteString("\t\tPrelude: r,\n\t}\n}\n")
+	b.WriteString("\t\tprelude.Bindings(r),\n\t}\n}\n")
 
 	b.WriteString(`
 func firstOf(v *int) int {
@@ -104,21 +104,21 @@ func (Resolver) %[1]sEdgeNode(_ context.Context, obj *shared.%[1]sEdge) (*shared
 	return obj.Node, nil
 }
 
-func (Resolver) %[1]s(_ context.Context, args prelude.%[1]sArgs) (*shared.%[1]s, error) {
+func (Resolver) %[1]s(_ context.Context, args %[4]s.%[1]sArgs) (*shared.%[1]s, error) {
 	return shared.Get%[1]s(string(args.ID)), nil
 }
 
-func (Resolver) %[1]ss(_ context.Context, args prelude.%[1]ssArgs) (*shared.%[1]sConnection, error) {
+func (Resolver) %[1]ss(_ context.Context, args %[4]s.%[1]ssArgs) (*shared.%[1]sConnection, error) {
 	return shared.Conn%[1]s(firstOf(args.First)), nil
 }
 
-func (Resolver) Create%[1]s(_ context.Context, args prelude.Create%[1]sArgs) (*shared.%[1]s, error) {
+func (Resolver) Create%[1]s(_ context.Context, args %[4]s.Create%[1]sArgs) (*shared.%[1]s, error) {
 	v := *shared.List%[1]s()[0]
 	v.Name = args.Input.Name
 	return &v, nil
 }
 
-func (Resolver) Update%[1]s(_ context.Context, args prelude.Update%[1]sArgs) (*shared.%[1]s, error) {
+func (Resolver) Update%[1]s(_ context.Context, args %[4]s.Update%[1]sArgs) (*shared.%[1]s, error) {
 	src := shared.Get%[1]s(string(args.ID))
 	if src == nil {
 		return nil, nil
@@ -130,7 +130,7 @@ func (Resolver) Update%[1]s(_ context.Context, args prelude.Update%[1]sArgs) (*s
 	return &v, nil
 }
 
-func (Resolver) Delete%[1]s(_ context.Context, args prelude.Delete%[1]sArgs) (bool, error) {
+func (Resolver) Delete%[1]s(_ context.Context, args %[4]s.Delete%[1]sArgs) (bool, error) {
 	return shared.Get%[1]s(string(args.ID)) != nil, nil
 }
 `, name, owner, child, pkg)
