@@ -15,6 +15,7 @@ import (
 	graphql "github.com/syssam/graphql-go"
 	"github.com/syssam/graphql-go/examples/veloxfx/graph"
 	"github.com/syssam/graphql-go/examples/veloxfx/internal/gqlfx"
+	"github.com/syssam/graphql-go/examples/veloxfx/internal/viewer"
 	"github.com/syssam/graphql-go/transport/drain"
 	"github.com/syssam/graphql-go/transport/gqlecho"
 	"github.com/syssam/graphql-go/transport/gqlsse"
@@ -35,10 +36,37 @@ func NewSchema(g gqlfx.Groups) (*graphql.Schema, error) {
 }
 
 func NewExecutor(s *graphql.Schema) *graphql.Executor {
-	return graphql.NewExecutor(s,
+	return graphql.NewExecutor(s, executorOptions()...)
+}
+
+// executorOptions is everything NewExecutor configures, apart so a benchmark
+// can build a variant of the same executor.
+func executorOptions() []graphql.ExecutorOption {
+	return []graphql.ExecutorOption{
 		graphql.WithErrorPresenter(presentError),
 		graphqlgo.Collect(), // velox reads each query's selection
-	)
+		graphql.WithAuthorizer(policy),
+		// A public API is one bad query from a table scan. Each limit is
+		// checked from the plan, before a resolver runs, so a refused query
+		// costs no SQL at all.
+		graphql.WithMaxDepth(10),
+		graphql.WithQueryCost(graphql.QueryCost{
+			// An ordinary browse page -- every category, twenty products
+			// each, their stock -- is about 51,000; a thousand orders of every
+			// customer with their items is millions.
+			Max: 100_000,
+			// A list with no first/last is assumed this long; velox pages
+			// never exceed gqlrelay.MaxPaginationLimit (1000) either way.
+			DefaultListSize: 50,
+			// Every velox to-many edge is a Relay connection. Priced by the
+			// page it asks for, products(first: 1) costs one row, not
+			// DefaultListSize for its edges list: without this, fourteen
+			// levels of first: 1 cost 260204, and legitimate pages are
+			// refused or the budget is raised until it protects nothing.
+			Connections: true,
+		}),
+		graphql.WithOperationTimeout(10 * time.Second),
+	}
 }
 
 // NewEcho registers every route with Any, for the reason examples/echo
@@ -46,6 +74,7 @@ func NewExecutor(s *graphql.Schema) *graphql.Executor {
 // GraphQL-aware error, which Echo's router must not pre-empt.
 func NewEcho(exec *graphql.Executor, d *drain.Drain) *echo.Echo {
 	e := echo.New()
+	e.Use(viewer.Middleware)
 	e.Any("/graphql", gqlecho.New(exec))
 	e.Any("/graphql/stream", gqlecho.SSE(exec, gqlsse.WithDrain(d)))
 	e.Any("/graphql/ws", gqlecho.WS(exec, gqlws.WithDrain(d)))

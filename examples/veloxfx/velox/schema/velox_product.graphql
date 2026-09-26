@@ -6,7 +6,7 @@ type Product @goModel(model: "github.com/syssam/graphql-go/examples/veloxfx/velo
   name: String!
   priceCents: Int!
   category: Category!
-  stocks: [Stock!]!
+  stocks: [Stock!]! @requiresScopes(scopes: [["inventory:read"]])
   orderItems: [OrderItem!]!
 }
 

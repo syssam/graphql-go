@@ -1,0 +1,3 @@
+# The directive schema/*.go puts on positions only some viewers may read.
+# graphql-go enforces it through the Authorizer in authz.go.
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT

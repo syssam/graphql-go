@@ -34,8 +34,8 @@ func Bindings(r Resolver) graphql.SchemaOption {
 			graphql.Field("id", func(v *entity.OrderItem) int { return v.ID }),
 			graphql.Field("quantity", func(v *entity.OrderItem) int { return v.Quantity }),
 			graphql.Field("unitPriceCents", func(v *entity.OrderItem) int { return v.UnitPriceCents }),
-			graphql.Resolve("order", func(ctx context.Context, v *entity.OrderItem) (*entity.Order, error) { return v.Order(ctx) }),
-			graphql.Resolve("product", func(ctx context.Context, v *entity.OrderItem) (*entity.Product, error) { return v.Product(ctx) }),
+			graphql.Resolve("order", func(ctx context.Context, v *entity.OrderItem) (*entity.Order, error) { return v.Order(ctx) }, graphql.Inline()),
+			graphql.Resolve("product", func(ctx context.Context, v *entity.OrderItem) (*entity.Product, error) { return v.Product(ctx) }, graphql.Inline()),
 		),
 		graphql.Query(
 			graphql.Resolve("orderItems", func(ctx context.Context, _ graphql.Root) ([]*entity.OrderItem, error) { return r.OrderItems(ctx) }),

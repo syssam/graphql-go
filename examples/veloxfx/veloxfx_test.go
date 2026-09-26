@@ -22,6 +22,7 @@ import (
 	"github.com/syssam/graphql-go/examples/veloxfx/graph"
 	"github.com/syssam/graphql-go/examples/veloxfx/internal/catalog"
 	"github.com/syssam/graphql-go/examples/veloxfx/internal/sales"
+	"github.com/syssam/graphql-go/examples/veloxfx/internal/viewer"
 	"github.com/syssam/graphql-go/examples/veloxfx/velox"
 )
 
@@ -75,6 +76,16 @@ func TestEveryEntityIsItsOwnGroup(t *testing.T) {
 type app struct {
 	t   *testing.T
 	url string
+	// viewer is the X-Viewer header each request sends: "staff" unless a
+	// test asks as someone else with as.
+	viewer string
+}
+
+// as returns the app acting as viewer ("" is anonymous).
+func (a *app) as(viewer string) *app {
+	c := *a
+	c.viewer = viewer
+	return &c
 }
 
 // start runs the whole Module on a free port against a database no other
@@ -94,7 +105,7 @@ func start(t *testing.T, opts ...fx.Option) *app {
 	// every stop wait out http.Server's grace for them. The server handles
 	// that (TestStopWaitsOutAnUnusedConnection); tests need not pay for it.
 	t.Cleanup(http.DefaultClient.CloseIdleConnections)
-	return &app{t: t, url: "http://" + srv.Addr() + "/graphql"}
+	return &app{t: t, url: "http://" + srv.Addr() + "/graphql", viewer: "staff"}
 }
 
 func dsn(t *testing.T) string {
@@ -117,7 +128,7 @@ func (a *app) post(query string) response {
 	if err != nil {
 		a.t.Fatal(err)
 	}
-	res, err := http.Post(a.url, "application/json", bytes.NewReader(body))
+	res, err := a.send(body)
 	if err != nil {
 		a.t.Fatal(err)
 	}
@@ -131,6 +142,19 @@ func (a *app) post(query string) response {
 		a.t.Fatalf("%d %s: %v", res.StatusCode, raw, err)
 	}
 	return out
+}
+
+// send posts a GraphQL request body as the app's viewer.
+func (a *app) send(body []byte) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodPost, a.url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if a.viewer != "" {
+		req.Header.Set(viewer.Header, a.viewer)
+	}
+	return http.DefaultClient.Do(req)
 }
 
 func (a *app) data(query string) string {

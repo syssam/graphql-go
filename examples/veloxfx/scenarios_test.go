@@ -1,11 +1,9 @@
 package veloxfx
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -69,7 +67,7 @@ func (s *sqlApp) run(query string, vars map[string]any) (string, []string) {
 	s.stmts = nil
 	s.mu.Unlock()
 	s.recording.Store(true)
-	res, err := http.Post(s.url, "application/json", bytes.NewReader(body))
+	res, err := s.send(body)
 	if err != nil {
 		s.t.Fatal(err)
 	}

@@ -3,6 +3,6 @@
 package velox
 
 const (
-	Version  = "v0.3.1-0.20260926152214-367e7ed10924"            // Version of velox codegen.
-	Checksum = "h1:rQLDITJ+oNbeyYcq81wx8PFr6xko0pVW3bKW6b76jkQ=" // go.sum checksum of the velox module used for codegen.
+	Version  = "v0.3.1-0.20260926154702-4c87d1c7765b"            // Version of velox codegen.
+	Checksum = "h1:L0G6e8SYBYbPZZu7Pi0FESX8FMp/19oonFIt7FTXS5Y=" // go.sum checksum of the velox module used for codegen.
 )

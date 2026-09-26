@@ -32,6 +32,14 @@ rootFields: returnType
 # which is the case graphql.ZeroForNull exists for. Without it NewSchema
 # refuses the binding, as it should for a bool whose false means something.
 zeroForNullInputs: true
+# velox's edge accessors -- order.Customer(ctx), order.Items(ctx) -- answer
+# from what field collection loaded with the parent, so they run inline
+# rather than on a goroutine each: 1.9x on a fifty-order page. Connection
+# edges take arguments, may page per row, and stay concurrent.
+inlineAccessors: true
+# Hand-written resolvers known to answer from memory. totalCents sums the
+# items that schema/sales.go's Loads("items") has velox load whole.
+inline: [Order.totalCents]
 # Each group's Resolver is implemented by a type in its domain package. A
 # method the type does not have yet is written as a stub into
 # internal/<domain>/<group>.resolvers.go; methods that exist are never touched.

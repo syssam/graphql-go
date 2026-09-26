@@ -68,7 +68,7 @@ func Bindings(r Resolver) graphql.SchemaOption {
 		graphql.Object[entity.Warehouse]("Warehouse",
 			graphql.Field("id", func(v *entity.Warehouse) int { return v.ID }),
 			graphql.Field("name", func(v *entity.Warehouse) string { return v.Name }),
-			graphql.Resolve("stocks", func(ctx context.Context, v *entity.Warehouse) ([]*entity.Stock, error) { return v.Stocks(ctx) }),
+			graphql.Resolve("stocks", func(ctx context.Context, v *entity.Warehouse) ([]*entity.Stock, error) { return v.Stocks(ctx) }, graphql.Inline()),
 			graphql.ResolveArgs("orders", func(ctx context.Context, v *entity.Warehouse, a WarehouseOrdersArgs) (*entity.OrderConnection, error) {
 				return v.Orders(ctx, a.After, a.First, a.Before, a.Last, a.OrderBy, a.Where)
 			}),

@@ -67,7 +67,9 @@ func (Product) Edges() []velox.Edge {
 		edge.From("category", Category.Type).Ref("products").Unique().Required(),
 		// Stock and order lines belong to the product; they are created
 		// through their own operations, never attached by id.
-		edge.To("stocks", Stock.Type).Annotations(graphql.Skip(graphql.SkipInputs)),
+		// Stock levels are internal: an empty list to shoppers, and not
+		// queried for them (authz.go).
+		edge.To("stocks", Stock.Type).Annotations(graphql.Skip(graphql.SkipInputs), requiresScopes("inventory:read")),
 		edge.To("order_items", OrderItem.Type).Annotations(graphql.Skip(graphql.SkipInputs)),
 	}
 }

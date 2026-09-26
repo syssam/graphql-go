@@ -14,7 +14,9 @@ type Customer struct{ velox.Schema }
 func (Customer) Fields() []velox.Field {
 	return []velox.Field{
 		field.String("name").NotEmpty(),
-		field.String("email").NotEmpty().Unique(),
+		// Personal data: masked for anyone without the scope (authz.go).
+		field.String("email").NotEmpty().Unique().
+			Annotations(requiresScopes("customer:pii")),
 	}
 }
 

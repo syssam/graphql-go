@@ -114,6 +114,8 @@ groups:
   rename: { schema: root }        # velox's shared file is root
 rootFields: returnType            # createProduct goes to the product group
 zeroForNullInputs: true           # velox's clearX: Boolean is a Go bool
+inlineAccessors: true             # edge accessors read loaded edges: no goroutine each
+inline: [Order.totalCents]        # nor this resolver, which sums loaded items
 scaffold:                         # which type implements each group
   product: internal/catalog.ProductResolver
   # ...
@@ -246,11 +248,31 @@ hooks in reverse: drain streams, shut the server down, close the database.
 A domain left out is a failed start that names the type it left unbound,
 not a schema that fails the first request to reach it.
 
-## 5. Call it
+## 5. Who may read what
+
+A public API needs three kinds of rule, and each has one right place
+(`authz.go`):
+
+| Rule | Where | What it costs |
+|---|---|---|
+| Stock levels are internal | `@requiresScopes` on `Product.stocks`, put there by an annotation in `schema/catalog.go`; the policy answers an empty list | nothing: the decision is made before anything resolves, and velox does not query stocks for a viewer who may not see them |
+| An email is personal data | `@requiresScopes` on `Customer.email`; the policy masks it (`c*@example.com`) | the column is read, since masking rewrites a value |
+| A customer sees only their orders | a velox read filter on every order query (`ownOrders`) | one indexed `WHERE customer_orders = ?`, in the list, its count, a lookup by id and every eager load; an anonymous read fails with `UNAUTHENTICATED` before any SQL |
+
+And one kind of limit: `WithMaxDepth(10)` and a cost budget priced by the page
+each connection asks for (`Connections: true`), both checked from the plan,
+so a refused query runs no SQL. Without `Connections`, `first: 1` is priced
+as fifty rows at every level, and legitimate pages get refused.
+
+The viewer comes from an `X-Viewer` header -- `staff` or `customer:<id>` --
+which stands in for verifying a token (`internal/viewer`); nothing past the
+middleware reads anything but the `Viewer`.
+
+## 6. Call it
 
     go run ./cmd/server
 
-    GQL='curl -s localhost:8080/graphql -H content-type:application/json'
+    GQL='curl -s localhost:8080/graphql -H content-type:application/json -H X-Viewer:staff'
     $GQL -d '{"query":"mutation { createCategory(input:{name:\"Keyboards\"}) { id } }"}'
     $GQL -d '{"query":"mutation { createProduct(input:{sku:\"kb-1\",name:\"Board\",priceCents:5000,categoryID:\"1\"}) { sku category { name } } }"}'
     $GQL -d '{"query":"mutation { createCustomer(input:{name:\"Ada\",email:\"ada@example.com\"}) { id } }"}'
@@ -265,7 +287,7 @@ The last one answers:
       "customer":{"name":"Ada"},"items":[{"quantity":2,"product":{"sku":"kb-1"}}]}}]},
       "stocks":[{"quantity":3}]}}
 
-## 6. The daily loop: add an entity
+## 7. The daily loop: add an entity
 
 Adding a `Supplier` to inventory, with `Product.supplier` pointing at it --
 done on a copy of the example.
@@ -347,7 +369,7 @@ signature typed, no type converted. (The first version of this example took
 55 for the same entity, every signature copied from the interface and every
 id and order argument converted by hand.)
 
-## 7. Test it
+## 8. Test it
 
     go test -race ./...
 
@@ -364,6 +386,7 @@ removing the rule and watching the test fail:
 | `TestReadAndDeleteByID` | null for a missing id; what a delete may take with it |
 | `TestOrdersAreAFixedNumberOfQueries` | eager loading across domains, and no COUNT nobody asked for |
 | `TestScenario*` (`scenarios_test.go`) | what large clients send: Relay fragments and variables over fifty orders, projected columns in the SQL, a count badge beside a list, a nested connection, a computed field under projection and in a nested page |
+| `TestScenario*` (`authz_scenarios_test.go`) | a withheld edge costs no query; masked personal data; a customer's orders filtered in SQL, by list, count, id and edge; anonymous reads fail closed; deep and wide queries refused with no SQL, and an ordinary page is not |
 | `TestUnclassifiedErrorsAreMasked` | a driver's error never reaches a client |
 | `TestAMissingDomainFailsStart` | a missing registration fails start |
 | `TestStopWaitsOutAnUnusedConnection` | shutdown survives a client's idle pre-connection |

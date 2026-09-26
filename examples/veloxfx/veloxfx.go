@@ -62,6 +62,9 @@ var appCore = fx.Options(
 		NewEcho,
 		NewServer,
 	),
+	// Order reads are narrowed to the viewer's own, on whichever client the
+	// app ends up with -- a test decorating it keeps the filter.
+	fx.Invoke(ownOrders),
 	// Nothing depends on *Server, and fx builds only what is asked for.
 	fx.Invoke(func(*Server) {}),
 )

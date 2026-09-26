@@ -3,7 +3,7 @@
 type Customer @goModel(model: "github.com/syssam/graphql-go/examples/veloxfx/velox/entity.Customer") {
   id: ID!
   name: String!
-  email: String!
+  email: String! @requiresScopes(scopes: [["customer:pii"]])
   orders(
     """
     Returns the elements in the list that come after the specified cursor.
