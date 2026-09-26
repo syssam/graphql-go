@@ -27,7 +27,7 @@ func (r *ProductResolver) Products(ctx context.Context, args productgql.Products
 	}
 	// Paginate loads what the page's nodes select, category included.
 	q := r.client.Product.Query()
-	return q.(entity.ProductPaginatable).Paginate(ctx, args.After, args.First, args.Before, args.Last, opts...)
+	return q.Paginate(ctx, args.After, args.First, args.Before, args.Last, opts...)
 }
 
 func (r *ProductResolver) Product(ctx context.Context, args productgql.ProductArgs) (*entity.Product, error) {
@@ -35,15 +35,10 @@ func (r *ProductResolver) Product(ctx context.Context, args productgql.ProductAr
 	return p, velox.MaskNotFound(err)
 }
 
-// CreateProduct reads the row back rather than returning what Save returned:
-// velox's create marks the category edge loaded with a stub holding only the
-// id, so product { category { name } } would answer an empty name.
+// CreateProduct returns the row Save created. Its category edge is left
+// unloaded, so product { category { name } } queries it.
 func (r *ProductResolver) CreateProduct(ctx context.Context, args productgql.CreateProductArgs) (*entity.Product, error) {
-	p, err := r.client.Product.Create().SetInput(args.Input).Save(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return r.client.Product.Get(ctx, p.ID)
+	return r.client.Product.Create().SetInput(args.Input).Save(ctx)
 }
 
 func (r *ProductResolver) UpdateProduct(ctx context.Context, args productgql.UpdateProductArgs) (*entity.Product, error) {

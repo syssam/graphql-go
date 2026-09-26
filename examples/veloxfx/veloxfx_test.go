@@ -226,8 +226,8 @@ func TestServesThroughEveryDomain(t *testing.T) {
 	a := start(t)
 	a.seed()
 
-	// Created rows are read back, so edges answer with real rows rather than
-	// velox's id-only stubs: a stub would say "name":"".
+	// A created row's edges are left unloaded, so they answer with the real
+	// row: an id-only stub marked loaded would say "name":"".
 	got := a.data(`mutation { createProduct(input: {sku: "kb-3", name: "Switches", priceCents: 900, categoryID: "1"}) { sku category { name } } }`)
 	if want := `{"createProduct":{"sku":"kb-3","category":{"name":"Keyboards"}}}`; got != want {
 		t.Errorf("createProduct = %s, want %s", got, want)

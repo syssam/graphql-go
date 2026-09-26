@@ -244,3 +244,25 @@ func TestScenarioComputedFieldSurvivesProjection(t *testing.T) {
 		t.Errorf("orders = %s, want %s", got, want)
 	}
 }
+
+// The same computed field one level down, where no resolver of the example's
+// is on the path: customers, each with a page of orders showing totals. The
+// declaration on the schema (Loads("items")) is what loads the items -- once
+// for every order of every customer.
+func TestScenarioComputedFieldInANestedPageIsDeclaredNotCoded(t *testing.T) {
+	s := startRecording(t)
+	s.storefront(30)
+
+	got, stmts := s.run(`query($n: Int) { customers { name orders(first: $n) { edges { node { totalCents } } } } }`,
+		map[string]any{"n": 5})
+	if strings.Count(got, `"totalCents"`) != 15 || strings.Contains(got, `"totalCents":0`) {
+		t.Fatalf("three customers, five orders each, every total non-zero: %s", got)
+	}
+	// customers, their orders (five per customer, in one query), the items.
+	if len(stmts) != 3 {
+		t.Errorf("took %d queries, want 3:\n%s", len(stmts), strings.Join(stmts, "\n"))
+	}
+	if items := stmtsOn(stmts, "order_items"); len(items) != 1 || !strings.Contains(items[0], "unit_price_cents") {
+		t.Errorf("the items must be read once, with their price: %v", items)
+	}
+}

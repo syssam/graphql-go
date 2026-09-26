@@ -9,6 +9,7 @@ var OrderCollectMeta runtime.CollectMeta
 
 func init() {
 	OrderCollectMeta.FieldColumns = map[string]string{"createdAt": FieldCreatedAt, "updatedAt": FieldUpdatedAt, "status": FieldStatus}
+	OrderCollectMeta.LoadsFor = map[string][]string{"totalCents": {"items"}}
 	OrderCollectMeta.Edges = map[string]runtime.EdgeMeta{"customer": {
 		FKColumns:   []string{"customer_orders"},
 		Inverse:     "orders",

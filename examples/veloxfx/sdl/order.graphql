@@ -2,11 +2,6 @@
 # every change to an order is one of these operations, and each checks the
 # state it moves from.
 
-extend type Order {
-  "Sum of quantity times unit price over the items. velox has no such column."
-  totalCents: Int!
-}
-
 extend type Query {
   "The Order with this id, or null if there is none."
   order(id: ID!): Order

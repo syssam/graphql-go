@@ -14,7 +14,6 @@ import (
 	"github.com/syssam/graphql-go/examples/veloxfx/velox/entity"
 	"github.com/syssam/graphql-go/examples/veloxfx/velox/order"
 	"github.com/syssam/graphql-go/examples/veloxfx/velox/orderitem"
-	"github.com/syssam/velox/contrib/graphqlgo"
 )
 
 // OrderResolver implements the order group's Resolver.
@@ -29,21 +28,15 @@ func NewOrderResolver(client *velox.Client) *OrderResolver {
 // Orders is a connection whose page loads what its nodes select, across
 // domains: orders { edges { node { items { product } } } } is a fixed number
 // of queries, not one per item, and no COUNT unless totalCount is asked for.
-//
-// totalCents is the one thing Paginate cannot see: it is sdl/order.graphql's,
-// and it reads every item's price whatever the client selected beneath
-// items. Loading the items here, when a node asks for it, is what tells
-// velox to leave them whole.
+// totalCents declares in schema/sales.go that it reads the items, so velox
+// loads them whole when a node selects it.
 func (r *OrderResolver) Orders(ctx context.Context, args ordergql.OrdersArgs) (*entity.OrderConnection, error) {
 	opts := []entity.OrderPaginateOption{entity.WithOrderOrder(args.OrderBy)}
 	if args.Where != nil {
 		opts = append(opts, entity.WithOrderFilter(args.Where.Filter))
 	}
 	q := r.client.Order.Query()
-	if graphqlgo.NodeSelects(ctx, "totalCents") {
-		q = q.WithItems()
-	}
-	return q.(entity.OrderPaginatable).Paginate(ctx, args.After, args.First, args.Before, args.Last, opts...)
+	return q.Paginate(ctx, args.After, args.First, args.Before, args.Last, opts...)
 }
 
 func (r *OrderResolver) Order(ctx context.Context, args ordergql.OrderArgs) (*entity.Order, error) {
@@ -152,9 +145,10 @@ func (r *OrderResolver) DeleteOrder(ctx context.Context, args ordergql.DeleteOrd
 	})
 }
 
-// OrderTotalCents answers Order.totalCents, which sdl/order.graphql adds and
-// velox knows nothing about. Items come from the edge, so under Orders it
-// reads what was eager-loaded and under a single order it queries once.
+// OrderTotalCents answers Order.totalCents, which schema/sales.go declares
+// with Loads("items"): wherever orders are collected -- the Orders page, a
+// customer's orders -- the items are already loaded whole, and a single
+// order queries them once.
 func (r *OrderResolver) OrderTotalCents(ctx context.Context, o *entity.Order) (int, error) {
 	items, err := o.Items(ctx)
 	if err != nil {

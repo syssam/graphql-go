@@ -36,11 +36,7 @@ func (r *StockResolver) Stock(ctx context.Context, args stockgql.StockArgs) (*en
 // (warehouse, product) refuses a second one, as CONFLICT; adjustStock changes
 // the count of the first.
 func (r *StockResolver) CreateStock(ctx context.Context, args stockgql.CreateStockArgs) (*entity.Stock, error) {
-	s, err := r.client.Stock.Create().SetInput(args.Input).Save(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return r.client.Stock.Get(ctx, s.ID)
+	return r.client.Stock.Create().SetInput(args.Input).Save(ctx)
 }
 
 // AdjustStock adds delta, which may be negative, with the same conditional

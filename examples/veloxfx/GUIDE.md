@@ -76,16 +76,21 @@ Two decisions in there are about the API, not the data:
   create and update inputs carry `stockIDs`, `addStockIDs`, ... and a client
   can move rows between parents by id.
 
+A computed field is declared with the entity, together with what its
+resolver reads, so velox loads it:
+
+```go
+// schema/sales.go, in Order's Annotations
+graphql.Resolvers(
+	graphql.Map("totalCents", "Int!").Loads("items"), // sums every item's price
+),
+```
+
 **What velox does not generate is SDL in `sdl/`**, one file per entity:
-lookups by id, deletes, domain operations, computed fields.
+lookups by id, deletes, domain operations.
 
 ```graphql
 # sdl/order.graphql
-extend type Order {
-  "Sum of quantity times unit price over the items."
-  totalCents: Int!
-}
-
 extend type Mutation {
   placeOrder(input: PlaceOrderInput!): Order!
   payOrder(id: ID!): Order!
@@ -161,7 +166,7 @@ func (r *ProductResolver) Products(ctx context.Context, args productgql.Products
 		opts = append(opts, entity.WithProductFilter(args.Where.Filter))
 	}
 	q := r.client.Product.Query() // Paginate loads what the page selects
-	return q.(entity.ProductPaginatable).Paginate(ctx, args.After, args.First, args.Before, args.Last, opts...)
+	return q.Paginate(ctx, args.After, args.First, args.Before, args.Last, opts...)
 }
 
 func (r *ProductResolver) Product(ctx context.Context, args productgql.ProductArgs) (*entity.Product, error) {
@@ -170,7 +175,7 @@ func (r *ProductResolver) Product(ctx context.Context, args productgql.ProductAr
 }
 ```
 
-Four habits, each because of something velox does:
+Three habits, each because of something velox does:
 
 - **Let the query decide what loads.** `Paginate` reads the page's
   selection, and a list resolver calls `CollectFields(ctx)` before `All`:
@@ -180,14 +185,12 @@ Four habits, each because of something velox does:
   orders of two items is four queries; one edge at a time it would be
   thirteen. velox reads the selection through its `contrib/graphqlgo`
   module, which `server.go` installs with one `graphqlgo.Collect()`.
-- **Load what a hand-written field reads.** velox cannot see inside
-  `Order.totalCents`, which sums every item's price. `Orders` loads the
-  items itself when a node selects it (`graphqlgo.NodeSelects`), and velox
-  leaves an edge the resolver loaded whole; left to the selection, the items
-  are read with only the columns the client asked for, and the total is 0.
-- **Read a created row back** (`Save`, then `Get`). velox marks a new row's
-  required edges loaded with an id-only stub, so `createProduct { category {
-  name } }` would answer an empty name.
+- **Declare what a computed field reads.** velox cannot see inside
+  `Order.totalCents`, which sums every item's price; `.Loads("items")` on its
+  `graphql.Map` tells it, and wherever orders are collected the items are
+  loaded whole, once for all of them. Undeclared, a client selecting
+  `items { quantity }` projects the price away and the total is 0, and a
+  customer list with order totals takes a query per order.
 - **Take a count with a condition**, never a read-then-write:
   `quantity = quantity - n WHERE quantity >= n` (`inventory.Take`). Twenty
   concurrent orders for five units place exactly five; velox's
@@ -360,21 +363,14 @@ removing the rule and watching the test fail:
 | `TestConcurrentOrdersCannotOversell` | twenty racing orders for five units place five |
 | `TestReadAndDeleteByID` | null for a missing id; what a delete may take with it |
 | `TestOrdersAreAFixedNumberOfQueries` | eager loading across domains, and no COUNT nobody asked for |
-| `TestScenario*` (`scenarios_test.go`) | what large clients send: Relay fragments and variables over fifty orders, projected columns in the SQL, a count badge beside a list, a nested connection, a computed field under projection |
+| `TestScenario*` (`scenarios_test.go`) | what large clients send: Relay fragments and variables over fifty orders, projected columns in the SQL, a count badge beside a list, a nested connection, a computed field under projection and in a nested page |
 | `TestUnclassifiedErrorsAreMasked` | a driver's error never reaches a client |
 | `TestAMissingDomainFailsStart` | a missing registration fails start |
 | `TestStopWaitsOutAnUnusedConnection` | shutdown survives a client's idle pre-connection |
 
-## Reference: what velox does that this example works around
+## Reference: what velox cannot check for you
 
-These belong in velox; the example states each where it copes.
-
-- **Its schema-loader cache never relinks when Go lives under a path with a
-  space** (`C:\Program Files\Go`): `go build -n` prints the linker quoted,
-  the check compares `link.exe"`, and generation silently uses the old
-  schema. `generate.go` deletes `.velox/` first.
-- **Its GraphQL extension's files are not in `.velox-manifest`**, so one it
-  no longer writes is never deleted and stops compiling. `generate.go`
-  deletes `velox/` first.
-- **A created row's edges are id-only stubs**, and **`NonNegative()` does not
-  check `AddQuantity`** -- covered in section 3.
+- **A validator checks the values velox writes, not the result of an
+  `AddX`.** `AddQuantity(-n)` is `quantity = quantity + -n` in the database,
+  so `NonNegative()` never sees the result. Take a count with a condition in
+  the same statement, as `inventory.Take` does (section 3).

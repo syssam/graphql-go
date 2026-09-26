@@ -14,6 +14,10 @@ type Order @goModel(model: "github.com/syssam/graphql-go/examples/veloxfx/velox/
   customer: Customer!
   warehouse: Warehouse!
   items: [OrderItem!]!
+  """
+  Sum of quantity times unit price over the items.
+  """
+  totalCents: Int! @goField(forceResolver: true)
 }
 
 """OrderStatus is enum for the field status

@@ -66,10 +66,7 @@ jobs:
         run: |
           (cd examples/blog && go generate ./...)
           (cd examples/veloxfx && go generate .)
-          # velox writes its manifest with the host's path separator, so the
-          # committed copy is stale on every other OS by construction. The
-          # files it lists are still compared; only the list itself is not.
-          if ! git diff --quiet -- . ':!examples/veloxfx/velox/.velox-manifest'; then
+          if ! git diff --quiet -- .; then
             echo "generated code is stale; run go generate in examples/blog or examples/veloxfx"
             git diff --stat; exit 1
           fi

@@ -7,8 +7,8 @@ replace github.com/syssam/graphql-go => ../..
 require (
 	github.com/labstack/echo/v5 v5.3.1
 	github.com/syssam/graphql-go v0.0.0-20260926145152-28e57f1692b6
-	github.com/syssam/velox v0.3.1-0.20260926145745-2f2e8d37399e
-	github.com/syssam/velox/contrib/graphqlgo v0.0.0-20260926145745-2f2e8d37399e
+	github.com/syssam/velox v0.3.1-0.20260926152214-367e7ed10924
+	github.com/syssam/velox/contrib/graphqlgo v0.0.0-20260926152214-367e7ed10924
 	go.uber.org/fx v1.24.0
 	modernc.org/sqlite v1.37.1
 )

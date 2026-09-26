@@ -62,6 +62,13 @@ func (Order) Annotations() []schema.Annotation {
 		graphql.WhereInputFields("status"),
 		graphql.WhereInputEdges("customer"),
 		graphql.QueryField(),
+		// totalCents is computed, not stored: its resolver sums every item.
+		// Loads is what makes velox load the items whole whenever it is
+		// selected, whatever the client selected beneath items.
+		graphql.Resolvers(
+			graphql.Map("totalCents", "Int!").Loads("items").
+				WithComment("Sum of quantity times unit price over the items."),
+		),
 	}
 }
 

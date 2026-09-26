@@ -75,7 +75,7 @@ type Resolver interface {
 	DeleteOrder(ctx context.Context, args DeleteOrderArgs) (int, error)
 	// OrderTotalCents resolves Order.totalCents.
 	//
-	// Sum of quantity times unit price over the items. velox has no such column.
+	// Sum of quantity times unit price over the items.
 	OrderTotalCents(ctx context.Context, obj *entity.Order) (int, error)
 	// Orders resolves Query.orders.
 	Orders(ctx context.Context, args OrdersArgs) (*entity.OrderConnection, error)
