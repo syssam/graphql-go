@@ -34,6 +34,7 @@ func Serve(ctx context.Context, sock Socket, cfg Config) {
 		sock:        sock,
 		ctx:         ctx,
 		cancel:      cancel,
+		life:        ctx,
 		subs:        make(map[string]context.CancelFunc),
 		streams:     streams,
 		stopStreams: stopStreams,
@@ -146,6 +147,14 @@ type conn struct {
 	sock   Socket
 	ctx    context.Context
 	cancel context.CancelFunc
+	// life is the connection's own lifetime, Serve's context, and every
+	// write runs under it. ctx becomes the OnConnect hook's context after the
+	// handshake, and that one can end on its own -- a token expiring -- which
+	// must reach the client as a 1001 close. coder/websocket drops the socket
+	// without a close frame when a write's context is cancelled mid-write, so
+	// a write under ctx racing the expiry turned that 1001 into an abnormal
+	// closure (TestHookExpiryCancelsNoWrite).
+	life context.Context
 
 	// stopOnDone unregisters the close that fires when the connection context
 	// ends; nil until the handshake succeeds.
@@ -268,7 +277,7 @@ func (c *conn) handshake() bool {
 			// The hook's context parents every operation, so a token decoded
 			// there reaches every resolver on this connection.
 			c.ctx, c.cancel = context.WithCancel(opCtx)
-			if err := c.write(c.ctx, OutMessage{Type: TypeConnectionAck}); err != nil {
+			if err := c.write(c.life, OutMessage{Type: TypeConnectionAck}); err != nil {
 				c.cancel()
 				return false
 			}
@@ -354,7 +363,7 @@ func (g *initDeadline) stop() { g.timer.Stop() }
 func (c *conn) dispatch(msg InMessage) bool {
 	switch msg.Type {
 	case TypePing:
-		return c.write(c.ctx, OutMessage{Type: TypePong, Payload: msg.Payload}) == nil
+		return c.write(c.life, OutMessage{Type: TypePong, Payload: msg.Payload}) == nil
 	case TypePong:
 		return true
 	case TypeConnectionInit:
@@ -550,7 +559,7 @@ func (c *conn) runOnce(ctx context.Context, id string, req *graphql.Request) {
 // immediately reuse it.
 func (c *conn) finish(id string, msg OutMessage) {
 	c.forget(id)
-	if err := c.write(c.ctx, msg); err != nil {
+	if err := c.write(c.life, msg); err != nil {
 		c.cfg.Logger.Debug("gqlwsproto: writing terminal message", "id", id, "error", err)
 	}
 }
@@ -570,7 +579,7 @@ func (c *conn) writeError(id string, e *graphql.Error) error {
 	if err != nil {
 		return err
 	}
-	return c.write(c.ctx, OutMessage{ID: id, Type: TypeError, Payload: payload})
+	return c.write(c.life, OutMessage{ID: id, Type: TypeError, Payload: payload})
 }
 
 // writeNext frames one result. It deliberately writes under the connection
@@ -583,7 +592,7 @@ func (c *conn) writeNext(id string, resp *graphql.Response) error {
 	if err != nil {
 		return err
 	}
-	return c.write(c.ctx, OutMessage{ID: id, Type: TypeNext, Payload: payload})
+	return c.write(c.life, OutMessage{ID: id, Type: TypeNext, Payload: payload})
 }
 
 // stop cancels an operation without sending anything, for an unsubscribe or a
@@ -694,7 +703,7 @@ func (c *conn) startPings() func() {
 		for {
 			select {
 			case <-t.C:
-				if err := c.write(c.ctx, OutMessage{Type: TypePing}); err != nil {
+				if err := c.write(c.life, OutMessage{Type: TypePing}); err != nil {
 					return
 				}
 			case <-done:
