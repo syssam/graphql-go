@@ -178,6 +178,13 @@ nothing inside a pure field, interceptor or not). A registered interceptor still
 the semaphore is a slot budget that `Stats` reports and a task never waits on, because a task waiting for a slot has not begun and its wave could never dispatch (`taskGroup`). `Inline()`/`Concurrent()` override per field. `loader.Loader` (`loader/`)
 coalesces `Load` calls within one concurrent wave — the executor announces a wave before
 launching sibling tasks (`pushWave`), which is what makes DataLoader batching work.
+**A batch's context comes from the Loads waiting on it, never from the first `Load` of the
+request** (`batchContext`): values from one waiter, cancelled only once every waiter has given
+up, deadline the latest of theirs. The scope used to keep the first `Load`'s context, so a
+resolver that wrapped its own in `WithTimeout` and returned failed every later wave with
+`context.Canceled` (`TestALaterWaveDoesNotInheritAnEarlierLoadsContext`). Outside `Execute` a
+`Loader` caches only under `loader.WithScope`; the unscoped fallback is shared by the whole
+process and must not cache (`TestOnlyAScopedLoadIsCachedOutsideExecute`).
 **The coordinator counts the whole operation, not a stack of waves.** It keeps three numbers:
 announced tasks not yet begun, goroutines running (the operation's own goroutine plus every
 begun task, less those parked or waiting in `taskGroup.wait` for tasks of their own), and parked

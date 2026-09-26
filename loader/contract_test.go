@@ -38,7 +38,7 @@ func TestABatchErrorIsNotCached(t *testing.T) {
 		return out, nil
 	})
 
-	ctx := context.Background()
+	ctx := loader.WithScope(context.Background())
 	if _, err := ld.Load(ctx, 1); !errors.Is(err, fail) {
 		t.Fatalf("first Load err = %v, want the batch error", err)
 	}
@@ -66,7 +66,7 @@ func TestAPerKeyErrorIsNotCached(t *testing.T) {
 		return map[int]int{1: 10}, nil, nil
 	})
 
-	ctx := context.Background()
+	ctx := loader.WithScope(context.Background())
 	if _, err := ld.Load(ctx, 1); !errors.Is(err, fail) {
 		t.Fatalf("first Load err = %v, want the per-key error", err)
 	}
@@ -91,7 +91,7 @@ func TestASuccessIsCached(t *testing.T) {
 		calls++
 		return map[int]int{1: 10}, nil
 	})
-	ctx := context.Background()
+	ctx := loader.WithScope(context.Background())
 	for range 3 {
 		if v, err := ld.Load(ctx, 1); err != nil || v != 10 {
 			t.Fatalf("Load = (%d, %v)", v, err)

@@ -5,7 +5,8 @@
 // Batching is driven by the executor's wave dispatch
 // (graphql.WaveCoordinator), so Loads issued by sibling Resolve fields in
 // the same wave flush together. Outside an Execute call a Loader still
-// works, falling back to its own scheduler.
+// works, falling back to its own scheduler; wrap the context with WithScope
+// to give such calls a cache of their own.
 package loader
 
 import (
@@ -14,8 +15,10 @@ import (
 	"log/slog"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	graphql "github.com/syssam/graphql-go"
 )
@@ -28,9 +31,11 @@ import (
 // A panic is recovered, logged, and fails every waiter in the batch with an
 // INTERNAL_SERVER_ERROR that does not carry the panic value.
 //
-// ctx is the request's, not a fresh background one: it carries the request's
-// cancellation, deadline and values, so a batch stops when the client goes
-// away and a tracing span or tenant read from it is the caller's own.
+// ctx carries the values of a Load waiting on the batch, so a tracing span or
+// tenant read from it is a caller's own. It is cancelled only once every Load
+// waiting on the batch has given up, and its deadline is the latest of theirs:
+// a batch serves several resolvers, and one of them returning early, or
+// running under a shorter timeout of its own, must not fail its siblings.
 type BatchFunc[K comparable, V any] func(ctx context.Context, keys []K) (map[K]V, error)
 
 // MappedBatchFunc is BatchFunc with per-key failure. A key present in the
@@ -57,8 +62,28 @@ type Loader[K comparable, V any] struct {
 	maxBatch int
 	cache    bool
 
-	// orphan is used when Load is called outside Execute (tests, scripts).
+	// orphan is used when Load is called outside Execute and outside
+	// WithScope. It never caches: it is shared by every such caller for the
+	// life of the process, so a cache would grow without bound and hand one
+	// caller's result to another.
 	orphan requestScope[K, V]
+}
+
+type scopeKey struct{}
+
+type scopeSet struct {
+	mu sync.Mutex
+	m  map[any]any
+}
+
+// WithScope returns a context under which every Loader keeps one cache and
+// one pending queue, the way it does for one request under Execute. It is for
+// work outside Execute -- a background job, a script, a test -- where there
+// is no request to scope them to. Without it such calls still batch, but
+// cache nothing, because the only thing left to share a cache with is every
+// other caller in the process.
+func WithScope(ctx context.Context) context.Context {
+	return context.WithValue(ctx, scopeKey{}, &scopeSet{m: make(map[any]any)})
 }
 
 // Option configures a Loader.
@@ -87,7 +112,7 @@ func New[K comparable, V any](batch BatchFunc[K, V], opts ...Option) *Loader[K, 
 		o(&cfg)
 	}
 	l := &Loader[K, V]{batch: batch, maxBatch: cfg.maxBatch, cache: cfg.cache}
-	l.orphan.init(l, nil)
+	l.orphan.init(l, nil, false)
 	return l
 }
 
@@ -100,7 +125,7 @@ func NewMapped[K comparable, V any](batch MappedBatchFunc[K, V], opts ...Option)
 		o(&cfg)
 	}
 	l := &Loader[K, V]{mapped: batch, maxBatch: cfg.maxBatch, cache: cfg.cache}
-	l.orphan.init(l, nil)
+	l.orphan.init(l, nil, false)
 	return l
 }
 
@@ -137,19 +162,26 @@ func (l *Loader[K, V]) Clear(ctx context.Context, key K) {
 func (l *Loader[K, V]) scope(ctx context.Context) *requestScope[K, V] {
 	oc := graphql.OperationFrom(ctx)
 	if oc == nil {
-		return &l.orphan
+		sc, _ := ctx.Value(scopeKey{}).(*scopeSet)
+		if sc == nil {
+			return &l.orphan
+		}
+		sc.mu.Lock()
+		defer sc.mu.Unlock()
+		if v, ok := sc.m[l]; ok {
+			return v.(*requestScope[K, V])
+		}
+		s := &requestScope[K, V]{}
+		s.init(l, nil, l.cache)
+		sc.m[l] = s
+		return s
 	}
 	if v, ok := oc.Get(l); ok {
 		return v.(*requestScope[K, V])
 	}
 	s := &requestScope[K, V]{}
 	w := oc.Waves()
-	s.init(l, w)
-	// The batch runs after the resolver that queued its keys has parked, so
-	// the scope carries the request context rather than taking one from
-	// whichever Load happens to trigger the flush. Cancellation, deadline and
-	// request-scoped values reach the batch function only through this.
-	s.ctx = ctx
+	s.init(l, w, l.cache)
 	// GetOrSet, not Set: sibling resolvers reach their first Load together
 	// and would otherwise each install a scope, splitting the pending queue
 	// and the cache so batching degrades to N+1. Only the winner registers
@@ -157,7 +189,7 @@ func (l *Loader[K, V]) scope(ctx context.Context) *requestScope[K, V] {
 	if actual, loaded := oc.GetOrSet(l, s); loaded {
 		return actual.(*requestScope[K, V])
 	}
-	w.OnReady(func() { s.flush(s.ctx) })
+	w.OnReady(s.flush)
 	return s
 }
 
@@ -167,13 +199,13 @@ type result[V any] struct {
 }
 
 type waiter[V any] struct {
-	ch chan result[V]
+	ctx context.Context
+	ch  chan result[V]
 }
 
 type requestScope[K comparable, V any] struct {
 	loader    *Loader[K, V]
 	waves     *graphql.WaveCoordinator
-	ctx       context.Context
 	mu        sync.Mutex
 	cache     map[K]V
 	cached    map[K]struct{}
@@ -182,10 +214,10 @@ type requestScope[K comparable, V any] struct {
 	scheduled atomic.Bool
 }
 
-func (s *requestScope[K, V]) init(l *Loader[K, V], w *graphql.WaveCoordinator) {
+func (s *requestScope[K, V]) init(l *Loader[K, V], w *graphql.WaveCoordinator, cache bool) {
 	s.loader = l
 	s.waves = w
-	if l.cache {
+	if cache {
 		s.cache = make(map[K]V)
 		s.cached = make(map[K]struct{})
 	}
@@ -226,7 +258,7 @@ func (s *requestScope[K, V]) load(ctx context.Context, keys []K) ([]V, error) {
 				continue
 			}
 		}
-		w := &waiter[V]{ch: make(chan result[V], 1)}
+		w := &waiter[V]{ctx: ctx, ch: make(chan result[V], 1)}
 		if _, seen := s.waiters[key]; !seen {
 			s.pending = append(s.pending, key)
 			queued = true
@@ -240,10 +272,8 @@ func (s *requestScope[K, V]) load(ctx context.Context, keys []K) ([]V, error) {
 	if len(wait) == 0 {
 		return out, nil
 	}
-	if queued {
-		s.notify(ctx)
-	} else if s.waves == nil {
-		s.schedule(ctx)
+	if queued || s.waves == nil {
+		s.notify()
 	}
 
 	if s.waves != nil {
@@ -265,31 +295,31 @@ func (s *requestScope[K, V]) load(ctx context.Context, keys []K) ([]V, error) {
 	return out, nil
 }
 
-func (s *requestScope[K, V]) notify(ctx context.Context) {
+func (s *requestScope[K, V]) notify() {
 	if s.waves != nil {
 		return
 	}
-	s.schedule(ctx)
+	s.schedule()
 }
 
-func (s *requestScope[K, V]) schedule(ctx context.Context) {
+func (s *requestScope[K, V]) schedule() {
 	if !s.scheduled.CompareAndSwap(false, true) {
 		return
 	}
 	go func() {
 		runtime.Gosched()
-		s.flush(ctx)
+		s.flush()
 		s.scheduled.Store(false)
 		s.mu.Lock()
 		more := len(s.pending) > 0
 		s.mu.Unlock()
 		if more {
-			s.schedule(ctx)
+			s.schedule()
 		}
 	}()
 }
 
-func (s *requestScope[K, V]) flush(ctx context.Context) {
+func (s *requestScope[K, V]) flush() {
 	for {
 		s.mu.Lock()
 		if len(s.pending) == 0 {
@@ -309,7 +339,9 @@ func (s *requestScope[K, V]) flush(ctx context.Context) {
 		}
 		s.mu.Unlock()
 
+		ctx, release := batchContext(keys, waiters)
 		got, keyErrs, err := s.invoke(ctx, keys)
+		release()
 		for _, k := range keys {
 			var r result[V]
 			switch {
@@ -333,6 +365,69 @@ func (s *requestScope[K, V]) flush(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// batchContext derives the context a batch runs under from the Loads waiting
+// on it. Taking any one caller's context whole was wrong: a resolver that
+// wraps its context in a timeout and returns cancels it, and every later batch
+// in the request then failed with context.Canceled.
+func batchContext[K comparable, V any](keys []K, waiters map[K][]*waiter[V]) (context.Context, func()) {
+	// Waiters overwhelmingly share one context, so a linear scan over the
+	// distinct ones beats a map.
+	var ctxs []context.Context
+	for _, k := range keys {
+		for _, w := range waiters[k] {
+			if w.ctx != nil && !slices.Contains(ctxs, w.ctx) {
+				ctxs = append(ctxs, w.ctx)
+			}
+		}
+	}
+	if len(ctxs) == 0 {
+		return context.Background(), func() {}
+	}
+	if len(ctxs) == 1 {
+		return ctxs[0], func() {}
+	}
+	base := context.WithoutCancel(ctxs[0])
+	var cancelDeadline context.CancelFunc = func() {}
+	if dl, ok := latestDeadline(ctxs); ok {
+		base, cancelDeadline = context.WithDeadline(base, dl)
+	}
+	ctx, cancel := context.WithCancel(base)
+	var live atomic.Int32
+	live.Store(int32(len(ctxs)))
+	stops := make([]func() bool, len(ctxs))
+	for i, c := range ctxs {
+		stops[i] = context.AfterFunc(c, func() {
+			if live.Add(-1) == 0 {
+				cancel()
+			}
+		})
+	}
+	return ctx, func() {
+		for _, stop := range stops {
+			stop()
+		}
+		cancel()
+		cancelDeadline()
+	}
+}
+
+// latestDeadline reports the latest deadline among ctxs, and false when any
+// of them has none: a waiter without a deadline would wait indefinitely, so
+// the batch must not impose one on its behalf.
+func latestDeadline(ctxs []context.Context) (time.Time, bool) {
+	var latest time.Time
+	for _, c := range ctxs {
+		dl, ok := c.Deadline()
+		if !ok {
+			return time.Time{}, false
+		}
+		if dl.After(latest) {
+			latest = dl
+		}
+	}
+	return latest, true
 }
 
 // invoke recovers because nothing above it can. The keys it was called for
