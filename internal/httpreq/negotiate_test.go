@@ -48,6 +48,19 @@ func TestNegotiate(t *testing.T) {
 		// q=0 is a refusal, not a low preference.
 		{gql + ";q=0, " + json, json, true, "q=0 refuses that type"},
 
+		// RFC 9110: a weight outside the qvalue grammar does not make the
+		// range acceptable. It used to count as q=1, so a typo for q=0 made
+		// the refused type the client's first choice.
+		{gql + ";q=O, " + json + ";q=0.5", json, true, "unparseable q is not acceptable"},
+		{gql + ";q=2, " + json + ";q=0.5", json, true, "q above 1 is outside the grammar"},
+		{gql + ";q=NaN, " + json + ";q=0.5", json, true, "ParseFloat takes NaN; the grammar does not"},
+		{gql + ";q=1e0, " + json + ";q=0.5", json, true, "ParseFloat takes exponents; the grammar does not"},
+		{gql + ";q=0.0001", gql, false, "at most three decimals"},
+		{gql + ";q=1.001, " + json + ";q=0.5", json, true, "1 takes only zero decimals"},
+		{"*/*;q=bogus", gql, false, "an unparseable wildcard accepts nothing"},
+		{json + ";q=1., " + gql + ";q=0.999", json, true, "1. is inside the grammar"},
+		{json + ";q=0.123, " + gql + ";q=0.12", json, true, "three decimals are allowed"},
+
 		{"text/html", gql, false, "nothing acceptable"},
 		{"text/html, application/xml", gql, false, "nothing acceptable"},
 	} {

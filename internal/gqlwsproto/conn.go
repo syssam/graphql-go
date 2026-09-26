@@ -226,11 +226,12 @@ func (c *conn) handshake() bool {
 	//
 	// Zero disables it, as zero does for every other limit here:
 	// time.AfterFunc(0, ...) would fire at once and close every connection.
+	var deadline *initDeadline
 	if c.cfg.InitTimeout > 0 {
-		timer := time.AfterFunc(c.cfg.InitTimeout, func() {
+		deadline = newInitDeadline(c.cfg.InitTimeout, func() {
 			c.close(StatusInitTimeout, "Connection initialisation timeout")
 		})
-		defer timer.Stop()
+		defer deadline.stop()
 	}
 
 	ctx := c.ctx
@@ -255,6 +256,14 @@ func (c *conn) handshake() bool {
 				if next != nil {
 					opCtx = next
 				}
+			}
+			// Decided before the ack is written, not when handshake returns:
+			// a timer firing in between -- while the ack write blocks on a
+			// slow client, say -- closed an authenticated connection 4408.
+			// And a timer that already fired, during a slow OnConnect, has
+			// closed the socket, so there is no connection to acknowledge.
+			if !deadline.ack() {
+				return false
 			}
 			// The hook's context parents every operation, so a token decoded
 			// there reaches every resolver on this connection.
@@ -291,6 +300,54 @@ func (c *conn) handshake() bool {
 		}
 	}
 }
+
+// initDeadline is the connection_init timeout. Stopping the timer is not
+// enough on its own: Stop cannot recall a callback that has already started,
+// so the callback and the ack decide under one lock which of them won.
+type initDeadline struct {
+	mu      sync.Mutex
+	acked   bool
+	expired bool
+	timer   *time.Timer
+}
+
+func newInitDeadline(d time.Duration, expire func()) *initDeadline {
+	g := &initDeadline{}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.timer = time.AfterFunc(d, func() { g.fire(expire) })
+	return g
+}
+
+// fire runs expire unless the connection was acknowledged first. expire runs
+// under mu so an ack cannot slip in between the check and the close.
+func (g *initDeadline) fire(expire func()) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.acked {
+		return
+	}
+	g.expired = true
+	expire()
+}
+
+// ack reports whether the connection may be acknowledged, and if so makes
+// the timeout a no-op from here on. A nil deadline (no timeout) always may.
+func (g *initDeadline) ack() bool {
+	if g == nil {
+		return true
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.expired {
+		return false
+	}
+	g.acked = true
+	g.timer.Stop()
+	return true
+}
+
+func (g *initDeadline) stop() { g.timer.Stop() }
 
 // dispatch handles one post-handshake message, reporting whether the
 // connection should continue.

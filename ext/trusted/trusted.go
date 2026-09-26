@@ -14,20 +14,51 @@
 // The wire format is the one automatic persisted queries already use,
 // extensions.persistedQuery.sha256Hash, which is also how Apollo Router
 // safelists. A top-level documentId field is not supported.
+//
+// # Enforcing on every transport
+//
+// WithPersistedQueries is a transport option, so the safelist binds only the
+// handlers it was passed to: mount gqlws or gqlsse without it and those
+// endpoints run any document. Store.Enforce closes that at the executor, which
+// every transport shares:
+//
+//	exec := graphql.NewExecutor(schema, store.Enforce()...)
+//
+// It refuses any operation whose document text is not one the store holds,
+// with the same PersistedQueryNotInList error the transports send. It checks
+// what will run rather than how the client named it, so it composes with the
+// transport wiring: a hash a transport resolved from the store yields
+// registered text and passes. It is the boundary; the transport option is
+// what lets clients send ids instead of text.
+//
+// Two limits, both from what an interceptor can reach. A query or mutation is
+// refused before it is parsed, but a subscription only after parsing,
+// validation and planning, since Executor.Subscribe runs no request
+// interceptor: a non-safelisted subscription can still learn a validation
+// error. And a streaming transport asks Executor.OperationKind what a document
+// is before executing it, which parses it into the executor's bounded
+// document cache whether or not it is later refused.
 package trusted
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+
+	graphql "github.com/syssam/graphql-go"
+	"github.com/syssam/graphql-go/ext/apq"
 )
 
 // Store is a fixed set of documents by id. It is read-only after
 // construction and therefore safe to share between requests without a lock.
 type Store struct {
 	docs map[string]string
+	// texts indexes docs by value, for Enforce: what an interceptor sees is
+	// the document text, the id having been resolved (or never sent).
+	texts map[string]struct{}
 }
 
 // NewStore holds docs as the complete set of documents this server will run.
@@ -37,10 +68,12 @@ type Store struct {
 // opaque build id both work, as long as both sides agree.
 func NewStore(docs map[string]string) *Store {
 	cp := make(map[string]string, len(docs))
+	texts := make(map[string]struct{}, len(docs))
 	for id, text := range docs {
 		cp[id] = text
+		texts[text] = struct{}{}
 	}
-	return &Store{docs: cp}
+	return &Store{docs: cp, texts: texts}
 }
 
 // LoadManifest reads either shape a generator emits: Apollo's persisted
@@ -103,3 +136,38 @@ func (s *Store) TrustedDocuments() {}
 // start-up: a manifest that silently loaded zero documents refuses every
 // request.
 func (s *Store) Len() int { return len(s.docs) }
+
+// Enforce returns executor options that refuse every operation whose document
+// is not in the store, on whichever transport it arrived. See the package
+// documentation for why this exists beside WithPersistedQueries and for its
+// two limits.
+func (s *Store) Enforce() []graphql.ExecutorOption {
+	return []graphql.ExecutorOption{
+		graphql.WithRequestInterceptor(graphql.RequestInterceptorFunc(
+			func(ctx context.Context, req *graphql.Request, next graphql.RequestHandler) *graphql.Response {
+				if !s.holds(req.Query) {
+					return notInList()
+				}
+				return next(ctx, req)
+			})),
+		// Subscribe runs no request interceptor, so without this a
+		// subscription would bypass the list entirely.
+		graphql.WithSubscriptionInterceptor(graphql.SubscriptionInterceptorFunc(
+			func(ctx context.Context, oc *graphql.OperationContext, next graphql.SubscriptionHandler) (<-chan *graphql.Response, error) {
+				if !s.holds(oc.RawQuery) {
+					return nil, &graphql.SubscribeError{Response: notInList()}
+				}
+				return next(ctx, oc)
+			})),
+	}
+}
+
+func (s *Store) holds(text string) bool {
+	_, ok := s.texts[text]
+	return ok
+}
+
+func notInList() *graphql.Response {
+	err := graphql.Errorf("PersistedQueryNotInList").WithCode(apq.CodeNotInList)
+	return &graphql.Response{Errors: []*graphql.Error{err}}
+}

@@ -24,6 +24,9 @@ over GET" is composed independently per transport, not through `httpreq`, and th
 (`gqlsse`, `gqlecho.SSE`, `gqlfiber.SSE`) and the plain-HTTP family use different wording for
 it, as they do for the unacceptable-`Accept` message — a real split along transport kind, not
 drift to fix. A row that splits still asserts every handler on both sides of it.
+**`httpreq.Decode` skips leading JSON whitespace itself**: `gqlhttp` and `gqlfiber` trimmed
+before calling it (they look for a batch `[` first) and the SSE handlers did not, so
+`" {...}"` was 200 over HTTP and 400 over SSE (`TestEquivalence/leading whitespace`).
 
 **A client that names neither JSON type gets `application/json`.** An empty `Accept` and a
 wildcard both answer `MediaTypeJSON`, and with it the 200 that media type carries for a
@@ -32,7 +35,9 @@ not be handed the status that goes with it. The specification's audit suite requ
 rows ("SHOULD accept */* and use application/json for the content-type", "SHOULD assume
 application/json content-type when accept is missing") and graphql-http, graphql-yoga and
 Apollo Server all answer `application/json` to a wildcard. An explicit type still outranks a
-wildcard in either order; `internal/httpreq.TestNegotiate` is the whole table, which
+wildcard in either order. A `q` outside RFC 9110's qvalue grammar (`q=O`, `q=2`, `q=1e0`)
+makes that range not acceptable, as `q=0` does; it used to count as `q=1`, promoting what
+was probably a typo for a refusal to first choice. `internal/httpreq.TestNegotiate` is the whole table, which
 `Negotiate` had no direct test for until this changed. **`gqlhttp` takes 61 of 61 on that
 audit** with CSRF prevention off, 58 with it on, where the three are `MAY` rows sending a GET
 with no preflight header. See `testdata/httpaudit/`.
@@ -53,7 +58,9 @@ indistinguishable from success to any client and the operator sees only a warnin
 `{"errors":[{"message":"internal system error"}]}` **only when nothing was**, which is what
 keeps a failure *after* bytes went out -- a client disconnecting mid-write -- from corrupting a
 partly-written response. It is safe because `Response.WriteTo` composes the whole envelope
-before writing any of it.
+before writing any of it. Both SSE handlers do the same through `writePayload`, for a
+pre-stream request error (their `writeResponse`) and for a `next` event, which used to go
+out as `data: ` with nothing after it and end the stream without `complete`.
 
 Losing the envelope is the reference behaviour, not a shortcoming: graphql-js, run for
 comparison, is `JSON.stringify` semantics -- a function or `undefined` is silently dropped, a
@@ -96,9 +103,14 @@ An unknown *hash* against a `TrustedStore` still answers `PersistedQueryNotFound
 round trip, no weaker a safelist -- but it is why the safelist row sends query text.
 
 `gqlecho` is `net/http` underneath, so it delegates to `gqlhttp`/`gqlsse`/`gqlws` rather than
-reimplementing them; its only addition over `echo.WrapHandler` is mapping a pre-response
-failure (rejected method, unacceptable `Accept`, forgeable request) into an `*echo.HTTPError`
-so Echo's error handler and middleware see it. `gqlfiber` is fasthttp-native instead: parsing
+reimplementing them; its only addition over `echo.WrapHandler` is raising an
+`*echo.HTTPError` for **every error status but 400** (`reportable`) so Echo's error handler
+and middleware see it; the body is already written and stays the GraphQL envelope. It was an
+allow-list of 403/405/406/415, which let 413, a drain's 503 and `gqlsse`'s 500 pass as
+successes. 400 stays unraised because it is the status of a GraphQL request error (validation
+under `application/graphql-response+json`, every request error on SSE) -- a response the
+client asked for -- and the recorder sees only the status, so a malformed body's 400 cannot be
+told apart from it. `gqlfiber` is fasthttp-native instead: parsing
 goes through `httpreq`'s fasthttp `Source`, writing goes straight into the fasthttp response
 buffer via `Response.WriteTo`, and no `net/http` value exists anywhere on the path. Fiber's
 own `Ctx` can never be cancelled — `Done()` is always nil, and `Context()` is
@@ -143,11 +155,10 @@ connection context — the one `OnConnect` returned, say on token expiry — clo
 1001 through a `context.AfterFunc`** registered after the ack and unregistered first in `serve`'s
 defer (so Serve's own cancel on a normal exit sends nothing); both drivers need it now that
 neither read is cancellable, and `gqlfiber` never had it. `Serve` releases `watch` from a defer,
-so a panicking `OnConnect` does not leave it parked. Three drain divergences are deliberate and
+so a panicking `OnConnect` does not leave it parked. Two drain divergences are deliberate and
 known: `gqlws` checks the drain before anything else, so a non-upgrade GET while draining gets
-503 where `gqlfiber` answers 426, then 403 (origin), then 503; drain refusals are not in
-`transport/equivalence_test.go`; and `gqlecho.serve` does not map a drain 503 to an
-`*echo.HTTPError`. Two guards in `gqlwsproto` have no deterministic
+503 where `gqlfiber` answers 426, then 403 (origin), then 503; and drain refusals are not in
+`transport/equivalence_test.go`. Two guards in `gqlwsproto` have no deterministic
 test and say so beside them (`closed(cfg.Closing)` in `subscribe`, and `Serve` waiting for
 `watch`); a reviewer's 50-run break of each failed 0 and 3 times. `gqlhttp` needs nothing.
 
@@ -217,7 +228,12 @@ tears down the whole connection when a write context is cancelled mid-frame, so 
 `next` under the operation context would let one client's unsubscribe drop every other
 subscription on that connection. The init timeout likewise closes the connection from a
 timer rather than bounding the read, because a read aborted by its own context leaves no
-way to send the 4408 close frame.
+way to send the 4408 close frame. **The ack and that timer decide under one lock
+(`initDeadline`)** before the ack is written: the timer used to be stopped only by
+`handshake`'s defer, so one firing while the ack write blocked closed an authenticated
+connection 4408, and one firing during a slow `OnConnect` closed the socket and the handshake
+acknowledged it anyway. `ack`'s `timer.Stop` is only cleanup -- the `acked` check in `fire` is
+what answers, so breaking the Stop alone changes nothing observable.
 
 **Why `gqlfiber` is native rather than `adaptor.HTTPHandler(gqlhttp...)`**, and it has nothing
 to do with allocations (the cost comparison is in `docs/benchmarks.md`): `fasthttpadaptor`

@@ -9,7 +9,7 @@
 //
 // Register it before any other operation interceptor. Interceptors wrap in
 // registration order, so one registered earlier runs even for a request the
-// limiter rejects.
+// limiter rejects. Nothing enforces this; see New.
 //
 // It needs a cost model, so build the executor with graphql.WithQueryCost.
 // Add Actual to that model to charge what the query really resolved rather
@@ -52,6 +52,17 @@ type Config struct {
 const defaultMaxBuckets = 10000
 
 // New returns the executor option that installs the limiter.
+//
+// ORDER MATTERS AND NOTHING CHECKS IT: pass this option to graphql.NewExecutor
+// before any other WithOperationInterceptor. Operation interceptors wrap in
+// registration order, so an interceptor registered earlier runs in full for
+// every request the limiter then refuses -- a throttled flood still pays for
+// its tracing, logging or authorization lookups. Interceptors registered
+// later never see a refused request.
+//
+// The order cannot be enforced from here: an ExecutorOption is an opaque
+// func(*Executor), and neither the options nor the interceptor chain can be
+// inspected from outside the graphql package.
 func New(cfg Config) graphql.ExecutorOption {
 	if cfg.Now == nil {
 		cfg.Now = time.Now

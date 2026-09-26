@@ -7,6 +7,7 @@
 package httpreq
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -153,7 +154,13 @@ func ReadBody(src Source, limit int64) ([]byte, int, error) {
 
 // Decode turns one JSON request object into a graphql.Request. See ParseGET
 // for queryOptional.
+//
+// Leading JSON whitespace is skipped here rather than by each caller: gqlhttp
+// and gqlfiber trimmed before calling, because they look for a batch array
+// first, and the SSE handlers did not, so " {...}" was 200 over plain HTTP and
+// 400 over SSE for the same body.
 func Decode(body []byte, queryOptional bool) (*graphql.Request, error) {
+	body = TrimJSONSpace(body)
 	if len(body) == 0 {
 		return nil, errors.New("request body is empty.")
 	}
@@ -171,6 +178,12 @@ func Decode(body []byte, queryOptional bool) (*graphql.Request, error) {
 		return nil, errors.New(`"variables" must be a JSON object or null.`)
 	}
 	return &req, nil
+}
+
+// TrimJSONSpace drops the leading whitespace RFC 8259 allows before a value:
+// space, tab, line feed and carriage return, and nothing else.
+func TrimJSONSpace(b []byte) []byte {
+	return bytes.TrimLeft(b, " \t\r\n")
 }
 
 // IsJSONObject accepts an object or the literal null.

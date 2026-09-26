@@ -49,6 +49,20 @@ func TestRegisteredDocumentResolves(t *testing.T) {
 	}
 }
 
+// A safelist id is opaque -- a build id as often as a digest -- so apq's
+// case folding of hashes must not reach it: an id registered with upper-case
+// letters has to resolve exactly as written.
+func TestIDsAreMatchedExactly(t *testing.T) {
+	store := trusted.NewStore(map[string]string{"Build-42": doc})
+	req := &graphql.Request{Extensions: persisted("Build-42")}
+	if resp := apq.Resolve(store, req); resp != nil {
+		t.Fatalf("rejected a registered id: %v", resp.Errors)
+	}
+	if req.Query != doc {
+		t.Fatalf("query = %q", req.Query)
+	}
+}
+
 func TestUnknownIDIsNotFound(t *testing.T) {
 	req := &graphql.Request{Extensions: persisted(apq.Hash(`{ other }`))}
 	if got := codeOf(t, apq.Resolve(newStore(), req)); got != apq.CodeNotFound {

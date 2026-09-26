@@ -41,9 +41,7 @@ func Negotiate(accept string) (string, bool) {
 		}
 		q := 1.0
 		if qs, ok := params["q"]; ok {
-			if parsed, err := strconv.ParseFloat(qs, 64); err == nil {
-				q = parsed
-			}
+			q = parseQ(qs)
 		}
 		if q <= 0 {
 			continue
@@ -67,4 +65,28 @@ func Negotiate(accept string) (string, bool) {
 		return MediaTypeGraphQLResponse, false
 	}
 	return best, true
+}
+
+// parseQ reads an RFC 9110 qvalue, "0" [ "." 0*3DIGIT ] / "1" [ "." 0*3("0") ],
+// and answers 0 for anything else. An unreadable weight used to count as
+// q=1, which promoted a range the client may have meant to refuse -- "q=O"
+// for "q=0" -- to its first choice. Treating it as not acceptable fails
+// closed: the range is ignored, and another the client named can still win.
+// strconv.ParseFloat alone is too loose here: it takes "2", "1e0", "NaN" and
+// "Inf".
+func parseQ(s string) float64 {
+	whole, frac, _ := strings.Cut(s, ".")
+	if (whole != "0" && whole != "1") || len(frac) > 3 {
+		return 0
+	}
+	for _, c := range frac {
+		if c < '0' || c > '9' || (whole == "1" && c != '0') {
+			return 0
+		}
+	}
+	q, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0
+	}
+	return q
 }

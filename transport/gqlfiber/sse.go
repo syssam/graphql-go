@@ -308,10 +308,26 @@ func (h *sseHandler) writeNext(w io.Writer, resp *graphql.Response) error {
 	if _, err := io.WriteString(w, "event: next\ndata: "); err != nil {
 		return err
 	}
-	if _, err := resp.WriteTo(w); err != nil {
+	if err := h.writePayload(w, resp); err != nil {
 		return err
 	}
 	_, err := io.WriteString(w, "\n\n")
+	return err
+}
+
+// writePayload is gqlsse's: resp, or httpreq.FallbackBody when resp failed to
+// serialize before any of it went out. Only a failure after bytes were
+// written -- the client leaving -- is returned.
+func (h *sseHandler) writePayload(w io.Writer, resp *graphql.Response) error {
+	err, wroteNothing := httpreq.WriteBody(w, func(out io.Writer) error {
+		_, err := resp.WriteTo(out)
+		return err
+	})
+	if err == nil || !wroteNothing {
+		return err
+	}
+	h.logger.Warn("gqlfiber: serializing response", "error", err)
+	_, err = io.WriteString(w, httpreq.FallbackBody)
 	return err
 }
 
@@ -346,7 +362,8 @@ func (h *sseHandler) logWrite(err error) {
 func (h *sseHandler) writeResponse(c fiber.Ctx, status int, resp *graphql.Response) {
 	c.Set("Content-Type", MediaTypeGraphQLResponse+"; charset=utf-8")
 	c.Status(status)
-	if _, err := resp.WriteTo(c); err != nil {
+	// See gqlhttp.writeResponse: an empty body reads as success.
+	if err := h.writePayload(c, resp); err != nil {
 		h.logger.Warn("gqlfiber: writing response", "error", err)
 	}
 }

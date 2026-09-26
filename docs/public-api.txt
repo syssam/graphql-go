@@ -52,6 +52,7 @@ ext/otel: type Option func(*config)
 ext/throttle: const CodeThrottled
 ext/throttle: func New(cfg Config) graphql.ExecutorOption
 ext/throttle: type Config struct { MaximumAvailable int RestoreRate float64 Key func(ctx context.Context) string MaxBuckets int Now func() time.Time }
+ext/trusted: func (s *Store) Enforce() []graphql.ExecutorOption
 ext/trusted: func (s *Store) Get(id string) (string, bool)
 ext/trusted: func (s *Store) Len() int
 ext/trusted: func (s *Store) Set(string, string)
@@ -302,6 +303,7 @@ loader: func (l *Loader[K, V]) Prime(ctx context.Context, key K, value V)
 loader: func NewMapped[K comparable, V any](batch MappedBatchFunc[K, V], opts ...Option) *Loader[K, V]
 loader: func New[K comparable, V any](batch BatchFunc[K, V], opts ...Option) *Loader[K, V]
 loader: func WithMaxBatchSize(n int) Option
+loader: func WithScope(ctx context.Context) context.Context
 loader: func WithoutCache() Option
 loader: type BatchFunc[K comparable, V any] func(ctx context.Context, keys []K) (map[K]V, error)
 loader: type Loader[K comparable, V any] struct { }

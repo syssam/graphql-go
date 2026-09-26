@@ -5,7 +5,6 @@
 package gqlhttp
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -239,7 +238,7 @@ func (h *Handler) parsePOST(src httpreq.Source) (reqs []*graphql.Request, batch 
 		return nil, false, status, err
 	}
 
-	trimmed := bytes.TrimLeft(body, " \t\r\n")
+	trimmed := httpreq.TrimJSONSpace(body)
 	if len(trimmed) > 0 && trimmed[0] == '[' {
 		if h.batchMax <= 0 {
 			return nil, false, http.StatusBadRequest, errors.New("batching is not enabled on this server.")

@@ -7,6 +7,10 @@
 // an unacceptable Accept header, a forgeable request -- reach Echo as an
 // *echo.HTTPError, so an application's error handler and middleware see them.
 //
+// Every error status but 400 is raised this way, including the body limit's
+// 413 and a drain's 503; 400 carries GraphQL request errors, which are a
+// response rather than a failure (see reportable).
+//
 // That HTTPError is observational. The wrapped handler has already written
 // the status and the response body by the time it is raised, so Echo's
 // default error handler finds the response committed and returns without
@@ -56,12 +60,27 @@ func serve(c *echo.Context, h http.Handler) error {
 	rec := &statusRecorder{ResponseWriter: c.Response(), status: http.StatusOK}
 	h.ServeHTTP(rec, c.Request())
 
-	// These four are the statuses the handlers emit before a GraphQL response
-	// exists. Everything else, 400 included, is a GraphQL response envelope.
-	switch rec.status {
-	case http.StatusMethodNotAllowed, http.StatusNotAcceptable,
-		http.StatusForbidden, http.StatusUnsupportedMediaType:
+	if reportable(rec.status) {
 		return echo.NewHTTPError(rec.status, http.StatusText(rec.status))
 	}
 	return nil
+}
+
+// reportable reports whether a status is a transport-level failure Echo's
+// error handler should see: every error status but 400.
+//
+// It used to be an allow-list of four (403, 405, 406, 415), which let the
+// body limit's 413, a drain's 503 and gqlsse's 500 past Echo's error
+// middleware as if they had succeeded. Listing what is excluded instead means
+// a status a handler starts emitting later is reported by default.
+//
+// 400 is excluded because it is the status of a GraphQL request error -- a
+// document that fails validation under application/graphql-response+json,
+// and every request error on the SSE handlers -- which is a GraphQL response
+// the client asked for, not a transport failure. A malformed body is also
+// 400, and the recorder sees only the status, so it cannot tell the two
+// apart; reporting both would put every invalid query from every client in
+// an application's error log.
+func reportable(status int) bool {
+	return status >= http.StatusBadRequest && status != http.StatusBadRequest
 }

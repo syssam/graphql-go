@@ -222,3 +222,26 @@ func TestCacheHasADefaultByteBudget(t *testing.T) {
 		t.Fatal("WithMaxBytes(0) still evicted")
 	}
 }
+
+// Hex digits are case-insensitive, so a client that sends its digest in upper
+// case is sending the same hash. Compared as written, it failed verification
+// against the very text it hashed, and a lookup missed a cache the other
+// spelling had warmed.
+func TestHashCaseIsIgnored(t *testing.T) {
+	lower := apq.Hash(query)
+	upper := strings.ToUpper(lower)
+
+	c := apq.NewCache(10)
+	if resp := apq.Resolve(c, &graphql.Request{Query: query, Extensions: ext(upper, 1)}); resp != nil {
+		t.Fatalf("upper-case registration refused: %s", message(t, resp))
+	}
+	for _, h := range []string{lower, upper} {
+		req := &graphql.Request{Extensions: ext(h, 1)}
+		if resp := apq.Resolve(c, req); resp != nil {
+			t.Fatalf("lookup by %s: %s", h, message(t, resp))
+		}
+		if req.Query != query {
+			t.Fatalf("lookup by %s: query = %q", h, req.Query)
+		}
+	}
+}

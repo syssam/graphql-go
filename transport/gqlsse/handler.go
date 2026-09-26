@@ -308,10 +308,27 @@ func (h *Handler) writeNext(w io.Writer, resp *graphql.Response) error {
 	if _, err := io.WriteString(w, "event: next\ndata: "); err != nil {
 		return err
 	}
-	if _, err := resp.WriteTo(w); err != nil {
+	if err := h.writePayload(w, resp); err != nil {
 		return err
 	}
 	_, err := io.WriteString(w, "\n\n")
+	return err
+}
+
+// writePayload writes resp, or httpreq.FallbackBody when resp failed to
+// serialize before any of it went out, so an event whose extensions will not
+// marshal still carries a parseable payload and the stream goes on. Only a
+// failure after bytes were written -- the client leaving -- is returned.
+func (h *Handler) writePayload(w io.Writer, resp *graphql.Response) error {
+	err, wroteNothing := httpreq.WriteBody(w, func(out io.Writer) error {
+		_, err := resp.WriteTo(out)
+		return err
+	})
+	if err == nil || !wroteNothing {
+		return err
+	}
+	h.logger.Warn("gqlsse: serializing response", "error", err)
+	_, err = io.WriteString(w, httpreq.FallbackBody)
 	return err
 }
 
@@ -335,7 +352,10 @@ func (h *Handler) logWrite(err error) {
 func (h *Handler) writeResponse(w http.ResponseWriter, status int, resp *graphql.Response) {
 	w.Header().Set("Content-Type", MediaTypeGraphQLResponse+"; charset=utf-8")
 	w.WriteHeader(status)
-	if _, err := resp.WriteTo(w); err != nil {
+	// The status is already on the wire, but the body is still empty after a
+	// serialization failure, and an empty body reads as nothing having gone
+	// wrong; see gqlhttp.writeResponse.
+	if err := h.writePayload(w, resp); err != nil {
 		h.logger.Warn("gqlsse: writing response", "error", err)
 	}
 }

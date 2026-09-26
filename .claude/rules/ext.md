@@ -91,15 +91,29 @@ every later client's hash executes. `httpreq` takes a `queryOptional` flag so th
 off the missing-query errors are byte-identical to before. **`apq.NewCache` is bounded by
 query text as well as entry count** (`WithMaxBytes`, 16 MiB by default): registration is open
 to any client that can hash, so an entry count alone let 1000 entries of 1 MiB hold a gigabyte.
+**A hash is lower-cased before lookup and verification** (hex is case-insensitive and `Hash`
+writes lower case), but **not against a `TrustedStore`**, whose ids are opaque build ids as
+often as digests (`TestHashCaseIsIgnored`, `TestIDsAreMatchedExactly`).
 
 `ext/trusted` is the same wiring as a safelist: a `Store` is an `apq.Cache`, and `apq.Resolve`
 tells the two apart by the `apq.TrustedStore` marker. A safelist must refuse query text
 however it hashes — verifying the hash only proves the client can hash — and must refuse a
 freeform request carrying no hash at all, which is otherwise the way straight round it.
+**That wiring is per transport**: a `gqlws` or `gqlsse` mounted without `WithPersistedQueries`
+runs anything. `Store.Enforce()` is the executor-level boundary every transport shares -- a
+request interceptor (refuses before parsing) plus a subscription interceptor, because
+`Subscribe` runs no request interceptor -- matching on document *text*, so a hash a transport
+resolved from the store passes. Its limits, from what an interceptor can reach: a subscription
+is refused only after parse/validate/plan, so it can still learn a validation error, and
+`OperationKind` parses every document a streaming transport sees into the document cache.
+Closing both needs a root hook that runs on the raw request for `Subscribe` and
+`OperationKind` as well as `Execute`.
 
 `ext/throttle` spends what `QueryCost` computes: a bucket of points per caller, refilled on
 read rather than on a timer, quoted before the query runs and refunded down to the actual
-cost after. **It charges per subscription event**, because each event runs the whole
+cost after. **It must be the first operation interceptor, and nothing checks that**: an
+`ExecutorOption` is an opaque `func(*Executor)` and the chain is unexported, so enforcing it
+needs a root API (an ordering hook, or a read-only view of the registered interceptors). **It charges per subscription event**, because each event runs the whole
 operation chain; a stream billed once at open is unmetered. A quote is clamped at zero before
 it is charged: a negative `FieldWeight` makes a negative quote, and charging one added points.
 

@@ -16,6 +16,7 @@ import (
 	"container/list"
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 	"sync"
 
 	"github.com/syssam/graphql-go"
@@ -90,6 +91,15 @@ func Resolve(c Cache, req *graphql.Request) *graphql.Response {
 	hash, _ := fields["sha256Hash"].(string)
 	if hash == "" {
 		return errorResponse(CodeNotSupported, "PersistedQueryNotSupported")
+	}
+
+	// Hex is case-insensitive and Hash writes lower case, so an upper-case
+	// digest from a client would otherwise miss a cache it had already warmed
+	// and fail verification against the very text it hashed. A safelist's ids
+	// are opaque (they may be build ids rather than digests), so they are
+	// matched exactly as registered.
+	if !trusted {
+		hash = strings.ToLower(hash)
 	}
 
 	if req.Query == "" {

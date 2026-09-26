@@ -82,6 +82,31 @@ type Mutation { bump: String! }
 	}
 }
 
+// badRequestErrorExecutor answers a request error carrying an extension
+// encoding/json cannot serialize. A request interceptor is what reaches it:
+// the operation chain never runs for a document that fails validation.
+func badRequestErrorExecutor(t *testing.T) func(*testing.T) *graphql.Executor {
+	t.Helper()
+	return func(t *testing.T) *graphql.Executor {
+		t.Helper()
+		s, err := graphql.NewSchema(graphql.SDL(`type Query { hello: String! }`),
+			graphql.Query(graphql.Field("hello", func(graphql.Root) string { return "world" })),
+		)
+		if err != nil {
+			t.Fatalf("NewSchema: %v", err)
+		}
+		return graphql.NewExecutor(s, graphql.WithRequestInterceptor(
+			graphql.RequestInterceptorFunc(func(ctx context.Context, req *graphql.Request, next graphql.RequestHandler) *graphql.Response {
+				resp := next(ctx, req)
+				if resp.Extensions == nil {
+					resp.Extensions = map[string]any{}
+				}
+				resp.Extensions["bad"] = func() {}
+				return resp
+			})))
+	}
+}
+
 // newEquivServersWithExecutor is newEquivServers with the executor swapped, so
 // a case can drive every handler against a schema of its own.
 func newEquivServersWithExecutor(t *testing.T, mk func(*testing.T) *graphql.Executor) map[string]string {
@@ -425,6 +450,53 @@ func TestEquivalence(t *testing.T) {
 			map[string]string{"Content-Type": "application/json"},
 			`{"query":"{ hello }"}`, http.StatusOK,
 			`{"errors":[{"message":"internal system error"}]}`)
+	})
+
+	// The same failure on a request error, which the SSE family answers
+	// before any stream opens, as a plain body through its writeResponse. That
+	// path wrote resp.WriteTo straight out and sent an empty 400, while the
+	// plain-HTTP family already fell back.
+	t.Run("an unserializable request error still produces a parseable body", func(t *testing.T) {
+		servers := newEquivServersWithExecutor(t, badRequestErrorExecutor(t))
+		headers := map[string]string{"Content-Type": "application/json"}
+		const body = `{"query":"{ nope }"}`
+		const want = `{"errors":[{"message":"internal system error"}]}`
+		assertEqualAcross(t, servers, httpFamily, http.MethodPost, "/graphql", headers, body, http.StatusOK, want)
+		assertEqualAcross(t, servers, sseFamily, http.MethodPost, "/graphql", headers, body, http.StatusBadRequest, want)
+	})
+
+	// On an open stream the fallback goes out as the event's payload, and the
+	// stream still completes: the SSE family used to write "data: " with
+	// nothing after it and end the response without a complete event.
+	t.Run("an unserializable event still produces a parseable event", func(t *testing.T) {
+		servers := newEquivServersWithExecutor(t, badExtensionExecutor(t))
+		assertEqualAcross(t, servers, sseFamily, http.MethodPost, "/graphql",
+			map[string]string{"Content-Type": "application/json"},
+			`{"query":"{ hello }"}`, http.StatusOK,
+			"event: next\ndata: {\"errors\":[{\"message\":\"internal system error\"}]}\n\nevent: complete\ndata:")
+	})
+
+	// JSON allows whitespace before a value, and the plain-HTTP handlers
+	// skipped it (they look for a batch array first) while the SSE handlers
+	// handed the untrimmed body to httpreq.Decode, which refused anything not
+	// starting with '{'. The same body was 200 on one endpoint and 400 on the
+	// other.
+	t.Run("leading whitespace before the body", func(t *testing.T) {
+		servers := newEquivServers(t, nil, nil, nil)
+		headers := map[string]string{"Content-Type": "application/json"}
+		const lead = " \r\n\t"
+
+		const wantMissing = `{"errors":[{"message":"request is missing the \"query\" member."}]}`
+		assertAllEqual(t, servers, http.MethodPost, "/graphql", headers, lead+`{}`, http.StatusBadRequest, wantMissing)
+
+		const body = lead + `{"query":"{ hello }"}`
+		assertEqualAcross(t, servers, httpFamily, http.MethodPost, "/graphql", headers, body,
+			http.StatusOK, `{"data":{"hello":"world"}}`)
+		assertEqualAcross(t, servers, sseFamily, http.MethodPost, "/graphql", headers, body,
+			http.StatusOK, "event: next\ndata: {\"data\":{\"hello\":\"world\"}}\n\nevent: complete\ndata:")
+
+		const wantEmpty = `{"errors":[{"message":"request body is empty."}]}`
+		assertAllEqual(t, servers, http.MethodPost, "/graphql", headers, lead, http.StatusBadRequest, wantEmpty)
 	})
 
 	// Every header in DefaultCSRFHeaders has to actually satisfy the check, in
