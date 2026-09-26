@@ -168,14 +168,20 @@ func (e *Executor) rejectIfOverLimit(oc *OperationContext) *Error {
 			WithExtension("depth", oc.plan.depth).
 			WithExtension("maxDepth", e.maxDepth)
 	}
-	if e.cost != nil && e.cost.Max > 0 {
-		n := oc.ensureCost(*e.cost)
-		if n > e.cost.Max {
-			return Errorf("query exceeds cost limit: %d > %d", n, e.cost.Max).
-				WithCode(CodeTooComplex).
-				WithExtension("requestedQueryCost", n).
-				WithExtension("maxQueryCost", e.cost.Max)
-		}
+	return e.rejectIfOverCost(oc)
+}
+
+// rejectIfOverCost is the one limit that depends on variables, so it cannot
+// be applied before the plan is compiled the way depth and complexity are.
+func (e *Executor) rejectIfOverCost(oc *OperationContext) *Error {
+	if e.cost == nil || e.cost.Max <= 0 {
+		return nil
+	}
+	if n := oc.ensureCost(*e.cost); n > e.cost.Max {
+		return Errorf("query exceeds cost limit: %d > %d", n, e.cost.Max).
+			WithCode(CodeTooComplex).
+			WithExtension("requestedQueryCost", n).
+			WithExtension("maxQueryCost", e.cost.Max)
 	}
 	return nil
 }
@@ -394,16 +400,34 @@ func asCostInt(v any) (int, bool) {
 	case int64:
 		return int(n), true
 	case json.Number:
-		i, err := n.Int64()
-		return int(i), err == nil
-	case float64:
-		// Converting a float64 beyond the range of int is implementation
-		// defined in Go, so clamp first.
-		if n >= math.MaxInt {
-			return math.MaxInt, true
+		if i, err := n.Int64(); err == nil {
+			return int(i), true
 		}
-		return int(n), true
+		// Int coercion accepts 5e2 and 500.0 (rawInt64), so the price must
+		// too: a page size it cannot read here is priced as DefaultListSize
+		// while the resolver still receives the real one.
+		f, err := n.Float64()
+		if err != nil && !math.IsInf(f, 0) {
+			return 0, false
+		}
+		return floatCostInt(f)
+	case float64:
+		return floatCostInt(n)
 	default:
 		return 0, false
 	}
+}
+
+// floatCostInt clamps before converting, because converting a float64 beyond
+// the range of int, or NaN, is implementation defined in Go.
+func floatCostInt(n float64) (int, bool) {
+	switch {
+	case math.IsNaN(n):
+		return 0, false
+	case n >= math.MaxInt:
+		return math.MaxInt, true
+	case n <= math.MinInt:
+		return math.MinInt, true
+	}
+	return int(n), true
 }

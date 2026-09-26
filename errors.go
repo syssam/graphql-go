@@ -250,7 +250,10 @@ type ExtensionsProvider interface {
 
 // ErrorPresenter converts any error raised during a request into the Error
 // that is sent to the client. Implementations typically mask internal
-// messages and attach codes.
+// messages and attach codes. It may return the same *Error for many calls:
+// the executor copies it before setting the path and locations. Returning nil
+// drops a field error; a request error, which the response cannot omit, is
+// replaced by a generic one carrying the original's code.
 type ErrorPresenter func(ctx context.Context, err error) *Error
 
 // DefaultErrorPresenter returns the first *Error or *gqlerror.Error found in

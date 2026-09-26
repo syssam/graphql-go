@@ -109,7 +109,22 @@ func WithPlanCacheBytes(n int64) ExecutorOption {
 
 // WithErrorPresenter replaces DefaultErrorPresenter.
 func WithErrorPresenter(p ErrorPresenter) ExecutorOption {
-	return func(e *Executor) { e.presenter = p }
+	return func(e *Executor) {
+		// The engine writes Path, Locations and the ordering key onto what the
+		// presenter returns. DefaultErrorPresenter always returns a copy; a
+		// custom one may return the error it was given or a package-level
+		// masked error, which those writes would race on across requests and
+		// leak one request's path into another's response. A shallow copy is
+		// enough: the engine assigns those fields and never appends to them.
+		e.presenter = func(ctx context.Context, err error) *Error {
+			out := p(ctx, err)
+			if out == nil {
+				return nil
+			}
+			c := *out
+			return &c
+		}
+	}
 }
 
 // suggestionFree pairs each gqlparser rule that volunteers a "Did you mean"
@@ -381,31 +396,46 @@ func selectOperation(doc *ast.QueryDocument, name string) (*ast.OperationDefinit
 // execute is the innermost request handler: parse, plan, coerce variables
 // and hand over to the operation chain.
 func (e *Executor) execute(ctx context.Context, req *Request) *Response {
-	start := time.Now()
-	entry, errs := e.document(req.Query)
+	oc, errs := e.prepareOperation(req, false)
 	if errs != nil {
 		return e.requestError(ctx, errs...)
 	}
+	return e.opChain(withOperation(ctx, oc), oc)
+}
+
+// prepareOperation is everything execute and Subscribe share before they
+// diverge: document, operation, variables, plan and cost. It is one function
+// because two copies drifted: Subscribe once skipped the cost limit and left
+// every event with the no-model cost.
+func (e *Executor) prepareOperation(req *Request, subscription bool) (*OperationContext, []*Error) {
+	start := time.Now()
+	entry, errs := e.document(req.Query)
+	if errs != nil {
+		return nil, errs
+	}
 	op, oerr := selectOperation(entry.doc, req.OperationName)
 	if oerr != nil {
-		return e.requestError(ctx, oerr)
+		return nil, []*Error{oerr}
 	}
-	if op.Operation == ast.Subscription {
-		return e.requestError(ctx, Errorf("Subscription operations must be run with Subscribe over a streaming transport, not Execute.").WithCode(CodeOperationResolution))
+	switch {
+	case subscription && op.Operation != ast.Subscription:
+		return nil, []*Error{Errorf("Subscribe requires a subscription operation, got %s.", op.Operation).WithCode(CodeOperationResolution)}
+	case !subscription && op.Operation == ast.Subscription:
+		return nil, []*Error{Errorf("Subscription operations must be run with Subscribe over a streaming transport, not Execute.").WithCode(CodeOperationResolution)}
 	}
 
 	rawVars, err := decodeVariables(req.Variables)
 	if err != nil {
-		return e.requestError(ctx, Errorf("%v", err).WithCode(CodeBadUserInput))
+		return nil, []*Error{Errorf("%v", err).WithCode(CodeBadUserInput)}
 	}
 	vars, verr := e.schema.coerceVariables(op, rawVars)
 	if verr != nil {
-		return e.requestError(ctx, verr)
+		return nil, []*Error{verr}
 	}
 
 	p, cacheHit, perrs := entry.planFor(e.schema, e, op, vars)
 	if perrs != nil {
-		return e.requestError(ctx, perrs...)
+		return nil, perrs
 	}
 	e.countPlan(cacheHit)
 
@@ -427,7 +457,7 @@ func (e *Executor) execute(ctx context.Context, req *Request) *Response {
 	if e.cost != nil {
 		oc.ensureCost(*e.cost)
 	}
-	return e.opChain(withOperation(ctx, oc), oc)
+	return oc, nil
 }
 
 // requestError builds a response for errors raised before execution. Each
@@ -442,7 +472,16 @@ func (e *Executor) requestError(ctx context.Context, errs ...*Error) *Response {
 	}
 	resp := &Response{Errors: make([]*Error, 0, len(errs)+1)}
 	for _, err := range errs {
-		resp.Errors = append(resp.Errors, e.presenter(ctx, err))
+		p := e.presenter(ctx, err)
+		if p == nil {
+			// A presenter may drop a field error, but not this one: a
+			// response without data has to carry an error saying why.
+			p = Errorf("request refused")
+			if code, ok := err.Extensions["code"]; ok {
+				p = p.WithExtension("code", code)
+			}
+		}
+		resp.Errors = append(resp.Errors, p)
 	}
 	if omitted {
 		resp.Errors = append(resp.Errors, errorLimitNotice())

@@ -63,7 +63,15 @@ the request is cheaper than before the guard existed, just invisible to intercep
 path where the walk runs on every request rather than once per cached document is
 `docEntry.planUncacheable()`, where every request already recompiles anyway. A subscription
 over the limit is rejected once at `Subscribe`, before the stream opens, instead of emitting
-an error `next` on every event as it did before this guard existed.
+an error `next` on every event as it did before this guard existed. Cost depends on the
+variables, so `Subscribe` refuses it separately (`rejectIfOverCost`) after coercing them and
+still before the source opens (`TestSubscribeRefusesAnOverCostOperationBeforeTheSourceOpens`);
+each event's `OperationContext` inherits the base's computed cost, or `oc.Cost()` in an event
+interceptor is the no-model fallback (`TestSubscriptionEventCostUsesTheConfiguredModel`).
+**The page size is read in every spelling `Int` accepts**: `asCostInt` falls back to
+`Float64` for `5e2` and `500.0`, which `rawInt64` coerces, or such a page is priced as
+`DefaultListSize` while the resolver receives the real one
+(`TestAFloatSpelledPageSizeCostsTheSameAsAnInteger`).
 
 **Operation interceptors wrap the engine's own limit check; they do not follow it.**
 `rejectIfOverLimit` and `attachCost` are the innermost layer of `opChain`

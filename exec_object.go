@@ -95,13 +95,9 @@ func (st *execState) writeFieldValue(ctx context.Context, w *jsonw.Writer, obj *
 	fd := f.def
 	args := f.args
 	if f.dynamicArgs {
-		raw, aerr := fieldArguments(f.ast, st.vars)
-		v, err := fd.args.decode(raw)
-		if err == nil {
-			err = aerr
-		}
+		v, err := f.decodeArgs(obj, st.vars)
 		if err != nil {
-			st.fieldError(ctx, Errorf("Invalid argument for field %s: %v", coordinate(obj.name, fd.name), err).WithCode(CodeBadUserInput), path, f, ord)
+			st.fieldError(ctx, err, path, f, ord)
 			return false
 		}
 		args = v
@@ -279,11 +275,31 @@ func (st *execState) writeComposite(ctx context.Context, w *jsonw.Writer, v any,
 			w.Null()
 			return true
 		case actionDrop:
+			// One error, as for Deny: writeNullValue would add a second,
+			// non-null one describing the same refusal.
 			st.addFieldError(ctx, Errorf("authorization: Drop is valid only for a list element, not at %s", coordinate(f.def.object.name, f.def.name)), path, f.ast.Position)
-			return st.writeNullValue(ctx, w, t, f, path)
+			if t.NonNull {
+				return false
+			}
+			w.Null()
+			return true
 		}
 	}
 	return st.writeObject(ctx, w, obj, f.sub, v, path, false)
+}
+
+// decodeArgs decodes the arguments of a field whose arguments reference
+// variables, so they cannot be decoded once at plan compile.
+func (f *planField) decodeArgs(obj *objectType, vars map[string]any) (any, *Error) {
+	raw, aerr := fieldArguments(f.ast, vars)
+	v, err := f.def.args.decode(raw)
+	if err == nil {
+		err = aerr
+	}
+	if err != nil {
+		return nil, Errorf("Invalid argument for field %s: %v", coordinate(obj.name, f.def.name), err).WithCode(CodeBadUserInput)
+	}
+	return v, nil
 }
 
 // writeNullValue writes null for a nullable position or records the

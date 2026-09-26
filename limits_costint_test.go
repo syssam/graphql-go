@@ -75,3 +75,21 @@ func TestANonNumericPageSizeFallsBackToTheDefault(t *testing.T) {
 		t.Errorf("first: 0 costs %d, want the default 11", got)
 	}
 }
+
+// Int accepts an integral number written as a float or with an exponent
+// (rawInt64), so the price has to read the same spellings: one it cannot read
+// falls back to DefaultListSize while the resolver still receives the page
+// size the client asked for, and Max no longer bounds anything.
+func TestAFloatSpelledPageSizeCostsTheSameAsAnInteger(t *testing.T) {
+	s := costProbeSchema(t)
+	const q = `query($n: Int){ users(first: $n) { id } }`
+	for _, vars := range []string{`{"n":500.0}`, `{"n":5e2}`, `{"n":5.0E2}`} {
+		if got := costReported(t, s, q, vars); got != 501 {
+			t.Errorf("%s costs %d, want 501", vars, got)
+		}
+	}
+	e := NewExecutor(s, WithQueryCost(QueryCost{Max: 100, DefaultListSize: 10}))
+	if resp := run(t, e, q, `{"n":2e9}`); !resp.HasRequestErrors() {
+		t.Errorf("a page size of 2e9 ran under Max 100: %s", resp.Data)
+	}
+}

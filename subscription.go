@@ -137,34 +137,11 @@ func (e *Executor) subscribeError(ctx context.Context, errs ...*Error) error {
 // On a request error nothing is started: the channel is nil and the error is
 // a *SubscribeError carrying the response to send.
 func (e *Executor) Subscribe(ctx context.Context, req *Request) (<-chan *Response, error) {
-	start := time.Now()
-
-	entry, errs := e.document(req.Query)
+	base, errs := e.prepareOperation(req, true)
 	if errs != nil {
 		return nil, e.subscribeError(ctx, errs...)
 	}
-	op, oerr := selectOperation(entry.doc, req.OperationName)
-	if oerr != nil {
-		return nil, e.subscribeError(ctx, oerr)
-	}
-	if op.Operation != ast.Subscription {
-		return nil, e.subscribeError(ctx, Errorf("Subscribe requires a subscription operation, got %s.", op.Operation).WithCode(CodeOperationResolution))
-	}
-
-	rawVars, err := decodeVariables(req.Variables)
-	if err != nil {
-		return nil, e.subscribeError(ctx, Errorf("%v", err).WithCode(CodeBadUserInput))
-	}
-	vars, verr := e.schema.coerceVariables(op, rawVars)
-	if verr != nil {
-		return nil, e.subscribeError(ctx, verr)
-	}
-
-	p, cacheHit, perrs := entry.planFor(e.schema, e, op, vars)
-	if perrs != nil {
-		return nil, e.subscribeError(ctx, perrs...)
-	}
-	e.countPlan(cacheHit)
+	p := base.plan
 
 	// The validator enforces a single root selection, but @skip and @include
 	// are folded per plan variant and can leave none.
@@ -176,24 +153,12 @@ func (e *Executor) Subscribe(ctx context.Context, req *Request) (<-chan *Respons
 	if f.kind != fieldNormal || f.def == nil || f.def.subscribe == nil {
 		return nil, e.subscribeError(ctx, Errorf("Subscription root field %s cannot be subscribed to.", f.name).WithCode(CodeOperationResolution))
 	}
-
-	base := &OperationContext{
-		Operation:     op,
-		Doc:           entry.doc,
-		RawQuery:      req.Query,
-		OperationName: req.OperationName,
-		Variables:     vars,
-		Stats:         OperationStats{Start: start, CacheHit: cacheHit, PlanUncacheable: entry.planUncacheable()},
-		plan:          p,
-		entry:         entry,
-	}
-	base.startWaves()
-	// The cost is computed here rather than at the limit check because a
-	// rate limiter is an operation interceptor, and those wrap that check
-	// rather than following it. Without this base.Cost() hands every
-	// interceptor the no-model fallback even when a model is configured.
-	if e.cost != nil {
-		base.ensureCost(*e.cost)
+	// Depth and complexity refused this subscription before its plan was
+	// compiled; cost depends on the variables, so it is refused here. Left to
+	// the per-event check it would open the source, run its side effects and
+	// hold its goroutine, only to answer every event with an error.
+	if cerr := e.rejectIfOverCost(base); cerr != nil {
+		return nil, e.subscribeError(ctx, cerr)
 	}
 	// The stream opener runs under the base context; each event then gets its
 	// own, installed below.
@@ -201,13 +166,9 @@ func (e *Executor) Subscribe(ctx context.Context, req *Request) (<-chan *Respons
 
 	args := f.args
 	if f.dynamicArgs {
-		raw, aerr := fieldArguments(f.ast, vars)
-		v, derr := f.def.args.decode(raw)
-		if derr == nil {
-			derr = aerr
-		}
+		v, derr := f.decodeArgs(p.root, base.Variables)
 		if derr != nil {
-			return nil, e.subscribeError(ctx, Errorf("Invalid argument for field %s: %v", coordinate(p.root.name, f.def.name), derr).WithCode(CodeBadUserInput))
+			return nil, e.subscribeError(ctx, derr)
 		}
 		args = v
 	}
@@ -251,13 +212,9 @@ func (e *Executor) Subscribe(ctx context.Context, req *Request) (<-chan *Respons
 		// interceptor runs.
 		args := args
 		if f.dynamicArgs {
-			raw, aerr := fieldArguments(f.ast, oc.Variables)
-			v, derr := f.def.args.decode(raw)
-			if derr == nil {
-				derr = aerr
-			}
+			v, derr := f.decodeArgs(p.root, oc.Variables)
 			if derr != nil {
-				return nil, e.subscribeError(ctx, Errorf("Invalid argument for field %s: %v", coordinate(p.root.name, f.def.name), derr).WithCode(CodeBadUserInput))
+				return nil, e.subscribeError(ctx, derr)
 			}
 			args = v
 		}
@@ -347,6 +304,11 @@ func (e *Executor) eventContext(base *OperationContext, f *planField, event any)
 		plan:          base.plan,
 		entry:         base.entry,
 		event:         &subEvent{field: f, value: event},
+		// The variables are the base's, so its cost is every event's. Left
+		// unset, oc.Cost() hands each event's interceptors the no-model
+		// fallback, and a rate limiter undercharges every event.
+		costOK:    base.costOK,
+		costValue: base.costValue,
 	}
 	oc.startWaves()
 	return oc
