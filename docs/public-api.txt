@@ -204,6 +204,7 @@ graphql: func PathFrom(ctx context.Context) Path
 graphql: func PrintSDL(s *Schema) string
 graphql: func Query(fields ...FieldOption) SchemaOption
 graphql: func Redact(fn func(any) any) Outcome
+graphql: func RedactRow(fn func(ctx context.Context, parent, value any) any) Outcome
 graphql: func RequireAuthCoverage() SchemaOption
 graphql: func RequirementDirective(name, arg string, shape ScopeShape) SchemaOption
 graphql: func ResolveArgs[P, A, R any](name string, fn func(context.Context, P, A) (R, error), opts ...FieldSchedule) FieldOption

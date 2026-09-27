@@ -8,6 +8,7 @@ import (
 	graphql "github.com/syssam/graphql-go"
 	"github.com/syssam/graphql-go/examples/veloxfx/internal/viewer"
 	"github.com/syssam/graphql-go/examples/veloxfx/velox"
+	"github.com/syssam/graphql-go/examples/veloxfx/velox/entity"
 	"github.com/syssam/graphql-go/examples/veloxfx/velox/order"
 	"github.com/syssam/graphql-go/examples/veloxfx/velox/query"
 	"github.com/syssam/velox/dialect/sql"
@@ -24,7 +25,9 @@ import (
 //     whether the table holds their ten orders or a million of others'.
 
 // policy withholds each position the viewer lacks the scope for, the way
-// that position needs: an email is masked, which still tells two customers
+// that position needs: an email is masked -- except a customer's own, which
+// is a question about the row the decision is made before, so RedactRow
+// answers it per row -- and a masked address still tells two customers
 // apart; stock levels become an empty list, which is not a lie a shopper can
 // act on and costs no query; anything else is refused.
 var policy = graphql.AuthorizerFunc(func(ctx context.Context, shape *graphql.AuthShape, d *graphql.Decision) error {
@@ -36,7 +39,7 @@ var policy = graphql.AuthorizerFunc(func(ctx context.Context, shape *graphql.Aut
 		var o graphql.Outcome
 		switch site.Coord {
 		case "Customer.email":
-			o = graphql.Redact(maskEmail)
+			o = graphql.RedactRow(maskUnlessOwn)
 		case "Product.stocks":
 			o = graphql.Zero()
 		default:
@@ -48,6 +51,15 @@ var policy = graphql.AuthorizerFunc(func(ctx context.Context, shape *graphql.Aut
 	}
 	return nil
 })
+
+// maskUnlessOwn shows a signed-in customer their own address and masks
+// every other. A row it cannot judge is masked: it fails closed.
+func maskUnlessOwn(ctx context.Context, parent, v any) any {
+	if c, ok := parent.(*entity.Customer); ok && c.ID != 0 && c.ID == viewer.From(ctx).CustomerID {
+		return v
+	}
+	return maskEmail(v)
+}
 
 // maskEmail keeps an address's shape and none of its content.
 func maskEmail(v any) any {

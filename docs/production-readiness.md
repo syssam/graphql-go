@@ -27,7 +27,7 @@ Everything below is what makes that fork cheap.
 
 | Concern | Where |
 |---|---|
-| Authorization decided before execution, per field and per row; masking, null, zero, deny | `authz*.go`, `examples/storefront`, `examples/veloxfx/authz.go` |
+| Authorization decided before execution, per field and per row; masking (per row with `RedactRow`: a customer sees their own email), null, zero, deny | `authz*.go`, `examples/storefront`, `examples/veloxfx/authz.go` |
 | A withheld field costs no database query | `SelectedField.Withheld` + velox `contrib/graphqlgo` |
 | Row ownership as a SQL filter, not load-then-drop | velox read interceptors; `examples/veloxfx` `ownOrders` |
 | Query depth, complexity and cost limits, priced per connection page | `limits.go` (`Connections: true`) |
@@ -88,8 +88,6 @@ without introspection enabled (replaced here; gqlgen uses the same rule).
   the same box.
 - Behaviour across a PostgreSQL failover, and under connection-pool
   exhaustion at the database's own limit.
-- Per-row masking (a customer seeing their own email unmasked) needs the
-  instance authorizer, not the per-field outcome the example uses.
 - A validator such as `NonNegative()` cannot check `AddX`; database `CHECK`
   constraints are the fix and velox does not emit them.
 - gqlgen is still in velox's root module graph, for the gqlgen side of its

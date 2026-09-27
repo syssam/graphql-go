@@ -256,7 +256,7 @@ A public API needs three kinds of rule, and each has one right place
 | Rule | Where | What it costs |
 |---|---|---|
 | Stock levels are internal | `@requiresScopes` on `Product.stocks`, put there by an annotation in `schema/catalog.go`; the policy answers an empty list | nothing: the decision is made before anything resolves, and velox does not query stocks for a viewer who may not see them |
-| An email is personal data | `@requiresScopes` on `Customer.email`; the policy masks it (`c*@example.com`) | the column is read, since masking rewrites a value |
+| An email is personal data | `@requiresScopes` on `Customer.email`; the policy masks it (`c*@example.com`), except a customer's own address, decided per row by `graphql.RedactRow` | the column is read, since masking rewrites a value |
 | A customer sees only their orders | a velox read filter on every order query (`ownOrders`) | one indexed `WHERE customer_orders = ?`, in the list, its count, a lookup by id and every eager load; an anonymous read fails with `UNAUTHENTICATED` before any SQL |
 
 And one kind of limit: `WithMaxDepth(10)` and a cost budget priced by the page

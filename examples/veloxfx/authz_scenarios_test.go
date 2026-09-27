@@ -75,16 +75,25 @@ func TestScenarioAWithheldEdgeIsNotQueried(t *testing.T) {
 }
 
 // Personal data is masked, not removed: a support view still tells two
-// customers apart. The column is still read -- Redact rewrites a resolved
-// value -- so this is about what leaves the server, not what it loads.
+// customers apart. A customer's own address is theirs to see, which is
+// decided per row -- the authorization decision is made before any row
+// exists. The column is still read -- the value is rewritten after it
+// resolves -- so this is about what leaves the server, not what it loads.
 func TestScenarioPersonalDataIsMasked(t *testing.T) {
 	s := startRecording(t)
 	s.storefront(0)
 	const q = `{ customers { name email } }`
 
 	got, _, _ := s.runAs("customer:1", q, nil)
-	if !strings.Contains(got, `"email":"c*@example.com"`) || strings.Contains(got, `c1@example.com`) {
-		t.Errorf("without customer:pii the email is masked: %s", got)
+	if !strings.Contains(got, `"email":"c1@example.com"`) {
+		t.Errorf("a customer sees their own address: %s", got)
+	}
+	if strings.Contains(got, `c2@example.com`) || strings.Contains(got, `c3@example.com`) || strings.Count(got, `"email":"c*@example.com"`) != 2 {
+		t.Errorf("without customer:pii everyone else's address is masked: %s", got)
+	}
+	got, _, _ = s.runAs("", q, nil)
+	if strings.Count(got, `"email":"c*@example.com"`) != 3 {
+		t.Errorf("nobody signed in: every address masked: %s", got)
 	}
 	got, _, _ = s.runAs("staff", q, nil)
 	if !strings.Contains(got, `"email":"c1@example.com"`) {

@@ -74,7 +74,7 @@ func (st *execState) authOutcome(f *planField) Outcome {
 // the two defers. A redacted field is still a field that was resolved, and an
 // observer -- ext/otel's field spans among them -- that did not see it would
 // report a query as having done less than it did.
-func (st *execState) callLeafRedacted(ctx context.Context, w *jsonw.Writer, f *planField, parent, args any, path *pathNode, fn func(any) any) (err error) {
+func (st *execState) callLeafRedacted(ctx context.Context, w *jsonw.Writer, f *planField, parent, args any, path *pathNode, o Outcome) (err error) {
 	fd := f.def
 	ctx, fc := st.fieldContext(ctx, f, parent, args, path)
 	// As in callLeaf: EndField's defer is registered before the recovery
@@ -113,7 +113,10 @@ func (st *execState) callLeafRedacted(ctx context.Context, w *jsonw.Writer, f *p
 	if rerr != nil {
 		return rerr
 	}
-	return fd.writeAny(w, fn(v), fd.typ)
+	if o.act == actionRedactRow {
+		return fd.writeAny(w, o.redact(&redactRowArgs{ctx, parent, v}), fd.typ)
+	}
+	return fd.writeAny(w, o.redact(v), fd.typ)
 }
 
 // writeZero writes the zero value of t. validFor has already refused any type

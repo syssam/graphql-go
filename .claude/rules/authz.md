@@ -266,3 +266,16 @@ worth not rediscovering:
   no test fails. That is not a gap: the two produce the same response, and there is no
   behaviour to assert. A break that *does* fail is one that lets the denied element through,
   which is what the test above catches.
+
+**`RedactRow` is `Redact` decided per row, and it did not get its own `Outcome` field.** A
+`Decision` is made before any row exists, so "a customer sees their own email, support sees
+everyone's masked" could not be said; `RedactRow(fn(ctx, parent, value))` runs in
+`callLeafRedacted` with the row. The first version added a `redactRow` func field to `Outcome`:
+48 → 56 bytes, copied into every `Decision` site, and interleaved n=10 measured
+`BenchmarkAuthorizerWide64/256` **+17% time, +20-24% B/op** for every authorizer user. It is
+now its own `action` (a `uint8`, free) routed through the existing `redact` field, which then
+receives a `*redactRowArgs`: memory identical sample for sample, time not distinguishable at
+n=14 (p=0.795). The cost -- a closure per `RedactRow` call and an allocation per redacted row --
+falls only on its users. It is valid exactly where `Redact` is; accepting it on a composite
+field would serve the field unguarded, since the composite path never consults redaction
+(`TestRedactRowOnlyOnLeafFields`).

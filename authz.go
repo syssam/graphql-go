@@ -358,12 +358,17 @@ const (
 	actionZero
 	actionRedact
 	actionDrop
+	actionRedactRow
 )
 
 // Outcome is what the executor does with a site. The zero Outcome allows, so
 // a Decision an Authorizer leaves untouched changes nothing.
 type Outcome struct {
-	act        action
+	act action
+	// redact rewrites a resolved value. For actionRedactRow it receives a
+	// *redactRowArgs rather than the value: Outcome is copied into every
+	// Decision site, and a second function field cost the authorizer path
+	// 17% (BenchmarkAuthorizerWide*) to serve an outcome most never use.
 	redact     func(any) any
 	permission string
 	resource   string
@@ -388,6 +393,30 @@ func Zero() Outcome { return Outcome{act: actionZero} }
 
 // Redact resolves the field and rewrites the result.
 func Redact(fn func(any) any) Outcome { return Outcome{act: actionRedact, redact: fn} }
+
+// RedactRow is Redact decided per row: fn receives the field's context, the
+// object the field belongs to (as its Object binding holds it, a *T) and the
+// resolved value, and returns what is written. It is what "a customer sees
+// their own email, support sees everyone's masked" needs, which a Decision
+// cannot say by itself because it is made before any row exists.
+//
+// It is valid wherever Redact is -- a leaf field -- and runs once per row
+// the field resolves on, so it must be cheap and must not fail open: return
+// the masked value when the row cannot be judged.
+func RedactRow(fn func(ctx context.Context, parent, value any) any) Outcome {
+	if fn == nil {
+		return Outcome{act: actionRedactRow}
+	}
+	return Outcome{act: actionRedactRow, redact: func(a any) any {
+		r := a.(*redactRowArgs)
+		return fn(r.ctx, r.parent, r.value)
+	}}
+}
+
+type redactRowArgs struct {
+	ctx           context.Context
+	parent, value any
+}
 
 // Drop omits the value from its enclosing list. It is valid only for an
 // instance site at a list element position; dropping renumbers the indices that follow, so a later
@@ -482,7 +511,7 @@ func (o Outcome) validFor(site AuthSite) error {
 			}
 			return Errorf("authorization: Zero is not valid for %s: %s has no zero value this package can write; use %s", site.Coord, site.Field.Type.String(), alt)
 		}
-	case actionRedact:
+	case actionRedact, actionRedactRow:
 		if site.Field == nil || site.Field.Type.Elem != nil || !isLeafField(site) {
 			return Errorf("authorization: Redact is valid only on a leaf field, not %s", site.Coord)
 		}

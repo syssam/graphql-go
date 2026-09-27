@@ -105,8 +105,8 @@ func (st *execState) writeFieldValue(ctx context.Context, w *jsonw.Writer, obj *
 
 	if fd.leaf {
 		var err error
-		if o := st.authOutcome(f); o.act == actionRedact {
-			err = st.callLeafRedacted(ctx, w, f, parent, args, path, o.redact)
+		if o := st.authOutcome(f); o.act == actionRedact || o.act == actionRedactRow {
+			err = st.callLeafRedacted(ctx, w, f, parent, args, path, o)
 		} else {
 			err = st.callLeaf(ctx, w, f, parent, args, path)
 		}
