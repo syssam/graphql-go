@@ -19,10 +19,47 @@ the right numbers depend on the schema.
 | `WithQueryCost` | off | `Max` against measured traffic; set `Report: true` first and watch `extensions.cost` for a week before enforcing. |
 | `WithOperationTimeout` | off | It bounds work, not latency: a resolver that ignores its context still holds the response. |
 | `WithMaxResponseBytes` | **64 MiB** | On already. Lower it if your largest legitimate response is far smaller. |
+| `WithMaxTokens` | **15 000** | On already. Parsing and validation run before every limit above, on every document, valid or not; see "Document limits" below. |
+| `WithMaxNesting` | **100** | On already. Selection sets and input literals as written, not after fragments. |
 | `WithMaxErrors` | **1000** | On already. |
 | `WithPlanCacheBytes` | **16 MiB**, with `WithPlanCache` at **1024** entries | On already, and it is what stops distinct large queries from retaining gigabytes: a parsed document retains roughly 26x its query text. |
 | `apq.WithMaxBytes` | **16 MiB** | On already. Any client can register any query it can hash, so an entry count alone lets 1000 entries of 1 MiB park a gigabyte. |
 | `gqlws.WithWriteTimeout` / `gqlfiber.WithWriteTimeout` | **10 s** | On already. It is what ends a WebSocket peer that stays connected but stops reading; pings do not. |
+
+### Document limits
+
+Parsing and validation happen before `WithMaxDepth`, `WithMaxComplexity` and
+`WithQueryCost` can refuse anything, and before a timeout starts to matter,
+and three of gqlparser's default validation rules are super-linear in the
+document. An external review measured, with every limit above set:
+
+| Shape | Size | Unbounded | Now |
+|---|---|---|---|
+| One field repeated | 10 KB | 1.2 s, 1.25 GB | refused past 15 000 tokens; 10 ms at the largest accepted |
+| Aliases with differing arguments | 43 KB | 2.0 s, 1.24 GB (an error per pair) | 4 ms at the largest accepted, errors cut at `WithMaxErrors` |
+| Nested list literal | 1 MiB | 3 min 17 s | refused past 100 levels |
+| `{not:{not:...}}` on a recursive input | 60 KB | 13 s, 17 GB | 57 ms at the largest accepted |
+| Fragment DAG | 51 KB | 5.8 s | refused past the fragment budget; 83 ms at the largest accepted |
+
+Four things bound it:
+
+- **`WithMaxTokens`** stops the parser, gqlgen's and Apollo Router's default.
+- **`WithMaxNesting`** caps selection sets and input literals as written.
+- **Above 256 selections, OverlappingFieldsCanBeMerged is replaced**
+  (`overlap.go`) by the specification's FieldsInSetCanMerge, checked per
+  response name rather than per pair, which is linear. It agrees with
+  gqlparser's rule on every graphql-js spec case and on 20 000 random
+  documents (`overlap_test.go`); below 256 gqlparser's runs, for its exact
+  messages.
+- **A fixed fragment budget** refuses a document whose fragments spread one
+  another so often that gqlparser's walker, which finds each spread's
+  definition by scanning the fragment list, would take more than about
+  50 ms. A 511-fragment tree, a large Relay screen's shape, uses 7% of it.
+
+`TestValidationIsBoundedByTheDefaultLimits` builds the largest document each
+shape can have under the defaults and requires it to validate in
+milliseconds. Raising either limit raises what one request can cost; lifting
+both (zero) leaves the parser's recursion bounded only by the request body.
 
 Two more that are not limits but belong in the same review:
 

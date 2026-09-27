@@ -10,6 +10,20 @@ paths:
 
 # Plan compile, limits and cost
 
+**Parsing and validation are bounded before they run** (`parseDocument`, `document_limits.go`,
+`overlap.go`): a token limit, a nesting limit, a fragment-lookup budget, and gqlparser's
+OverlappingFieldsCanBeMerged swapped for a linear FieldsInSetCanMerge above 256 selections.
+They exist because validation runs before every depth, complexity and cost limit, and
+gqlparser's default rules made a 10-60 KB request cost seconds and gigabytes (numbers in
+`docs/operations.md`, "Document limits"). **The replacement rule must agree with gqlparser's on
+validity**, not wording: `TestFieldsCanMergeAgreesWithGqlparserSpec` runs graphql-js's cases from
+gqlparser's module, `TestFieldsCanMergeAgreesWithGqlparserRandom` 20 000 generated documents, and
+`FuzzFieldsCanMerge` the same differential. gqlparser compares untyped fields by name and
+treats a composite type as conflicting with nothing, so its relation is not transitive --
+`shapeConflict` compares leaf types with the first leaf, not the first field, for that reason.
+The fragment budget is a stopgap for the walker's linear `Fragments.ForName`; drop it when
+gqlparser indexes fragments.
+
 **Plan compile (`plan.go`).** A document is parsed and validated once and
 cached in an LRU (`docEntry`), bounded by entry count and by query text
 (`WithPlanCacheBytes`, 16 MiB by default). The byte budget matters more than it looks: a

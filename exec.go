@@ -39,6 +39,11 @@ type Executor struct {
 	recover        bool
 	rules          *rules.Rules
 	noSuggestions  bool
+	// largeRules is rules with gqlparser's OverlappingFieldsCanBeMerged
+	// replaced by fieldsCanMergeRule, for documents too large for it.
+	largeRules *rules.Rules
+	maxTokens  int
+	maxNesting int
 
 	reqInterceptors   []RequestInterceptor
 	opInterceptors    []OperationInterceptor
@@ -173,6 +178,8 @@ func NewExecutor(s *Schema, opts ...ExecutorOption) *Executor {
 
 		maxResponseBytes: 64 << 20,
 		maxErrors:        1000,
+		maxTokens:        defaultMaxTokens,
+		maxNesting:       defaultMaxNesting,
 
 		objectAuthBatch: 50,
 	}
@@ -188,21 +195,28 @@ func NewExecutor(s *Schema, opts ...ExecutorOption) *Executor {
 	if e.maxConcurrency > 0 {
 		e.sem = make(chan struct{}, e.maxConcurrency)
 	}
-	e.rules = rules.NewDefaultRules()
-	if e.noSuggestions {
-		for _, r := range suggestionFree {
-			e.rules.RemoveRule(r.suggesting)
-			e.rules.AddRule(r.quiet.Name, r.quiet.RuleFunc)
-		}
-	}
-	if !s.introspection {
-		e.rules.RemoveRule(maxIntrospectionDepthRule.Name)
-		e.rules.AddRule(noIntrospectionRule.Name, noIntrospectionRule.RuleFunc)
-	} else {
-		e.rules.ReplaceRule(maxIntrospectionDepthRule.Name, maxIntrospectionDepthRule.RuleFunc)
-	}
+	e.rules = e.validationRules()
+	e.largeRules = e.validationRules()
+	e.largeRules.ReplaceRule(fieldsCanMergeRule.Name, fieldsCanMergeRule.RuleFunc)
 	e.buildChains()
 	return e
+}
+
+func (e *Executor) validationRules() *rules.Rules {
+	r := rules.NewDefaultRules()
+	if e.noSuggestions {
+		for _, q := range suggestionFree {
+			r.RemoveRule(q.suggesting)
+			r.AddRule(q.quiet.Name, q.quiet.RuleFunc)
+		}
+	}
+	if !e.schema.introspection {
+		r.RemoveRule(maxIntrospectionDepthRule.Name)
+		r.AddRule(noIntrospectionRule.Name, noIntrospectionRule.RuleFunc)
+	} else {
+		r.ReplaceRule(maxIntrospectionDepthRule.Name, maxIntrospectionDepthRule.RuleFunc)
+	}
+	return r
 }
 
 // Schema returns the executor's schema.
@@ -353,11 +367,31 @@ func (e *Executor) parseDocument(query string) (*docEntry, []*Error) {
 	if testHookParseDocument != nil {
 		testHookParseDocument()
 	}
-	doc, err := parser.ParseQuery(&ast.Source{Input: query})
+	// The token limit, the nesting limit and the rule swap below are what
+	// bound validation: gqlparser's default rules run before any depth,
+	// complexity or cost limit can, and three of them are super-linear in
+	// the document (docs/operations.md, "Document limits").
+	doc, err := parser.ParseQueryWithTokenLimit(&ast.Source{Input: query}, e.maxTokens)
 	if err != nil {
 		return nil, gqlErrors(err, CodeParseFailed)
 	}
-	if verrs := validator.ValidateWithRules(e.schema.ast, doc, e.rules); len(verrs) > 0 {
+	shape := measureDocument(doc, e.maxNesting)
+	if e.maxNesting > 0 && shape.nesting > e.maxNesting {
+		return nil, []*Error{Errorf("document nesting exceeds the limit of %d", e.maxNesting).WithCode(CodeParseFailed)}
+	}
+	if fragmentLookups(doc, fragmentLookupBudget) > fragmentLookupBudget {
+		return nil, []*Error{Errorf("document is too expensive to validate: its fragments spread one another too many times").WithCode(CodeValidationFailed)}
+	}
+	rs := e.rules
+	if shape.selections > overlapExactMaxSelections {
+		rs = e.largeRules
+	}
+	if verrs := validator.ValidateWithRules(e.schema.ast, doc, rs); len(verrs) > 0 {
+		// One more than the limit is enough for the request error to say
+		// errors were omitted; converting the rest would only be dropped.
+		if e.maxErrors > 0 && len(verrs) > e.maxErrors+1 {
+			verrs = verrs[:e.maxErrors+1]
+		}
 		return nil, gqlErrors(verrs, CodeValidationFailed)
 	}
 	entry := &docEntry{query: query, doc: doc, condVars: condVariables(doc)}

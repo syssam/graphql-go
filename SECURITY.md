@@ -27,6 +27,10 @@ This is a GraphQL server engine, so the interesting classes are:
   surface as another request's data.
 - **Anything reachable without a valid operation**: parser or validator
   crashes, unbounded allocation before the cost limits are applied.
+  Parsing and validation are bounded by `WithMaxTokens`, `WithMaxNesting`
+  and a fixed fragment budget, all on by default (`docs/operations.md`,
+  "Document limits"); a document within them that validates slowly is in
+  scope.
 - **Persisted queries.** Registration verifies `sha256(query) == hash`; a way
   to store text under a hash that does not match it would let one client
   choose what every later client's hash executes.

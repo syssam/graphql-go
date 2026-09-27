@@ -129,6 +129,31 @@ func WithMaxErrors(n int) ExecutorOption {
 	return func(e *Executor) { e.maxErrors = n }
 }
 
+// WithMaxTokens caps the tokens a document may have: parsing stops at the
+// limit and the request is refused with GRAPHQL_PARSE_FAILED. Parsing and
+// validation run before WithMaxDepth, WithMaxComplexity and WithQueryCost
+// can, on every document, valid or not, and gqlparser's default rules are
+// not all linear in it, so this and WithMaxNesting are what bound that work.
+// Zero means unlimited, which leaves gqlparser's recursive parser bounded
+// only by the request body: about a million levels of [ overflows the
+// goroutine stack, which no recover catches, and the transports' 1 MiB
+// default body keeps a document under that. The default is 15 000, gqlgen's
+// and Apollo Router's.
+func WithMaxTokens(n int) ExecutorOption {
+	return func(e *Executor) { e.maxTokens = n }
+}
+
+// WithMaxNesting caps how deeply a document's selection sets, or its input
+// value literals, may nest as written: { a { b } } and [[1]] are both 2. A
+// deeper document is refused with GRAPHQL_PARSE_FAILED before validation,
+// whose ValuesOfCorrectType check does work at every level proportional to
+// what is below it. It is not WithMaxDepth: that counts an operation's
+// depth after fragments are expanded, this counts the text. Zero means
+// unlimited. The default is 100.
+func WithMaxNesting(n int) ExecutorOption {
+	return func(e *Executor) { e.maxNesting = n }
+}
+
 // WithOperationTimeout bounds how long one operation may run: a query or
 // mutation from the moment Execute is called, parsing and every interceptor
 // included, or one subscription event, never a stream as a whole. Opening a

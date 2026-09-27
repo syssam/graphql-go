@@ -17,7 +17,7 @@ missing is what only time, releases and users produce:
 | No release | graphql-go has no tag; consumers pin commits. velox is v0.3.0, pre-1.0, with breaking changes allowed without a deprecation cycle. | Tag graphql-go; ship velox v1.0 with the COMPATIBILITY.md guarantees in force. |
 | No production hours | `docs/operations.md`: "This engine has not served a real request outside a benchmark." | Run one non-critical internal service behind the company's existing gateway, shadowing a known-good one, and compare. |
 | One maintainer | Both repositories. | A second owner for each, and a security contact that is not the author. |
-| No external security review | Authorization, input coercion and the transports are reviewed and fuzzed in-repo only. | An independent review of `authz*`, `coerce.go` and `transport/`. |
+| No external security review | Authorization, input coercion, validation and the transports are reviewed and fuzzed in-repo only; an in-repo adversarial pass found the three issues below. | An independent review of `authz*`, `coerce.go` and `transport/`. |
 
 A large company adopts a dependency like this by vendoring it, running it
 behind its own gateway, and owning a fork until upstream has the track record.
@@ -64,6 +64,20 @@ ran:
 - gqlc **never deleted an SDL copy** whose source was removed, so a deleted
   file's types stayed in the served schema -- found when a removed
   federation link kept the subgraph carrying two (fixed).
+
+An adversarial review of the attack surface, run from this repository's own
+tooling rather than by an outside party, then found three more, each with a
+reproducing request:
+
+- **Validation was unbounded and ran before every limit.** gqlparser's default
+  rules made 10-60 KB requests cost seconds and gigabytes, whatever depth,
+  complexity and cost limits were set. Now bounded by default ("Document
+  limits" in `docs/operations.md`).
+- **`WithMaxComplexity` wrapped negative** on 64 levels of doubling aliases, so
+  a 5 KB request passed any limit and held 5 GB (fixed; it saturates, as the
+  cost always did).
+- **A safelisted id sent over GET was always refused**: the handler resolved
+  it twice and presented the resolved text to a store that refuses text.
 
 That list is the argument for the adoption path above: every item passed a
 green unit suite and failed the first time something shaped like real traffic
