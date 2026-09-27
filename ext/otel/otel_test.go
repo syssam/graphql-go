@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/syssam/graphql-go"
 	gqlotel "github.com/syssam/graphql-go/ext/otel"
@@ -626,5 +627,44 @@ func TestMappedLoaderBatchSpanIsNotFailedByOneKey(t *testing.T) {
 	}
 	if got := attrOf(t, batch, gqlotel.AttrLoaderKeyErrors).AsInt64(); got != 1 {
 		t.Fatalf("key error count = %d, want 1", got)
+	}
+}
+
+// Resolver spans are where I/O is: Query.me and User.boom are resolvers,
+// id and name are fields read from the value me returned. Skipping a pure
+// field must not end the span its context carries -- that is its parent's,
+// here the operation's, which would then end before its resolvers do.
+func TestResolverSpansSkipPureFields(t *testing.T) {
+	h := newHarness(t, gqlotel.WithResolverSpans(true))
+	h.run(t, `{ me { id name boom } }`, "")
+	spans := h.spans.Ended()
+	var names []string
+	for _, s := range spans {
+		names = append(names, s.Name())
+	}
+	for _, want := range []string{"Query.me", "User.boom"} {
+		named(t, spans, want)
+	}
+	for _, s := range spans {
+		if s.Name() == "User.id" || s.Name() == "User.name" {
+			t.Errorf("a pure field got a span: %v", names)
+		}
+	}
+	if len(spans) != 3 {
+		t.Errorf("spans %v, want the operation, Query.me and User.boom", names)
+	}
+	var op sdktrace.ReadOnlySpan
+	for _, s := range spans {
+		if s.Parent().SpanID() == (trace.SpanID{}) {
+			op = s
+		}
+	}
+	if op == nil {
+		t.Fatalf("no root span among %v", names)
+	}
+	for _, s := range spans {
+		if s.EndTime().After(op.EndTime()) {
+			t.Errorf("%s ended after the operation span it belongs to", s.Name())
+		}
 	}
 }

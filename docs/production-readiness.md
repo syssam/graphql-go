@@ -33,7 +33,7 @@ Everything below is what makes that fork cheap.
 | Query depth, complexity and cost limits, priced per connection page | `limits.go` (`Connections: true`) |
 | Persisted and trusted documents (Meta and Shopify style) | `ext/apq`, `ext/trusted` |
 | Rate limiting by cost | `ext/throttle` |
-| Tracing and metrics | `ext/otel`, velox `contrib/otelvelox` |
+| Tracing and metrics, from a field to the SQL it ran | `ext/otel` (`WithResolverSpans`), velox `contrib/otelvelox`; `examples/veloxfx/tracing.go` wires both and a test checks every statement lands under its resolver |
 | Federation (Apollo router), including gqlc-generated subgraphs | `fed/` (`SubgraphFS`), gqlc `federation: true`; velox `graphqlgo.Entities` answers a router's batch in one query per type |
 | Graceful drain of HTTP, SSE and WebSocket | `transport/drain` |
 | Introspection off in production | `DisableIntrospection()` |

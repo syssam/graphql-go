@@ -14,6 +14,11 @@ type FieldInfo struct {
 	Object string
 	Field  string
 	Alias  string
+	// Resolver reports whether the field is bound with Resolve or
+	// ResolveArgs, which may do I/O, rather than Field, which reads data it
+	// was handed. A tracer that wants to see where time and queries go
+	// spans these and skips the rest.
+	Resolver bool
 
 	pathParent *pathNode
 }

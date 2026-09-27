@@ -36,8 +36,8 @@ func NewSchema(g gqlfx.Groups, client *velox.Client) (*graphql.Schema, error) {
 	return graph.NewSchema(entities(client), append(g.Bindings, scalars)...)
 }
 
-func NewExecutor(s *graphql.Schema) *graphql.Executor {
-	return graphql.NewExecutor(s, executorOptions()...)
+func NewExecutor(s *graphql.Schema, tr Tracing) *graphql.Executor {
+	return graphql.NewExecutor(s, append(tracingOptions(tr), executorOptions()...)...)
 }
 
 // executorOptions is everything NewExecutor configures, apart so a benchmark

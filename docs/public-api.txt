@@ -47,6 +47,7 @@ ext/otel: func WithAttributes(attrs ...attribute.KeyValue) Option
 ext/otel: func WithDocument(enabled bool) Option
 ext/otel: func WithFieldSpans(enabled bool) Option
 ext/otel: func WithMeterProvider(mp metric.MeterProvider) Option
+ext/otel: func WithResolverSpans(enabled bool) Option
 ext/otel: func WithTracerProvider(tp trace.TracerProvider) Option
 ext/otel: type Option func(*config)
 ext/throttle: const CodeThrottled
@@ -260,7 +261,7 @@ graphql: type ExtensionsProvider interface { GraphQLExtensions() map[string]any 
 graphql: type FieldContext struct { Field *ast.FieldDefinition Object *ast.Definition Args any Parent any }
 graphql: type FieldFunc func(ctx context.Context, parent any, args any) (any, error)
 graphql: type FieldHandler func(ctx context.Context) (any, error)
-graphql: type FieldInfo struct { Object string Field string Alias string }
+graphql: type FieldInfo struct { Object string Field string Alias string Resolver bool }
 graphql: type FieldInterceptor interface { InterceptField(ctx context.Context, fc *FieldContext, next FieldHandler) (any, error) }
 graphql: type FieldInterceptorFunc func(ctx context.Context, fc *FieldContext, next FieldHandler) (any, error)
 graphql: type FieldObserver interface { BeginField(ctx context.Context, f FieldInfo) context.Context EndField(ctx context.Context, f FieldInfo, err error) }

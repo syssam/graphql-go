@@ -148,7 +148,7 @@ func (st *execState) fieldContext(ctx context.Context, f *planField, parent, arg
 // it reads already lives on f.def.
 func (st *execState) fieldInfo(f *planField, path *pathNode) FieldInfo {
 	fd := f.def
-	return FieldInfo{Object: fd.object.name, Field: fd.name, Alias: f.alias, pathParent: path}
+	return FieldInfo{Object: fd.object.name, Field: fd.name, Alias: f.alias, Resolver: !fd.pure, pathParent: path}
 }
 
 // observerContexts is how many observers' contexts a field keeps on the stack

@@ -54,14 +54,16 @@ const (
 )
 
 type config struct {
-	tracer      trace.Tracer
-	meter       metric.Meter
-	fieldSpans  bool
-	recordQuery bool
-	duration    metric.Float64Histogram
-	errors      metric.Int64Counter
-	active      metric.Int64UpDownCounter
-	attrs       []attribute.KeyValue
+	tracer     trace.Tracer
+	meter      metric.Meter
+	fieldSpans bool
+	// resolverSpans spans only the fields FieldInfo.Resolver marks.
+	resolverSpans bool
+	recordQuery   bool
+	duration      metric.Float64Histogram
+	errors        metric.Int64Counter
+	active        metric.Int64UpDownCounter
+	attrs         []attribute.KeyValue
 }
 
 // Option configures the instrumentation.
@@ -98,6 +100,16 @@ func WithFieldSpans(enabled bool) Option {
 	return func(c *config) { c.fieldSpans = enabled }
 }
 
+// WithResolverSpans emits a span per resolver field -- bound with Resolve or
+// ResolveArgs -- and none for pure fields. A resolver is where a field does
+// I/O, so a database or RPC client instrumented at its own layer (otelsql,
+// otelgrpc) lands its spans under the resolver that issued them, and a
+// page of fifty rows is not also fifty spans per column. WithFieldSpans,
+// which spans every field, includes these.
+func WithResolverSpans(enabled bool) Option {
+	return func(c *config) { c.resolverSpans = enabled }
+}
+
 // WithDocument records the query text on the span. It is off by default
 // because a document can carry data in inline arguments, and traces are
 // usually retained longer and read more widely than logs.
@@ -124,7 +136,7 @@ func New(opts ...Option) []graphql.ExecutorOption {
 		graphql.WithRequestInterceptor(graphql.RequestInterceptorFunc(c.interceptRequest)),
 		graphql.WithOperationInterceptor(graphql.OperationInterceptorFunc(c.interceptOperation)),
 	}
-	if c.fieldSpans {
+	if c.fieldSpans || c.resolverSpans {
 		out = append(out, graphql.WithFieldObserver(fieldSpanObserver{c}))
 	}
 	return out
@@ -242,7 +254,14 @@ func (c *config) interceptOperation(ctx context.Context, oc *graphql.OperationCo
 // there is nothing to store between the two.
 type fieldSpanObserver struct{ c *config }
 
+func (o fieldSpanObserver) spans(f graphql.FieldInfo) bool {
+	return o.c.fieldSpans || f.Resolver
+}
+
 func (o fieldSpanObserver) BeginField(ctx context.Context, f graphql.FieldInfo) context.Context {
+	if !o.spans(f) {
+		return ctx
+	}
 	ctx, span := o.c.tracer.Start(ctx, f.Object+"."+f.Field)
 	span.SetAttributes(
 		AttrFieldObject.String(f.Object),
@@ -251,7 +270,11 @@ func (o fieldSpanObserver) BeginField(ctx context.Context, f graphql.FieldInfo) 
 	return ctx
 }
 
-func (o fieldSpanObserver) EndField(ctx context.Context, _ graphql.FieldInfo, err error) {
+func (o fieldSpanObserver) EndField(ctx context.Context, f graphql.FieldInfo, err error) {
+	if !o.spans(f) {
+		// BeginField started nothing: the span in ctx is the parent's.
+		return
+	}
 	span := trace.SpanFromContext(ctx)
 	if err != nil {
 		span.RecordError(err)

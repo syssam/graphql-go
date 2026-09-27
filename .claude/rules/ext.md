@@ -133,3 +133,16 @@ graphql-relay-js and graphql-java produce), `Node`, and cursor connections. It e
 types — the SDL still declares `Node`, the connection and the edge, as in every reference
 implementation. `Query.node` needed no engine change: it binds through the existing
 `any`-returning resolver on an unbound interface.
+
+**`WithResolverSpans` spans the fields that can do I/O, and it is what tracing an API should
+use.** `WithFieldSpans` spans every field, pure ones included -- a page of fifty rows is a span
+per column per row -- so the useful setting was "no field spans", under which every SQL span
+hangs off the operation and nothing says which field ran it. `FieldInfo.Resolver` (set from the
+binding: `Resolve`/`ResolveArgs`, not `Field`) lets the observer span only resolvers; a
+database or RPC client instrumented at its own layer then lands under the resolver that asked,
+because the observer's context is the one the resolver runs under. **The skip has to happen in
+`EndField` too**: `BeginField` returns its context unchanged for a pure field, so the span in
+that context is the parent's, and ending it closed the operation span before its resolvers
+(`TestResolverSpansSkipPureFields`, which fails with either half broken).
+`examples/veloxfx` wires it with `otelsql` and `TestScenarioTracesReachFromFieldToSQL` checks
+every statement of a page lands under a resolver span, on SQLite and PostgreSQL.

@@ -38,12 +38,12 @@ func configurePool(db *sql.DB, maxConns int) {
 // NewClient opens the database. The migration runs in OnStart rather than
 // here because it does I/O, and a start hook is given a context that fx
 // cancels at its start timeout where a constructor is given none.
-func NewClient(lc fx.Lifecycle, cfg Config) (*velox.Client, error) {
+func NewClient(lc fx.Lifecycle, cfg Config, tr Tracing) (*velox.Client, error) {
 	driver := cfg.Driver
 	if driver == "" {
 		driver = "sqlite"
 	}
-	db, err := sql.Open(driver, cfg.DSN)
+	db, err := openSQL(driver, cfg.DSN, tr)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
