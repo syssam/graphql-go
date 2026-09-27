@@ -98,7 +98,7 @@ func (w *metricWalker) walkConcrete(obj *objectType, sels ast.SelectionSet) plan
 	for _, g := range groups {
 		first := g.fields[0]
 		if first.Name == "__typename" {
-			m.complexity++
+			m.complexity = costAdd(m.complexity, 1)
 			m.depth = max(m.depth, 1)
 			continue
 		}
@@ -115,7 +115,7 @@ func (w *metricWalker) walkConcrete(obj *objectType, sels ast.SelectionSet) plan
 			continue
 		}
 		if fd.leaf || isIntrospectionRoot(first.Name) {
-			m.complexity++
+			m.complexity = costAdd(m.complexity, 1)
 			m.depth = max(m.depth, 1)
 			continue
 		}
@@ -135,7 +135,10 @@ func (w *metricWalker) walkConcrete(obj *objectType, sels ast.SelectionSet) plan
 		} else {
 			sub = w.walk(nil, w.c.s.abstracts[named.Name], merged)
 		}
-		m.complexity += 1 + sub.complexity
+		// The walk is linear in the document, but the tree it measures can
+		// double at every level, so the sum saturates like the cost does:
+		// 64 levels of two aliases wrapped it to -1, under any limit.
+		m.complexity = costAdd(m.complexity, costAdd(1, sub.complexity))
 		m.depth = max(m.depth, 1+sub.depth)
 	}
 	return m

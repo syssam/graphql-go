@@ -93,7 +93,11 @@ pays for the list directly inside it and nothing deeper, or the two multiply and
 200 prices as one of 2000. Off by default: it changes the number an existing deployment set
 `Max` against. **Cost arithmetic saturates** (`costAdd`, `costMul`): the client picks the
 page sizes, and three nested `first: 2147483647` lists wrapped to a negative cost that passed
-any `Max` and credited `ext/throttle`. The walk carries its state on `costWalk`, and **a memo over it must key on
+any `Max` and credited `ext/throttle`. **Complexity saturates too** (`plan_metrics.go`): the walk is linear in the
+document but measures a tree that can double per level, and 64 fragments each selecting a
+self-referencing field under two aliases wrapped it to -1 -- a 5 KB request under any
+`WithMaxComplexity` that held gigabytes (`TestComplexitySaturatesInsteadOfWrapping`). Any new
+sum over the walk goes through `costAdd`. The walk carries its state on `costWalk`, and **a memo over it must key on
 `paid` as well as the selection set** — the same `*selectionSet` costs differently paid and
 unpaid.
 
