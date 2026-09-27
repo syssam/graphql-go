@@ -31,7 +31,9 @@ func main() {
 		slog.Error("velox graphql extension", "error", err)
 		os.Exit(1)
 	}
-	cfg, err := gen.NewConfig(gen.WithTarget("./velox"))
+	// Stock.quantity is NonNegative(): the database refuses a count below
+	// zero too, whatever path AddQuantity was reached by.
+	cfg, err := gen.NewConfig(gen.WithTarget("./velox"), gen.WithFeatures(gen.FeatureCheckBounds))
 	if err != nil {
 		slog.Error("velox config", "error", err)
 		os.Exit(1)

@@ -196,8 +196,11 @@ Three habits, each because of something velox does:
 - **Take a count with a condition**, never a read-then-write:
   `quantity = quantity - n WHERE quantity >= n` (`inventory.Take`). Twenty
   concurrent orders for five units place exactly five; velox's
-  `NonNegative()` does not check an `AddQuantity`, so without the condition
-  all twenty succeed and the count ends at -15.
+  `NonNegative()` does not check an `AddQuantity`. The database does
+  (`gen.FeatureCheckBounds` puts a `CHECK (quantity >= 0)` on the column), so
+  without the condition the orders past the fifth fail with
+  `FAILED_PRECONDITION` rather than succeed -- the condition is still what
+  turns them into a clean "not enough in stock".
 
 **Errors carry a code**, the way gRPC errors carry a status. A domain rule
 raises its own:
@@ -419,5 +422,7 @@ removing the rule and watching the test fail:
 
 - **A validator checks the values velox writes, not the result of an
   `AddX`.** `AddQuantity(-n)` is `quantity = quantity + -n` in the database,
-  so `NonNegative()` never sees the result. Take a count with a condition in
-  the same statement, as `inventory.Take` does (section 3).
+  so `NonNegative()` never sees the result. Generate with
+  `gen.FeatureCheckBounds` so the database refuses it
+  (`TestScenarioStockCannotGoNegativeWhateverThePath`), and take a count with
+  a condition in the same statement, as `inventory.Take` does (section 3).

@@ -86,6 +86,7 @@ Code for features not listed here is not generated, so an API you
 expect may simply be absent rather than renamed.
 
 - `namedges`
+- `sql/checkbounds`
 
 ## Entities (7)
 

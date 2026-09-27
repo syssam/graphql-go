@@ -62,8 +62,8 @@ github.com/sosodev/duration v1.3.1 h1:qtHBDMQ6lvMQsL15g4aopM4HEfOaYuhWBw3NPTtlqq
 github.com/sosodev/duration v1.3.1/go.mod h1:RQIBBX0+fMLc/D9+Jb/fwvVmo0eZvDDEERAikUR6SDg=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
 github.com/stretchr/testify v1.12.1/go.mod h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUmoNlxoYthg=
-github.com/syssam/velox v0.3.1-0.20260927080053-315eb94e9922 h1:Cuhe3AmIvVkAuZmL3dK9WbpB8nENO8zyBqbx6xfgMiE=
-github.com/syssam/velox v0.3.1-0.20260927080053-315eb94e9922/go.mod h1:Qsu7Zbl+gH8p1mtxvaxvaoU6ZcXGx4lPkPtfmMFUXEY=
+github.com/syssam/velox v0.3.1-0.20260927083806-b69dda8e0d24 h1:x4Ca7ysffGTeSHV4wtaPZb47d3LpB+Ui3l0c6yLtW4k=
+github.com/syssam/velox v0.3.1-0.20260927083806-b69dda8e0d24/go.mod h1:Qsu7Zbl+gH8p1mtxvaxvaoU6ZcXGx4lPkPtfmMFUXEY=
 github.com/syssam/velox/contrib/graphqlgo v0.0.0-20260927080053-315eb94e9922 h1:qKNR1Q6j53adaDZ3zYLh9um6iDqCg7pRRSCHvPBK3pY=
 github.com/syssam/velox/contrib/graphqlgo v0.0.0-20260927080053-315eb94e9922/go.mod h1:JJw8PwBp+DTSoL6XgtE9FI7AZTRyUG94WuLfIneu1cs=
 github.com/vektah/gqlparser/v2 v2.5.58 h1:yHxQ3EjU2OGuDMh6noxxmZova1HkBM3CbdGtL+rvjOc=

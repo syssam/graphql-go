@@ -94,9 +94,17 @@ var OrderItemColumns = []*schema.Column{{
 	Name:      "id",
 	Type:      field.TypeInt,
 }, {
+	Bounds: []field.Bound{{
+		Op:    ">=",
+		Value: "1",
+	}},
 	Name: "quantity",
 	Type: field.TypeInt,
 }, {
+	Bounds: []field.Bound{{
+		Op:    ">=",
+		Value: "0",
+	}},
 	Name: "unit_price_cents",
 	Type: field.TypeInt,
 }, {
@@ -138,6 +146,10 @@ var ProductColumns = []*schema.Column{{
 	Name: "name",
 	Type: field.TypeString,
 }, {
+	Bounds: []field.Bound{{
+		Op:    ">=",
+		Value: "0",
+	}},
 	Name: "price_cents",
 	Type: field.TypeInt,
 }, {
@@ -164,6 +176,10 @@ var StockColumns = []*schema.Column{{
 	Name:      "id",
 	Type:      field.TypeInt,
 }, {
+	Bounds: []field.Bound{{
+		Op:    ">=",
+		Value: "0",
+	}},
 	Name: "quantity",
 	Type: field.TypeInt,
 }, {

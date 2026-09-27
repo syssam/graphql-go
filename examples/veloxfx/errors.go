@@ -40,6 +40,10 @@ func presentError(ctx context.Context, err error) *graphql.Error {
 	// delete of a referenced row as a duplicate.
 	case sqlgraph.IsForeignKeyConstraintError(err):
 		return coded(err, "FAILED_PRECONDITION", "still referenced; delete what refers to it first")
+	// A validator's bound, enforced by the database (FeatureCheckBounds):
+	// what an AddX past it reaches, since no validator sees an addition.
+	case sqlgraph.IsCheckConstraintError(err):
+		return coded(err, "FAILED_PRECONDITION", "the change would take a value past its limit")
 	case velox.IsConstraintError(err):
 		return coded(err, "CONFLICT", "already exists")
 	}

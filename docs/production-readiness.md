@@ -88,8 +88,6 @@ without introspection enabled (replaced here; gqlgen uses the same rule).
   the same box.
 - Behaviour across a PostgreSQL failover, and under connection-pool
   exhaustion at the database's own limit.
-- A validator such as `NonNegative()` cannot check `AddX`; database `CHECK`
-  constraints are the fix and velox does not emit them.
 - gqlgen is still in velox's root module graph, for the gqlgen side of its
   GraphQL support; a server generated with `graphqlgen.WithoutGQLGen()` links
   none of it (`examples/veloxfx`: 0 gqlgen packages).

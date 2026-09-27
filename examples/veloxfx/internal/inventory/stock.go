@@ -26,10 +26,11 @@ func short(format string, args ...any) error {
 //
 // It is one conditional update -- quantity = quantity - n WHERE quantity >= n
 // -- rather than a read, a check and a write, so two takes racing for the
-// last unit cannot both succeed: the second matches no row. The condition is
-// the only guard. velox's NonNegative() on the column is checked when a value
-// is set, not when one is added, so without it the count goes negative and
-// the take succeeds.
+// last unit cannot both succeed: the second matches no row. velox's
+// NonNegative() on the column is checked when a value is set, not when one is
+// added; the CHECK constraint FeatureCheckBounds puts on the column would
+// still refuse a negative count, but as a constraint error, where the
+// condition makes it the "not enough in stock" a client can act on.
 func Take(ctx context.Context, tx *velox.Tx, warehouseID, productID, n int) error {
 	taken, err := tx.Stock.Update().
 		Where(
