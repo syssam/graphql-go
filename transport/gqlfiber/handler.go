@@ -64,8 +64,9 @@ func (h *handler) serve(c fiber.Ctx) error {
 	}
 
 	var (
-		reqs  []*graphql.Request
-		batch bool
+		reqs     []*graphql.Request
+		batch    bool
+		resolved bool
 	)
 	switch method {
 	case http.MethodGet:
@@ -88,6 +89,9 @@ func (h *handler) serve(c fiber.Ctx) error {
 			return nil
 		}
 		reqs = []*graphql.Request{req}
+		// Resolved above, before the kind check; resolving again would
+		// present the resolved text to a safelist, which refuses text.
+		resolved = true
 	case http.MethodPost:
 		var status int
 		var err error
@@ -102,7 +106,7 @@ func (h *handler) serve(c fiber.Ctx) error {
 	defer cancel()
 
 	if !batch {
-		resp, malformed := h.execute(ctx, reqs[0])
+		resp, malformed := h.execute(ctx, reqs[0], resolved)
 		status := http.StatusOK
 		switch {
 		case malformed:
@@ -129,7 +133,7 @@ func (h *handler) serve(c fiber.Ctx) error {
 					return err
 				}
 			}
-			resp, _ := h.execute(ctx, req)
+			resp, _ := h.execute(ctx, req, false)
 			_, err := resp.WriteTo(out)
 			resp.Release()
 			if err != nil {
@@ -147,10 +151,12 @@ func (h *handler) serve(c fiber.Ctx) error {
 // a body carrying no query never became an operation, so it is 400 whatever
 // media type was negotiated, the same answer graphql-http gives and the same
 // one httpreq composes when persisted queries are off and the missing query is
-// caught while parsing.
-func (h *handler) execute(ctx context.Context, req *graphql.Request) (*graphql.Response, bool) {
-	if resp := h.resolvePersisted(req); resp != nil {
-		return resp, false
+// caught while parsing. resolved says the caller already resolved it.
+func (h *handler) execute(ctx context.Context, req *graphql.Request, resolved bool) (*graphql.Response, bool) {
+	if !resolved {
+		if resp := h.resolvePersisted(req); resp != nil {
+			return resp, false
+		}
 	}
 	if req.Query == "" {
 		return &graphql.Response{Errors: []*graphql.Error{graphql.Errorf("%v", httpreq.ErrMissingQuery)}}, true

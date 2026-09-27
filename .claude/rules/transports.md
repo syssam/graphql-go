@@ -85,6 +85,13 @@ so `writeGraphQLError` -- the only caller of which is the persisted-query miss o
 branch -- was at 0% in `gqlhttp` and `gqlfiber` both. It is the *first* request an Apollo
 client ever sends.
 
+**A persisted query is resolved once per request.** The GET branch resolves before the
+mutation-over-GET check, so it passes `resolved` to `execute` in `gqlhttp` and `gqlfiber`.
+Resolving twice was harmless for APQ, which re-verified the hash of the text it had just
+loaded, and fatal for a safelist, which refuses any request carrying text: every registered
+id over GET, the CDN-cacheable shape a safelist is for, came back `PersistedQueryNotInList`.
+Every safelist test sent text or used POST ("safelisted id over GET executes").
+
 **An APQ retry handshake is 200 under every media type** (`apq.IsRetryHandshake`, consulted at
 all four status decisions in `gqlhttp` and `gqlfiber`). This used to follow the media type like
 any other request error -- 200 for `application/json`, 400 for

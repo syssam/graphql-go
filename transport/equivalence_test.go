@@ -588,4 +588,22 @@ func TestEquivalence(t *testing.T) {
 			map[string]string{"Accept": "application/graphql-response+json", "GraphQL-Require-Preflight": "1"}, "",
 			http.StatusBadRequest, want)
 	})
+
+	// What a safelist is for: a client sends only a registered id, over GET
+	// so a CDN can cache it. The GET branch resolved the id to its text, and
+	// execute resolved again -- and a request carrying text is exactly what a
+	// safelist refuses, so every registered GET came back
+	// PersistedQueryNotInList. Every safelist test sent text or used POST.
+	t.Run("safelisted id over GET executes", func(t *testing.T) {
+		store := trusted.NewStore(map[string]string{"hello-v1": `{ hello }`})
+		servers := newEquivServers(t,
+			[]gqlhttp.Option{gqlhttp.WithPersistedQueries(store)},
+			[]gqlsse.Option{gqlsse.WithPersistedQueries(store)},
+			[]gqlfiber.Option{gqlfiber.WithPersistedQueries(store)},
+		)
+		ext := url.QueryEscape(`{"persistedQuery":{"version":1,"sha256Hash":"hello-v1"}}`)
+		assertEqualAcross(t, servers, httpFamily, http.MethodGet, "/graphql?extensions="+ext,
+			map[string]string{"Accept": "application/json", "GraphQL-Require-Preflight": "1"}, "",
+			http.StatusOK, `{"data":{"hello":"world"}}`)
+	})
 }
