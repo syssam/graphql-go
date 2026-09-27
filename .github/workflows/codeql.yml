@@ -1,0 +1,47 @@
+# CodeQL's security-extended queries over every package in the root module.
+# The other four modules are benchmarks, a generated cross-check, the lint
+# analyzer and an example; none of them ships.
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "41 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  analyze:
+    name: Analyze Go
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: go
+          queries: security-extended
+          build-mode: manual
+      - name: Build
+        run: go build ./...
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:go

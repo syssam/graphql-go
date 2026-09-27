@@ -1,0 +1,36 @@
+# Updates for every committed module and for the workflows' actions. compare/
+# is here too: its go.mod is committed even though its engines are generated,
+# and govulncheck scans it in CI.
+version: 2
+updates:
+  - package-ecosystem: "gomod"
+    directories:
+      - "/"
+      - "/benchmarks"
+      - "/compare"
+      - "/lint"
+      - "/examples/veloxfx"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "deps"
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+        # gqlparser's AST is part of this library's public API
+        # (docs/api-stability.md), so its updates arrive as their own PR
+        # rather than inside a batch.
+        exclude-patterns: ["github.com/vektah/gqlparser/*"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    labels: ["ci"]
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]

@@ -4,12 +4,19 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Weekly on an unchanged tree: govulncheck's database and the dependencies'
+  # own releases move without a push here, and the fuzz job runs a longer
+  # campaign than a push can afford.
+  schedule:
+    - cron: "17 3 * * 1"
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # The event is in the key so that a push to main does not cancel the
+  # weekly run's fuzz campaign.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 env:
@@ -223,10 +230,14 @@ jobs:
       # out: its FuzzString and FuzzKey guard the JSON string escaping, where
       # a bug is a corrupted response, and neither had ever been fuzzed here.
       - name: Fuzz targets
+        env:
+          # 30s per target on a push is a smoke test; the weekly run is the
+          # campaign, long enough to get past the seed corpus's neighbourhood.
+          FUZZTIME: ${{ github.event_name == 'schedule' && '10m' || '30s' }}
         run: |
           for pkg in $(go list ./...); do
             for target in $(go test -list 'Fuzz.*' "$pkg" | grep '^Fuzz'); do
               echo "== $pkg $target"
-              go test -run '^$' -fuzz "^${target}$" -fuzztime 30s "$pkg"
+              go test -run '^$' -fuzz "^${target}$" -fuzztime "$FUZZTIME" "$pkg"
             done
           done
