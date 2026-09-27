@@ -55,15 +55,41 @@ bounded by `TestBindingCodeSize`) with request-path benchmarks unchanged.
 What remains of the group packages is the typed closures the executor calls
 without reflection, which is the design.
 
-The rebuild is CPU-bound and parallel -- 589 s of CPU in 183 s of wall on 4
-cores. More cores should divide it; by how much on 16 was not measured.
+The rebuild is CPU-bound, but only its middle is parallel. Timed from the
+action graph (`go build -debug-actiongraph`) of a second entity edit:
+
+| Phase | Wall | What runs |
+|---|---|---|
+| Head | 38 s | velox `filter`, then `entity`, which imports it: one package at a time |
+| Middle | 110 s | the 300 group and 300 `client/<entity>` packages, 4 at a time |
+| Tail | 39 s | velox `query`, then the `velox` root and `hook`, which import it |
+
+`query` needs only `entity` and was ready at 38 s. It waited until 147 s
+because Go's scheduler starts ready packages in the order a depth-first walk
+from the build's roots reaches them. `gofmt` sorts `graph` ahead of `velox`
+in any import list, so the walk reaches every group before it reaches
+`query`, and `go build` has no flag to reorder it. A
+repeat edit on a busier machine had the same shape: `query` ready at 67 s,
+started at 282 s. More cores divide only
+the middle. With the head and tail still serial, 16 cores would take this
+rebuild from about 3 minutes to about 1 minute 45 seconds, not to 45 seconds.
+That figure is derived from the 4-core timeline, not measured.
+
+The head is velox's to shorten. `entity` imports `filter` only to name
+`*filter.XWhereInput` in edge methods that take a `where` argument. Declared
+against an interface instead, the two packages would compile side by side,
+saving about 18 s. That was not done, for two reasons. gqlgen types each argument from the
+method's parameter (`bindArgs`), so it would have to decode an input object
+into an interface. And a nil `*XWhereInput` stored in an interface is not a
+nil interface, which breaks the `where == nil` fast path the edge method
+relies on.
 
 ## What to do about it
 
-- **Give the developer machines and CI cores.** An entity edit is fan-out
-  across 600 packages. The part that is not is the chain through velox's
-  shared packages, `filter` then `entity` then `query` (175 s of CPU between
-  them, each one compiler process).
+- **Give the developer machines and CI cores, up to a point.** An entity edit
+  is fan-out across 600 packages, and that part divides by cores. About 77 s
+  of it on this schema is two serial chains of velox's shared packages,
+  which do not divide (above).
 - **Import a group package, not the graph root, from domain code.** The root
   (`graph`) imports every group; a domain package that imports it recompiles
   whenever any group does.
