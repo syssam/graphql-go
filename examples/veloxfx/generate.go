@@ -23,6 +23,9 @@ func main() {
 		// Node ids here are per-table integers, so node(id: 1) could be any
 		// entity. examples/relaynode shows the global-id contract instead.
 		veloxgql.WithRelaySpec(false),
+		// Served by graphql-go, whose selection graphqlgo.Collect() supplies:
+		// the generated code need not import gqlgen to read its.
+		veloxgql.WithoutGQLGen(),
 	)
 	if err != nil {
 		slog.Error("velox graphql extension", "error", err)
