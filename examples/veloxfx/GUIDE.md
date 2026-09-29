@@ -5,13 +5,19 @@ walks through a route guide: define the service, generate the code, implement
 it, register it, run it, and then do the loop you will do every day -- add an
 entity. Every output below is what the commands printed.
 
-The service is a small shop: seven entities in three domains.
+The service is a small shop: seven entities -- Category, Product, Customer,
+Order, OrderItem, Warehouse, Stock -- each one package in each layer:
 
-| Domain | Entities | Package |
+| Path | What | Written by |
 |---|---|---|
-| catalog | Category, Product | `internal/catalog` |
-| sales | Customer, Order, OrderItem | `internal/sales` |
-| inventory | Warehouse, Stock | `internal/inventory` |
+| `graph/<entity>/generated.go` | bindings, argument structs, the `Resolver` interface | gqlc |
+| `graph/<entity>/<entity>.resolvers.go` | the `Handler` implementing it, each method a thin hand-off | you, from gqlc's stubs |
+| `graph/model/<entity>` | types the SDL declares and Go does not have | gqlc |
+| `internal/service/<entity>` | the rules: an order's states, a stock count, who may change what | you |
+
+An edit to one entity recompiles that entity's packages and not the rest.
+Models sit apart from their entity because models of different entities
+refer to each other, and a package each would import in a circle.
 
 If you know gRPC, the mapping is close to one to one:
 
@@ -19,9 +25,10 @@ If you know gRPC, the mapping is close to one to one:
 |---|---|
 | `.proto` messages and services | velox schema in `schema/`, plus `sdl/*.graphql` |
 | `protoc` + `protoc-gen-go-grpc` | `go generate`: velox, then `go tool gqlc` |
-| `XServer` interface | each group's `Resolver` interface, `graph/<group>` |
-| `RegisterXServer(s, impl)` | `gqlfx.Register(NewImpl, <group>gql.Bindings)` in a domain's fx `Module` |
-| `status.Error(codes.NotFound, ...)` | `extensions.code: "NOT_FOUND"`, from `errors.go` |
+| `XServer` interface | each entity's `Resolver` interface, `graph/<entity>/generated.go` |
+| the handler implementing it | `graph/<entity>.Handler`, handing each call to `internal/service/<entity>` |
+| `RegisterXServer(s, impl)` | `gqlfx.Register(<entity>.NewHandler, <entity>.Bindings)` in `resolvers.go` |
+| `status.Errorf(codes.NotFound, ...)` | `apperr.New(apperr.NotFound, ...)`, `internal/apperr` |
 
 ## Prerequisites
 
@@ -117,7 +124,7 @@ zeroForNullInputs: true           # velox's clearX: Boolean is a Go bool
 inlineAccessors: true             # edge accessors read loaded edges: no goroutine each
 inline: [Order.totalCents]        # nor this resolver, which sums loaded items
 scaffold:                         # which type implements each group
-  product: internal/catalog.ProductResolver
+  product: graph/product.Handler  # in the group's own package
   # ...
 ```
 
@@ -133,9 +140,13 @@ six seconds. What comes out:
 | Path | What | Edit it? |
 |---|---|---|
 | `velox/` | the ORM: clients, queries, entities, migrations | no |
-| `graph/<group>/generated.go` | the group's `Resolver` interface, argument structs and `Bindings` | no |
+| `graph/<entity>/generated.go` | the entity's `Resolver` interface, argument structs and `Bindings` | no |
+| `graph/<entity>/<entity>.resolvers.go` | stubs for methods the `Handler` lacks, in the same package | yes -- yours from then on |
+| `graph/model/<entity>/models.go` | types gqlc had to write, such as `PlaceOrderInput`; only order has any | no |
 | `graph/schema.go` | `NewSchema(opts...)` over the embedded SDL | no |
-| `internal/<domain>/<group>.resolvers.go` | stubs for methods the implementation lacks | yes -- yours from then on |
+
+A package gqlc stops writing is deleted on the next run, so a type that
+moves to a velox binding does not leave its old model behind.
 
 A group's interface holds only what nothing else answers. For product:
 
@@ -155,27 +166,46 @@ ordered connection -- to velox's generated edge methods, whose arguments
 (`*entity.ProductOrder`, `*filter.ProductWhereInput`, `*gqlrelay.Cursor`) are
 velox's own types.
 
-## 3. Implement the resolvers
+## 3. Implement: a service, and a resolver in front of it
 
-A resolver is the business logic and nothing else. The arguments are already
-velox's types, so there is nothing to convert:
+**The rules are a service**, one package per entity in `internal/service`,
+taking and returning velox's types, never GraphQL's argument structs:
 
 ```go
-// internal/catalog/product.resolvers.go
-func (r *ProductResolver) Products(ctx context.Context, args productgql.ProductsArgs) (*entity.ProductConnection, error) {
-	opts := []entity.ProductPaginateOption{entity.WithProductOrder(args.OrderBy)}
-	if args.Where != nil {
-		opts = append(opts, entity.WithProductFilter(args.Where.Filter))
+// internal/service/product/product.go
+func (s *Service) Page(ctx context.Context, p PageArgs) (*entity.ProductConnection, error) {
+	opts := []entity.ProductPaginateOption{entity.WithProductOrder(p.OrderBy)}
+	if p.Where != nil {
+		opts = append(opts, entity.WithProductFilter(p.Where.Filter))
 	}
-	q := r.client.Product.Query() // Paginate loads what the page selects
-	return q.Paginate(ctx, args.After, args.First, args.Before, args.Last, opts...)
+	return s.client.Product.Query().Paginate(ctx, p.After, p.First, p.Before, p.Last, opts...)
 }
 
-func (r *ProductResolver) Product(ctx context.Context, args productgql.ProductArgs) (*entity.Product, error) {
-	p, err := r.client.Product.Get(ctx, args.ID)
+func (s *Service) Get(ctx context.Context, id int) (*entity.Product, error) {
+	p, err := s.client.Product.Get(ctx, id)
 	return p, velox.MaskNotFound(err) // an id naming nothing is null
 }
 ```
+
+**The entity's `Handler` hands each field to it**, beside the generated code
+in the same package, and is the only place GraphQL's argument structs are
+read:
+
+```go
+// graph/product/product.resolvers.go
+func (r *Handler) Products(ctx context.Context, args ProductsArgs) (*entity.ProductConnection, error) {
+	return r.svc.Page(ctx, productsvc.PageArgs(args))
+}
+
+func (r *Handler) Product(ctx context.Context, args ProductArgs) (*entity.Product, error) {
+	return r.svc.Get(ctx, args.ID)
+}
+```
+
+`PageArgs(args)` is a conversion, not a copy: the service declares the same
+fields in the same order, and Go converts between struct types that differ
+only in tags. Where the shapes differ -- `placeOrder`'s input -- the
+`Handler` builds the service's type in four lines.
 
 Three habits, each because of something velox does:
 
@@ -194,7 +224,7 @@ Three habits, each because of something velox does:
   `items { quantity }` projects the price away and the total is 0, and a
   customer list with order totals takes a query per order.
 - **Take a count with a condition**, never a read-then-write:
-  `quantity = quantity - n WHERE quantity >= n` (`inventory.Take`). Twenty
+  `quantity = quantity - n WHERE quantity >= n` (`stock.Take`). Twenty
   concurrent orders for five units place exactly five; velox's
   `NonNegative()` does not check an `AddQuantity`. The database does
   (`gen.FeatureCheckBounds` puts a `CHECK (quantity >= 0)` on the column), so
@@ -202,15 +232,16 @@ Three habits, each because of something velox does:
   `FAILED_PRECONDITION` rather than succeed -- the condition is still what
   turns them into a clean "not enough in stock".
 
-**Errors carry a code**, the way gRPC errors carry a status. A domain rule
-raises its own:
+**Errors carry a code**, the way gRPC errors carry a status, and every code
+is one constant in `internal/apperr`, as gRPC's are in `codes`. A service's
+rule raises its own:
 
 ```go
-return (&graphql.Error{Message: fmt.Sprintf("order %d is %s, and this needs %v", id, o.Status, want)}).
-	WithExtension("code", "FAILED_PRECONDITION")
+return apperr.New(apperr.FailedPrecondition, "order %d is %s, and this needs %v", id, o.Status, want)
 ```
 
-and `errors.go` maps what velox raises and masks the rest:
+and `errors.go` maps what velox raises onto the same codes and masks the
+rest:
 
 | `extensions.code` | when |
 |---|---|
@@ -218,49 +249,64 @@ and `errors.go` maps what velox raises and masks the rest:
 | `BAD_USER_INPUT` | a field rule velox enforces, or an operation's own input check |
 | `CONFLICT` | a unique column already holds the value |
 | `FAILED_PRECONDITION` | a row still referenced, an order in the wrong status, not enough stock |
+| `UNAUTHENTICATED` | nobody is signed in and this needs someone |
+| `FORBIDDEN` | the viewer is signed in and may not do this |
 | `INTERNAL_SERVER_ERROR` | anything else; the message is fixed and the real error is logged |
 | `GRAPHQL_VALIDATION_FAILED` | the engine's own: the request itself is invalid |
 
 ## 4. Register and serve
 
-Each domain registers its groups in one `Module`, as a gRPC server registers
-its services:
+`resolvers.go` registers every entity's `Handler` over its bindings, as a
+gRPC server registers its services, and the services come from one more
+module:
 
 ```go
-// internal/catalog/module.go
-var Module = fx.Module("catalog",
-	gqlfx.Register(NewCategoryResolver, categorygql.Bindings),
-	gqlfx.Register(NewProductResolver, productgql.Bindings),
+// resolvers.go
+var Resolvers = fx.Module("resolver",
+	gqlfx.Register(category.NewHandler, category.Bindings),
+	gqlfx.Register(product.NewHandler, product.Bindings),
+	// ... one line per entity, and one gqlfx.Entity per federation type
 )
+
+// internal/service/service.go
+var Module = fx.Module("service", fx.Provide(category.New, product.New /* ... */))
 ```
 
-`Register` (`internal/gqlfx`, 10 lines) provides the Resolver and adds the
-group's bindings to the `graphql` value group. It takes the Resolver interface
-from `Bindings`, so a constructor for the wrong group fails when the app is
-built: `*catalog.ProductResolver does not implement category.Resolver`.
-
-`NewSchema` collects the `graphql` group without naming a single entity, and
-`veloxfx.go` lists the domains:
+`Register` (`internal/gqlfx`, 10 lines) provides the Handler and adds the
+entity's bindings to the `graphql` value group. It takes the Resolver
+interface from `Bindings`, so a constructor for the wrong entity fails when
+the app is built: `*product.Handler does not implement category.Resolver`.
+`NewSchema` collects the group without naming a single entity, and
+`veloxfx.go` is the three modules:
 
 ```go
-var Domains = fx.Options(catalog.Module, sales.Module, inventory.Module)
+var Module = fx.Module("veloxfx", service.Module, Resolvers, appCore)
 ```
 
 fx runs start hooks in dependency order -- migrate, then listen -- and stop
 hooks in reverse: drain streams, shut the server down, close the database.
-A domain left out is a failed start that names the type it left unbound,
-not a schema that fails the first request to reach it.
+An entity left out of `Resolvers` is a failed start that names the type it
+left unbound, not a schema that fails the first request to reach it.
 
-## 5. Who may read what
+## 5. Who may read and write what
 
-A public API needs three kinds of rule, and each has one right place
-(`authz.go`):
+A public API needs four kinds of rule. Who may do what is the services'
+decision, whoever calls them -- GraphQL, a job, another transport -- as
+graphql.org recommends; what a query may *see* is GraphQL's, because only the
+plan knows what was selected.
+
+The policy itself is this shop's, not a recommendation: customers are listed
+to anyone with their emails masked, orders are their owner's, stock levels are
+staff's. Another application draws those lines elsewhere with the same four
+mechanisms:
 
 | Rule | Where | What it costs |
 |---|---|---|
-| Stock levels are internal | `@requiresScopes` on `Product.stocks`, put there by an annotation in `schema/catalog.go`; the policy answers an empty list | nothing: the decision is made before anything resolves, and velox does not query stocks for a viewer who may not see them |
+| Stock levels are internal | `@requiresScopes` on `Product.stocks`, put there by an annotation in `schema/catalog.go`, where the policy answers an empty list; and a read filter on every other stock query (`stock.HideLevels`): the `stocks` and `stock` roots, `Warehouse.stocks`, eager loads | nothing for `Product.stocks`: decided before anything resolves, so velox does not query stocks. Elsewhere one `WHERE false`: a shopper's list is empty and a lookup null, the same answer |
 | An email is personal data | `@requiresScopes` on `Customer.email`; the policy masks it (`c*@example.com`), except a customer's own address, decided per row by `graphql.RedactRow` | the column is read, since masking rewrites a value |
-| A customer sees only their orders | a velox read filter on every order query (`ownOrders`) | one indexed `WHERE customer_orders = ?`, in the list, its count, a lookup by id and every eager load; an anonymous read fails with `UNAUTHENTICATED` before any SQL |
+| A customer sees only their orders | a velox read filter on every order query (`order.OwnOrders`), and on every order-line query, a line being theirs when its order is (`order.OwnOrderItems`) | one indexed `WHERE customer_orders = ?`, in the list, its count, a lookup by id and every eager load -- and for lines the same condition through their order, whether they are reached from an order, a product or the `orderItems` root; an anonymous read fails with `UNAUTHENTICATED` before any SQL |
+| A customer moves only their orders | the same condition in every order `UPDATE` (`transition`, in `internal/service/order`), and `placeOrder` refusing a `customerID` not the viewer's with `FORBIDDEN` | nothing extra: a read interceptor never sees an `UPDATE`, so without it a customer could pay someone else's order and be told only `NOT_FOUND` |
+| Every other write is staff's | each such service method calls `viewer.RequireStaff` -- `UNAUTHENTICATED` anonymously, `FORBIDDEN` for a customer -- and `mutationGate` in `authz.go` refuses the same calls again, first | the gate runs nothing: it reads the document, through fragments and without evaluating `@skip`, and denies any mutation not in `customerMutations`, so one added to the SDL is staff's until listed. It is not `@requiresScopes` because velox cannot put a directive on the mutations it generates |
 
 And one kind of limit: `WithMaxDepth(10)` and a cost budget priced by the page
 each connection asks for (`Connections: true`), both checked from the plan,
@@ -276,8 +322,10 @@ middleware reads anything but the `Viewer`.
 Other services in a federated graph refer to this one's products, customers
 and orders. `key("id")` in `schema/*.go` puts `@key` on them, velox adds the
 Federation v2 `@link`, and `gqlc.yaml`'s `federation: true` makes
-`graph.NewSchema` take the entity resolvers in `entities.go`, one
-`graphqlgo.Entities` per type. A router's batch of references is one query
+`graph.NewSchema` take the entity resolvers. The service that owns each type
+answers it -- `product.Service.Entity`, `customer.Service.Entity`,
+`order.Service.Entity`, one `graphqlgo.Entities` each -- and `resolvers.go`
+registers them with `gqlfx.Entity`. A router's batch of references is one query
 per type, collected for what it selected, and an order fetched through the
 router passes the same ownership filter as one fetched by a client
 (`federation_scenarios_test.go`).
@@ -315,10 +363,10 @@ The last one answers:
 
 ## 7. The daily loop: add an entity
 
-Adding a `Supplier` to inventory, with `Product.supplier` pointing at it --
-done on a copy of the example.
+Adding a `Supplier`, with `Product.supplier` pointing at it -- done on a copy
+of the example.
 
-**Declare it.** The type in `schema/inventory.go` (21 lines), one edge on
+**Declare it.** The type in `schema/inventory.go` (22 lines), one edge on
 Product, and which type implements the new group:
 
 ```go
@@ -327,26 +375,26 @@ edge.From("supplier", Supplier.Type).Ref("products").Unique(),
 
 ```yaml
 scaffold:
-  supplier:  internal/inventory.SupplierResolver
+  supplier:  graph/supplier.Handler
 ```
 
-**Generate.** `go generate` (5.4 s) writes `graph/supplier` and
-`internal/inventory/supplier.resolvers.go`:
+**Generate.** `go generate` (3.6 s, a second run over the same input) writes
+`graph/supplier/generated.go` and, in the same package,
+`graph/supplier/supplier.resolvers.go`:
 
 ```go
-// SupplierResolver implements the supplier group's Resolver.
-type SupplierResolver struct{}
+// Handler implements the supplier group's Resolver.
+type Handler struct{}
 
-var _ suppliergql.Resolver = (*SupplierResolver)(nil)
+var _ Resolver = (*Handler)(nil)
 
 // CreateSupplier resolves Mutation.createSupplier.
-func (r *SupplierResolver) CreateSupplier(ctx context.Context, args suppliergql.CreateSupplierArgs) (*entity.Supplier, error) {
+func (r *Handler) CreateSupplier(ctx context.Context, args CreateSupplierArgs) (*entity.Supplier, error) {
 	panic("not implemented: Mutation.createSupplier")
 }
 
 // UpdateSupplier resolves Mutation.updateSupplier.
 // Suppliers resolves Query.suppliers.
-// ...
 ```
 
 Three stubs. `Supplier.id` binds to velox's `ID`, `Supplier.products` -- a
@@ -361,39 +409,68 @@ none of them is yours to write.
 
 (fx prints its constructor chain above it; the line that matters is the last.)
 
-**Implement and register.** A client field and a constructor on the type, a
-body for each stub --
+**Implement.** The service, in `internal/service/supplier/supplier.go`, its
+writes staff's like every other entity's:
 
 ```go
-func (r *SupplierResolver) Suppliers(ctx context.Context) ([]*entity.Supplier, error) {
-	q, err := r.client.Supplier.Query().CollectFields(ctx)
+type Service struct{ client *velox.Client }
+
+func New(client *velox.Client) *Service { return &Service{client: client} }
+
+func (s *Service) List(ctx context.Context) ([]*entity.Supplier, error) {
+	q, err := s.client.Supplier.Query().CollectFields(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return q.All(ctx)
 }
+
+func (s *Service) Create(ctx context.Context, in supplierclient.CreateSupplierInput) (*entity.Supplier, error) {
+	if err := viewer.RequireStaff(ctx); err != nil {
+		return nil, err
+	}
+	return s.client.Supplier.Create().SetInput(in).Save(ctx)
+}
+// Update likewise.
 ```
 
--- and one line in `internal/inventory/module.go`:
+and a service field, a constructor and one line per stub in the `Handler`:
 
 ```go
-gqlfx.Register(NewSupplierResolver, suppliergql.Bindings),
+type Handler struct{ svc *suppliersvc.Service }
+
+func (r *Handler) Suppliers(ctx context.Context) ([]*entity.Supplier, error) {
+	return r.svc.List(ctx)
+}
+```
+
+**Register.** One line in each module:
+
+```go
+supplier.New,                                          // internal/service/service.go
+gqlfx.Register(supplier.NewHandler, supplier.Bindings), // resolvers.go
 ```
 
 **Green, and it answers:**
 
-    {"data":{"suppliers":[{"id":"1","name":"Keychron","products":{"totalCount":1,"edges":[{"node":{"sku":"kb-1"}}]}}]}}
+    {"suppliers":[{"id":"1","name":"Keychron","products":{"totalCount":1,"edges":[{"node":{"sku":"kb-1"}}]}}]}
 
-Running `go generate` again leaves the filled-in file byte for byte as it was;
-a field added later arrives as one new stub at its end.
+and a customer's `createSupplier` is refused with `FORBIDDEN` before it runs,
+by the gate, with nothing added to it. Running `go generate` again leaves the
+filled-in `Handler` byte for byte as it was; a field added later arrives as
+one new stub at its end.
 
-**39 lines by hand:** 22 of schema, 3 of configuration and registration, 13
-of bodies and constructor, and one in the test that pins the group list.
-(35 when `Suppliers` named its eager loads, `WithProducts().All(ctx)`; the
-four more lines are what makes it load only what a query selects.) No
-signature typed, no type converted. (The first version of this example took
-55 for the same entity, every signature copied from the interface and every
-id and order argument converted by hand.)
+**64 lines by hand**, not counting blank ones: 23 of schema, 1 of
+configuration, 4 of registration (two lines and their imports), 29 of service
+(7 of them the staff checks), 6 in the `Handler`, and one in the test that
+pins the group list. No signature typed, no type converted.
+
+That is 25 more than the same entity took when each resolver held its own
+queries (39). They are the service -- a second type, a constructor, a method
+per operation -- and its staff checks. What they buy is that the rules do not
+live in GraphQL code: a job or a test calls `supplier.Service` without an
+argument struct and meets the same checks, and changing an entity's rules
+recompiles its service and its own entity package, nothing else.
 
 ## 8. Test it
 
@@ -410,12 +487,16 @@ removing the rule and watching the test fail:
 | `TestOrderLifecycle` | the state machine, and stock returned on cancel |
 | `TestConcurrentOrdersCannotOversell` | twenty racing orders for five units place five |
 | `TestReadAndDeleteByID` | null for a missing id; what a delete may take with it |
-| `TestOrdersAreAFixedNumberOfQueries` | eager loading across domains, and no COUNT nobody asked for |
+| `TestOrdersAreAFixedNumberOfQueries` | eager loading across entities, and no COUNT nobody asked for |
 | `TestScenario*` (`scenarios_test.go`) | what large clients send: Relay fragments and variables over fifty orders, projected columns in the SQL, a count badge beside a list, a nested connection, a computed field under projection and in a nested page |
 | `TestScenarioRouter*`, `TestScenarioServiceSDLIsComposable` (`federation_scenarios_test.go`) | a router's batch of thirteen references is two queries; several types, one query each; ownership holds through `_entities`; `_service` carries one federation link and every key |
-| `TestScenario*` (`authz_scenarios_test.go`) | a withheld edge costs no query; masked personal data; a customer's orders filtered in SQL, by list, count, id and edge; anonymous reads fail closed; deep and wide queries refused with no SQL, and an ordinary page is not |
+| `TestScenario*` (`authz_scenarios_test.go`) | a withheld edge costs no query; masked personal data; a customer's orders filtered in SQL, by list, count, id and edge, and written only by their owner; catalog and stock writes staff-only; anonymous reads fail closed; deep and wide queries refused with no SQL, and an ordinary page is not |
+| `TestEveryReadPathKeepsThePolicy` | every root, lookup and edge reaching a stock level, an order or an order line, as staff, the owner, another customer and nobody: 13 paths, 52 answers |
+| `TestMutationGateRefusesEveryUnlistedMutation`, `TestMutationGateExpandsEachFragmentOnce` | every mutation the schema serves is refused to customers unless listed, through fragments and `@skip`; a fragment spread many times is walked once |
+| `TestServicesRefuseNonStaffWrites`, `TestOrderServiceRefusesAnonymousWrites` | the services' own half: every staff-only write, and anonymous order writes, refused with no GraphQL in front and nothing changed |
 | `TestUnclassifiedErrorsAreMasked` | a driver's error never reaches a client |
-| `TestAMissingDomainFailsStart` | a missing registration fails start |
+| `TestAMissingGroupFailsStart` | a missing registration fails start |
+| `TestEveryEntityIsItsOwnGroup` | one package per entity, its `Handler` beside its generated code |
 | `TestStopWaitsOutAnUnusedConnection` | shutdown survives a client's idle pre-connection |
 
 ## Reference: what velox cannot check for you
@@ -425,4 +506,4 @@ removing the rule and watching the test fail:
   so `NonNegative()` never sees the result. Generate with
   `gen.FeatureCheckBounds` so the database refuses it
   (`TestScenarioStockCannotGoNegativeWhateverThePath`), and take a count with
-  a condition in the same statement, as `inventory.Take` does (section 3).
+  a condition in the same statement, as `stock.Take` does (section 3).

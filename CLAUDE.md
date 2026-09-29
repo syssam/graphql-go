@@ -155,7 +155,8 @@ The root package is ~32 files on purpose, because Go scopes encapsulation to the
   `gqlvet` can.
 - A nil Go slice is Go's empty list: `[]` at a non-null list position, `null` at a nullable
   one. graphql-js has no nil slice to decide it and gqlgen writes `[]`; see `executor.md`.
-- Package docs go in `doc.go`. `graphql.go` holds only `ID`, `Root`, `Omittable` and the
+- Package docs go in `doc.go` in the library's own packages; the examples keep each package's
+  doc on its main file, as a reader opening it expects. `graphql.go` holds only `ID`, `Root`, `Omittable` and the
   scalar `Writer`. Keep each
   file focused enough that its name tells you what is in it.
 - Comments explain why, not what. English only. No code-narrating comments.

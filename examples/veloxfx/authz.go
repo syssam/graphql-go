@@ -2,27 +2,30 @@ package veloxfx
 
 import (
 	"context"
-	"errors"
 	"strings"
 
+	"github.com/vektah/gqlparser/v2/ast"
+
 	graphql "github.com/syssam/graphql-go"
+	"github.com/syssam/graphql-go/examples/veloxfx/internal/apperr"
 	"github.com/syssam/graphql-go/examples/veloxfx/internal/viewer"
-	"github.com/syssam/graphql-go/examples/veloxfx/velox"
 	"github.com/syssam/graphql-go/examples/veloxfx/velox/entity"
-	"github.com/syssam/graphql-go/examples/veloxfx/velox/order"
-	"github.com/syssam/graphql-go/examples/veloxfx/velox/query"
-	"github.com/syssam/velox/dialect/sql"
 )
 
-// Two layers, each doing what only it can:
+// Three layers, each doing what only it can:
 //
 //   - Positions (a field anyone may select, but only some may read) are the
 //     engine's: schema/*.go puts @requiresScopes on them, and policy decides
 //     once per operation, before anything resolves. That decision reaches
 //     velox too -- a withheld position is neither selected nor loaded.
-//   - Rows (which orders are yours) are the database's: ownOrders narrows
-//     every order read in SQL, so a customer's page costs the same query
-//     whether the table holds their ten orders or a million of others'.
+//   - Rows (which orders and lines are yours, which stock you may count) are
+//     the database's: order.OwnOrders, order.OwnOrderItems and
+//     stock.HideLevels narrow every read in SQL -- roots, lookups, edges and
+//     eager loads alike -- and each order write carries the same condition,
+//     so a customer's page costs the same query whether the table holds
+//     their ten orders or a million of others'.
+//   - Operations (which mutations you may run) are mutationGate's, decided
+//     from the document before anything runs.
 
 // policy withholds each position the viewer lacks the scope for, the way
 // that position needs: an email is masked -- except a customer's own, which
@@ -74,34 +77,68 @@ func maskEmail(v any) any {
 	return local[:1] + strings.Repeat("*", len(local)-1) + "@" + domain
 }
 
-// errSignIn is what an anonymous order read gets: UNAUTHENTICATED, which a
-// client answers by signing in, where INTERNAL_SERVER_ERROR says the server
-// is broken.
-var errSignIn = (&graphql.Error{Message: "sign in to read orders"}).WithExtension("code", "UNAUTHENTICATED")
+// customerMutations are the mutations a signed-in customer may run, and the
+// order service checks that the order each one touches is theirs. Every
+// other mutation is staff's: one added to the SDL is refused to customers
+// until it is listed here, where the opposite default leaves it open until
+// someone remembers to guard it.
+var customerMutations = map[string]bool{
+	"placeOrder":  true,
+	"payOrder":    true,
+	"cancelOrder": true,
+}
 
-// ownOrders narrows every order read to the viewer's own: the list, a
-// lookup by id, a customer's orders, and every eager load of an order edge
-// all pass through it. Staff read every order; an anonymous caller reads
-// none, failing closed rather than falling through to all of them.
-//
-// It is a filter on the query, not a check on each row after loading, so it
-// is one indexed WHERE whatever the table's size.
-func ownOrders(client *velox.Client) {
-	client.Order.Intercept(velox.TraverseFunc(func(ctx context.Context, q velox.Query) error {
-		v := viewer.From(ctx)
+// mutationGate refuses a mutation the viewer may not run before any of it
+// runs. It is not @requiresScopes because velox generates half the mutations
+// and has no way to put a directive on them; an interceptor sees them all.
+var mutationGate = graphql.OperationInterceptorFunc(func(ctx context.Context, oc *graphql.OperationContext, next graphql.OperationHandler) *graphql.Response {
+	v := viewer.From(ctx)
+	if oc.Operation.Operation != ast.Mutation || v.Staff {
+		return next(ctx, oc)
+	}
+	for _, name := range operationRootFields(oc.Doc, oc.Operation) {
 		switch {
-		case v.Staff:
-			return nil
+		case name == "__typename":
 		case v.Anonymous():
-			return errSignIn
+			return refuse(apperr.New(apperr.Unauthenticated, "sign in to run %s", name))
+		case !customerMutations[name]:
+			return refuse(apperr.New(apperr.Forbidden, "%s is for staff", name))
 		}
-		oq, ok := q.(*query.OrderQuery)
-		if !ok {
-			return errors.New("ownOrders: unexpected query type")
+	}
+	return next(ctx, oc)
+})
+
+// operationRootFields names every field op selects at its root.
+func operationRootFields(doc *ast.QueryDocument, op *ast.OperationDefinition) []string {
+	return rootFields(doc, op.SelectionSet, map[string]bool{})
+}
+
+// rootFields names every field a selection set selects, through
+// fragments. @skip and @include are not evaluated: a field that might run is
+// judged as if it will, so a variable cannot slip one past the gate. seen is
+// shared by the whole walk, so each named fragment is expanded once however
+// many times, and through however many inline fragments, it is spread.
+func rootFields(doc *ast.QueryDocument, set ast.SelectionSet, seen map[string]bool) []string {
+	var names []string
+	for _, sel := range set {
+		switch sel := sel.(type) {
+		case *ast.Field:
+			names = append(names, sel.Name)
+		case *ast.InlineFragment:
+			names = append(names, rootFields(doc, sel.SelectionSet, seen)...)
+		case *ast.FragmentSpread:
+			if seen[sel.Name] {
+				continue
+			}
+			seen[sel.Name] = true
+			if f := doc.Fragments.ForName(sel.Name); f != nil {
+				names = append(names, rootFields(doc, f.SelectionSet, seen)...)
+			}
 		}
-		oq.Where(func(s *sql.Selector) {
-			s.Where(sql.EQ(s.C(order.CustomerColumn), v.CustomerID))
-		})
-		return nil
-	}))
+	}
+	return names
+}
+
+func refuse(err *graphql.Error) *graphql.Response {
+	return &graphql.Response{Errors: []*graphql.Error{err}}
 }
