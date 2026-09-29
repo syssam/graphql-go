@@ -239,9 +239,10 @@ compiled, passed `NewSchema` (the zero value is what `ValidateSchema` builds wit
 failed on the first request to reach it. Now the grouped `NewSchema(opts...)` takes each
 group's `Bindings(r)`, so a group left out fails the build with `type X has no Object
 binding`, and one passed twice fails with `bound more than once`. It also means a large
-service has no 800-field struct to fill: each domain contributes its own groups, which with
-uber/fx is a value group (`examples/veloxfx`). Each Resolver method carries its field's coordinate and SDL description, as a gRPC
-service interface carries the `.proto` comments (`TestGeneratedGroupIsDocumented`).
+service has no 800-field struct to fill: each group is one registration, which with uber/fx
+is a value group (`examples/veloxfx`'s `Resolvers`). Each Resolver method carries its
+field's coordinate and SDL description, as a gRPC service interface carries the `.proto`
+comments (`TestGeneratedGroupIsDocumented`).
 Groups with no Resolver are registered by
 `NewSchema` itself; `ValidateSchema` registers the rest with a nil resolver.
 `TestGeneratedTwoGroupsExecutes` and `TestGenerateGroupFuncRegistersPureGroupItself` both
@@ -279,6 +280,136 @@ first version imported the group package unconditionally and did not compile whe
 was declared elsewhere and no stub took args -- `TestScaffoldKeepsWhatExists` builds that case.
 Four breaks (ignore existing methods, overwrite instead of append, not called, no group check)
 each fail a `TestScaffold*` test.
+
+**Scaffold reads each target directory once per run** (`indexPackage`, kept in a map for the
+run). It used to parse the whole target package once per group, which cost nothing while each
+package held ten resolvers and was quadratic once one package held them all: a 300-entity
+schema scaffolded into one `graph/resolver` took 41 s to generate against 1.6 s spread over
+thirty packages. `TestScaffoldParsesEachFileOnce` counts parses (961 for a 31-file package
+with the cache removed). The index is updated with what each group writes (`pkgIndex.add`),
+because two groups can share one type and the second must see the type the first declared;
+`TestScaffoldTwoGroupsIntoOneType` fails with `Resolver redeclared` without it.
+
+**A file gqlc stops writing is deleted, and only if it is gqlc's.** `pruneGenerated` removes
+every `.go` under `Output` that starts with `generatedHeader` and was not written this run,
+then any directory that left empty. Before it, `examples/veloxfx` carried four
+`graph/model/<group>` packages for types that had since become velox bindings or left the SDL;
+they compiled, so nothing reported them. Four limits are the safety of it: no header, no
+delete (hand-written, scaffolded, another generator's); a directory the go command ignores
+(`testdata`, `vendor`, `.`/`_` names) is not walked, since a golden copy of gqlc output there
+is a fixture; a subdirectory is another gqlc root only with *both* a `schema/` directory and a
+gqlc-headed `schema.go` (`isGqlcRoot`) -- `schema/` alone skipped a group holding a
+hand-written one and left its stale files forever; and `emit.go`'s `header` uses the same
+constant, so the header written and the header recognised cannot drift. What this run wrote is
+recognised **by file identity** (`writtenSet.has`): the same path, or a spelling differing only
+in case that `os.SameFile` says is the same file. Both simpler rules were shipped and both were
+wrong. An exact compare, on Windows and macOS, walked a file written as
+`register/user/generated.go` into an existing `Register/` under the old spelling and deleted
+the run's own output (`TestPruneKeepsWhatThisRunWroteWhateverTheCase`, skipped where case
+matters; its break must restore exactness on *both* sides of the compare, or the first run
+deletes its own uppercase output and the second passes). Folding case instead, argued as "the
+safe direction for a delete", kept on Linux a stale `schema/User.graphql` beside the new
+`user.graphql`, both embedded, `User` defined twice
+(`TestPruneDeletesACaseVariantWhereCaseMatters`, which runs only where case matters -- run it
+in `docker run golang:1.27` over a copy of the tree, since a Windows bind mount keeps NTFS's
+case rules). Only the filesystem knows which, so it is asked. Headers are read sixteen at a time (`generatedAmong`): at 300
+entities in the Handler-per-group layout a regenerate went from 1158 ms to 915 ms median,
+interleaved n=12 -- more than disabling prune saved, because the parallel reads warm the
+resolver files scaffold then parses: making scaffold's own reads parallel as well measured
+969 ms against 995 ms with the samples overlapping, so it was reverted. An entry that vanishes mid-walk is
+skipped (`pruneWalker`, driven directly by `TestPruneWalkerSkipsWhatVanished`, since the
+symlink version cannot run without privileges on Windows). The header line may end in `\r\n`,
+since a checkout with `core.autocrlf` rewrites it and a strict match would silently stop
+pruning. `TestStaleGeneratedFilesAreRemoved` fails with the header check, the nested-root
+skip, `\r\n` acceptance, empty-directory removal, the ignored-directory skip or
+`isGqlcRoot`'s header half broken, and
+`TestGroupDirHoldsEveryGroupPackage` with the header check ignored, since the scaffolded
+resolvers live inside `Output`.
+
+**`Config.GroupDir` moves group packages to `Output/<GroupDir>/<group>`**, so a project can
+lay out generated bindings (`graph/register`), generated models (`graph/model`) and its
+resolvers a directory each while every group stays its own package. The file key, the root's
+import and the scaffold's import all go through `groupRel`/`groupImport`; three call sites
+computing the path separately is how a file and an import of it would disagree. Moving it prunes the old packages; it does not
+rewrite imports in code the author wrote, which the compiler reports instead.
+`TestGroupDirHoldsEveryGroupPackage` fails with any one of the three sites reverted.
+
+**A group's implementation can be scaffolded into the group's own package**
+(`graph/product.Handler`), which is `examples/veloxfx`'s layout: one package per entity,
+generated code and `Handler` together. Measured at 300 entities against the alternatives
+(one `graph/resolver` package, or `graph/resolver/<entity>` beside `graph/register/<entity>`),
+it had the fastest edit loop of the layouts with a service layer -- a single resolver package
+costs about a second per edit, because any service edit recompiles it. `scaffoldGroup` treats
+a target whose directory is the group's (`self`) as that package: signatures unqualified, no
+import of itself, `var _ Resolver`. The implementation then shares a namespace with
+generated.go, so `pkgIndex.generated` records every top-level name a gqlc-headed file
+declares and a clashing target type is refused -- in any package, not only the group's own:
+pointing another group's implementation at `graph/user.Resolver` gave a generated interface
+methods, which does not compile. `self` is decided by `os.SameFile` when both directories
+exist, so `Graph/user` on a case-insensitive filesystem is still the group's own package.
+One type can implement several groups, so `reportStale` is given the union of their methods;
+judged against one group's, it told the author to delete the other group's live methods on
+every run. `TestScaffoldIntoItsOwnGroupPackage` fails with `self` forced false;
+`TestScaffoldRefusesAGeneratedNameInItsOwnPackage` with the check removed, limited to `self`,
+or on `Bindings` with function names left out of `generated`;
+`TestScaffoldOwnPackageInOtherLetterCase` (skipped where case matters) with `samePath` a string
+compare; `TestScaffoldTwoGroupsIntoOneType` with `reportStale` judging one group. `GroupDir`'s
+reserved names are compared without case for the same filesystems.
+
+The other direction is checked too: a hand-written name in a scaffold target's package that
+generated code there also declares (`OrderArgs` in the author's own file) is an error naming
+the file, not a redeclaration inside generated.go
+(`TestScaffoldNamesAHandWrittenClashWithGeneratedCode`). `impl.R` and `./impl/.R` are one
+implementation, and a stale method is reported **once per implementation** after every group
+has written its stubs, naming every group it serves
+(`TestScaffoldTargetSpellingsAreOneImplementation`,
+`TestScaffoldReportsAStaleMethodOncePerType`). `GroupDir` refuses names the go command
+ignores -- pruning skips them, so a package left there would never be deleted -- and a path
+reaching into another gqlc
+run's root, where the two runs would prune each other (`TestGroupDirMayNotReachIntoAnotherRun`).
+It also refuses `internal` (nothing outside Output could import the groups) and any element
+that is not an import-path element; `C:foo` is caught by `VolumeName` on Windows but is an
+ordinary directory on Linux, so only the element check covers both. Scaffold targets are
+merged into one implementation after scaffolding, when every target directory exists and
+`samePath` can ask the filesystem, bucketed by folded path so three hundred targets are not
+stat'd pairwise (`TestScaffoldKeepsTargetsApartWhereCaseMatters` on Linux,
+`TestScaffoldTargetSpellingsAreOneImplementation` everywhere). The stale report's union is
+built from the method names `scaffoldGroup` already rendered, not a second pass. The per-run
+package index (`pkgCache`) is found the same way -- keyed by spelling, `Impl` and `impl` were
+two indexes of one directory and a group reading the stale one declared a type twice
+(`TestScaffoldOnePackageUnderEverySpelling`, case-insensitive filesystems). `indexPackage`
+skips a file no build includes -- a `//go:build` line that needs `ignore` -- whose `package
+main` otherwise named a new stub file (`TestScaffoldIgnoresFilesTheBuildLeavesOut`). **It must
+not ask the host.** Excluding what `go/build`'s `MatchFile` excludes on the machine running
+gqlc hid `handler_linux.go` on Windows, and the Handler declared there was declared again
+(`TestScaffoldCountsFilesBuiltElsewhere`, a `plan9` file).
+
+Prune also steps around another module's tree (a `go.mod` below Output, what `output: .`
+walks into) and anything unreadable -- it is cleanup after the output is written, and failing
+the generate there left scaffolding undone and every later run failing
+(`TestPruneLeavesANestedModuleAlone`, `TestPruneWalkerSkipsWhatVanished`). `GroupDir` elements
+must also be portable: no trailing dot, device name or `~` (Windows would create `reg` for
+`reg.` while the import keeps the dot). The file writes and the header reads share
+`boundedEach`, a pool of `ioParallel` workers pulling indices rather than a goroutine per item
+parked on a semaphore (`TestBoundedEachUsesAFixedPool`).
+
+The SDL copies are found by `filepath.Glob`, not the walk, and the walk starts from Output's
+real path: `WalkDir` follows no link at its root, so merging the two into one walk left a
+linked Output or `schema/` pruned of nothing, which a glob and the `//go:embed` reading the
+copies both follow (`TestPruneFollowsALinkedOutput`, Linux; `TestPruneFindsSchemaCopiesWhateverTheCase`,
+Windows). What prune cannot delete depends on what it is: a stale Go file is dead code that
+still compiles, so it is a note and scaffolding goes on (`TestPruneNotesAGoFileItCannotDelete`,
+a file held open on Windows); a stale SDL copy is embedded and keeps its types served, so it
+fails the generate -- a library caller leaves `Notef` nil and would otherwise never hear of it
+(`TestPruneFailsOnAnSDLCopyItCannotDelete`). Before writing, `foreignDir` refuses a group
+package directory -- or a `GroupDir` element -- that is a file, another module or another gqlc
+run's root, naming it (`TestGroupPackagesStayOutOfForeignDirectories`).
+
+**Two platforms are needed to see all of this.** Five of the tests above run only where case
+matters or only where it does not, and one needs symlink privileges Windows withholds; on
+this machine run the Linux half with
+`docker run --rm -v <repo>:/src:ro golang:1.27` over a `tar` copy of the tree into the
+container (a bind mount keeps NTFS's case rules, so every Linux-only test would skip).
 
 One SDL group stays flat in `Output`; two or more become subpackages, each registered by its own `Bindings`, with models split the same way (`model/<group>/`) so a one-group edit
 does not invalidate every other group's compiled package — except when two groups' input

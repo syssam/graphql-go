@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	goast "go/ast"
+	"go/build/constraint"
 	"go/format"
 	"go/parser"
 	"go/token"
@@ -44,79 +45,184 @@ func (b *builder) scaffold(groups []string) error {
 	if flat {
 		known = map[string]bool{b.pkgName: true}
 	}
-	for _, name := range slices.Sorted(maps.Keys(b.cfg.Scaffold)) {
-		group := name
+	groupOf := func(name string) string {
 		if flat {
-			group = ""
+			return ""
 		}
-		if !known[name] || !b.hasResolver(group) {
+		return name
+	}
+	names := slices.Sorted(maps.Keys(b.cfg.Scaffold))
+	for _, name := range names {
+		if !known[name] || !b.hasResolver(groupOf(name)) {
 			return fmt.Errorf("codegen: scaffold: %q is not a group with a Resolver (groups: %s)",
 				name, strings.Join(slices.Sorted(maps.Keys(known)), ", "))
 		}
-		if err := b.scaffoldGroup(name, group, b.cfg.Scaffold[name]); err != nil {
+	}
+	pkgs := &pkgCache{byFold: map[string][]*pkgIndex{}}
+	methods := make(map[string][]string, len(names))
+	for _, name := range names {
+		ms, err := b.scaffoldGroup(pkgs, name, groupOf(name), b.cfg.Scaffold[name])
+		if err != nil {
 			return fmt.Errorf("codegen: scaffold %s: %w", name, err)
 		}
+		methods[name] = ms
+	}
+
+	// One type can implement several groups, so a method is stale only when
+	// none of them asks for it, and it is reported once per implementation: a
+	// type serving three hundred groups is one note, not three hundred. A
+	// target is one type in one directory however its path is spelled --
+	// "impl", "./impl", and "Impl" where the filesystem ignores case, but not
+	// where it does not -- so this runs after scaffolding, when every target
+	// directory exists and the filesystem can say which spellings are one.
+	// pkgCache already resolved every spelling of a directory to one index, so
+	// an implementation is one index and one type.
+	type key struct {
+		idx *pkgIndex
+		typ string
+	}
+	type impl struct {
+		spelled string
+		groups  []string
+		want    map[string]bool
+	}
+	var order []key
+	impls := map[key]*impl{}
+	for _, name := range names {
+		dir, typ, _ := b.splitTarget(b.cfg.Scaffold[name]) // validated by scaffoldGroup
+		idx, err := pkgs.get(b, dir)
+		if err != nil {
+			return fmt.Errorf("codegen: scaffold %s: %w", name, err)
+		}
+		k := key{idx, typ}
+		t := impls[k]
+		if t == nil {
+			t = &impl{spelled: b.cfg.Scaffold[name], want: map[string]bool{}}
+			impls[k] = t
+			order = append(order, k)
+		}
+		t.groups = append(t.groups, name)
+		for _, m := range methods[name] {
+			t.want[m] = true
+		}
+	}
+	for _, k := range order {
+		t := impls[k]
+		b.reportStale(t.groups, t.spelled, k.idx.methods[k.typ], t.want)
 	}
 	return nil
 }
 
-// scaffoldGroup brings one implementation up to its group's interface.
-// target is "dir.Type", dir relative to Config.Dir.
-func (b *builder) scaffoldGroup(name, group, target string) error {
+// pkgCache holds each target directory's index for one run, found the way
+// implementations are: by folded path, then by samePath. Keyed by spelling,
+// "Impl" and "impl" on a case-insensitive filesystem were two indexes of one
+// directory, and a group reading the stale one declared a type another group
+// had just written, a second time.
+type pkgCache struct{ byFold map[string][]*pkgIndex }
+
+func (c *pkgCache) get(b *builder, dir string) (*pkgIndex, error) {
+	fold := strings.ToLower(dir)
+	for _, idx := range c.byFold[fold] {
+		if samePath(idx.dir, dir) {
+			return idx, nil
+		}
+	}
+	idx, err := b.indexPackage(dir)
+	if err != nil {
+		return nil, err
+	}
+	c.byFold[fold] = append(c.byFold[fold], idx)
+	return idx, nil
+}
+
+// splitTarget reads a Scaffold target, "dir.Type" with dir relative to
+// Config.Dir, into the cleaned absolute directory and the type.
+func (b *builder) splitTarget(target string) (dir, typ string, err error) {
 	i := strings.LastIndex(target, ".")
 	if i <= 0 || i == len(target)-1 {
-		return fmt.Errorf("target %q is not dir.Type", target)
+		return "", "", fmt.Errorf("target %q is not dir.Type", target)
 	}
-	relDir, typ := target[:i], target[i+1:]
-	dir := filepath.Join(b.dir, filepath.FromSlash(relDir))
-	have, declared, pkg, err := existingMethods(dir, typ)
+	return filepath.Join(b.dir, filepath.FromSlash(target[:i])), target[i+1:], nil
+}
+
+// scaffoldGroup brings one implementation up to its group's interface, and
+// returns the interface's method names. target is "dir.Type", dir relative
+// to Config.Dir. pkgs holds each target directory parsed once for the whole
+// run, since every group may share one.
+func (b *builder) scaffoldGroup(pkgs *pkgCache, name, group, target string) ([]string, error) {
+	dir, typ, err := b.splitTarget(target)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	idx, err := pkgs.get(b, dir)
+	if err != nil {
+		return nil, err
+	}
+	have, declared, pkg := idx.methods[typ], idx.declared[typ], idx.pkg
 	if pkg == "" {
 		pkg = identFrom(filepath.Base(dir))
 	}
 
 	groupImport := b.cfg.Package
+	groupDir := filepath.Join(b.dir, filepath.FromSlash(b.cfg.Output))
 	if name != b.pkgName || group != "" {
-		groupImport += "/" + group
+		groupImport = b.groupImport(group)
+		groupDir = filepath.Join(groupDir, filepath.FromSlash(b.groupRel(group)))
 	}
+	// A name the generator declares in the target package -- the group's own,
+	// or any other group's -- is refused rather than redeclared, or given
+	// methods, inside a file marked DO NOT EDIT.
+	if idx.generated[typ] {
+		return nil, fmt.Errorf("target %q: %s is declared by the generated code in that package; name the implementation something else", target, typ)
+	}
+	// In the group's own package the group is not imported -- it is the
+	// package -- and its names are not qualified: importing itself is a cycle.
+	self := samePath(dir, groupDir)
 	alias := identFrom(name) + "gql"
-	sigs := b.resolverSignatures(group, alias+".")
-	b.reportStale(name, target, have, sigs)
+	qual := alias + "."
+	if self {
+		qual = ""
+	}
+	sigs := b.resolverSignatures(group, qual)
+	names := make([]string, len(sigs))
+	for i, m := range sigs {
+		names[i] = m.name
+	}
 	var stubs strings.Builder
 	for _, m := range sigs {
 		if have[m.name] {
 			continue
 		}
-		stubs.WriteString("\n")
-		if m.doc != "" {
-			for _, line := range strings.Split(strings.TrimSpace(m.doc), "\n") {
-				stubs.WriteString("// " + line + "\n")
-			}
+		// Name first, then the description, as the interface has it: the stub
+		// is the author's code from now on, and a doc comment that does not
+		// open with the method's name fails ST1020 there.
+		fmt.Fprintf(&stubs, "\n// %s resolves %s.\n", m.name, m.coord)
+		if doc := strings.TrimSpace(m.doc); doc != "" {
 			stubs.WriteString("//\n")
+			for line := range strings.SplitSeq(doc, "\n") {
+				stubs.WriteString(strings.TrimRight("// "+line, " ") + "\n")
+			}
 		}
-		fmt.Fprintf(&stubs, "// %s resolves %s.\n", m.name, m.coord)
 		fmt.Fprintf(&stubs, "func (r *%s) %s%s {\n\tpanic(%q)\n}\n", typ, m.name, m.signature, "not implemented: "+m.coord)
 	}
 	if stubs.Len() == 0 && declared {
-		return nil
+		return names, nil
 	}
 	body := stubs.String()
 	if !declared {
-		body = fmt.Sprintf("\n// %s implements the %s group's Resolver.\ntype %s struct{}\n\nvar _ %s.Resolver = (*%s)(nil)\n",
-			typ, name, typ, alias, typ) + body
+		body = fmt.Sprintf("\n// %s implements the %s group's Resolver.\ntype %s struct{}\n\nvar _ %sResolver = (*%s)(nil)\n",
+			typ, name, typ, qual, typ) + body
 	}
 
 	file := filepath.Join(dir, identFrom(name)+".resolvers.go")
 	old, err := os.ReadFile(file)
 	if err != nil && !os.IsNotExist(err) {
-		return err
+		return nil, err
 	}
 	src := append(append([]byte{}, old...), body...)
-	imports, err := b.stubImports(body, alias, groupImport, bytes.Contains(src, []byte(alias+".")))
+	imports, err := b.stubImports(body, alias, groupImport, !self && bytes.Contains(src, []byte(alias+".")))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var out []byte
 	if len(old) == 0 {
@@ -127,12 +233,18 @@ func (b *builder) scaffoldGroup(name, group, target string) error {
 		out, err = addImports(src, imports)
 	}
 	if err != nil {
-		return fmt.Errorf("%s: %w", file, err)
+		return nil, fmt.Errorf("%s: %w", file, err)
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return nil, err
 	}
-	return os.WriteFile(file, out, 0o644)
+	if err := os.WriteFile(file, out, 0o644); err != nil {
+		return nil, err
+	}
+	// What was just written is in the package now, for a later group that
+	// shares it.
+	idx.add(pkg, typ, sigs)
+	return names, nil
 }
 
 // reportStale names the exported methods on the implementation that its
@@ -140,11 +252,10 @@ func (b *builder) scaffoldGroup(name, group, target string) error {
 // behind, compiling, because the var _ Resolver assertion checks only what
 // the interface asks for; this run is the one that knows. It is a note, not
 // an error: an exported method can be the author's own, such as String.
-func (b *builder) reportStale(name, target string, have map[string]bool, sigs []resolverSig) {
-	want := make(map[string]bool, len(sigs))
-	for _, m := range sigs {
-		want[m.name] = true
-	}
+// want holds the methods of every Resolver the type implements -- one per
+// group in groups -- since a type serving two groups has both groups' methods
+// and neither group's are stale.
+func (b *builder) reportStale(groups []string, target string, have, want map[string]bool) {
 	var stale []string
 	for m := range have {
 		if !want[m] && goast.IsExported(m) {
@@ -155,51 +266,179 @@ func (b *builder) reportStale(name, target string, have map[string]bool, sigs []
 		return
 	}
 	slices.Sort(stale)
-	b.notef("scaffold %s: %s has methods the %s Resolver does not: %s. If the SDL dropped their fields, delete them.",
-		name, target, name, strings.Join(stale, ", "))
+	which := "the " + groups[0] + " Resolver does not"
+	if len(groups) > 1 {
+		which = "none of the " + strings.Join(groups, ", ") + " Resolvers has"
+	}
+	b.notef("scaffold %s: %s has methods %s: %s. If the SDL dropped their fields, delete them.",
+		strings.Join(groups, ", "), target, which, strings.Join(stale, ", "))
 }
 
-// existingMethods lists the methods declared on typ in dir's non-test files,
-// whether typ itself is declared there, and the package name. A directory
-// that does not exist yet has none of the three.
-func existingMethods(dir, typ string) (map[string]bool, bool, string, error) {
-	have := map[string]bool{}
+// pkgIndex is what scaffold needs of one implementation package: its name,
+// the methods declared on each receiver type, and which types it declares.
+type pkgIndex struct {
+	dir      string
+	pkg      string
+	methods  map[string]map[string]bool
+	declared map[string]bool
+	// generated is every top-level name a gqlc-generated file in the package
+	// declares, which an implementation scaffolded into that package must not
+	// reuse.
+	generated map[string]bool
+}
+
+// add records the Resolver methods of typ as declared, after its stubs and,
+// if it was new, the type itself were written.
+func (p *pkgIndex) add(pkg, typ string, sigs []resolverSig) {
+	if p.pkg == "" {
+		p.pkg = pkg
+	}
+	p.declared[typ] = true
+	if p.methods[typ] == nil {
+		p.methods[typ] = map[string]bool{}
+	}
+	for _, m := range sigs {
+		p.methods[typ][m.name] = true
+	}
+}
+
+// indexPackage parses dir's non-test files once. A directory that does not
+// exist yet is an empty package.
+func (b *builder) indexPackage(dir string) (*pkgIndex, error) {
+	idx := &pkgIndex{dir: dir, methods: map[string]map[string]bool{}, declared: map[string]bool{}, generated: map[string]bool{}}
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
-		return have, false, "", nil
+		return idx, nil
 	}
 	if err != nil {
-		return nil, false, "", err
+		return nil, err
 	}
-	declared := false
-	pkg := ""
 	fset := token.NewFileSet()
+	// authored is each top-level name a file gqlc did not write declares, and
+	// where: in a group's own package the author's code and generated.go share
+	// one namespace, and a helper named like something gqlc later emits is a
+	// redeclaration the compiler reports inside a file marked DO NOT EDIT.
+	//
+	// Read one file after another. Reading them ioParallel at a time, as the
+	// output is written, measured no faster at 300 entities (969 ms against
+	// 995 ms, samples overlapping): prune has just read every one of these
+	// headers in parallel, so the files are warm by the time they are parsed.
+	authored := map[string]string{}
 	for _, e := range entries {
 		n := e.Name()
 		if e.IsDir() || !strings.HasSuffix(n, ".go") || strings.HasSuffix(n, "_test.go") {
 			continue
 		}
-		f, err := parser.ParseFile(fset, filepath.Join(dir, n), nil, parser.SkipObjectResolution)
+		path := filepath.Join(dir, n)
+		// Read once: the header check and the parse share the bytes.
+		src, err := os.ReadFile(path)
 		if err != nil {
-			return nil, false, "", err
+			return nil, err
 		}
-		pkg = f.Name.Name
+		if excludedEverywhere(src) {
+			continue
+		}
+		b.scaffoldParses++
+		f, err := parser.ParseFile(fset, path, src, parser.SkipObjectResolution)
+		if err != nil {
+			return nil, err
+		}
+		gen := isGeneratedSource(src)
+		idx.pkg = f.Name.Name
+		top := func(name string) {
+			switch {
+			case name == "_" || name == "init":
+			case gen:
+				idx.generated[name] = true
+			case authored[name] == "":
+				authored[name] = n
+			}
+		}
 		for _, d := range f.Decls {
 			switch d := d.(type) {
 			case *goast.FuncDecl:
-				if d.Recv != nil && len(d.Recv.List) == 1 && receiverName(d.Recv.List[0].Type) == typ {
-					have[d.Name.Name] = true
+				if d.Recv != nil && len(d.Recv.List) == 1 {
+					recv := receiverName(d.Recv.List[0].Type)
+					if idx.methods[recv] == nil {
+						idx.methods[recv] = map[string]bool{}
+					}
+					idx.methods[recv][d.Name.Name] = true
+				} else {
+					top(d.Name.Name)
 				}
 			case *goast.GenDecl:
 				for _, s := range d.Specs {
-					if ts, ok := s.(*goast.TypeSpec); ok && ts.Name.Name == typ {
-						declared = true
+					switch s := s.(type) {
+					case *goast.TypeSpec:
+						idx.declared[s.Name.Name] = true
+						top(s.Name.Name)
+					case *goast.ValueSpec:
+						for _, id := range s.Names {
+							top(id.Name)
+						}
 					}
 				}
 			}
 		}
 	}
-	return have, declared, pkg, nil
+	for _, name := range slices.Sorted(maps.Keys(authored)) {
+		if idx.generated[name] {
+			return nil, fmt.Errorf("%s declares %s, which the code gqlc generates into that package declares too; rename yours",
+				filepath.Join(dir, authored[name]), name)
+		}
+	}
+	return idx, nil
+}
+
+// excludedEverywhere reports whether src's //go:build line leaves it out of
+// every build: one that needs the "ignore" tag, which no platform sets and
+// which by convention marks a tool file -- a "package main" beside the
+// resolvers that would otherwise name a new stub file's package.
+//
+// A file built only elsewhere is not excluded. handler_linux.go, or a cgo
+// file on a machine without a C compiler, is part of the package; judged by
+// the host running gqlc, a Handler declared only there was declared again,
+// and the build on the platform that has it failed.
+func excludedEverywhere(src []byte) bool {
+	for line := range bytes.SplitSeq(src, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if bytes.HasPrefix(line, []byte("package ")) {
+			return false
+		}
+		if !constraint.IsGoBuild(string(line)) {
+			continue
+		}
+		expr, err := constraint.Parse(string(line))
+		if err != nil {
+			return false // the compiler reports it; scaffold need not guess
+		}
+		mentions := false
+		holds := expr.Eval(func(tag string) bool {
+			if tag == "ignore" {
+				mentions = true
+				return false
+			}
+			return true
+		})
+		return mentions && !holds
+	}
+	return false
+}
+
+// samePath reports whether a and b are one file or directory: by path, or --
+// when both exist -- by identity, so a spelling that differs in letter case
+// on a case-insensitive filesystem, or a path through a link, is still the
+// same one, and on a case-sensitive filesystem two spellings stay two.
+func samePath(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	ai, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	bi, err := os.Stat(b)
+	return err == nil && os.SameFile(ai, bi)
 }
 
 func receiverName(e goast.Expr) string {

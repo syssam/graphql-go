@@ -95,6 +95,11 @@ type fileConfig struct {
 	//	scaffold:
 	//	  product: internal/catalog.ProductResolver
 	Scaffold map[string]string `yaml:"scaffold"`
+	// groupDir puts each group's package under output/<groupDir>/<group>
+	// rather than output/<group>; see codegen.Config.GroupDir.
+	//
+	//	groupDir: register
+	GroupDir string `yaml:"groupDir"`
 }
 
 // groupFunc turns the groups key into a codegen.GroupFunc, or nil when the
@@ -180,6 +185,7 @@ func run(args []string) error {
 		GroupFunc:              fc.groupFunc(),
 		RootFieldGroup:         rootFieldGroup,
 		Scaffold:               fc.Scaffold,
+		GroupDir:               fc.GroupDir,
 		Dir:                    filepath.Dir(*configPath),
 		SchemaGlobs:            fc.Schema,
 		Output:                 fc.Output,
