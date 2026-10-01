@@ -197,6 +197,21 @@ func (fc *FieldContext) Selection() Selection {
 	return Selection{set: fc.field.sub}
 }
 
+// ArgumentMap returns this field's argument values as the request gave them,
+// before binding; see SelectedField.ArgumentMap for what that means for
+// variables, defaults and absent arguments. It is for a FieldInterceptor that
+// enforces a rule over what the client sent, such as refusing a write to a
+// read-only key or a filter on a hidden column: the decoded Args struct cannot
+// say whether a key was omitted or sent as null, and the interceptor cannot
+// name it. vars is OperationFrom(ctx).Variables. A nil or hand-built
+// FieldContext has no arguments and returns nil.
+func (fc *FieldContext) ArgumentMap(vars map[string]any) (map[string]any, error) {
+	if fc == nil || fc.field == nil {
+		return nil, nil
+	}
+	return SelectedField{field: fc.field}.ArgumentMap(vars)
+}
+
 type operationCtxKey struct{}
 type fieldCtxKey struct{}
 

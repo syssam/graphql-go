@@ -118,6 +118,7 @@ graphql: func (f SelectedField) ArgumentMap(vars map[string]any) (map[string]any
 graphql: func (f SelectedField) Selection() Selection
 graphql: func (f SelectedField) Withheld(ctx context.Context) bool
 graphql: func (f SubscriptionInterceptorFunc) InterceptSubscription(ctx context.Context, oc *OperationContext, next SubscriptionHandler) (<-chan *Response, error)
+graphql: func (fc *FieldContext) ArgumentMap(vars map[string]any) (map[string]any, error)
 graphql: func (fc *FieldContext) Path() Path
 graphql: func (fc *FieldContext) Selection() Selection
 graphql: func (o Omittable[T]) IsSet() bool

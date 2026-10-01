@@ -186,3 +186,77 @@ func TestSelectionForTypeSplitsAnAbstractSelection(t *testing.T) {
 		t.Error("ForType on a concrete selection must return it unchanged")
 	}
 }
+
+// A FieldInterceptor that enforces a rule over what the client SENT (a readonly
+// input key, a filter on a hidden column) cannot use the decoded argument struct:
+// it cannot name it, and it cannot tell an omitted key from one sent as null.
+// FieldContext.ArgumentMap is the same answer SelectedField gives, for the field
+// the interceptor was handed.
+func TestFieldContextArgumentMapSeesWhatTheClientSent(t *testing.T) {
+	s, err := NewSchema(SDL(selectionArgsSDL),
+		Object[Root]("Query", Resolve("feed", func(context.Context, Root) (*selFeed, error) { return &selFeed{}, nil })),
+		Object[selFeed]("Feed", ResolveArgs("posts", func(context.Context, *selFeed, selPostsArgs) ([]selPost, error) {
+			return nil, nil
+		})),
+		Object[selPost]("Post",
+			Field("id", func(p *selPost) ID { return ID(p.ID) }),
+			Field("title", func(p *selPost) string { return p.Title }),
+		),
+		Input[selWhere]("PostWhere",
+			InputField("titleContains", func(w *selWhere, v *string) { w.TitleContains = v }),
+		),
+		Args[selPostsArgs](
+			InputField("first", func(a *selPostsArgs, v *int) { a.First = v }),
+			InputField("after", func(a *selPostsArgs, v *string) { a.After = v }),
+			InputField("where", func(a *selPostsArgs, v *selWhere) { a.Where = v }),
+		),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]map[string]any{}
+	e := NewExecutor(s, WithFieldInterceptor(FieldInterceptorFunc(
+		func(ctx context.Context, fc *FieldContext, next FieldHandler) (any, error) {
+			if fc.Field.Name == "posts" {
+				m, err := fc.ArgumentMap(OperationFrom(ctx).Variables)
+				if err != nil {
+					t.Errorf("ArgumentMap: %v", err)
+				}
+				got[fc.Path().String()] = m
+			}
+			return next(ctx)
+		})))
+	resp := e.Execute(context.Background(), &Request{
+		Query: `query Q($w: PostWhere, $cur: String) {
+			feed {
+				a: posts(where: $w, after: $cur) { id }
+				b: posts(after: null) { id }
+				c: posts { id }
+			}
+		}`,
+		Variables: json.RawMessage(`{"w":{"titleContains":"x"}}`),
+	})
+	if len(resp.Errors) > 0 {
+		t.Fatalf("errors: %v", resp.Errors)
+	}
+	want := map[string]map[string]any{
+		// $cur was not supplied: absent, not null.
+		"feed.a": {"first": json.Number("10"), "where": map[string]any{"titleContains": "x"}},
+		// An explicit null is a key the client sent.
+		"feed.b": {"first": json.Number("10"), "after": nil},
+		"feed.c": {"first": json.Number("10")},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ArgumentMap per field = %#v\nwant %#v", got, want)
+	}
+}
+
+func TestFieldContextArgumentMapOnANilOrHandBuiltContext(t *testing.T) {
+	var fc *FieldContext
+	if m, err := fc.ArgumentMap(nil); m != nil || err != nil {
+		t.Fatalf("nil context: %v, %v", m, err)
+	}
+	if m, err := (&FieldContext{}).ArgumentMap(nil); m != nil || err != nil {
+		t.Fatalf("hand-built context: %v, %v", m, err)
+	}
+}
