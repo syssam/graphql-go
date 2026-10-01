@@ -158,6 +158,15 @@ type Config struct {
 	// input-object fields so PATCH-style inputs distinguish absent from
 	// null. Field arguments stay pointers.
 	NullableInputOmittable bool
+	// StructObjectFields makes a field of object, interface or union type that
+	// takes no arguments a struct field, read from the model like a scalar, on
+	// every type whose Go binding is not fully stated (a generated model, or a
+	// hand-written one named only in Models). Without it such a field is a
+	// Resolver method, which suits an ORM entity that loads relations lazily but
+	// leaves a model built by hand nowhere to hold the nested value. A field with
+	// arguments is always a resolver, and a type bound through a manifest or
+	// AutoBind keeps the bindings it states.
+	StructObjectFields bool
 }
 
 // Generate writes bindings, models, argument structs and a Resolver

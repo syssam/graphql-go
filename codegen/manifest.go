@@ -158,14 +158,16 @@ func (m *manifest) binding(typeName, field string) (FieldBinding, bool) {
 	return f, ok
 }
 
-// bound reports whether the type is in the manifest at all, which is what
-// makes an unlisted field a Resolver rather than an inferred binding.
+// bound reports whether the manifest states the type's Go binding, which is what
+// makes an unlisted field a Resolver rather than an inferred binding. An entry
+// that names no Go type (only fields to override) does not: the type's own
+// binding comes from elsewhere and the fields it does not list are inferred.
 func (m *manifest) bound(typeName string) bool {
 	if m == nil {
 		return false
 	}
-	_, ok := m.types[typeName]
-	return ok
+	tb, ok := m.types[typeName]
+	return ok && !tb.Go.zero()
 }
 
 // newManifest validates a manifest against the schema and folds its type

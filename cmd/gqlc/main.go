@@ -35,6 +35,10 @@ type fileConfig struct {
 	Output                 string   `yaml:"output"`
 	Package                string   `yaml:"package"`
 	NullableInputOmittable bool     `yaml:"nullableInputOmittable"`
+	// StructObjectFields reads object-typed fields that take no arguments from
+	// the model's struct, as gqlgen did, instead of a Resolver method. See
+	// codegen.Config.StructObjectFields.
+	StructObjectFields bool `yaml:"structObjectFields"`
 	// zeroForNullInputs lets a Go field that cannot be null back a nullable
 	// input position; read the graphql.ZeroForNull godoc before setting it.
 	ZeroForNullInputs bool `yaml:"zeroForNullInputs"`
@@ -186,6 +190,7 @@ func run(args []string) error {
 		Package:                fc.Package,
 		Models:                 fc.Models,
 		NullableInputOmittable: fc.NullableInputOmittable,
+		StructObjectFields:     fc.StructObjectFields,
 		ZeroForNullInputs:      fc.ZeroForNullInputs,
 		InlineAccessors:        fc.InlineAccessors,
 		Inline:                 fc.Inline,

@@ -396,10 +396,13 @@ func (b *builder) fieldKind(typeName string, fd *ast.FieldDefinition) fieldKind 
 	// at all: its unlisted fields are resolvers, so an incomplete manifest
 	// surfaces as a missing resolver method rather than as generated access
 	// to a struct field that may not exist.
-	if b.manifest.bound(typeName) {
-		if fb, ok := b.manifest.binding(typeName, fd.Name); ok && fb.pure() {
+	if fb, ok := b.manifest.binding(typeName, fd.Name); ok {
+		if fb.pure() {
 			return fieldPure
 		}
+		return fieldResolve
+	}
+	if b.manifest.bound(typeName) {
 		return fieldResolve
 	}
 	if len(fd.Arguments) > 0 {
@@ -411,6 +414,12 @@ func (b *builder) fieldKind(typeName string, fd *ast.FieldDefinition) fieldKind 
 	}
 	if named.Kind == ast.Scalar || named.Kind == ast.Enum {
 		return fieldPure
+	}
+	if b.cfg.StructObjectFields {
+		switch named.Kind {
+		case ast.Object, ast.Interface, ast.Union:
+			return fieldPure
+		}
 	}
 	return fieldResolve
 }
