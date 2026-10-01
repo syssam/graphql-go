@@ -542,8 +542,10 @@ func (b *builder) modelQualifier(pkg string) string {
 func (b *builder) goType(t *ast.Type, selfPkg string, omitNull bool) string {
 	if t.Elem != nil {
 		inner := b.goType(t.Elem, selfPkg, omitNull)
-		if t.NonNull {
-			return "[]" + inner
+		if b.cfg.InputListPointers && t.Elem.Elem == nil && !strings.HasPrefix(inner, "*") {
+			if def := b.schema.Types[t.Elem.NamedType]; def != nil && def.Kind == ast.InputObject {
+				inner = "*" + inner
+			}
 		}
 		return "[]" + inner
 	}

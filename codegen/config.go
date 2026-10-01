@@ -167,6 +167,11 @@ type Config struct {
 	// arguments is always a resolver, and a type bound through a manifest or
 	// AutoBind keeps the bindings it states.
 	StructObjectFields bool
+	// InputListPointers spells a list of input objects []*T instead of []T, as
+	// gqlgen did. Callers written against that shape test elements for nil and
+	// dereference them; a value slice breaks every one. Scalar and enum lists are
+	// unchanged.
+	InputListPointers bool
 }
 
 // Generate writes bindings, models, argument structs and a Resolver

@@ -39,6 +39,9 @@ type fileConfig struct {
 	// the model's struct, as gqlgen did, instead of a Resolver method. See
 	// codegen.Config.StructObjectFields.
 	StructObjectFields bool `yaml:"structObjectFields"`
+	// InputListPointers spells a list of input objects []*T, as gqlgen did. See
+	// codegen.Config.InputListPointers.
+	InputListPointers bool `yaml:"inputListPointers"`
 	// zeroForNullInputs lets a Go field that cannot be null back a nullable
 	// input position; read the graphql.ZeroForNull godoc before setting it.
 	ZeroForNullInputs bool `yaml:"zeroForNullInputs"`
@@ -191,6 +194,7 @@ func run(args []string) error {
 		Models:                 fc.Models,
 		NullableInputOmittable: fc.NullableInputOmittable,
 		StructObjectFields:     fc.StructObjectFields,
+		InputListPointers:      fc.InputListPointers,
 		ZeroForNullInputs:      fc.ZeroForNullInputs,
 		InlineAccessors:        fc.InlineAccessors,
 		Inline:                 fc.Inline,

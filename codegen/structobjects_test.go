@@ -80,3 +80,31 @@ func TestManifestEntryWithoutAGoTypeOnlyOverridesItsFields(t *testing.T) {
 
 // norm collapses runs of spaces so a test need not match gofmt's alignment.
 func norm(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+const inputListSDL = `
+input Line { n: Int! }
+input Order { lines: [Line!]! maybe: [Line!] tags: [String!] }
+type Query { echo(lines: [Line!]): Int }
+`
+
+// gqlgen spelled a list of input objects []*Input; callers written against it
+// test elements for nil and dereference them. InputListPointers keeps that shape.
+func TestInputListPointersKeepsPointerElements(t *testing.T) {
+	dir := generate(t, inputListSDL, Config{InputListPointers: true})
+	models := norm(generated(t, dir, "model/models.go"))
+	for _, want := range []string{"Lines []*Line", "Maybe []*Line", "Tags []string"} {
+		if !strings.Contains(models, want) {
+			t.Errorf("model missing %q:\n%s", want, models)
+		}
+	}
+	if args := norm(generated(t, dir, "generated.go")); !strings.Contains(args, "Lines []*model.Line") {
+		t.Errorf("a field argument list should use pointers too:\n%s", args)
+	}
+}
+
+func TestInputListsAreValuesByDefault(t *testing.T) {
+	dir := generate(t, inputListSDL, Config{})
+	if models := norm(generated(t, dir, "model/models.go")); !strings.Contains(models, "Lines []Line") {
+		t.Errorf("default should keep value elements:\n%s", models)
+	}
+}
