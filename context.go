@@ -174,6 +174,14 @@ func (oc *OperationContext) SetExtension(key string, value any) {
 // FieldArgs accessor takes no context, so nothing is attached for one, and a
 // FieldInterceptor must use the FieldContext it is handed as a parameter
 // rather than FieldFrom.
+//
+// Args is the decoded argument struct, a pointer to the type the field was
+// bound with. A FieldInterceptor may replace it with a pointer to a value of
+// that same type, and the field then runs with the replacement; that is how an
+// interceptor supplies an argument the client did not send, such as a default
+// page size. Copy before changing: literal arguments are decoded once per plan
+// and shared by every request with the same query text, so writing through the
+// original would alter all of them.
 type FieldContext struct {
 	Field  *ast.FieldDefinition
 	Object *ast.Definition

@@ -196,7 +196,15 @@ func (e *Executor) interceptedExec(pf *planField) fieldExec {
 	fd := pf.def
 	inner := fd.anyResolve
 	chain := func(ctx context.Context, parent, args any, fc *FieldContext) (any, error) {
-		handler := FieldHandler(func(ctx context.Context) (any, error) { return inner(ctx, parent, args) })
+		// The field runs with fc.Args as the interceptors left it, so one may
+		// supply arguments the client did not send. fc is built per field
+		// execution, so a replacement belongs to this request alone.
+		handler := FieldHandler(func(ctx context.Context) (any, error) {
+			if fc != nil && fc.Args != nil {
+				args = fc.Args
+			}
+			return inner(ctx, parent, args)
+		})
 		for i := len(e.fieldInterceptors) - 1; i >= 0; i-- {
 			next, fi := handler, e.fieldInterceptors[i]
 			handler = func(ctx context.Context) (any, error) { return fi.InterceptField(ctx, fc, next) }

@@ -260,3 +260,66 @@ func TestFieldContextArgumentMapOnANilOrHandBuiltContext(t *testing.T) {
 		t.Fatalf("hand-built context: %v, %v", m, err)
 	}
 }
+
+// A FieldInterceptor may supply arguments the client did not send (a default
+// page size) by replacing fc.Args with a value of the same type. The field then
+// runs with it. The original is shared: literal arguments are decoded once per
+// plan and every request with the same text reuses them, so the test proves the
+// replacement is per request and the shared value is never touched.
+func TestFieldInterceptorMayReplaceArgsPerRequest(t *testing.T) {
+	var seenFirst []int
+	s, err := NewSchema(SDL(selectionArgsSDL),
+		Object[Root]("Query", Resolve("feed", func(context.Context, Root) (*selFeed, error) { return &selFeed{}, nil })),
+		Object[selFeed]("Feed", ResolveArgs("posts", func(_ context.Context, _ *selFeed, a selPostsArgs) ([]selPost, error) {
+			if a.First != nil {
+				seenFirst = append(seenFirst, *a.First)
+			} else {
+				seenFirst = append(seenFirst, -1)
+			}
+			return nil, nil
+		})),
+		Object[selPost]("Post",
+			Field("id", func(p *selPost) ID { return ID(p.ID) }),
+			Field("title", func(p *selPost) string { return p.Title }),
+		),
+		Input[selWhere]("PostWhere",
+			InputField("titleContains", func(w *selWhere, v *string) { w.TitleContains = v }),
+		),
+		Args[selPostsArgs](
+			InputField("first", func(a *selPostsArgs, v *int) { a.First = v }),
+			InputField("after", func(a *selPostsArgs, v *string) { a.After = v }),
+			InputField("where", func(a *selPostsArgs, v *selWhere) { a.Where = v }),
+		),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	override := false
+	e := NewExecutor(s, WithFieldInterceptor(FieldInterceptorFunc(
+		func(ctx context.Context, fc *FieldContext, next FieldHandler) (any, error) {
+			if override && fc.Field.Name == "posts" {
+				orig := fc.Args.(*selPostsArgs)
+				cp := *orig // never mutate the shared original
+				n := 99
+				cp.First = &n
+				fc.Args = &cp
+			}
+			return next(ctx)
+		})))
+	run := func(q string) {
+		t.Helper()
+		if resp := e.Execute(context.Background(), &Request{Query: q}); len(resp.Errors) > 0 {
+			t.Fatalf("errors: %v", resp.Errors)
+		}
+	}
+	// `first: 3` is literal, so its args struct lives in the cached plan.
+	const q = `{ feed { posts(first: 3) { id } } }`
+	run(q)
+	override = true
+	run(q)
+	override = false
+	run(q)
+	if want := []int{3, 99, 3}; !reflect.DeepEqual(seenFirst, want) {
+		t.Fatalf("resolver saw first = %v, want %v: the replacement must apply to one request and leave the shared original alone", seenFirst, want)
+	}
+}
