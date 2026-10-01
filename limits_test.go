@@ -284,3 +284,21 @@ func BenchmarkQueryCostReported(b *testing.B) {
 func BenchmarkQueryCostConnections(b *testing.B) {
 	benchCost(b, &QueryCost{DefaultListSize: 10, Report: true, Connections: true})
 }
+
+// A request that sends both first and last is priced at the larger page, in
+// either argument order. Taking whichever the client named first lets a small
+// first hide a large last from the ceiling.
+func TestQueryCostConnectionsPricesTheLargerOfFirstAndLast(t *testing.T) {
+	s := connCostSchema(t)
+	cfg := QueryCost{DefaultListSize: 10, Connections: true}
+	want := connCost(t, s, cfg, `{ conn(first: 200) { edges { node { id } } } }`)
+	for _, q := range []string{
+		`{ conn(first: 2, last: 200) { edges { node { id } } } }`,
+		`{ conn(last: 200, first: 2) { edges { node { id } } } }`,
+		`{ conn(first: 200, last: 2) { edges { node { id } } } }`,
+	} {
+		if got := connCost(t, s, cfg, q); got != want {
+			t.Fatalf("%s cost %d, want %d (the larger page)", q, got, want)
+		}
+	}
+}

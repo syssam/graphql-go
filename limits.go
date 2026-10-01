@@ -10,8 +10,8 @@ import (
 // compiled plan and variable values, before resolvers run.
 //
 // A field costs FieldWeight[Type.field] (default 1) plus the cost of its
-// sub-selection multiplied by the list size. List size is the first
-// matching ListArguments value (default "first", "last"), or
+// sub-selection multiplied by the list size. List size is the largest
+// positive ListArguments value sent (default "first", "last"), or
 // DefaultListSize when the field returns a list and neither argument is
 // present. __typename is free, and so are __schema and __type with all they
 // select: see WithMaxDepth.
@@ -404,13 +404,16 @@ func listMultiplier(f *planField, w costWalk) int {
 	return w.cfg.defaultList()
 }
 
-// pageArg returns the first positive pagination argument on f, reporting
+// pageArg returns the largest positive pagination argument on f, reporting
 // whether there was one. Absent is not zero: no first at all asks for every
-// element, while first: 0 asks for none.
+// element, while first: 0 asks for none. The largest wins because a request
+// that sends both first and last must be priced at the bigger page, never the
+// smaller one the client happened to name first.
 func pageArg(f *planField, w costWalk) (int, bool) {
 	if f.ast == nil {
 		return 0, false
 	}
+	best, found := 0, false
 	for _, name := range w.cfg.listArgs() {
 		a := f.ast.Arguments.ForName(name)
 		if a == nil {
@@ -420,11 +423,11 @@ func pageArg(f *planField, w costWalk) (int, bool) {
 		if err != nil {
 			continue
 		}
-		if n, ok := asCostInt(raw); ok && n > 0 {
-			return n, true
+		if n, ok := asCostInt(raw); ok && n > 0 && (!found || n > best) {
+			best, found = n, true
 		}
 	}
-	return 0, false
+	return best, found
 }
 
 func asCostInt(v any) (int, bool) {
