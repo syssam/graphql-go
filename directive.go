@@ -35,6 +35,23 @@ func Directive(name string, fn func(next FieldFunc) FieldFunc) SchemaOption {
 	})
 }
 
+// SubscriptionRootDirective declares that the named directives, bound with Directive or
+// DirectiveArgs for ordinary fields, are enforced on subscription root fields by a
+// SubscriptionInterceptor the application installs.
+//
+// A bound directive cannot wrap a subscription root field (the field is served by its stream,
+// not its resolver), so a schema that carries one there is refused rather than built with a
+// check that never runs. An application that enforces the directive itself when a subscription
+// opens says so here, and the refusal is lifted for exactly those names. Naming a directive
+// that is not bound is an error: a typo must not switch the refusal off for nothing.
+func SubscriptionRootDirective(names ...string) SchemaOption {
+	return schemaOptionFunc(func(b *schemaBuilder) {
+		for _, n := range names {
+			b.subDirectives[n] = true
+		}
+	})
+}
+
 // DirectiveArgs binds a schema directive whose arguments decode into A.
 // Register Args[A] when A is not struct{}. Locations FIELD_DEFINITION and
 // OBJECT are applied; an OBJECT directive wraps every field of that type.
@@ -141,6 +158,11 @@ func (b *schemaBuilder) applyDirectives(s *Schema) {
 				db.name, locationList(def.Locations))
 		}
 	}
+	for name := range b.subDirectives {
+		if b.directives[name] == nil {
+			b.errorf("SubscriptionRootDirective(%q): no directive of that name is bound", name)
+		}
+	}
 	for _, obj := range s.objects {
 		subRoot := b.ast.Subscription != nil && obj.name == b.ast.Subscription.Name
 		for _, fd := range obj.fields {
@@ -164,9 +186,9 @@ func (b *schemaBuilder) applyDirectives(s *Schema) {
 // executor outright. Reporting it beats a check that quietly never runs.
 func (b *schemaBuilder) rejectDirectivesOnSubscriptionRoot(obj *objectType, fd *fieldDef) {
 	for _, d := range append(append([]*ast.Directive(nil), fd.def.Directives...), obj.def.Directives...) {
-		if b.directives[d.Name] == nil {
+		if b.directives[d.Name] == nil || b.subDirectives[d.Name] {
 			continue
 		}
-		b.errorf("field %s: @%s is bound, but a directive on a subscription root field never runs; use a SubscriptionInterceptor", coordinate(obj.name, fd.name), d.Name)
+		b.errorf("field %s: @%s is bound, but a directive on a subscription root field never runs; use a SubscriptionInterceptor (and declare it with SubscriptionRootDirective)", coordinate(obj.name, fd.name), d.Name)
 	}
 }

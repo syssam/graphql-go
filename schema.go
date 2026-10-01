@@ -131,13 +131,16 @@ type objectType struct {
 // schemaBuilder accumulates bindings while options are applied and resolves
 // them once every registration is known, so option order never matters.
 type schemaBuilder struct {
-	ast           *ast.Schema
-	reg           *registry
-	objects       map[string]*objectBinding
-	objectOrder   []string
-	inputs        []*inputBinding
-	abstracts     map[string]*abstractBinding
-	directives    map[string]*directiveBinding
+	ast         *ast.Schema
+	reg         *registry
+	objects     map[string]*objectBinding
+	objectOrder []string
+	inputs      []*inputBinding
+	abstracts   map[string]*abstractBinding
+	directives  map[string]*directiveBinding
+	// subDirectives names directives the application enforces itself when a subscription
+	// opens; see SubscriptionRootDirective.
+	subDirectives map[string]bool
 	introspection bool
 	authCoverage  bool
 	authCapped    map[string]bool
@@ -188,6 +191,7 @@ func NewSchema(src Source, opts ...SchemaOption) (*Schema, error) {
 		objects:       make(map[string]*objectBinding),
 		abstracts:     make(map[string]*abstractBinding),
 		directives:    make(map[string]*directiveBinding),
+		subDirectives: make(map[string]bool),
 		introspection: true,
 		// Seeded before options apply, so the Apollo spelling is always present
 		// and a caller redeclaring it collides rather than silently winning.
