@@ -1,6 +1,9 @@
 package codegen
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -119,5 +122,56 @@ func TestInputListsAreValuesByDefault(t *testing.T) {
 	dir := generate(t, inputListSDL, Config{})
 	if models := norm(generated(t, dir, "model/models.go")); !strings.Contains(models, "Lines []Line") {
 		t.Errorf("default should keep value elements:\n%s", models)
+	}
+}
+
+// writeGroups writes one SDL file per group and generates into graph/.
+func writeGroups(t *testing.T, cfg Config, files map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for name, sdl := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(sdl), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg.Dir, cfg.SchemaGlobs, cfg.Output, cfg.Package = dir, []string{"*.graphql"}, "graph", "hello/graph"
+	if err := Generate(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// generated models hold only leaf fields by default, so per-group model packages
+// cannot import each other. StructObjectFields puts object fields in the struct, which
+// CAN make two groups' models refer to each other; Go forbids the import cycle, so the
+// models must then fall back to one shared package, exactly as cyclic inputs do.
+func TestStructObjectFieldsCycleFallsBackToOnePackage(t *testing.T) {
+	dir := writeGroups(t, Config{StructObjectFields: true}, map[string]string{
+		"alpha.graphql": "type Alpha { id: ID! beta: Beta }\ntype Query { alpha: Alpha }\n",
+		"beta.graphql":  "type Beta { id: ID! alpha: Alpha }\nextend type Query { beta: Beta }\n",
+	})
+	if _, err := os.Stat(filepath.Join(dir, "graph", "model", "models.go")); err != nil {
+		t.Fatalf("objects that refer to each other across groups must share one model package: %v", err)
+	}
+	for _, g := range []string{"alpha", "beta"} {
+		if _, err := os.Stat(filepath.Join(dir, "graph", "model", g)); err == nil {
+			t.Errorf("model/%s was emitted despite the object cycle", g)
+		}
+	}
+}
+
+// No cycle, no fallback: the per-group split is what makes an edit recompile one group.
+func TestStructObjectFieldsKeepsTheSplitWhenThereIsNoCycle(t *testing.T) {
+	dir := writeGroups(t, Config{StructObjectFields: true}, map[string]string{
+		"alpha.graphql": "type Alpha { id: ID! beta: Beta }\ntype Query { alpha: Alpha }\n",
+		"beta.graphql":  "type Beta { id: ID! }\nextend type Query { beta: Beta }\n",
+	})
+	for _, g := range []string{"alpha", "beta"} {
+		if _, err := os.Stat(filepath.Join(dir, "graph", "model", g, "models.go")); err != nil {
+			t.Errorf("an acyclic schema must keep model/%s: %v", g, err)
+		}
+	}
+	if m := norm(generated(t, dir, "model/alpha/models.go")); !strings.Contains(m, "Beta *beta.Beta") {
+		t.Errorf("alpha's model should hold a *beta.Beta:\n%s", m)
 	}
 }

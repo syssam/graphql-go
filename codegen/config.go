@@ -165,7 +165,9 @@ type Config struct {
 	// Resolver method, which suits an ORM entity that loads relations lazily but
 	// leaves a model built by hand nowhere to hold the nested value. A field with
 	// arguments is always a resolver, and a type bound through a manifest or
-	// AutoBind keeps the bindings it states.
+	// AutoBind keeps the bindings it states. Models may then refer to each
+	// other across groups; a cycle among them falls back to one shared model
+	// package, as cyclic inputs do.
 	StructObjectFields bool
 	// InputListPointers spells a list of input objects []*T instead of []T, as
 	// gqlgen did. Callers written against that shape test elements for nil and
