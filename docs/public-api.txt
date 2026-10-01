@@ -190,6 +190,7 @@ graphql: func Inline() FieldSchedule
 graphql: func InputField[T, V any](name string, set func(*T, V)) InputFieldOption
 graphql: func Input[T any](name string, fields ...InputFieldOption) SchemaOption
 graphql: func Interface[T any](name string, opts ...AbstractOption) SchemaOption
+graphql: func IntrospectDeprecatedInputValues() SchemaOption
 graphql: func MarkerDirective(name, scope string) SchemaOption
 graphql: func Mutation(fields ...FieldOption) SchemaOption
 graphql: func NewExecutor(s *Schema, opts ...ExecutorOption) *Executor

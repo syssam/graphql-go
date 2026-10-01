@@ -168,6 +168,34 @@ var introDirectiveLocations = func() map[ast.DirectiveLocation]string {
 	return m
 }()
 
+// IntrospectDeprecatedInputValues makes introspection list deprecated input fields and
+// deprecated arguments when the client does not say whether it wants them.
+//
+// The specification hides them unless the query passes includeDeprecated: true, and graphql-js's
+// getIntrospectionQuery passes nothing for inputFields and args. gqlgen returned them whatever
+// was asked, so a client generated against it (a codegen that introspects the live server) lists
+// every deprecated input field it still sends; against a server that follows the specification
+// those fields disappear from the generated types without an error. This option changes the
+// default the introspection schema declares, not the rule: a client that passes
+// includeDeprecated: false still gets them hidden.
+func IntrospectDeprecatedInputValues() SchemaOption {
+	return schemaOptionFunc(func(b *schemaBuilder) {
+		for _, site := range [][2]string{{"__Type", "inputFields"}, {"__Field", "args"}, {"__Directive", "args"}} {
+			def := b.ast.Types[site[0]]
+			if def == nil {
+				continue
+			}
+			f := def.Fields.ForName(site[1])
+			if f == nil {
+				continue
+			}
+			if a := f.Arguments.ForName("includeDeprecated"); a != nil {
+				a.DefaultValue = &ast.Value{Raw: "true", Kind: ast.BooleanValue}
+			}
+		}
+	})
+}
+
 // patchPrelude brings gqlparser's introspection schema up to the current
 // specification. The prelude predates directive deprecation, so the fields
 // below are absent from every schema it loads; a client that asks for them
