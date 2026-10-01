@@ -263,7 +263,59 @@ func newBuilder(dir string, cfg Config) (*builder, error) {
 	b.setModels(models)
 	b.manifest = man
 	b.setExtraEnums(explicit)
+	if err := b.checkTagDirectives(); err != nil {
+		return nil, fmt.Errorf("codegen: %w", err)
+	}
 	return b, nil
+}
+
+// checkTagDirectives refuses a tag directive the struct-tag syntax cannot carry. The
+// generated field would otherwise be a tag that does not parse (reflect drops the whole
+// tag silently) or one that means something else, so the run fails instead.
+func (b *builder) checkTagDirectives() error {
+	if b.cfg.TagDirective.IsZero() {
+		return nil
+	}
+	for _, name := range b.typeNames(ast.InputObject) {
+		for _, fd := range b.schema.Types[name].Fields {
+			if _, err := b.tagsFor(fd); err != nil {
+				return fmt.Errorf("%s.%s: %w", name, fd.Name, err)
+			}
+		}
+	}
+	return nil
+}
+
+// tagsFor renders the extra struct tags a field's Config.TagDirective directives ask for,
+// each as ` key:"value"`, in directive order. It is empty when no directive is configured
+// or none is on the field.
+func (b *builder) tagsFor(fd *ast.FieldDefinition) (string, error) {
+	td := b.cfg.TagDirective
+	if td.IsZero() || fd == nil {
+		return "", nil
+	}
+	var out strings.Builder
+	seen := map[string]bool{}
+	for _, d := range fd.Directives.ForNames(td.Name) {
+		k, v := d.Arguments.ForName(td.KeyArg), d.Arguments.ForName(td.ValueArg)
+		if k == nil || v == nil {
+			return "", fmt.Errorf("@%s needs both %q and %q", td.Name, td.KeyArg, td.ValueArg)
+		}
+		key, val := k.Value.Raw, v.Value.Raw
+		switch {
+		case key == "" || strings.ContainsAny(key, " \t\n\r\"`:"):
+			return "", fmt.Errorf("@%s key %q cannot be a struct-tag key", td.Name, key)
+		case key == "graphql":
+			return "", fmt.Errorf("@%s key %q is reserved for the field's GraphQL name", td.Name, key)
+		case strings.ContainsAny(val, "\"`\n\r\\"):
+			return "", fmt.Errorf("@%s value for %q contains a quote, backtick, backslash or newline, which a struct tag cannot carry", td.Name, key)
+		case seen[key]:
+			return "", fmt.Errorf("@%s repeats key %q", td.Name, key)
+		}
+		seen[key] = true
+		out.WriteString(" " + key + ":\"" + val + "\"")
+	}
+	return out.String(), nil
 }
 
 // setExtraEnums renders Manifest.ExtraEnums into the references generated code

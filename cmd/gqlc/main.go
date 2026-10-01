@@ -74,6 +74,18 @@ type fileConfig struct {
 		Name             string `yaml:"name"`
 		ForceResolverArg string `yaml:"forceResolverArg"`
 	} `yaml:"fieldDirective"`
+	// tagDirective adds a struct tag to an input-object field, for the validation tags
+	// gqlgen's @goTag(key: "valid", value: "required") carried:
+	//
+	//	tagDirective:
+	//	  name: goTag
+	//	  keyArg: key
+	//	  valueArg: value
+	TagDirective struct {
+		Name     string `yaml:"name"`
+		KeyArg   string `yaml:"keyArg"`
+		ValueArg string `yaml:"valueArg"`
+	} `yaml:"tagDirective"`
 	// autoBind binds SDL types to existing Go types found in these package
 	// patterns, instead of generating models for them:
 	//
@@ -201,6 +213,7 @@ func run(args []string) error {
 		Federation:             fc.Federation,
 		ModelDirective:         codegen.ModelDirective{Name: fc.ModelDirective.Name, Arg: fc.ModelDirective.Arg},
 		FieldDirective:         codegen.FieldDirective{Name: fc.FieldDirective.Name, ForceResolverArg: fc.FieldDirective.ForceResolverArg},
+		TagDirective:           codegen.TagDirective{Name: fc.TagDirective.Name, KeyArg: fc.TagDirective.KeyArg, ValueArg: fc.TagDirective.ValueArg},
 		Notef: func(format string, args ...any) {
 			fmt.Fprintf(os.Stderr, "gqlc: "+format+"\n", args...)
 		},

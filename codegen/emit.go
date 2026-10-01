@@ -178,9 +178,11 @@ func (b *builder) emitModel(group string) string {
 			// The tag pins the SDL name. Deriving it back from the Go name is
 			// lossy: an SDL field named ownerID becomes OwnerID, which derives
 			// to ownerId, and the binding then fails to match the schema.
+			// Validated when the builder was made, so the error cannot occur here.
+			extra, _ := b.tagsFor(fd)
 			body.WriteString("\t" + goIdent(fd.Name) + " " +
 				b.goType(fd.Type, selfPkg, b.cfg.NullableInputOmittable) +
-				" `graphql:\"" + fd.Name + "\"`\n")
+				" `graphql:\"" + fd.Name + "\"" + extra + "`\n")
 		}
 		body.WriteString("}\n\n")
 	}

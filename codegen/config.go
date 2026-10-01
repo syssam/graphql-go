@@ -94,6 +94,23 @@ type Config struct {
 	// column and that the author wants computed anyway; do not quote it as a
 	// migration win.
 	FieldDirective FieldDirective
+	// TagDirective names an SDL directive that adds a struct tag to an
+	// input-object field, with the arguments holding the tag's key and value.
+	// Empty means none.
+	//
+	// gqlgen spells it @goTag(key: "valid", value: "required,max=200"), and a
+	// service that validates the decoded input with struct tags -- the
+	// go-validator `valid` tag, go-playground's `validate` -- reads exactly
+	// what the SDL says. Without this option every such tag is dropped and the
+	// validator runs over a struct with nothing to validate; nothing fails,
+	// because a missing tag is not an error. One real schema carries 5 899.
+	//
+	// Tags are written after the graphql tag, in the order the directives
+	// appear. Only input-object fields take them: an output field is read, not
+	// validated. A key or value the struct-tag syntax cannot carry, a key that
+	// repeats on one field, and the reserved key "graphql" are errors rather
+	// than silently-wrong tags.
+	TagDirective TagDirective
 	// Manifest binds GraphQL types and fields explicitly instead of letting
 	// the generator infer them. It loads no Go type information; see the
 	// Manifest documentation.
@@ -281,6 +298,20 @@ type FieldDirective struct {
 
 // IsZero reports that no directive was named.
 func (d FieldDirective) IsZero() bool { return d.Name == "" || d.ForceResolverArg == "" }
+
+// TagDirective names an SDL directive that adds a struct tag to an
+// input-object field.
+type TagDirective struct {
+	// Name is the directive, without the @.
+	Name string
+	// KeyArg is the string argument holding the tag key.
+	KeyArg string
+	// ValueArg is the string argument holding the tag value.
+	ValueArg string
+}
+
+// IsZero reports that no directive was named.
+func (d TagDirective) IsZero() bool { return d.Name == "" || d.KeyArg == "" || d.ValueArg == "" }
 
 // pruneSchemaCopies deletes SDL copies this run did not write. The generated
 // package embeds every file matching schema/*.graphql, so a copy whose
