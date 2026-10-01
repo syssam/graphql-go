@@ -111,6 +111,19 @@ type Config struct {
 	// repeats on one field, and the reserved key "graphql" are errors rather
 	// than silently-wrong tags.
 	TagDirective TagDirective
+	// FieldNames maps an SDL field or argument name to the Go identifier it gets, instead of the
+	// name the generator derives. Empty means the derived name for every field.
+	//
+	// The derived name for a leading underscore keeps an X (`_lastUpdatedAt` is
+	// XLastUpdatedAt): an underscore has no upper case, so dropping it would leave the field
+	// unexported, and the X keeps `_x` and `x` on one type from colliding. A schema that carries
+	// exactly one such name, with no sibling it can collide with, may prefer the plain name
+	// gqlgen gave it and its callers already use: `_lastUpdatedAt: LastUpdatedAt`.
+	//
+	// An entry applies wherever the SDL name appears, as a field, an input field or an argument.
+	// The value must be an exported Go identifier, and two names that end up identical on one
+	// type are refused with their SDL coordinates, as any other collision is.
+	FieldNames map[string]string
 	// JSONTags writes a json struct tag on every generated model field: the field's GraphQL
 	// name, with ",omitempty" when the field is nullable -- what gqlgen wrote.
 	//

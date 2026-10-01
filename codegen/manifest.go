@@ -129,14 +129,6 @@ func (f FieldBinding) pure() bool {
 	return false
 }
 
-// goName resolves the Go identifier for a field binding.
-func (f FieldBinding) goName(sdlName string) string {
-	if f.GoName != "" {
-		return f.GoName
-	}
-	return goIdent(sdlName)
-}
-
 // manifest is the builder's normalized view: lookups by name, with the type
 // bindings already folded into Config.Models so that model references,
 // imports and the mapped check all keep working unchanged.

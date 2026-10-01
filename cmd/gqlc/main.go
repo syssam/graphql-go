@@ -89,6 +89,12 @@ type fileConfig struct {
 	// jsonTags writes json:"name" (",omitempty" when nullable) on every generated model field,
 	// as gqlgen did, for code that reads the tag by reflection.
 	JSONTags bool `yaml:"jsonTags"`
+	// fieldNames overrides the Go name derived for an SDL field or argument name, for example
+	// the plain name gqlgen gave a leading-underscore field:
+	//
+	//	fieldNames:
+	//	  _lastUpdatedAt: LastUpdatedAt
+	FieldNames map[string]string `yaml:"fieldNames"`
 	// autoBind binds SDL types to existing Go types found in these package
 	// patterns, instead of generating models for them:
 	//
@@ -218,6 +224,7 @@ func run(args []string) error {
 		FieldDirective:         codegen.FieldDirective{Name: fc.FieldDirective.Name, ForceResolverArg: fc.FieldDirective.ForceResolverArg},
 		TagDirective:           codegen.TagDirective{Name: fc.TagDirective.Name, KeyArg: fc.TagDirective.KeyArg, ValueArg: fc.TagDirective.ValueArg},
 		JSONTags:               fc.JSONTags,
+		FieldNames:             fc.FieldNames,
 		Notef: func(format string, args ...any) {
 			fmt.Fprintf(os.Stderr, "gqlc: "+format+"\n", args...)
 		},

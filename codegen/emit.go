@@ -161,7 +161,7 @@ func (b *builder) emitModel(group string) string {
 			if b.fieldKind(name, fd) != fieldPure {
 				continue
 			}
-			body.WriteString("\t" + goIdent(fd.Name) + " " + b.goType(fd.Type, selfPkg, false))
+			body.WriteString("\t" + b.ident(fd.Name) + " " + b.goType(fd.Type, selfPkg, false))
 			if jt := b.jsonTag(fd); jt != "" {
 				body.WriteString(" `" + strings.TrimPrefix(jt, " ") + "`")
 			}
@@ -184,7 +184,7 @@ func (b *builder) emitModel(group string) string {
 			// to ownerId, and the binding then fails to match the schema.
 			// Validated when the builder was made, so the error cannot occur here.
 			extra, _ := b.tagsFor(fd)
-			body.WriteString("\t" + goIdent(fd.Name) + " " +
+			body.WriteString("\t" + b.ident(fd.Name) + " " +
 				b.goType(fd.Type, selfPkg, b.cfg.NullableInputOmittable) +
 				" `graphql:\"" + fd.Name + "\"" + b.jsonTag(fd) + extra + "`\n")
 		}
@@ -210,7 +210,7 @@ func (b *builder) emitArgs(group string) string {
 			// lossy. Args structs went without one until an SDL argument
 			// arrived that does not survive the round trip -- ownerID
 			// derives to ownerId, and _lastUpdatedAt to xLastUpdatedAt.
-			body.WriteString("\t" + goIdent(arg.Name) + " " +
+			body.WriteString("\t" + b.ident(arg.Name) + " " +
 				b.goType(arg.Type, "", false) +
 				" `graphql:\"" + arg.Name + "\"`\n")
 		}
@@ -499,7 +499,7 @@ func (b *builder) checkIdentifiers() error {
 			add := fold("fields")
 			for _, fd := range def.Fields {
 				if !strings.HasPrefix(fd.Name, "__") && b.fieldKind(name, fd) == fieldPure {
-					add(goIdent(fd.Name), name+"."+fd.Name)
+					add(b.ident(fd.Name), name+"."+fd.Name)
 				}
 			}
 		}
@@ -509,7 +509,7 @@ func (b *builder) checkIdentifiers() error {
 			}
 			add := fold("arguments")
 			for _, arg := range fd.Arguments {
-				add(goIdent(arg.Name), name+"."+fd.Name+"("+arg.Name+":)")
+				add(b.ident(arg.Name), name+"."+fd.Name+"("+arg.Name+":)")
 			}
 		}
 	}
@@ -520,7 +520,7 @@ func (b *builder) checkIdentifiers() error {
 		exported(name)
 		add := fold("input fields")
 		for _, fd := range b.schema.Types[name].Fields {
-			add(goIdent(fd.Name), name+"."+fd.Name)
+			add(b.ident(fd.Name), name+"."+fd.Name)
 		}
 	}
 	return errors.Join(errs...)
@@ -675,7 +675,7 @@ func (b *builder) fieldCall(typeName string, fd *ast.FieldDefinition, root bool)
 		return fmt.Sprintf("\t\t\tgraphql.Subscribe(%q, func(ctx context.Context) (<-chan %s, error) { return r.%s(ctx) }),\n", fd.Name, goRet, meth)
 	case b.fieldKind(typeName, fd) == fieldPure:
 		recv := "*" + b.modelRef(typeName, typeName)
-		ident := goIdent(fd.Name)
+		ident := b.ident(fd.Name)
 		return fmt.Sprintf("\t\t\tgraphql.Field(%q, func(v %s) %s { return v.%s }),\n", fd.Name, recv, goRet, ident)
 	case len(fd.Arguments) > 0 && root:
 		an := b.argsName(typeName, fd.Name)

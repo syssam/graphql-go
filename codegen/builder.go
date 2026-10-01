@@ -3,6 +3,7 @@ package codegen
 import (
 	"fmt"
 	"github.com/syssam/graphql-go/fed"
+	"go/token"
 	"maps"
 	"os"
 	"path/filepath"
@@ -152,7 +153,7 @@ func (b *builder) computeMarker(name string) bool {
 			return false
 		}
 		for _, fd := range member.Fields {
-			if b.fieldKind(member.Name, fd) == fieldPure && goIdent(fd.Name) == method {
+			if b.fieldKind(member.Name, fd) == fieldPure && b.ident(fd.Name) == method {
 				return false
 			}
 		}
@@ -263,6 +264,9 @@ func newBuilder(dir string, cfg Config) (*builder, error) {
 	b.setModels(models)
 	b.manifest = man
 	b.setExtraEnums(explicit)
+	if err := b.checkFieldNames(); err != nil {
+		return nil, fmt.Errorf("codegen: %w", err)
+	}
 	if err := b.checkTagDirectives(); err != nil {
 		return nil, fmt.Errorf("codegen: %w", err)
 	}
@@ -495,6 +499,26 @@ const (
 	fieldResolve
 )
 
+// ident is the Go identifier for an SDL field or argument name: Config.FieldNames when it
+// names one, the derived name otherwise.
+func (b *builder) ident(sdlName string) string {
+	if g, ok := b.cfg.FieldNames[sdlName]; ok {
+		return g
+	}
+	return goIdent(sdlName)
+}
+
+// checkFieldNames refuses a Config.FieldNames value that is not an exported Go identifier,
+// since the field it names would be unexported and the schema would not bind.
+func (b *builder) checkFieldNames() error {
+	for sdl, g := range b.cfg.FieldNames {
+		if !token.IsIdentifier(g) || !token.IsExported(g) {
+			return fmt.Errorf("FieldNames[%q] = %q is not an exported Go identifier", sdl, g)
+		}
+	}
+	return nil
+}
+
 func goIdent(name string) string {
 	if name == "id" {
 		return "ID"
@@ -644,16 +668,16 @@ func (b *builder) goType(t *ast.Type, selfPkg string, omitNull bool) string {
 
 func (b *builder) argsName(typeName, field string) string {
 	if b.isRoot(typeName) {
-		return goIdent(field) + "Args"
+		return b.ident(field) + "Args"
 	}
-	return typeName + goIdent(field) + "Args"
+	return typeName + b.ident(field) + "Args"
 }
 
 func (b *builder) resolverMethod(typeName, field string) string {
 	if b.isRoot(typeName) {
-		return goIdent(field)
+		return b.ident(field)
 	}
-	return typeName + goIdent(field)
+	return typeName + b.ident(field)
 }
 
 // modelRef qualifies a generated model identifier for use outside the model

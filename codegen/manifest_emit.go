@@ -20,7 +20,10 @@ func (b *builder) manifestFieldCall(typeName string, fd *ast.FieldDefinition, fb
 	if fb.Value && strings.HasPrefix(goRet, "*") {
 		goRet = goRet[1:]
 	}
-	name := fb.goName(fd.Name)
+	name := fb.GoName
+	if name == "" {
+		name = b.ident(fd.Name)
+	}
 	// wrap converts the value to the type the field needs, for a binding whose
 	// Go side is a different named type over the same basic kind.
 	wrap := func(expr string) string {
@@ -45,7 +48,7 @@ func (b *builder) manifestFieldCall(typeName string, fd *ast.FieldDefinition, fb
 	if hasArgs {
 		parts := make([]string, 0, len(fd.Arguments))
 		for _, arg := range fd.Arguments {
-			parts = append(parts, "a."+goIdent(arg.Name))
+			parts = append(parts, "a."+b.ident(arg.Name))
 		}
 		spread = strings.Join(parts, ", ")
 	}
