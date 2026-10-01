@@ -139,14 +139,28 @@ func registerLeaf[E any](r *registry, name string, kind ast.DefinitionKind, writ
 		}
 		return &v, nil
 	}
+	// A Go interface holds nil, so as E itself it can stand for null: a value of type any backs
+	// a nullable JSON argument without a pointer to the interface. Its decoder therefore maps
+	// null to the zero value instead of refusing it; a NON-NULL SDL position still refuses null
+	// before any decoder runs, so nothing is loosened there.
+	eNilable := reflect.TypeFor[E]().Kind() == reflect.Interface
+	if eNilable {
+		dE = func(raw any, _ *ast.Type) (E, error) {
+			if raw == nil {
+				var zero E
+				return zero, nil
+			}
+			return decode(raw)
+		}
+	}
 	wSE, dSE := listWriter(wE), listDecoder(dE)
 	wSPE, dSPE := listWriter(wPE), listDecoder(dPE)
 
-	r.addLeafShape(name, []bool{false}, leafShape(name, wE, dE))
+	r.addLeafShape(name, []bool{eNilable}, leafShape(name, wE, dE))
 	r.addLeafShape(name, []bool{true}, leafShape(name, wPE, dPE))
-	r.addLeafShape(name, []bool{true, false}, leafShape(name, wSE, dSE))
+	r.addLeafShape(name, []bool{true, eNilable}, leafShape(name, wSE, dSE))
 	r.addLeafShape(name, []bool{true, true}, leafShape(name, wSPE, dSPE))
-	r.addLeafShape(name, []bool{true, true, false}, leafShape(name, listWriter(wSE), listDecoder(dSE)))
+	r.addLeafShape(name, []bool{true, true, eNilable}, leafShape(name, listWriter(wSE), listDecoder(dSE)))
 	r.addLeafShape(name, []bool{true, true, true}, leafShape(name, listWriter(wSPE), listDecoder(dSPE)))
 }
 
