@@ -286,6 +286,18 @@ func (b *builder) checkTagDirectives() error {
 	return nil
 }
 
+// jsonTag renders the json struct tag Config.JSONTags asks for, as ` json:"name"` (with
+// ",omitempty" for a nullable field) and empty when the option is off.
+func (b *builder) jsonTag(fd *ast.FieldDefinition) string {
+	if !b.cfg.JSONTags || fd == nil {
+		return ""
+	}
+	if fd.Type != nil && fd.Type.NonNull {
+		return " json:\"" + fd.Name + "\""
+	}
+	return " json:\"" + fd.Name + ",omitempty\""
+}
+
 // tagsFor renders the extra struct tags a field's Config.TagDirective directives ask for,
 // each as ` key:"value"`, in directive order. It is empty when no directive is configured
 // or none is on the field.

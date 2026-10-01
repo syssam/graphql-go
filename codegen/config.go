@@ -111,6 +111,17 @@ type Config struct {
 	// repeats on one field, and the reserved key "graphql" are errors rather
 	// than silently-wrong tags.
 	TagDirective TagDirective
+	// JSONTags writes a json struct tag on every generated model field: the field's GraphQL
+	// name, with ",omitempty" when the field is nullable -- what gqlgen wrote.
+	//
+	// Code that reads the tag by reflection depends on it, and a missing tag is silent: a
+	// struct-to-map helper keys its entries by it, a validator names the offending field by
+	// it in the error a client sees, a masker finds a field to redact by it, and a setter table
+	// matches an aggregate's operations by it. Each falls back to the Go field name or skips the
+	// field, so the output is wrong rather than broken.
+	//
+	// Off by default, which leaves the generated structs untagged.
+	JSONTags bool
 	// Manifest binds GraphQL types and fields explicitly instead of letting
 	// the generator infer them. It loads no Go type information; see the
 	// Manifest documentation.

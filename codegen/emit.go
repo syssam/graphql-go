@@ -161,7 +161,11 @@ func (b *builder) emitModel(group string) string {
 			if b.fieldKind(name, fd) != fieldPure {
 				continue
 			}
-			body.WriteString("\t" + goIdent(fd.Name) + " " + b.goType(fd.Type, selfPkg, false) + "\n")
+			body.WriteString("\t" + goIdent(fd.Name) + " " + b.goType(fd.Type, selfPkg, false))
+			if jt := b.jsonTag(fd); jt != "" {
+				body.WriteString(" `" + strings.TrimPrefix(jt, " ") + "`")
+			}
+			body.WriteString("\n")
 		}
 		body.WriteString("}\n\n")
 		for _, abstract := range b.markersOf(name) {
@@ -182,7 +186,7 @@ func (b *builder) emitModel(group string) string {
 			extra, _ := b.tagsFor(fd)
 			body.WriteString("\t" + goIdent(fd.Name) + " " +
 				b.goType(fd.Type, selfPkg, b.cfg.NullableInputOmittable) +
-				" `graphql:\"" + fd.Name + "\"" + extra + "`\n")
+				" `graphql:\"" + fd.Name + "\"" + b.jsonTag(fd) + extra + "`\n")
 		}
 		body.WriteString("}\n\n")
 	}

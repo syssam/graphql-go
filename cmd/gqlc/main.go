@@ -86,6 +86,9 @@ type fileConfig struct {
 		KeyArg   string `yaml:"keyArg"`
 		ValueArg string `yaml:"valueArg"`
 	} `yaml:"tagDirective"`
+	// jsonTags writes json:"name" (",omitempty" when nullable) on every generated model field,
+	// as gqlgen did, for code that reads the tag by reflection.
+	JSONTags bool `yaml:"jsonTags"`
 	// autoBind binds SDL types to existing Go types found in these package
 	// patterns, instead of generating models for them:
 	//
@@ -214,6 +217,7 @@ func run(args []string) error {
 		ModelDirective:         codegen.ModelDirective{Name: fc.ModelDirective.Name, Arg: fc.ModelDirective.Arg},
 		FieldDirective:         codegen.FieldDirective{Name: fc.FieldDirective.Name, ForceResolverArg: fc.FieldDirective.ForceResolverArg},
 		TagDirective:           codegen.TagDirective{Name: fc.TagDirective.Name, KeyArg: fc.TagDirective.KeyArg, ValueArg: fc.TagDirective.ValueArg},
+		JSONTags:               fc.JSONTags,
 		Notef: func(format string, args ...any) {
 			fmt.Fprintf(os.Stderr, "gqlc: "+format+"\n", args...)
 		},
