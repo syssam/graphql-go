@@ -542,9 +542,14 @@ func (b *builder) modelQualifier(pkg string) string {
 func (b *builder) goType(t *ast.Type, selfPkg string, omitNull bool) string {
 	if t.Elem != nil {
 		inner := b.goType(t.Elem, selfPkg, omitNull)
-		if b.cfg.InputListPointers && t.Elem.Elem == nil && !strings.HasPrefix(inner, "*") {
+		if b.cfg.InputListPointers && t.Elem.Elem == nil {
 			if def := b.schema.Types[t.Elem.NamedType]; def != nil && def.Kind == ast.InputObject {
-				inner = "*" + inner
+				// An element is *T whether or not it may be null; a nullable
+				// element is never wrapped in Omittable, only a whole field is.
+				inner = b.goType(t.Elem, selfPkg, false)
+				if !strings.HasPrefix(inner, "*") {
+					inner = "*" + inner
+				}
 			}
 		}
 		return "[]" + inner

@@ -83,7 +83,7 @@ func norm(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 const inputListSDL = `
 input Line { n: Int! }
-input Order { lines: [Line!]! maybe: [Line!] tags: [String!] }
+input Order { lines: [Line!]! maybe: [Line!] tags: [String!] sparse: [Line] }
 type Query { echo(lines: [Line!]): Int }
 `
 
@@ -92,13 +92,26 @@ type Query { echo(lines: [Line!]): Int }
 func TestInputListPointersKeepsPointerElements(t *testing.T) {
 	dir := generate(t, inputListSDL, Config{InputListPointers: true})
 	models := norm(generated(t, dir, "model/models.go"))
-	for _, want := range []string{"Lines []*Line", "Maybe []*Line", "Tags []string"} {
+	for _, want := range []string{"Lines []*Line", "Maybe []*Line", "Tags []string", "Sparse []*Line"} {
 		if !strings.Contains(models, want) {
 			t.Errorf("model missing %q:\n%s", want, models)
 		}
 	}
 	if args := norm(generated(t, dir, "generated.go")); !strings.Contains(args, "Lines []*model.Line") {
 		t.Errorf("a field argument list should use pointers too:\n%s", args)
+	}
+}
+
+// A nullable ELEMENT must not be wrapped in Omittable and then pointed at: the
+// element is simply *T.
+func TestInputListPointersOnNullableElementsWithOmittable(t *testing.T) {
+	dir := generate(t, inputListSDL, Config{InputListPointers: true, NullableInputOmittable: true})
+	models := norm(generated(t, dir, "model/models.go"))
+	if strings.Contains(models, "*graphql.Omittable") || strings.Contains(models, "[]graphql.Omittable") {
+		t.Errorf("list elements must not be Omittable:\n%s", models)
+	}
+	if !strings.Contains(models, "Sparse graphql.Omittable[*[]*Line]") && !strings.Contains(models, "Sparse []*Line") {
+		t.Errorf("Sparse should be a list of *Line:\n%s", models)
 	}
 }
 
