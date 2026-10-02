@@ -139,10 +139,15 @@ if err != nil {
 }
 exec := graphql.NewExecutor(s, graphql.WithMaxDepth(12) /* ... */)
 
-mux.Handle("/graphql", gqlhttp.New(exec))
-mux.Handle("/graphql/stream", gqlsse.New(exec, gqlsse.WithDrain(d)))
-mux.Handle("/graphql/ws", gqlws.New(exec, gqlws.WithDrain(d)))
+// HTTP, Server-Sent Events and WebSocket on one path; the drain is given once.
+mux.Handle("/graphql", gqlmux.New(exec, gqlmux.WithDrain(d)))
 ```
+
+Once the schema has several groups, each registers its own bindings over its
+own Resolver, and `wire: { deps: ... }` in `gqlc.yaml` has gqlc write the list:
+`graph.NewSchema(graph.Wire(deps)...)`. A group left out is then a compile
+error rather than something a container reports at start-up; see
+[`cmd/gqlc/README.md`](../cmd/gqlc/README.md).
 
 **Read [`operations.md`](operations.md) before this reaches anything
 untrusted.** Four limits are off by default, and the drain has to be shut down
@@ -231,7 +236,10 @@ Every number below came from running the generator against it and compiling
 what came out. The whole schema now generates in about 9 s and its 804
 generated packages build and vet clean.
 
-The work is one config file:
+The work is one config file. `preset: gqlgen` stands for the keys numbered 1
+and 2 below and four more that are silent when missing (`tagDirective`,
+`jsonTags`, `inputListPointers`, `structObjectFields`); they are written out
+here because each was found by needing it.
 
 ```yaml
 schema:

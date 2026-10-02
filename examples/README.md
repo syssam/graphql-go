@@ -243,7 +243,7 @@ example, not of the library. `scripts/gate.sh` finds it like every other
 
 ## Running
 
-    go run ./examples/quickstart            # :8080 /graphql, /graphql/stream
+    go run ./examples/quickstart            # :8080 /graphql (HTTP, SSE and WebSocket)
     go run ./examples/blog/cmd/server       # :8080 + /graphql/ws
     go run ./examples/storefront/cmd/server # :8080, all three, with limits and a drain
     go run ./examples/echo                  # same schema, Echo v5

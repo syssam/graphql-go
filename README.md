@@ -80,7 +80,6 @@ func main() {
 		type User { id: ID! name: String! }
 		type Query { user(id: ID!): User }
 	`),
-		graphql.Args[userArgs](),
 		graphql.Object[User]("User",
 			graphql.Field("id", func(u *User) graphql.ID { return u.ID }),
 			graphql.Field("name", func(u *User) string { return u.Name }),
@@ -135,8 +134,16 @@ graphql.Subscription(
 )
 ```
 
-Serve them over either streaming transport; both also serve queries and
-mutations, so a client needs only one endpoint:
+`gqlmux` serves all of it from one path, choosing the transport from the
+request: a WebSocket upgrade, an `Accept: text/event-stream`, or plain HTTP.
+
+```go
+mux.Handle("/graphql", gqlmux.New(exec))
+```
+
+An option that has to hold on every transport -- a persisted-query safelist,
+the drain below -- is then given once. The three handlers are still there to
+mount on paths of their own, and each serves queries and mutations too:
 
 ```go
 mux.Handle("/graphql", gqlhttp.New(exec))
@@ -163,8 +170,7 @@ and new SSE subscriptions get 503:
 
 ```go
 d := drain.New()
-mux.Handle("/graphql/stream", gqlsse.New(exec, gqlsse.WithDrain(d)))
-mux.Handle("/graphql/ws", gqlws.New(exec, gqlws.WithDrain(d)))
+mux.Handle("/graphql", gqlmux.New(exec, gqlmux.WithDrain(d)))
 
 // on SIGTERM: both together, under one deadline
 var wg sync.WaitGroup
@@ -217,7 +223,7 @@ field from an N+1 into one query per wave.
 | `Object[E](name, fields...)` | Bind a GraphQL object type to Go struct `E`. Field functions receive `*E`. |
 | `Field` / `FieldArgs` | Pure data access; runs inline, never on its own goroutine. |
 | `Resolve` / `ResolveArgs` | May perform I/O; scheduled concurrently, one goroutine each. Bound the work of a request with the cost, complexity and response-size limits. |
-| `Args[A]()` / `Input[T](name)` | Decoder from struct fields (`graphql` / `json` tags, or `AuthorID` → `authorId`). Explicit `InputField` stays the zero-reflect path. |
+| `Input[T](name)` / `Args[A]()` | Decoder from struct fields (`graphql` / `json` tags, or `AuthorID` → `authorId`). An argument struct named by `FieldArgs` or `ResolveArgs` is derived without `Args`; register it only to decode a field differently. Explicit `InputField` stays the zero-reflect path. |
 | `InputField`, `OmittableField` | Hand-written setters when a name or type needs an override. |
 | `Enum`, `Scalar` | Leaf types; several Go types may back one GraphQL type. |
 | `Time(name)` | `time.Time` as RFC 3339, gqlgen's `Time` wire format; the one custom scalar almost every schema has. |
@@ -280,7 +286,8 @@ loading only their export data rather than a whole module.
 [`examples/blog`](examples/blog) uses the generated package.
 
 **Transports.** `gqlhttp`, `gqlsse` (Server-Sent Events), `gqlws`
-(`graphql-transport-ws`), and `gqlecho` and `gqlfiber` for Echo v5 and Fiber v3.
+(`graphql-transport-ws`), `gqlmux` (the three on one path), and `gqlecho` and
+`gqlfiber` for Echo v5 and Fiber v3.
 All five serve every operation kind, so a client needs one endpoint, and they
 share one set of CSRF, body-limit and content-negotiation rules that
 `transport/equivalence_test.go` proves by driving real requests through all six
@@ -339,7 +346,7 @@ Nothing is tagged yet. [`docs/api-stability.md`](docs/api-stability.md) records
 what the promise will cover, which parts are still expected to move, and the
 one coupling that decides this library's major version for it: `gqlparser/v2`'s
 AST is part of the public API, so a gqlparser v3 means a major release here.
-`TestPublicAPISurface` pins all 448 exported declarations against
+`TestPublicAPISurface` pins all 461 exported declarations against
 [`docs/public-api.txt`](docs/public-api.txt), so an API change is a failing
 test rather than a code review someone has to catch.
 

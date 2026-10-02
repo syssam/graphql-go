@@ -8,7 +8,7 @@ session, so it holds only what applies everywhere. Subsystem detail lives in
 |---|---|---|
 | `schema-build.md` | `schema.go`, binding files, `input.go` | `NewSchema` phases, error ordering, `json:"-"` |
 | `plan.md` | `plan*.go`, `limits.go`, `interceptor.go` | plan cache, parse flight, depth/cost guard, cost |
-| `executor.md` | `exec*.go`, `wave.go`, `subscription.go`, `internal/jsonw`, `loader/` | response/error limits, timeout, pure/resolver scheduling, `Park`, struct sizes |
+| `executor.md` | `exec*.go`, `wave.go`, `subscription.go`, `internal/jsonw`, `internal/jsonr`, `loader/` | response/error limits, timeout, pure/resolver scheduling, `Park`, struct sizes |
 | `authz.md` | `authz*.go`, `examples/storefront` | `AuthShape`, requirement directives, instance sites, batching |
 | `codegen.md` | `codegen/`, `cmd/gqlc/` | AutoBind, discovery order, enums, the real-schema record |
 | `transports.md` | `transport/`, `internal/httpreq`, `internal/gqlwsproto` | shared rules, drain, age/idle, gqlfiber specifics |
@@ -119,7 +119,7 @@ first plan compile, and the request path writes JSON straight into a pooled buff
 - **Codegen** (`codegen/`, `cmd/gqlc`): SDL only. It loads no Go packages unless `AutoBind`
   asks, and then only export data.
 - **Transports**: `gqlhttp`, `gqlsse`, `gqlws`, `gqlecho`, `gqlfiber` all serve every operation
-  kind. `internal/httpreq` holds the shared CSRF, body-limit and negotiation rules, and
+  kind, and `gqlmux` is the first three on one path. `internal/httpreq` holds the shared CSRF, body-limit and negotiation rules, and
   `transport/equivalence_test.go` proves all six HTTP handlers agree.
   `internal/gqlwsproto` is the shared graphql-transport-ws core. `transport/drain` drains
   long-lived connections.

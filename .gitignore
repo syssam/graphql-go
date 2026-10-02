@@ -8,6 +8,10 @@
 # Linux server binaries built for benchmarks/k6/FOURWAY.md, which have no
 # extension to be caught by the rules above.
 /benchmarks/srv-*
+# What `go build ./cmd/...` leaves in the working directory: one command
+# matches, so the go tool writes its executable here rather than discarding it.
+/gqlc
+/gqlvet
 
 # Editor and OS files
 .idea/
