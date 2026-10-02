@@ -646,7 +646,15 @@ One SDL group stays flat in `Output`; two or more become subpackages, each regis
 does not invalidate every other group's compiled package — except when two groups' input
 objects reference each other, which would be an import cycle and falls back to one shared
 `model` package (`modelGroupsAcyclic`). Generated files are strings run through `go/format` (not Jennifer), and
-content-equal files are not rewritten.
+content-equal files are not rewritten (`writeGo`, which the SDL copies and `wire.go` go through
+too). That was a sentence with no test for as long as it had been true; it is pinned by
+`TestGenerateWritesOnlyWhatChanged`, which fails with the comparison removed. Measured at 300
+groups: a regenerate with nothing changed takes 0.38 s, writes no file and recompiles no
+package; a field added to one type writes that group's two files and recompiles seven packages
+(its models, its service, its group, and the four that assemble everything). Go's build cache
+is keyed by content, so it would survive a rewrite; what would not is everything that goes by
+timestamp -- a file watcher, an editor's reload, a container layer, rsync. gqlc keeps no cache
+of its own: it regenerates in memory on every run, so there is none to go stale.
 
 **A schema can be validated with no resolvers at all, and that is why ten bugs survived.**
 Binding validation reads the resolver's *type*, never its behaviour -- `Resolve` captures the
