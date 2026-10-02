@@ -58,3 +58,39 @@ func TestFieldNamesCollisionIsStillRefused(t *testing.T) {
 		}
 	}
 }
+
+// A bare key renames that name wherever it appears, which is the wrong tool
+// when one type's field needs a name and another's does not. A key written as
+// a schema coordinate applies to that field or argument alone, and wins over
+// a bare key for the same name.
+func TestFieldNamesTakesASchemaCoordinate(t *testing.T) {
+	sdl := `
+		type User { userId: ID! }
+		type Post { userId: ID! }
+		input Filter { userId: ID }
+		type Query { user(byId: ID): User post(byId: ID): Post find(f: Filter): Int }
+	`
+	dir := generate(t, sdl, Config{FieldNames: map[string]string{
+		"User.userId":       "UID",
+		"Query.user(byId:)": "Key",
+		"Filter.userId":     "Owner",
+		"byId":              "ByID",
+	}})
+	models := norm(generated(t, dir, "model/models.go"))
+	for _, want := range []string{"type User struct { UID", "type Post struct { UserID", "Owner *"} {
+		if !strings.Contains(models, norm(want)) {
+			t.Errorf("models.go lacks %q:\n%s", want, models)
+		}
+	}
+	src := norm(generated(t, dir, "generated.go"))
+	for _, want := range []string{"type UserArgs struct { Key ", "type PostArgs struct { ByID ", "return v.UID"} {
+		if !strings.Contains(src, norm(want)) {
+			t.Errorf("generated.go lacks %q:\n%s", want, src)
+		}
+	}
+
+	_, err := generateWith(t, sdl, Config{FieldNames: map[string]string{"User.nope": "X", "Query.user(nope:)": "Y"}})
+	if err == nil || !strings.Contains(err.Error(), "User.nope") || !strings.Contains(err.Error(), "Query.user(nope:)") {
+		t.Fatalf("err = %v, want one naming both coordinates that match nothing", err)
+	}
+}

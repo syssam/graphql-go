@@ -35,13 +35,26 @@ type fileConfig struct {
 	Output                 string   `yaml:"output"`
 	Package                string   `yaml:"package"`
 	NullableInputOmittable bool     `yaml:"nullableInputOmittable"`
+	// preset turns on a set of the keys below together, each of which a key
+	// written out beside it still overrides. The one preset is gqlgen, for a
+	// schema that arrives from it:
+	//
+	//	preset: gqlgen
+	//
+	// is modelDirective goModel/model, fieldDirective goField/forceResolver,
+	// tagDirective goTag/key/value, jsonTags, inputListPointers and
+	// structObjectFields. Each is silent when missing -- the output compiles
+	// and the models are a different shape -- which is what makes a list of
+	// six to remember worth one word.
+	Preset string `yaml:"preset"`
 	// StructObjectFields reads object-typed fields that take no arguments from
 	// the model's struct, as gqlgen did, instead of a Resolver method. See
-	// codegen.Config.StructObjectFields.
-	StructObjectFields bool `yaml:"structObjectFields"`
+	// codegen.Config.StructObjectFields. A pointer, like the two below, so a
+	// key written as false is told apart from one left for the preset.
+	StructObjectFields *bool `yaml:"structObjectFields"`
 	// InputListPointers spells a list of input objects []*T, as gqlgen did. See
 	// codegen.Config.InputListPointers.
-	InputListPointers bool `yaml:"inputListPointers"`
+	InputListPointers *bool `yaml:"inputListPointers"`
 	// zeroForNullInputs lets a Go field that cannot be null back a nullable
 	// input position; read the graphql.ZeroForNull godoc before setting it.
 	ZeroForNullInputs bool `yaml:"zeroForNullInputs"`
@@ -88,7 +101,7 @@ type fileConfig struct {
 	} `yaml:"tagDirective"`
 	// jsonTags writes json:"name" (",omitempty" when nullable) on every generated model field,
 	// as gqlgen did, for code that reads the tag by reflection.
-	JSONTags bool `yaml:"jsonTags"`
+	JSONTags *bool `yaml:"jsonTags"`
 	// fieldNames overrides the Go name derived for an SDL field or argument name, for example
 	// the plain name gqlgen gave a leading-underscore field:
 	//
@@ -128,7 +141,53 @@ type fileConfig struct {
 	//
 	//	groupDir: register
 	GroupDir string `yaml:"groupDir"`
+	// wire writes output/wire.go: Wire(d), which builds every group's
+	// Resolver from one dependencies value and returns their bindings for
+	// NewSchema. Each group needs a scaffold target; see codegen.Config.Wire.
+	//
+	//	wire:
+	//	  deps: example.com/app/internal/deps.Deps
+	Wire struct {
+		Deps string `yaml:"deps"`
+	} `yaml:"wire"`
 }
+
+// applyPreset fills in what the preset stands for wherever the file left a
+// key unset, so a key written out beside the preset decides.
+func (fc *fileConfig) applyPreset() error {
+	switch fc.Preset {
+	case "":
+		return nil
+	case "gqlgen":
+	default:
+		return fmt.Errorf("preset: %q is not a preset; the one there is is gqlgen", fc.Preset)
+	}
+	// Field by field: a directive key written in part keeps what it says and
+	// takes the rest, where filling in only an absent name threw a written
+	// argument away and left a half-written directive switched off.
+	for _, d := range []struct {
+		key *string
+		is  string
+	}{
+		{&fc.ModelDirective.Name, "goModel"}, {&fc.ModelDirective.Arg, "model"},
+		{&fc.FieldDirective.Name, "goField"}, {&fc.FieldDirective.ForceResolverArg, "forceResolver"},
+		{&fc.TagDirective.Name, "goTag"}, {&fc.TagDirective.KeyArg, "key"}, {&fc.TagDirective.ValueArg, "value"},
+	} {
+		if *d.key == "" {
+			*d.key = d.is
+		}
+	}
+	on := true
+	for _, key := range []**bool{&fc.JSONTags, &fc.InputListPointers, &fc.StructObjectFields} {
+		if *key == nil {
+			*key = &on
+		}
+	}
+	return nil
+}
+
+// set reports a boolean key's value, false when the file did not give one.
+func set(b *bool) bool { return b != nil && *b }
 
 // groupFunc turns the groups key into a codegen.GroupFunc, or nil when the
 // key is absent, so the generator's own default stays in charge.
@@ -217,6 +276,9 @@ func run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("gqlc: %s: %w", *configPath, err)
 	}
+	if err := fc.applyPreset(); err != nil {
+		return fmt.Errorf("gqlc: %s: %w", *configPath, err)
+	}
 	cfg := codegen.Config{
 		AutoBind:               fc.AutoBind,
 		GroupFunc:              fc.groupFunc(),
@@ -229,8 +291,8 @@ func run(args []string) error {
 		Package:                fc.Package,
 		Models:                 fc.Models,
 		NullableInputOmittable: fc.NullableInputOmittable,
-		StructObjectFields:     fc.StructObjectFields,
-		InputListPointers:      fc.InputListPointers,
+		StructObjectFields:     set(fc.StructObjectFields),
+		InputListPointers:      set(fc.InputListPointers),
 		ZeroForNullInputs:      fc.ZeroForNullInputs,
 		InlineAccessors:        fc.InlineAccessors,
 		Inline:                 fc.Inline,
@@ -238,7 +300,8 @@ func run(args []string) error {
 		ModelDirective:         codegen.ModelDirective{Name: fc.ModelDirective.Name, Arg: fc.ModelDirective.Arg},
 		FieldDirective:         codegen.FieldDirective{Name: fc.FieldDirective.Name, ForceResolverArg: fc.FieldDirective.ForceResolverArg},
 		TagDirective:           codegen.TagDirective{Name: fc.TagDirective.Name, KeyArg: fc.TagDirective.KeyArg, ValueArg: fc.TagDirective.ValueArg},
-		JSONTags:               fc.JSONTags,
+		JSONTags:               set(fc.JSONTags),
+		Wire:                   codegen.Wire{Deps: fc.Wire.Deps},
 		FieldNames:             fc.FieldNames,
 		Notef: func(format string, args ...any) {
 			fmt.Fprintf(os.Stderr, "gqlc: "+format+"\n", args...)

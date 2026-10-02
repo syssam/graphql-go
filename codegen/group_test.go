@@ -15,11 +15,11 @@ func TestSanitizeGroup(t *testing.T) {
 		{"", "graph", "types"},
 	}
 	for _, tt := range tests {
-		if got := sanitizeGroup(tt.in, tt.pkg); got != tt.want {
+		if got := sanitizeGroup(tt.in, tt.pkg, false); got != tt.want {
 			t.Errorf("sanitizeGroup(%q, %q) = %q, want %q", tt.in, tt.pkg, got, tt.want)
 		}
 	}
-	if got := sanitizeGroup(fileStem("user.graphql"), "graph"); got != "user" {
+	if got := sanitizeGroup(fileStem("user.graphql"), "graph", false); got != "user" {
 		t.Errorf("file stem user.graphql: got %q", got)
 	}
 }

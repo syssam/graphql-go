@@ -157,7 +157,7 @@ func (b *builder) computeMarker(name string) bool {
 			return false
 		}
 		for _, fd := range member.Fields {
-			if b.fieldKind(member.Name, fd) == fieldPure && b.ident(fd.Name) == method {
+			if b.fieldKind(member.Name, fd) == fieldPure && b.fieldIdent(member.Name, fd.Name) == method {
 				return false
 			}
 		}
@@ -582,6 +582,24 @@ func (b *builder) ident(sdlName string) string {
 	return goIdent(sdlName)
 }
 
+// fieldIdent is ident for a field or input field of a type. A FieldNames key
+// written as the schema coordinate, Type.field, names that one field and
+// outranks a bare key, which names it on every type.
+func (b *builder) fieldIdent(typeName, field string) string {
+	if g, ok := b.cfg.FieldNames[typeName+"."+field]; ok {
+		return g
+	}
+	return b.ident(field)
+}
+
+// argIdent is ident for one argument, whose coordinate is Type.field(arg:).
+func (b *builder) argIdent(typeName, field, arg string) string {
+	if g, ok := b.cfg.FieldNames[typeName+"."+field+"("+arg+":)"]; ok {
+		return g
+	}
+	return b.ident(arg)
+}
+
 // checkFieldNames refuses a Config.FieldNames value that is not an exported Go identifier,
 // since the field it names would be unexported and the schema would not bind.
 //
@@ -593,11 +611,11 @@ func (b *builder) checkFieldNames() error {
 		return nil
 	}
 	known := map[string]bool{}
-	for _, def := range b.schema.Types {
+	for name, def := range b.schema.Types {
 		for _, fd := range def.Fields {
-			known[fd.Name] = true
+			known[fd.Name], known[name+"."+fd.Name] = true, true
 			for _, arg := range fd.Arguments {
-				known[arg.Name] = true
+				known[arg.Name], known[name+"."+fd.Name+"("+arg.Name+":)"] = true, true
 			}
 		}
 	}
@@ -765,16 +783,16 @@ func (b *builder) goType(t *ast.Type, selfPkg string, omitNull bool) string {
 
 func (b *builder) argsName(typeName, field string) string {
 	if b.isRoot(typeName) {
-		return b.ident(field) + "Args"
+		return b.fieldIdent(typeName, field) + "Args"
 	}
-	return typeName + b.ident(field) + "Args"
+	return typeName + b.fieldIdent(typeName, field) + "Args"
 }
 
 func (b *builder) resolverMethod(typeName, field string) string {
 	if b.isRoot(typeName) {
-		return b.ident(field)
+		return b.fieldIdent(typeName, field)
 	}
-	return typeName + b.ident(field)
+	return typeName + b.fieldIdent(typeName, field)
 }
 
 // modelRef qualifies a generated model identifier for use outside the model

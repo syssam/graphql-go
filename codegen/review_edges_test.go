@@ -13,13 +13,13 @@ import (
 // the generated code already uses for an import.
 func TestAGroupIsNeverNamedSomethingGoOrTheGeneratorReserves(t *testing.T) {
 	for _, stem := range []string{"func", "type", "go", "range", "select", "main", "graphql", "context", "embed"} {
-		got := sanitizeGroup(stem, "graph")
+		got := sanitizeGroup(stem, "graph", false)
 		if got == stem || token.IsKeyword(got) {
 			t.Errorf("sanitizeGroup(%q) = %q, which cannot name a generated package", stem, got)
 		}
 	}
 	// Ordinary names are left alone.
-	if got := sanitizeGroup("user", "graph"); got != "user" {
+	if got := sanitizeGroup("user", "graph", false); got != "user" {
 		t.Errorf("sanitizeGroup(%q) = %q", "user", got)
 	}
 }
@@ -188,4 +188,39 @@ func TestConfigThatCannotBeGoIsRefusedByName(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The root package imports every group package unaliased, beside names of its
+// own: the embedded SDL is a package variable called sdl, a federated schema
+// imports fed, and NewSchema's parameter is opts. A group of one of those
+// names generated a file that did not compile.
+func TestAGroupNamedLikeTheRootPackagesOwnNamesStillCompiles(t *testing.T) {
+	for _, stem := range []string{"sdl", "opts"} {
+		if got := sanitizeGroup(stem, "graph", false); got == stem {
+			t.Errorf("sanitizeGroup(%q) = %q, which the generated root package already uses", stem, got)
+		}
+	}
+	// fed is imported only by a federated schema. Renamed everywhere, a
+	// schema with a fed.graphql and no federation lost a package it had.
+	if got := sanitizeGroup("fed", "graph", true); got == "fed" {
+		t.Error("a federated schema's root package imports fed; a group of that name collides")
+	}
+	if got := sanitizeGroup("fed", "graph", false); got != "fed" {
+		t.Errorf("sanitizeGroup(%q) without federation = %q, want it left alone", "fed", got)
+	}
+	if testing.Short() {
+		t.Skip("skipping go vet subprocess")
+	}
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{
+		"schema/sdl.graphql":  "type Thing { id: ID! }\ntype Query { things: [Thing!]! }\n",
+		"schema/opts.graphql": "type Opt { id: ID! }\nextend type Query { opts: [Opt!]! }\n",
+	})
+	writeTempModule(t, dir)
+	if err := Generate(context.Background(), Config{
+		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	goBuild(t, dir)
 }

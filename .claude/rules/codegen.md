@@ -318,6 +318,42 @@ offer a field tagged `json:"-"` -- ent writes that on every `Sensitive()` column
 bound by its Go name -- and matches a json tag in key order, where ranging the map picked a
 different one of two fields sharing a tag from one generate to the next.
 
+**`Config.Wire` writes `wire.go`: `Wire(d)`, every group's bindings over the Resolver its
+constructor builds from one dependencies value.** Something has to construct each group's
+implementation and hand the list to `NewSchema`. By hand that is a line per group to keep in
+step with the schema; through uber/fx it is reflection at start-up -- about 50 µs a provider
+measured, 15 ms at 300 single-provider groups and 41 ms at 800 -- and a group left out is found
+when the process starts. gqlc knows every group and, from `Scaffold`, where its implementation
+is, so it writes the list: a group whose constructor is missing or takes something else does
+not compile, and nothing is resolved at run time. Requests cost the same either way (19.3 µs,
+139 allocations, p=0.811 on `examples/veloxfx`): a container is not on the request path. Every
+group with a Resolver needs a scaffold target, or generation fails naming it. Scaffolding writes
+`NewType(d Deps)` with a new type and nothing where the constructor is there. **For a type that
+exists without one it writes nothing and says so in a note**: its fields are the author's, so a
+constructor could only panic, which compiles and stops the process at start-up -- the failure
+this feature moves to the compiler. The first version wrote that stub. **A type serving several
+groups is built once** and the one value handed to each (`resolver2 := resolver.NewResolver(d)`,
+named so as not to hide its package); a call per group made an instance per group. Imports are
+aliased per path, as model imports are, and the stub file's import of the dependencies package
+goes through `depsQualifier`: it reuses the name a file already imports the package under, and
+otherwise avoids every name in that file's scope, since a dependencies package called `user`
+meets the `user` model package there. The dependencies type may be in the generated package in
+the flat layout, where `Wire` names it unqualified; with several groups that is refused, as each
+implementation would import the root that imports it. In the flat layout an implementation
+outside the generated package is refused for the same reason. `examples/veloxfx` still uses fx,
+on purpose: it is the fx example.
+
+**`preset: gqlgen` in gqlc.yaml** is `modelDirective`, `fieldDirective`, `tagDirective`,
+`jsonTags`, `inputListPointers` and `structObjectFields` at once; a key written beside it wins,
+which is why those three booleans are pointers in `fileConfig`, and the directives are filled in
+field by field -- merged whole on the name, `modelDirective: {arg: type}` lost its `arg` and
+`fieldDirective: {name: goField}` was left with no argument, which switches it off silently. **`FieldNames` takes a schema
+coordinate** -- `User.userId`, `Query.user(byId:)` -- which names one field or argument and
+outranks a bare key (`fieldIdent`, `argIdent`). A group named `sdl` or `opts` is renamed like
+the other reserved names, since the root package declares each beside its unaliased group
+imports; `fed` is renamed only when `Federation` is on, which is the only time the root imports
+it -- renaming it always would have moved a package a non-federated schema already had.
+
 **A file gqlc stops writing is deleted, and only if it is gqlc's.** `pruneGenerated` removes
 every `.go` under `Output` that starts with `generatedHeader` and was not written this run,
 then any directory that left empty. Before it, `examples/veloxfx` carried four

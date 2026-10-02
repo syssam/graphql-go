@@ -35,16 +35,16 @@ func (b *builder) groupOf(typeName string) string {
 func (b *builder) groupOfUncached(typeName string) string {
 	if b.manifest != nil {
 		if g, ok := b.manifest.groups[typeName]; ok {
-			return sanitizeGroup(g, b.pkgName)
+			return sanitizeGroup(g, b.pkgName, b.cfg.Federation)
 		}
 	}
 	file := b.sdlFile(typeName)
 	if b.cfg.GroupFunc != nil {
 		if g := b.cfg.GroupFunc(typeName, file); g != "" {
-			return sanitizeGroup(g, b.pkgName)
+			return sanitizeGroup(g, b.pkgName, b.cfg.Federation)
 		}
 	}
-	return sanitizeGroup(fileStem(file), b.pkgName)
+	return sanitizeGroup(fileStem(file), b.pkgName, b.cfg.Federation)
 }
 
 func (b *builder) inGroup(typeName, group string) bool {
@@ -90,15 +90,15 @@ func (b *builder) rootFieldGroupUncached(root string, fd *ast.FieldDefinition) s
 		if g := b.cfg.RootFieldGroup(RootField{
 			Root: root, Name: fd.Name, SDLFile: file, ReturnType: ret, ReturnGroup: retGroup,
 		}); g != "" {
-			return sanitizeGroup(g, b.pkgName)
+			return sanitizeGroup(g, b.pkgName, b.cfg.Federation)
 		}
 	}
 	if b.cfg.GroupFunc != nil {
 		if g := b.cfg.GroupFunc(root, file); g != "" {
-			return sanitizeGroup(g, b.pkgName)
+			return sanitizeGroup(g, b.pkgName, b.cfg.Federation)
 		}
 	}
-	return sanitizeGroup(fileStem(file), b.pkgName)
+	return sanitizeGroup(fileStem(file), b.pkgName, b.cfg.Federation)
 }
 
 // groupField is one object field and the type declaring it.
@@ -201,7 +201,7 @@ func fileStem(path string) string {
 	return strings.TrimSuffix(base, filepath.Ext(base))
 }
 
-func sanitizeGroup(name, pkgName string) string {
+func sanitizeGroup(name, pkgName string, federation bool) string {
 	var b strings.Builder
 	for _, r := range strings.ToLower(name) {
 		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
@@ -224,11 +224,16 @@ func sanitizeGroup(name, pkgName string) string {
 		"main",
 		// Names the generated code already imports under: a group package
 		// called one of them redeclares it in every file that imports both.
-		"graphql", "context", "embed":
+		"graphql", "context", "embed",
+		// Names the root package declares beside its group imports: the
+		// embedded SDL, and the parameter NewSchema and ValidateSchema take.
+		"sdl", "opts":
 		s += "grp"
 	default:
-		// func.graphql would otherwise ask for `package func`.
-		if s == pkgName || token.IsKeyword(s) {
+		// func.graphql would otherwise ask for `package func`. fed is the
+		// federation package, which the root imports only when the schema
+		// is a subgraph; without that a fed.graphql keeps its package.
+		if s == pkgName || token.IsKeyword(s) || (federation && s == "fed") {
 			s += "grp"
 		}
 	}

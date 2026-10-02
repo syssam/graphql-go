@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	goast "go/ast"
 	"go/parser"
 	"go/token"
 	"io"
@@ -155,7 +156,9 @@ type Config struct {
 	// exactly one such name, with no sibling it can collide with, may prefer the plain name
 	// gqlgen gave it and its callers already use: `_lastUpdatedAt: LastUpdatedAt`.
 	//
-	// An entry applies wherever the SDL name appears, as a field, an input field or an argument.
+	// A bare key applies wherever the SDL name appears, as a field, an input field or an argument.
+	// A key written as a schema coordinate -- "User.userId", or "Query.user(byId:)" for an
+	// argument -- applies to that one alone, and outranks a bare key for the same name.
 	// The value must be an exported Go identifier, and two names that end up identical on one
 	// type are refused with their SDL coordinates, as any other collision is.
 	FieldNames map[string]string
@@ -245,6 +248,23 @@ type Config struct {
 	// other across groups; a cycle among them falls back to one shared model
 	// package, as cyclic inputs do.
 	StructObjectFields bool
+	// Wire writes wire.go into Output: one function, Wire(d), that constructs
+	// every group's Resolver from one dependencies value and returns their
+	// bindings for NewSchema. Empty means none.
+	//
+	// Something has to construct each group's implementation and hand the list
+	// to NewSchema. Written by hand that is a line per group to keep in step
+	// with the schema. Left to a dependency container it is reflection at
+	// start-up -- about 50 microseconds a provider, measured, so tens of
+	// milliseconds at a few hundred groups -- and a group left out is found
+	// when the process starts. gqlc knows every group and, from Scaffold,
+	// where its implementation is, so it writes the list: a group with no
+	// constructor does not compile, and nothing is resolved at run time.
+	//
+	// Every group with a Resolver needs a Scaffold target, and each
+	// implementation a constructor NewType(d Deps) beside it; scaffolding
+	// writes one with the type, and a stub where the type exists without it.
+	Wire Wire
 	// InputListPointers spells a list of input objects []*T instead of []T, as
 	// gqlgen did. Callers written against that shape test elements for nil and
 	// dereference them; a value slice breaks every one. Scalar and enum lists are
@@ -347,6 +367,14 @@ func checkGoConfig(cfg Config) error {
 			errs = append(errs, fmt.Errorf("codegen: Models[%q] = %q is not a Go type, written as import/path.Type", gql, expr))
 		}
 	}
+	if !cfg.Wire.IsZero() {
+		path, ref := splitModelExpr(cfg.Wire.Deps)
+		expr, err := parser.ParseExpr(ref)
+		_, selector := expr.(*goast.SelectorExpr)
+		if err != nil || !selector || path == "" || strings.ContainsAny(path, " \t\"`") {
+			errs = append(errs, fmt.Errorf("codegen: Wire.Deps = %q is not a Go type written as import/path.Type", cfg.Wire.Deps))
+		}
+	}
 	return errors.Join(errs...)
 }
 
@@ -399,6 +427,18 @@ type FieldDirective struct {
 
 // IsZero reports that no directive was named.
 func (d FieldDirective) IsZero() bool { return d.Name == "" || d.ForceResolverArg == "" }
+
+// Wire configures the generated Wire function.
+type Wire struct {
+	// Deps is the Go type every implementation's constructor takes, written
+	// as import/path.Type: the application's shared dependencies -- a
+	// database client, configuration, services. Its package must not import
+	// the generated one, which imports it.
+	Deps string
+}
+
+// IsZero reports whether Wire is not configured.
+func (w Wire) IsZero() bool { return w.Deps == "" }
 
 // TagDirective names an SDL directive that adds a struct tag to an
 // input-object field.

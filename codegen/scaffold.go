@@ -205,24 +205,74 @@ func (b *builder) scaffoldGroup(pkgs *pkgCache, name, group, target string) ([]s
 		}
 		fmt.Fprintf(&stubs, "func (r *%s) %s%s {\n\tpanic(%q)\n}\n", typ, m.name, m.signature, "not implemented: "+m.coord)
 	}
-	if stubs.Len() == 0 && declared {
-		return names, nil
-	}
-	body := stubs.String()
-	if !declared {
-		body = fmt.Sprintf("\n// %s implements the %s group's Resolver.\ntype %s struct{}\n\nvar _ %sResolver = (*%s)(nil)\n",
-			typ, name, typ, qual, typ) + body
-	}
-
 	file := filepath.Join(dir, identFrom(name)+".resolvers.go")
 	old, err := os.ReadFile(file)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
-	src := append(append([]byte{}, old...), body...)
-	imports, err := b.stubImports(body, alias, groupImport, !self && bytes.Contains(src, []byte(alias+".")))
+	imports, err := b.stubImports(stubs.String())
 	if err != nil {
 		return nil, err
+	}
+
+	// With Wire configured the implementation needs a constructor from the
+	// dependencies, which Wire calls. A new type is given one that keeps
+	// them, and one that is already there is left alone. A type that exists
+	// without one is the author's, with fields this run knows nothing about:
+	// a constructor written for it could only panic, which compiles and then
+	// stops the process at start-up, the failure Wire exists to turn into a
+	// compile error. So nothing is written, the build fails on the missing
+	// name, and a note says what to write.
+	fields, constructor := "{}", ""
+	if ctor := constructorName(typ); !b.cfg.Wire.IsZero() && !idx.funcs[ctor] {
+		depsPath, depsQual, depsType := b.wireDeps()
+		deps, here := depsType, false
+		if implImport, err := b.importPathOf(dir); err == nil && implImport == depsPath {
+			here = true
+		}
+		switch {
+		case declared:
+			if !here {
+				deps = depsQual + "." + depsType
+			}
+			if !idx.wanted[ctor] {
+				idx.wanted[ctor] = true
+				where := dir
+				if rel, err := filepath.Rel(b.dir, dir); err == nil {
+					where = rel
+				}
+				b.notef("wire: %s has no %s, which the generated Wire calls, so the build fails until there is one. Write func %s(d %s) *%s in %s.",
+					target, ctor, ctor, deps, typ, where)
+			}
+		default:
+			if !here {
+				qual, add, err := depsQualifier(old, depsPath, depsQual, idx, imports, alias, typ)
+				if err != nil {
+					return nil, fmt.Errorf("%s: %w", file, err)
+				}
+				if add {
+					imports = append(imports, importSpec{qual, depsPath})
+				}
+				deps = qual + "." + depsType
+			}
+			fields = " {\n\tdeps " + deps + "\n}"
+			constructor = fmt.Sprintf("\n// %s builds the %s group's Resolver from the application's dependencies.\n// The generated Wire calls it.\nfunc %s(d %s) *%s { return &%s{deps: d} }\n",
+				ctor, name, ctor, deps, typ, typ)
+			idx.funcs[ctor] = true
+		}
+	}
+	if stubs.Len() == 0 && declared {
+		return names, nil
+	}
+	body := constructor + stubs.String()
+	if !declared {
+		body = fmt.Sprintf("\n// %s implements the %s group's Resolver.\ntype %s struct%s\n\nvar _ %sResolver = (*%s)(nil)\n",
+			typ, name, typ, fields, qual, typ) + body
+	}
+
+	src := append(append([]byte{}, old...), body...)
+	if !self && bytes.Contains(src, []byte(alias+".")) {
+		imports = append([]importSpec{{alias, groupImport}}, imports...)
 	}
 	var out []byte
 	if len(old) == 0 {
@@ -285,6 +335,64 @@ type pkgIndex struct {
 	// declares, which an implementation scaffolded into that package must not
 	// reuse.
 	generated map[string]bool
+	// funcs is every top-level function the package declares, whoever wrote
+	// it: a constructor Wire calls is scaffolded only where its name is free.
+	funcs map[string]bool
+	// wanted is each constructor this run has already said is missing, so a
+	// type serving several groups is reported once.
+	wanted map[string]bool
+}
+
+// depsQualifier is the name a resolvers file refers to the dependencies
+// package under, and whether the file still needs the import. A file that
+// imports the package already keeps its own name for it. Otherwise the
+// preferred name is used unless something in the file's scope has it: another
+// import -- a group's model package is named after the group, and so may the
+// dependencies package be -- or a name the package declares.
+func depsQualifier(old []byte, depsPath, preferred string, idx *pkgIndex, imports []importSpec, alias, typ string) (qual string, add bool, err error) {
+	taken := map[string]bool{alias: true, typ: true, "d": true}
+	local := func(im importSpec) string {
+		if im.name != "" {
+			return im.name
+		}
+		// An import with no name is known by its package's, which is its last
+		// path element by convention and by nothing gqlc can check.
+		elems := strings.Split(im.path, "/")
+		last := elems[len(elems)-1]
+		if isMajorVersion(last) && len(elems) > 1 {
+			last = elems[len(elems)-2]
+		}
+		return identFrom(last)
+	}
+	if len(old) > 0 {
+		f, err := parser.ParseFile(token.NewFileSet(), "", old, parser.ImportsOnly)
+		if err != nil {
+			return "", false, err
+		}
+		for _, spec := range f.Imports {
+			im := importSpec{path: strings.Trim(spec.Path.Value, "\"`")}
+			if spec.Name != nil {
+				im.name = spec.Name.Name
+			}
+			if im.path == depsPath && im.name != "_" && im.name != "." {
+				return local(im), false, nil
+			}
+			taken[local(im)] = true
+		}
+	}
+	for _, im := range imports {
+		taken[local(im)] = true
+	}
+	for _, names := range []map[string]bool{idx.declared, idx.funcs, idx.generated} {
+		for n := range names {
+			taken[n] = true
+		}
+	}
+	qual = preferred
+	for n := 2; taken[qual]; n++ {
+		qual = fmt.Sprintf("%s%d", preferred, n)
+	}
+	return qual, true, nil
 }
 
 // add records the Resolver methods of typ as declared, after its stubs and,
@@ -305,7 +413,7 @@ func (p *pkgIndex) add(pkg, typ string, sigs []resolverSig) {
 // indexPackage parses dir's non-test files once. A directory that does not
 // exist yet is an empty package.
 func (b *builder) indexPackage(dir string) (*pkgIndex, error) {
-	idx := &pkgIndex{dir: dir, methods: map[string]map[string]bool{}, declared: map[string]bool{}, generated: map[string]bool{}}
+	idx := &pkgIndex{dir: dir, methods: map[string]map[string]bool{}, declared: map[string]bool{}, generated: map[string]bool{}, funcs: map[string]bool{}, wanted: map[string]bool{}}
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return idx, nil
@@ -364,6 +472,7 @@ func (b *builder) indexPackage(dir string) (*pkgIndex, error) {
 					}
 					idx.methods[recv][d.Name.Name] = true
 				} else {
+					idx.funcs[d.Name.Name] = true
 					top(d.Name.Name)
 				}
 			case *goast.GenDecl:
@@ -453,14 +562,11 @@ func receiverName(e goast.Expr) string {
 
 type importSpec struct{ name, path string }
 
-// stubImports is what the stubs refer to: the generator's own import block
-// for the types, which already knows each qualifier's path, plus the group
-// package under alias for its args structs and Resolver, when they are used.
-func (b *builder) stubImports(body, alias, groupImport string, usesGroup bool) ([]importSpec, error) {
+// stubImports is what the stubs' types refer to: the generator's own import
+// block, which already knows each qualifier's path. The group package, for
+// its args structs and Resolver, is the caller's to add.
+func (b *builder) stubImports(body string) ([]importSpec, error) {
 	var out []importSpec
-	if usesGroup {
-		out = append(out, importSpec{alias, groupImport})
-	}
 	block := b.importBlock(body, "")
 	if block == "" {
 		return out, nil

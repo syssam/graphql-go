@@ -208,6 +208,36 @@ marked DO NOT EDIT; so is a helper of yours in that package named like
 something gqlc emits, with the file it is in. Models stay in `model/<group>`: models of different groups
 refer to each other, and one package each would import in a circle.
 
+`wire` writes one more file, `graph/wire.go`, with a function that constructs
+every group's implementation and returns their bindings:
+
+```yaml
+scaffold:
+  product: graph/product.Handler
+  order: graph/order.Handler
+wire:
+  deps: example.com/app/internal/deps.Deps
+```
+
+```go
+schema, err := graph.NewSchema(graph.Wire(deps.Deps{DB: db})...)
+```
+
+`Deps` is a type of yours holding what resolvers need -- a database client,
+configuration, services. Each implementation has a constructor from it,
+`NewHandler(d deps.Deps) *Handler`, which scaffolding writes with the type. For
+a type you wrote yourself it writes nothing: gqlc does not know its fields, so
+the build fails on the missing constructor and a note gives the signature to
+write. A type that implements several groups is constructed once and shared. A
+group with a Resolver and no scaffold target fails generation. Nothing is
+looked up when the process starts, so there is no container to run and no
+group to forget. The package holding `Deps` must not import `graph`, which
+imports it.
+
+`preset: gqlgen` is the six keys a schema arriving from gqlgen needs, at once --
+`modelDirective`, `fieldDirective`, `tagDirective`, `jsonTags`,
+`inputListPointers`, `structObjectFields` -- and a key written beside it wins.
+
 `codegen.Config` also offers `Manifest` (explicit bindings), and Go functions
 where these keys take a rule; call `codegen.Generate` from a small program for
 those. An unknown key in `gqlc.yaml` is an error rather than being ignored.
