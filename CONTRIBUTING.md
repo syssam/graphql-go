@@ -8,8 +8,8 @@ sh scripts/gate.sh -short   # skip the slow subprocess and load tests
 ```
 
 Run it before opening a pull request. `go test ./...` reaches one module and
-this repository has four — `benchmarks/`, `compare/` and `lint/` are outside
-the root module, so a root-only run reports success while testing none of them.
+this repository has five — `benchmarks/`, `compare/`, `lint/` and
+`examples/veloxfx/` are outside the root module, so a root-only run reports success while testing none of them.
 
 `-race` is not optional. The DataLoader N+1 race was caught 4 times in 40 runs
 with it and 0 times in 40 without: the detector perturbs scheduling enough to

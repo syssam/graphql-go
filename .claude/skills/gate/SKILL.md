@@ -1,6 +1,6 @@
 ---
 name: gate
-description: Run every gate this repository has (all four modules, API surface, allocation baseline, lint, gqlvet) and report the evidence. Use before claiming a change is clean, before committing, or when asked whether the tree passes.
+description: Run every gate this repository has (all five modules, API surface, allocation baseline, lint, gqlvet) and report the evidence. Use before claiming a change is clean, before committing, or when asked whether the tree passes.
 argument-hint: "[-short] [fast]"
 ---
 
@@ -11,7 +11,7 @@ skipped, say so and why.
 `$ARGUMENTS` may contain `-short` (skip the slow subprocess and load tests) or `fast` (steps 1-3
 only).
 
-1. **Every module**, not only the root. `go test ./...` reaches one module of four.
+1. **Every module**, not only the root. `go test ./...` reaches one module of five.
    ```sh
    [ -d compare/schema ] || (cd compare && go run gen.go -n 25)
    GATE_REQUIRE_ALL=1 sh scripts/gate.sh      # append -short if requested

@@ -60,7 +60,7 @@ jobs:
         run: cd compare && go run gen.go -n 25
 
       # scripts/gate.sh walks every go.mod. go vet and go test reach only the
-      # module they run in, and this repository has four; a root-only run
+      # module they run in, and this repository has five; a root-only run
       # reports success while testing none of benchmarks, compare or lint.
       # GATE_REQUIRE_ALL turns the skip above into a failure, so dropping the
       # generate step cannot quietly take compare out of the gate again.
@@ -131,9 +131,9 @@ jobs:
       # them the typecheck fails before any linter runs.
       - name: Generate compare fixtures
         run: cd compare && go run gen.go -n 25
-      # The action lints the directory it runs in, and this repository has four
+      # The action lints the directory it runs in, and this repository has five
       # modules. Without this it linted the root and reported success, the same
-      # shape as `go test ./...` reaching one module of four: benchmarks/ was
+      # shape as `go test ./...` reaching one module of five: benchmarks/ was
       # carrying 18 findings under this very config and compare/ 4, neither ever
       # asked. The root .golangci.yml is found by searching upward, so the
       # policy is the same in each.

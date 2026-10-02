@@ -21,8 +21,16 @@ gqlparser's module, `TestFieldsCanMergeAgreesWithGqlparserRandom` 20 000 generat
 `FuzzFieldsCanMerge` the same differential. gqlparser compares untyped fields by name and
 treats a composite type as conflicting with nothing, so its relation is not transitive --
 `shapeConflict` compares leaf types with the first leaf, not the first field, for that reason.
-The fragment budget is a stopgap for the walker's linear `Fragments.ForName`; drop it when
-gqlparser indexes fragments.
+The fragment budget was written as a stopgap for the walker's linear `Fragments.ForName`, to be
+dropped when gqlparser indexed fragments. v2.5.59 does, and **the budget is still needed**:
+measured with it removed, the largest fragment DAG the token limit admits (1 362 fragments,
+58 KB) validates in 2.3 s under the large-document rules, because the rules still walk a
+fragment once per spread that reaches it. The count measures that too, so it stays. The
+linear merge rule is still needed as well: on the same release, 1 249 fragments spread once
+validate in 1.47 s under gqlparser's rule and 5 ms under the replacement. **Agreement includes list nullability**: gqlparser steps into a
+list without comparing the list's own non-null, the replacement compared it, and `[Int]!` against
+`[Int]` under one response name was valid until a document grew past 256 selections
+(`TestMergeValidityDoesNotDependOnDocumentSize`). The differential's schema had no `[T]!` field.
 
 **Plan compile (`plan.go`).** A document is parsed and validated once and
 cached in an LRU (`docEntry`), bounded by entry count and by query text
@@ -53,6 +61,29 @@ was wrong and the number replaces it; re-measure before believing either. The te
 so "concurrent" is exact. Each `(operation, @skip/@include variant)` compiles to an
 immutable `plan` with fragments flattened, directives constant-folded per variant (up to
 `maxCondVars` boolean variables), arguments pre-decoded and response keys pre-serialized.
+**Variants are bounded twice, because a client chooses them**: sixteen conditional variables
+are 65 536 plans of one query text, every one used to be kept while its document stayed
+cached, and the budget counted the text once -- 2 048 variants of a 17.8 KB query held 1.1 GB
+under an entry the cache reported as 17.8 KB. A document keeps at most `maxPlanVariants` (64)
+and each plan after its first is charged the query text again (`planCache.charge`), evicting
+other documents to make room; past either bound the variant is compiled for its request and
+not kept (`plan_variants_test.go`). **Pre-decoded means scalars and enums**: a list or
+input-object literal (or default) is validated at compile and decoded per request
+(`literalAggregates`), because decoded once it is one slice or struct shared by every request,
+and a resolver that sorted or defaulted its own arguments changed the next request's
+(`TestLiteralArgumentsAreNotSharedBetweenRequests`). A custom scalar that decodes a scalar
+literal to something holding a slice is still shared. **This is a trade and it costs**:
+`BenchmarkExecuteLiteralAggregateArgs`, a field given a three-element list and a two-field input
+object as literals, went from 511 ns to 1 413 ns a request, 560 B to 1 505 B and 7 allocations to
+24 (interleaved n=12, p=0.000), with `ExecuteConstantArgs`, `ExecuteVariableArgs`,
+`ExecuteUsers` and `ExecuteTypenameHeavy` not distinguishable. It is what the same query costs
+when it sends those arguments as variables, which is how a client that parameterises its
+queries sends them anyway. The alternative is to decode once and document that a resolver must
+not modify its arguments.
+The variant store also changed shape after a review of this change: a variant that will not be
+kept is compiled outside `docEntry.mu` (`TestAnUncachedVariantIsNotCompiledUnderTheDocumentLock`,
+which looks at the lock from inside a compile), since it is compiled again on every request for
+it and under the lock held up every other request for the document.
 `selectionSet` carries `byType` for abstract parents plus the scheduling counts the
 executor needs. Abstract parents expand through a memo keyed on `(parent type, selection
 set)`, so the expansion is a DAG rather than a tree — without it, 8 implementers selected 6
@@ -86,6 +117,13 @@ interceptor is the no-model fallback (`TestSubscriptionEventCostUsesTheConfigure
 `Float64` for `5e2` and `500.0`, which `rawInt64` coerces, or such a page is priced as
 `DefaultListSize` while the resolver receives the real one
 (`TestAFloatSpelledPageSizeCostsTheSameAsAnInteger`).
+
+**A variable's default is validated once per document** (`variableDefaultErrors`, in
+`parseDocument`). gqlparser checks a default's kind and not its value, so `$l: Int = 99999999999`
+ran the operation, sibling resolvers included, and failed whichever field used it, where the same
+literal as an argument is a validation error. **A list under a paid connection field is priced by
+its own page size when it names one** (`fieldCost`): it is then a second page rather than the
+connection's edges, and `items(first: 500)` used to cost what `items(first: 5)` did.
 
 **Operation interceptors wrap the engine's own limit check; they do not follow it.**
 `rejectIfOverLimit` and `attachCost` are the innermost layer of `opChain`
@@ -165,10 +203,11 @@ budget an API would set for its own queries. So `__schema` and `__type` count as
 `costWeight` -- nor does any field of a `__` meta type, which only introspection reaches.
 What bounds introspection instead is graphql-js's rule: a path may pass through at most two of
 `fields`, `interfaces`, `possibleTypes`, `inputFields`. **gqlparser ships that rule in its
-default set without a memo**: it re-walks every path through fragment spreads, so 24 fragments
-each spreading the next twice -- 1.1 KB -- cost 2.0 s of validation, doubling per fragment, and
-it ran with introspection disabled too. `maxIntrospectionDepthRule` memoizes on (fragment,
-depth) and `ReplaceRule`s it; with introspection disabled it is removed, since
-`NoIntrospection` refuses anyway. Every half fails a test when broken, the memo and the
-replacement both through `TestMaxIntrospectionDepthIsLinearInFragments` (41 fragments, 10 s
-budget). gqlgen uses the same gqlparser rule set.
+default set, and until v2.5.59 without a memo**: it re-walked every path through fragment
+spreads, so 24 fragments each spreading the next twice -- 1.1 KB -- cost 2.0 s of validation,
+doubling per fragment, with introspection disabled too. This repository replaced it with a
+memoized copy for as long as that was true. v2.5.59 memoizes it upstream, every introspection
+test passes on gqlparser's own rule, and the copy is gone; with introspection disabled the rule
+is still removed, since `NoIntrospection` refuses anyway.
+`TestMaxIntrospectionDepthIsLinearInFragments` (41 fragments, 10 s budget) now guards the
+dependency rather than a copy of it.

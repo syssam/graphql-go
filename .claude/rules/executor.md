@@ -20,6 +20,36 @@ offset rather than building an intermediate value tree. `errNonNull` is the inte
 for "null reached a non-null position"; `indexedError` carries a list index so error paths
 can be reconstructed.
 
+**Recovery covers user code, not only the resolver call.** `callLeaf`/`callResolve` turn a
+resolver panic into a field error. Everything else a request can reach -- interceptors, the
+presenter, a scalar's unmarshal at plan compile or variable coercion, an `InputField` setter,
+a `TypeResolver`, the body of an `iter.Seq` -- is caught in `Execute` and `Subscribe`
+(`panicResponse`) and costs the operation one `INTERNAL_SERVER_ERROR` with no data. It used to
+be left to "the transport's recover", and `gqlwsproto` runs each operation on a goroutine with
+none, so a custom scalar written `v.(string)` and one `{ f(d: 5) }` ended the process
+(`execute_panic_test.go`, `transport/gqlws/panic_test.go`).
+
+**A panic on a scheduled field's goroutine travels with its own stack** (`taskPanic`). The group
+that waits for the task raises it again, and `Execute` recovers it there, where `debug.Stack()`
+is the wait's; the log line is the only record once the process no longer dies, so it carries
+the stack taken where the panic happened
+(`TestAPanicOnAScheduledFieldIsLoggedWithItsOwnStack`). **The actual cost is summed in 64 bits and
+clamped** (`addActualCost`): inferring a wrap from a negative result was wrong for a negative
+`FieldWeight`, whose total is legitimately negative.
+
+**`__typename` reports to the response limit like any other field.** Its fast path returned
+before the `OverLimit` checkpoint, so a selection made only of `__typename` aliases reported
+nothing: a lazy list was pulled to its end and the writer reached 525 times the limit before
+`finishData` refused it (`TestTypenameOnlySelectionStopsAtTheResponseLimit`).
+
+**A typed nil at an abstract position is null before a `TypeResolver` sees it**
+(`concreteValue`). Without a resolver the Go type decided and the nil check followed; with one
+the resolver ran first, on the nil, and the usual resolver is a method call on the value
+(`TestATypedNilIsNullBeforeTheTypeResolverSeesIt`). **The actual cost saturates** at `MaxInt32`
+like every other cost sum: it is 32 bits for `execState`'s padding and three fields weighing
+2^30 wrapped it negative, which `ext/throttle` refunded. `float32` is written with its own
+shortest digits (`jsonw.Float32`), not widened to `0.10000000149011612`.
+
 **Three per-request allocations that were there only because nobody looked** (interleaved
 n=14, sec/op unchanged on every one of them; allocation counts are the figure):
 
@@ -63,7 +93,7 @@ nullable or not (`writeField`, `writeList`, and a check after each concurrent gr
 that, a nullable field or element turned the failure into a null and traversal went on, so a
 lazy list of nullable fields was pulled to the end and the root writer reached 229 times the
 limit. A concurrent list still drains its source into a slice before spawning, which predates
-the limit. **A concurrent list must still spawn every element after a trip**: `pushWave` has
+the limit. **A concurrent list must still spawn every element after a trip**: `newTaskGroup` has
 announced them all and a loader flushes only once every announced task has begun, so breaking
 out of the spawn loop stranded every parked `Load` and the request hung until its deadline,
 holding concurrency slots shared by every request on the executor
@@ -177,7 +207,7 @@ nothing inside a pure field, interceptor or not). A registered interceptor still
 `FieldContext` per field; an observer builds none. `Resolve`/`ResolveArgs` may do I/O and are scheduled concurrently, one goroutine each;
 the semaphore is a slot budget that `Stats` reports and a task never waits on, because a task waiting for a slot has not begun and its wave could never dispatch (`taskGroup`). `Inline()`/`Concurrent()` override per field. `loader.Loader` (`loader/`)
 coalesces `Load` calls within one concurrent wave — the executor announces a wave before
-launching sibling tasks (`pushWave`), which is what makes DataLoader batching work.
+launching sibling tasks (`newTaskGroup`, which calls `announce`), which is what makes DataLoader batching work.
 **A batch's context comes from the Loads waiting on it, never from the first `Load` of the
 request** (`batchContext`): values from one waiter, cancelled only once every waiter has given
 up, deadline the latest of theirs. The scope used to keep the first `Load`'s context, so a

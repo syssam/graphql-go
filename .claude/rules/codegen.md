@@ -290,6 +290,34 @@ with the cache removed). The index is updated with what each group writes (`pkgI
 because two groups can share one type and the second must see the type the first declared;
 `TestScaffoldTwoGroupsIntoOneType` fails with `Resolver redeclared` without it.
 
+**gqlc refuses three things it used to do silently** (`filesafety_test.go`). Two sources with
+one base name: the SDL copies are embedded by glob from one directory and keyed by base name,
+so a `schema.graphql` per feature folder left one copy for both, the output compiled, and the
+schema failed at start-up on the dropped file's types. A Go file at a path it generates that
+does not carry its header: prune always read the header before deleting, writing went straight
+over the file (`readExisting`, checked for every file before any is written). And an SDL file
+in `Output/schema` that the globs do not name *when the sources are read from that directory*:
+there it is the author's, not a stale copy, and prune deleted it (`authoredSchemaFiles`); it is
+refused rather than kept because the root embeds the directory whole.
+
+**More that compiled wrong or not at all, each refused or fixed at generate time**
+(`review_edges_test.go`, `structfields_test.go`): a group named after a Go keyword, `main`, or a
+name the generated code imports under (`graphql`, `context`, `embed`) gets a `grp` suffix; an
+enum constant with the name of a type in the same model package is an error naming both; a
+`TagDirective` for `json` replaces the `JSONTags` tag instead of following it, since reflect
+answers a repeated key with the first; a control character in a tag key or value, and a
+non-string value, are refused with the field's coordinate; a `FieldNames` key that names nothing
+in the schema is refused, in sorted order; AutoBind leaves out a name two embedded structs
+promote from one depth, which Go rejects as ambiguous; `Output` may be absolute; and `gqlc -h`
+exits 0 while a stray positional argument is an error. A scalar or enum nested in more than two
+lists, or an input object in more than one, is refused with its coordinate: the engine has no
+binding for the position, so the output compiled and `NewSchema` then failed. A `Package` that
+does not end in a Go package name and a `Models` entry that is not a type expression are refused
+by name instead of as a formatter error over a file that was never written. AutoBind does not
+offer a field tagged `json:"-"` -- ent writes that on every `Sensitive()` column, and it was
+bound by its Go name -- and matches a json tag in key order, where ranging the map picked a
+different one of two fields sharing a tag from one generate to the next.
+
 **A file gqlc stops writing is deleted, and only if it is gqlc's.** `pruneGenerated` removes
 every `.go` under `Output` that starts with `generatedHeader` and was not written this run,
 then any directory that left empty. Before it, `examples/veloxfx` carried four

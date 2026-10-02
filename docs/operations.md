@@ -22,9 +22,10 @@ the right numbers depend on the schema.
 | `WithMaxTokens` | **15 000** | On already. Parsing and validation run before every limit above, on every document, valid or not; see "Document limits" below. |
 | `WithMaxNesting` | **100** | On already. Selection sets and input literals as written, not after fragments. |
 | `WithMaxErrors` | **1000** | On already. |
-| `WithPlanCacheBytes` | **16 MiB**, with `WithPlanCache` at **1024** entries | On already, and it is what stops distinct large queries from retaining gigabytes: a parsed document retains roughly 26x its query text. |
+| `WithPlanCacheBytes` | **16 MiB**, with `WithPlanCache` at **1024** entries | On already, and it is what stops distinct large queries from retaining gigabytes: a parsed document retains roughly 26x its query text. A document's `@skip`/`@include` variants count too: each plan kept after its first is charged the query text again, and at most 64 are kept per document. |
 | `apq.WithMaxBytes` | **16 MiB** | On already. Any client can register any query it can hash, so an entry count alone lets 1000 entries of 1 MiB park a gigabyte. |
 | `gqlws.WithWriteTimeout` / `gqlfiber.WithWriteTimeout` | **10 s** | On already. It is what ends a WebSocket peer that stays connected but stops reading; pings do not. |
+| `gqlsse.WithWriteTimeout` | **10 s** | On already, and the same for an SSE subscriber: a handler parked in a write sees neither the drain nor its cancelled context, so without it a stalled reader holds its stream past `Shutdown`. `gqlfiber.WithWriteTimeout` does the same for its SSE streams. |
 
 ### Document limits
 
@@ -72,7 +73,12 @@ Two more that are not limits but belong in the same review:
   and stack go to `slog` and never to the client. A panicking DataLoader
   batch function fails every `Load` waiting on it the same way, and a panic
   in a subscription event's interceptors or presenter becomes one error event
-  rather than ending the process.
+  rather than ending the process. A panic anywhere else in `Execute` or in
+  opening a subscription -- an interceptor, a scalar's unmarshal or an input
+  setter decoding what the client sent, a `TypeResolver`, a lazy list's body --
+  costs that operation the same error and no data. It has to be caught there
+  rather than by the transport: a WebSocket runs each operation on a goroutine
+  of its own, where an unrecovered panic ends the process.
 
 ## Shutdown
 

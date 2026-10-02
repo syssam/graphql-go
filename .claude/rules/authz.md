@@ -141,7 +141,7 @@ hangs to its deadline — `TestInstanceDropDoesNotStrandTheWave`, in `loader/`),
 **`writeListGuarded` must stop at the first fatal failure** the way `writeList` does, or a
 denied non-null list keeps resolving elements into a buffer that is about to be rewound and
 appends one error per element, every one of them carrying the first element's index. `Null` is
-rejected at a non-null position by `valueNonNull` on the site, since an instance site has no
+rejected at a non-null position by `NonNull` on the site, since an instance site has no
 `Field` for the ordinary guard to read. **`AuthSite.ListElement` exists for the same reason**:
 an `ObjectAuthorizer` has to choose between `Drop` and `Deny` for a row it withholds, `Drop` is
 valid only at a list element position, and with `Field` nil there was nothing to read it from —
@@ -168,7 +168,7 @@ is the one that notices.
 
 **`AuthSite` is 136 bytes where 120 would fit the next size class down, and that was
 measured and left alone.** `fieldalignment` reports the 11% waste; the three small fields
-(`Kind`, `leaf`, `valueNonNull`) sit apart because the struct is grouped by meaning and
+(`Kind`, `leaf`, `NonNull`) sit apart because the struct is grouped by meaning and
 godoc shows exported fields in declaration order. Before reordering it, note what the
 measurement said about the larger version of the same cost: `ScopeAuthorizer` and the
 argument-input walk used to range over `shape.sites` *by value*, copying all 136 bytes per
@@ -279,3 +279,11 @@ n=14 (p=0.795). The cost -- a closure per `RedactRow` call and an allocation per
 falls only on its users. It is valid exactly where `Redact` is; accepting it on a composite
 field would serve the field unguarded, since the composite path never consults redaction
 (`TestRedactRowOnlyOnLeafFields`).
+
+**`AuthSite.NonNull` is exported, for the same reason `ListElement` was added.** `Null` is the
+outcome that gives nothing away -- a withheld row answers as a missing one does -- and is valid
+only at a nullable position, which a policy could not tell from the site. Without it the only
+safe choice at a single position was `Deny`, whose error is an existence oracle whatever it
+says; `examples/storefront` made exactly that claim and did not meet it
+(`TestSomeoneElsesOrderAnswersLikeOneThatDoesNotExist`). The shape walk's `seen` memo is now
+pinned by `TestAuthShapeWalkIsLinearInThePlanDAG`, which fails at 11 s with the memo removed.

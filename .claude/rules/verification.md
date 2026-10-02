@@ -19,7 +19,7 @@ The short version is in the root CLAUDE.md. This is the evidence behind it.
 
 **Watch for measurements that succeed while covering less than they look.** A red build is
 easy; a command that used to be complete, quietly stopped being, and still prints success is
-not. Ten instances now, all found by asking what a passing result would look
+not. The instances so far, all found by asking what a passing result would look
 like if the thing under test were broken:
 
 - `go test ./...` printed `ok` for every package it knew about, and had silently stopped
@@ -118,6 +118,14 @@ like if the thing under test were broken:
   input comes out of the same estimate as the constant it checks will always agree with it.
   It now pins the response measured on the real schema, and fails at 8 MiB naming the
   capacity reached.
+
+**`gqlvet` matches on the key, not on the receiver's text.** It compared both, so an alias, a
+field holding the context or a second `OperationFrom` hid the pair; it rendered every composite
+literal as `?`, so two different `struct{}` keys were one; and a guard that compared a function
+literal with a block walked into closures and reported them twice. Its one test also overrode
+the type name it ships with, so a rename of `OperationContext` would have left it matching
+nothing and reporting a clean tree; `TestContextRaceWithTheShippedContextType` runs against a
+stand-in at the real import path.
 
 The habit that catches these is breaking the thing on purpose and requiring the test to
 fail. If it still passes, the test was agreeing with the code rather than checking it.

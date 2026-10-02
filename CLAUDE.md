@@ -134,7 +134,7 @@ first plan compile, and the request path writes JSON straight into a pooled buff
 Do not act on a CPU profile alone: `jsonw.(*Writer).overLimit` looks like the hot spot and
 measurably is not (`executor.md`).
 
-The root package is ~32 files on purpose, because Go scopes encapsulation to the package; see
+The root package is ~36 files on purpose, because Go scopes encapsulation to the package; see
 `docs/root-package.md` before proposing a split.
 
 ## Conventions

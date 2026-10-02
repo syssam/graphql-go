@@ -339,7 +339,7 @@ Nothing is tagged yet. [`docs/api-stability.md`](docs/api-stability.md) records
 what the promise will cover, which parts are still expected to move, and the
 one coupling that decides this library's major version for it: `gqlparser/v2`'s
 AST is part of the public API, so a gqlparser v3 means a major release here.
-`TestPublicAPISurface` pins all 413 exported declarations against
+`TestPublicAPISurface` pins all 448 exported declarations against
 [`docs/public-api.txt`](docs/public-api.txt), so an API change is a failing
 test rather than a code review someone has to catch.
 

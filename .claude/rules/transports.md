@@ -204,6 +204,59 @@ is about a different guard entirely. `TestWriteFailureRetiresTheSubscription` ho
 directly, using idle under `synctest` as the observable because polling for a `MaxSubs`
 refusal races the pump and reads whichever answer arrives first.
 
+**An operation is tracked by identity, not by its id** (`operation` in `gqlwsproto`). The
+protocol lets a client reuse an id the moment it has completed it, while the goroutine serving
+the first use is still running. `c.subs` was keyed by the bare id and `forget` deleted by it,
+so a completed query answered into the subscription that had reused its id, and a completed
+operation's terminal error deleted that subscription's entry: it kept running where `complete`
+could not reach it and `MaxSubs` did not count it (40 live on a cap of 2). `forget` and
+`finish` now compare the operation, and `runOnce` sends nothing once its context is cancelled
+(`reuse_test.go`, under `synctest`).
+
+**A response with errors and no data is 400 unless it is the server's failure**
+(`httpreq.ErrorStatus`, at every status decision in all six handlers). A panic or an unreachable
+policy backend leaves no data either, carries `INTERNAL_SERVER_ERROR`, and is 500: answered 400 it
+never reached 5xx alerting and told a client not to retry. `application/json` is still 200.
+
+**The SSE write deadline is taken off after each flushed write.** Left set it is a deadline on
+the stream: HTTP/2 resets a stream whose write deadline passes whether or not anything is being
+written, so a subscription quiet for longer than the timeout was reset, and on HTTP/1.1 the chunk
+that ends the response failed (`deadline_test.go`, both protocols). On Fiber the deadline lives on
+the connection and fasthttp does not reset it between responses, so a stream's connection is
+closed after it (`SetConnectionClose`) and its tail is bounded by one last deadline.
+
+**`gqlsse` sets a write deadline before every write** (`WithWriteTimeout`, 10 s, through
+`http.ResponseController`). A subscriber that stops reading parks the handler in a socket
+write, where it sees neither `drain.Closing()` nor its context, and the stream outlived
+`drain.Shutdown` and `http.Server.Shutdown` both (`stall_test.go`, a raw TCP client that reads
+the status line and nothing else). `gqlfiber`'s SSE stalled the same way and is bounded the same
+way, through the connection's own write deadline, since its writes go through fasthttp's pipe.
+
+**An SSE payload is written through `httpreq.EventData`**, which turns a line break into a
+further `data:` line. The engine writes compact JSON, but a custom scalar writes its own bytes
+and one built on `json.Encoder` ends them with a newline, which ended the event half way through
+the response on all three SSE handlers (`TestSSEFramesAPayloadThatContainsANewline`).
+**`gqlfiber` reads the body as sent** (`BodyRaw`), like the net/http handlers: Fiber's `Body()`
+decompresses, so a gzip body had two answers across transports, and a failed decode came back as
+Fiber's error text standing in for the body (`TestARequestBodyIsNeverDecompressed`).
+
+**`TestEquivalence` asserts literal answers for the cases it lists; `agreement_test.go` asks
+only that a family agrees with itself**, over forty request shapes it did not list, so a probe
+needs no expected answer to be worth adding. It found one divergence -- a GET with invalid
+percent-encoding was refused by net/http and passed to the parser by Fiber, fixed by reading
+every parameter through `httpreq.QueryValue` -- and the batching handlers, written twice, are
+compared the same way. Three things the handlers agreed on and were still wrong about are fixed
+in `httpreq`, where they exist once: `Negotiate` keeps a type refused with `q=0` refused when a
+wildcard follows; `AcceptsEventStream` reads the weight and lets the most specific range decide
+(it used to be two verbatim copies that ignored `q`); and `WriteBatch` replaces an entry that
+will not serialize with the fallback body instead of leaving the client `[{...},` under a 200.
+
+**What `DecorateContext` adds for the handshake is taken off again by `ClearContext`.** Both
+`RequestFrom` and `ConnFrom` are documented as available to a `ConnectFunc` and to nothing
+later, but the idiomatic hook returns a context derived from the one it was given, which became
+the parent of every operation: the upgrade request, or on Fiber a recycled connection, reached
+every resolver (`TestTheUpgradeRequestDoesNotReachOperations`).
+
 `internal/gqlwsproto` is `graphql-transport-ws` extracted so `gqlws` and `gqlfiber`'s
 WebSocket layer both drive it. It locks around every write: `coder/websocket` serializes
 writers itself, but `fasthttp/websocket` (a gorilla derivative) does not, and concurrent

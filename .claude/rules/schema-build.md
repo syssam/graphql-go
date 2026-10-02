@@ -105,6 +105,27 @@ usable, so a directive with one usable location among several still builds, and 
 lists the declared locations rather than making the author guess which two are applied
 (`TestADirectiveBindingThatCanNeverWrapIsABuildError`).
 
+**A bound directive left on an interface's field alone is a build error too**
+(`rejectDirectivesLeftOnTheInterface`). `FIELD_DEFINITION` is an applied location and an
+interface field is written at it, but only an object's field has an executor to wrap, so
+`@adminOnly` on `Node.secret` wrapped nothing and `User.secret` was served without it. Writing
+it on the implementing field, or on the object, is what runs, and then the schema builds. Not
+covered, and still silent: a bound directive on an interface *type*, an input field or an
+argument when one of its declared locations is usable -- the paragraph above is why.
+
+**Four more mismatches are build errors now, each found by a review rather than by a user.**
+`Enum` collected the first bad value it met while ranging its map, so the message changed run
+to run and named one of several; it reports every undefined and every doubly-mapped value,
+sorted (`TestEnumBuildErrorsNameEveryValueInOneOrder`). A second `Scalar`, `Enum` or
+`*Marshaler` for the same `(GraphQL type, Go type)` replaced the first silently while the first
+kept validating variables, so option order changed behaviour; `claimLeaf` refuses it, and
+several Go types behind one GraphQL type still build (`leaf_duplicate_test.go`). An `InputField`
+setter for a struct other than the one the binding is for, and a `TypeResolver` whose parameter
+cannot take every value of the binding's type, both asserted at request time
+(`build_mismatch_test.go`). **Not a build error, on purpose**: one Go type bound to two members
+of a union with no `TypeResolver`. `TestSharedGoTypeOnTwoObjects` pins that as a request-time
+error, since the concrete positions of both objects still work.
+
 **Schema build scales with the width of the widest type, not the type count.** 4800 types build
 in 78 ms and retain 33 MB; narrowing that schema's 4800-field Query root to 100 fields takes the
 identical type set to 34 ms, because gqlparser validates a k-field type in O(k^2).

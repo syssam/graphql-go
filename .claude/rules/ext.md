@@ -146,3 +146,24 @@ that context is the parent's, and ending it closed the operation span before its
 (`TestResolverSpansSkipPureFields`, which fails with either half broken).
 `examples/veloxfx` wires it with `otelsql` and `TestScenarioTracesReachFromFieldToSQL` checks
 every statement of a page lands under a resolver span, on SQLite and PostgreSQL.
+
+**Review fixes, 2026-10-02.** `ext/otel`: an operation's name is client text, so it is a metric
+attribute only with `WithOperationNameMetrics(true)` and the `operationName` of a request that
+never parsed is never one -- 3 000 distinct names filled the SDK's 2 000-series limit and pushed
+real operations into the overflow series. A subscription event is recognised by the absence of
+the request layer's flag, not by `!span.IsRecording()`, which is false under any instrumented
+caller: events then got no span and renamed the caller's
+(`TestSubscriptionEventsGetTheirOwnSpansUnderACallersSpan`). `ext/throttle`: the refund clamps
+a negative actual cost as the charge already clamped a negative quote. `ext/apq`: an entry is
+charged its text plus 256 bytes, since an unbounded-count cache admitted millions of five-byte
+queries under 16 MiB of "text". `relay.FromSlice` holds cursor offsets inside the list before
+adding to them. `fed`: a type whose every `@key` is `resolvable: false` is not an entity here.
+
+**`fed.Resolver[E]` is checked against the entity's bound Go type at `NewSchema`**, through
+`internal/bindhook`: the builder is the only thing that knows what an object is bound to, a
+schema option is a closed type only the root package can make, and the root package leaves the
+constructor in the internal package at init for `fed` to call. `_Entity` resolves by Go type, so
+a `User` resolver returning `*product` was not an error anywhere -- a `User` representation was
+answered as a `Product`. A resolver over `struct{}` is exempt, because that is the stand-in
+gqlc's generated `ValidateSchema` passes for every `@key` type.
+

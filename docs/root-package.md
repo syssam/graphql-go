@@ -7,7 +7,7 @@ Checked rather than assumed: `authz_shape.go` touches seven of them (`selectionS
 `planField`, `objectType`, `fieldDef`, `abstractType`, `schemaBuilder`, `plan`), `authz.go`
 and `authz_exec.go` four each, `limits.go` three, `introspection.go` one. Moving authorization
 out — 1,664 lines, 17% of root — would mean exporting the plan compiler's internals or
-re-creating `AuthSite`'s unexported fields (`leaf`, `argType`, `argValue`, `valueNonNull`)
+re-creating `AuthSite`'s unexported fields (`leaf`, `argType`, `argValue`)
 through constructors, which is strictly worse than the file prefix it has now. `authz_input.go`
 is the one exception, with no engine coupling at all; it is the natural seam if a split is
 ever forced, and nothing else is.

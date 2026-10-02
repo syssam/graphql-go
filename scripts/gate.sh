@@ -11,7 +11,7 @@
 #
 # compare/ needs its fixtures generated before its tests can run:
 #
-#   cd compare && go run gen.go -n 200
+#   cd compare && go run gen.go -n 25
 #
 # Without them the script reports compare as skipped rather than failing, since
 # a missing fixture is not a broken build. Set GATE_REQUIRE_ALL=1 to turn that
@@ -38,7 +38,7 @@ for m in $modules; do
 
   if [ "$m" = "compare" ] && [ ! -d "compare/schema" ]; then
     skipped="$skipped $name"
-    printf '%-12s skipped (run: cd compare && go run gen.go -n 200)\n' "$name"
+    printf '%-12s skipped (run: cd compare && go run gen.go -n 25)\n' "$name"
     continue
   fi
 

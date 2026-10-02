@@ -9,7 +9,7 @@ before a version number exists than after.
 
 ## What is covered
 
-Everything in [`public-api.txt`](public-api.txt): 413 exported declarations
+Everything in [`public-api.txt`](public-api.txt): 448 exported declarations
 across 15 importable packages, regenerated and compared by
 `TestPublicAPISurface` on every run. A change to any of them is a failing test
 and a visible diff in the commit that makes it, reported by symbol:
