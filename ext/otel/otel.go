@@ -60,10 +60,12 @@ type config struct {
 	// resolverSpans spans only the fields FieldInfo.Resolver marks.
 	resolverSpans bool
 	recordQuery   bool
-	duration      metric.Float64Histogram
-	errors        metric.Int64Counter
-	active        metric.Int64UpDownCounter
-	attrs         []attribute.KeyValue
+	// nameMetrics puts a parsed operation's name on the request metrics.
+	nameMetrics bool
+	duration    metric.Float64Histogram
+	errors      metric.Int64Counter
+	active      metric.Int64UpDownCounter
+	attrs       []attribute.KeyValue
 }
 
 // Option configures the instrumentation.
@@ -115,6 +117,18 @@ func WithResolverSpans(enabled bool) Option {
 // usually retained longer and read more widely than logs.
 func WithDocument(enabled bool) Option {
 	return func(c *config) { c.recordQuery = enabled }
+}
+
+// WithOperationNameMetrics adds graphql.operation.name to the request duration
+// and error metrics. It is off by default because the name is whatever the
+// client wrote: each distinct one is a new series, so an anonymous client can
+// fill the SDK's series limit, after which every operation it has not seen
+// yet lands in the overflow series. Turn it on where clients cannot choose
+// names -- behind a safelist such as ext/trusted. Spans carry the name either
+// way. The operationName of a request that never parsed is not a name at all
+// and is never a metric attribute.
+func WithOperationNameMetrics(enabled bool) Option {
+	return func(c *config) { c.nameMetrics = enabled }
 }
 
 // New returns the executor options that install the instrumentation.
@@ -188,7 +202,9 @@ func (c *config) interceptRequest(ctx context.Context, req *graphql.Request, nex
 	resp := next(ctx, req)
 	c.recordSpan(span, resp)
 	if !*recorded {
-		c.recordMetrics(ctx, resp, start, requestAttrs(req))
+		// No attributes: the operation never ran, so its type is unknown, and
+		// the operationName beside the document is unvalidated client text.
+		c.recordMetrics(ctx, resp, start, nil)
 	}
 	return resp
 }
@@ -205,8 +221,11 @@ func (c *config) interceptOperation(ctx context.Context, oc *graphql.OperationCo
 	name := oc.Operation.Name
 
 	// A subscription event never passed through interceptRequest, so it has no
-	// span of ours to rename and needs one of its own.
-	own := !span.IsRecording()
+	// span of ours to rename and needs one of its own. The flag that layer
+	// leaves in the context is what says so. Whether a span is recording does
+	// not: under an instrumented caller one always is, and it is the caller's.
+	flag, viaRequest := ctx.Value(recordedKey{}).(*bool)
+	own := !viaRequest
 	if own {
 		var sub trace.Span
 		ctx, sub = c.tracer.Start(ctx, spanName(kind, name), trace.WithSpanKind(trace.SpanKindServer))
@@ -234,11 +253,11 @@ func (c *config) interceptOperation(ctx context.Context, oc *graphql.OperationCo
 	resp := next(ctx, oc)
 
 	metricAttrs := []attribute.KeyValue{AttrOperationType.String(kind)}
-	if name != "" {
+	if name != "" && c.nameMetrics {
 		metricAttrs = append(metricAttrs, AttrOperationName.String(name))
 	}
 	c.recordMetrics(ctx, resp, start, metricAttrs)
-	if flag, ok := ctx.Value(recordedKey{}).(*bool); ok {
+	if viaRequest {
 		*flag = true
 	}
 	// A subscription event owns its span, so it also applies the outcome; on
@@ -314,13 +333,6 @@ func errorCount(resp *graphql.Response) int {
 		return 0
 	}
 	return len(resp.Errors)
-}
-
-func requestAttrs(req *graphql.Request) []attribute.KeyValue {
-	if req.OperationName == "" {
-		return nil
-	}
-	return []attribute.KeyValue{AttrOperationName.String(req.OperationName)}
 }
 
 // spanName follows the convention of "<type> <name>", falling back to the

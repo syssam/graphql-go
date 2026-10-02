@@ -120,8 +120,10 @@ func (t *limiter) intercept(ctx context.Context, oc *graphql.OperationContext, n
 	// Shopify charges what the query really cost and returns the rest. The
 	// quote has to guess how long every list is; the actual figure counted
 	// them, so refunding the difference is the honest charge.
-	if actual, measured := oc.ActualCost(); measured && actual < quoted {
-		available = t.refund(key, float64(quoted-actual))
+	// The actual cost is clamped the way the quote was: a negative one would
+	// refund more than was charged, refilling the bucket for running a query.
+	if actual, measured := oc.ActualCost(); measured && max(actual, 0) < quoted {
+		available = t.refund(key, float64(quoted-max(actual, 0)))
 	}
 	t.report(resp, available)
 	return resp

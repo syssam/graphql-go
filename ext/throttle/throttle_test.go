@@ -306,3 +306,35 @@ func TestNegativeQuoteIsNotCredited(t *testing.T) {
 		}
 	}
 }
+
+// The refund is what was charged less what the query really cost, and the
+// charge is clamped at zero. The actual cost was not, so a negative one
+// refunded more than had been charged and refilled a drained bucket with no
+// time passing.
+func TestNegativeActualCostRefundsNoMoreThanWasCharged(t *testing.T) {
+	now := time.Unix(0, 0)
+	weight := map[string]int{"Query.items": 30, "Item.id": -40}
+	e := newExec(t,
+		graphql.WithQueryCost(graphql.QueryCost{Actual: true, DefaultListSize: 1, FieldWeight: weight}),
+		throttle.New(throttle.Config{
+			MaximumAvailable: 100, RestoreRate: 0, Key: keyFunc, Now: fixedClock(&now),
+		}))
+
+	// Drain most of the bucket with a query whose cost is positive.
+	resp := e.Execute(shopCtx("shop-1"), &graphql.Request{Query: `{ a: items { __typename } b: items { __typename } }`})
+	if len(resp.Errors) > 0 {
+		t.Fatalf("errors: %v", resp.Errors)
+	}
+	before := status(t, resp)["currentlyAvailable"].(int)
+	if before >= 100 {
+		t.Fatalf("currentlyAvailable = %d after a costly query; the fixture charges nothing", before)
+	}
+
+	resp = e.Execute(shopCtx("shop-1"), &graphql.Request{Query: `{ items(first: 3) { id } }`})
+	if len(resp.Errors) > 0 {
+		t.Fatalf("errors: %v", resp.Errors)
+	}
+	if after := status(t, resp)["currentlyAvailable"].(int); after > before {
+		t.Fatalf("currentlyAvailable went from %d to %d on a query, with a restore rate of 0 and the clock frozen", before, after)
+	}
+}

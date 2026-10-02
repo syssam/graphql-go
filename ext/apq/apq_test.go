@@ -179,10 +179,13 @@ func TestHashIsHexSHA256(t *testing.T) {
 // 1000 entries of 1 MiB each hold a gigabyte of attacker-chosen text. The
 // cache is bounded by the text it holds as well.
 func TestCacheIsBoundedByBytes(t *testing.T) {
-	c := apq.NewCache(1000, apq.WithMaxBytes(10))
+	// An entry is charged its text and 256 bytes for what it holds besides,
+	// so this budget has room for two five-byte queries and not three.
+	const perEntry = 5 + 256
+	c := apq.NewCache(1000, apq.WithMaxBytes(2*perEntry))
 	c.Set("a", "12345")
 	c.Set("b", "12345")
-	c.Set("c", "12345") // 15 bytes: a must go
+	c.Set("c", "12345") // a third: a must go
 	if _, ok := c.Get("a"); ok {
 		t.Fatal("the least recently used entry survived going over the byte budget")
 	}
@@ -192,7 +195,7 @@ func TestCacheIsBoundedByBytes(t *testing.T) {
 		}
 	}
 
-	c.Set("huge", "12345678901")
+	c.Set("huge", strings.Repeat("x", 2*perEntry))
 	if _, ok := c.Get("huge"); ok {
 		t.Fatal("a query larger than the whole budget was stored")
 	}

@@ -49,6 +49,7 @@ ext/otel: func WithAttributes(attrs ...attribute.KeyValue) Option
 ext/otel: func WithDocument(enabled bool) Option
 ext/otel: func WithFieldSpans(enabled bool) Option
 ext/otel: func WithMeterProvider(mp metric.MeterProvider) Option
+ext/otel: func WithOperationNameMetrics(enabled bool) Option
 ext/otel: func WithResolverSpans(enabled bool) Option
 ext/otel: func WithTracerProvider(tp trace.TracerProvider) Option
 ext/otel: type Option func(*config)

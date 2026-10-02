@@ -175,8 +175,10 @@ const defaultMaxBytes = 16 << 20
 // CacheOption configures NewCache.
 type CacheOption func(*lru)
 
-// WithMaxBytes bounds the query text the cache holds, evicting the least
-// recently used queries to stay within it. A query larger than the whole
+// WithMaxBytes bounds what the cache holds, evicting the least recently used
+// queries to stay within it. An entry counts as its query text plus a fixed
+// 256 bytes for what it holds besides, so many small queries meet the budget
+// as surely as a few large ones. A query larger than the whole
 // budget is not stored; the request still runs. Zero or negative means no
 // byte limit. The default is 16 MiB.
 func WithMaxBytes(n int64) CacheOption {
@@ -215,17 +217,29 @@ func (c *lru) Set(hash, query string) {
 		c.order.MoveToFront(el)
 		return
 	}
-	n := int64(len(query))
+	n := entryCost(query)
 	if c.maxBytes > 0 && n > c.maxBytes {
 		return
 	}
 	c.index[hash] = c.order.PushFront(&entry{hash: hash, query: query})
 	c.bytes += n
 	for (c.size > 0 && c.order.Len() > c.size) || (c.maxBytes > 0 && c.bytes > c.maxBytes) {
-		oldest := c.order.Back()
-		e := oldest.Value.(*entry)
-		c.order.Remove(oldest)
-		delete(c.index, e.hash)
-		c.bytes -= int64(len(e.query))
+		c.removeOldest()
 	}
 }
+
+func (c *lru) removeOldest() {
+	oldest := c.order.Back()
+	e := oldest.Value.(*entry)
+	c.order.Remove(oldest)
+	delete(c.index, e.hash)
+	c.bytes -= entryCost(e.query)
+}
+
+// entryOverhead is what an entry holds besides its query text: the hash twice
+// (map key and entry), the list element, the entry and its map slot. About
+// 200 bytes measured; rounded up so the budget errs towards holding less.
+const entryOverhead = 256
+
+// entryCost is what a query is charged against the byte budget.
+func entryCost(query string) int64 { return int64(len(query)) + entryOverhead }
