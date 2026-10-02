@@ -7,7 +7,22 @@ sh scripts/gate.sh          # vet and test every module
 sh scripts/gate.sh -short   # skip the slow subprocess and load tests
 ```
 
-Run it before opening a pull request. `go test ./...` reaches one module and
+Run it before opening a pull request, and before pushing run what CI runs:
+
+```sh
+scripts/ci-local.sh                 # every CI job, on Linux, in Docker
+scripts/ci-local.sh test postgres   # only those
+scripts/ci-local.sh flake           # not in CI: the race suite ten times, shuffled
+```
+
+It needs Docker and nothing else. The gate on your own machine is one leg of
+CI's matrix; this is the Linux leg, which is where the tests that need a
+case-sensitive filesystem run, and the PostgreSQL job, which otherwise runs
+nowhere but CI. It reads its versions from `go.mod` and the workflow, so the
+two cannot disagree; a step added to `.github/workflows/ci.yml` belongs in the
+script as well.
+
+`go test ./...` reaches one module and
 this repository has five — `benchmarks/`, `compare/`, `lint/` and
 `examples/backoffice/` are outside the root module, so a root-only run reports success while testing none of them.
 

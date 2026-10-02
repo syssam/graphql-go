@@ -25,6 +25,7 @@ go test -race -run TestExecNestedLists .       # one test
 go test -short ./codegen                       # skip the ~20s subprocess compile tests
 sh scripts/gate.sh [-short]                    # vet + test EVERY module (there are five)
 GATE_REQUIRE_ALL=1 sh scripts/gate.sh          # and fail on a skipped module, as CI does
+scripts/ci-local.sh [job...]                   # every CI job on Linux in Docker; run before a push
 ```
 
 `go test ./...` reaches one module of five: `benchmarks/`, `compare/`, `lint/` and `examples/backoffice/` are separate
@@ -75,7 +76,7 @@ before/after once reported a strictly-cheaper change as 50% slower.
   correctly, so there is no behaviour to assert.
 - **Undo a deliberate break with a reverse edit, never `git checkout -- <file>` or
   `git restore`.** Those revert to HEAD and destroy uncommitted work. A hook blocks them.
-- **Watch for results that pass while covering less than they appear to.** Sixteen instances
+- **Watch for results that pass while covering less than they appear to.** Seventeen instances
   so far, each described in `verification.md`. The tooling ones: `go test ./...` skipping three
   modules, fuzz discovery that missed `internal/jsonw`, the gate skipping `compare/` in CI,
   lint reaching one module, a `govulncheck` built with an older Go exiting 0 having analyzed

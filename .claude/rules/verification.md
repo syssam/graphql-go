@@ -102,6 +102,14 @@ like if the thing under test were broken:
   loops came back swapped; an `ext/apq` restore left a stray blank line. Every one was found
   by `git diff`, none by a test. **Check the diff after undoing a break, not just that the
   suite is green.**
+- **A guard that could not see what it guarded against.** `scripts/ci-local.sh` copies the
+  tree into a Linux container as a tar archive, and macOS's tar writes a `._name` beside every
+  file with extended attributes; unpacked on Linux those are files, the generated packages embed
+  `schema/*.graphql`, and the first run failed every schema-building test. The fix was
+  `COPYFILE_DISABLE=1`, with a check that the archive held no `._` entry -- made by listing it
+  with the same tar, which folds those entries into the next one when it lists. Remove the fix
+  and the check stayed green. It runs where the archive is unpacked now, and was confirmed by
+  removing the fix.
 - **A break that hangs.** Removing the loader's key dedup leaves a second waiter on a key the
   queue carries once, and the test ran to the 600-second default timeout. Run a break that
   could deadlock with a short `-timeout`; the gqlwsproto and wave breaks after that were
@@ -129,6 +137,17 @@ stand-in at the real import path.
 
 The habit that catches these is breaking the thing on purpose and requiring the test to
 fail. If it still passes, the test was agreeing with the code rather than checking it.
+
+**`scripts/ci-local.sh` is CI's Linux leg and its PostgreSQL job, in Docker.** Before it the
+PostgreSQL job ran nowhere but CI, and the tests that need a case-sensitive filesystem ran
+nowhere on a Mac or a Windows machine. It copies the tree rather than mounting it (a bind mount
+keeps the host's case rules), builds its tools inside the container, waits for PostgreSQL over
+TCP, and **requires proof the suite ran on PostgreSQL**: with `BACKOFFICE_POSTGRES` unset or
+misspelled the same tests pass on SQLite, so the server has to have logged the tests'
+`CREATE DATABASE`s and no test may skip (confirmed by misspelling the variable: 44 passed, 0
+databases, reported as a failure). Versions are read from `go.mod` and the workflow. First full
+run, 2026-10-02: every job passed; five `codegen` tests skip on Linux and two others on macOS,
+so between the two every one runs.
 
 **Running `govulncheck` in `golang:1.27` settles the version question.** The trap above is a
 locally installed binary built with the wrong Go; a container pinned to the version in
