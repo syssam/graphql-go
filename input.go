@@ -359,6 +359,10 @@ func (ib *inputBinding) resolve(b *schemaBuilder) {
 
 // Args declares how a field's arguments are decoded into the Go struct A.
 // The same A may be shared by several fields with identical arguments.
+//
+// It is needed only to decode an argument differently, with InputField: an A
+// that FieldArgs or ResolveArgs names and no Args registers is derived from
+// the struct, which is all the empty Args[A]() does.
 func Args[A any](fields ...InputFieldOption) SchemaOption {
 	return schemaOptionFunc(func(b *schemaBuilder) {
 		bindArgs(b, reflect.TypeFor[A](), func() any { return new(A) }, fields)
@@ -384,6 +388,32 @@ func bindArgs(b *schemaBuilder, tA reflect.Type, newValue func() any, fields []I
 		}
 	}
 	b.reg.argsDecoders[tA] = &inputDecoder{goType: tA, newValue: newValue, argsBinding: ib}
+}
+
+// argsDecoderFor is the Args binding for tA: the one an Args option
+// registered, or one derived from the struct now. FieldArgs, ResolveArgs,
+// SubscribeArgs and DirectiveArgs each name the struct in their own signature,
+// and an empty Args[A]() adds nothing to that -- it derives every field -- so
+// requiring it was a second registration to forget. The derived binding is
+// held to the schema exactly as a registered one is, by build.
+//
+// A derived decoder makes its value through reflection, since no typed
+// constructor was handed over; that is one reflect.New per decoded value, on
+// a path that already reads the struct's fields reflectively.
+func (b *schemaBuilder) argsDecoderFor(tA reflect.Type) (*inputDecoder, error) {
+	if d := b.reg.argsDecoders[tA]; d != nil {
+		return d, nil
+	}
+	if tA.Kind() != reflect.Struct {
+		return nil, fmt.Errorf("arguments are decoded into a struct, and %s is not one", tA)
+	}
+	ib := &inputBinding{goType: tA}
+	for _, f := range autoInputFields(tA, false, nil) {
+		f.applyInput(ib)
+	}
+	d := &inputDecoder{goType: tA, newValue: func() any { return reflect.New(tA).Interface() }, argsBinding: ib}
+	b.reg.argsDecoders[tA] = d
+	return d, nil
 }
 
 // build resolves an Args binding against the argument definitions of the

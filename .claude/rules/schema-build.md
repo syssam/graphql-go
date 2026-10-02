@@ -160,9 +160,20 @@ hand-written `InputField` is arbitrary code and keeps declared order
 (`TestHandWrittenInputFieldsRunInDeclaredOrder`). An absent field's default and an absent
 required field are handled from a precomputed list (`TestAbsentInputFieldsKeepTheirMeaning`,
 which fails with either list emptied). `validInput` may refuse more than `validateInput`,
-never less. Replacing `encoding/json` for the variables map was measured and dropped: v2 into
-`any` with a `json.Number` hook was level with v1, and a `jsontext` token walk was -18% inside
-±22% noise with more bytes.
+never less. Swapping one JSON library for another for the variables map was measured and
+dropped: v2 into `any` with a `json.Number` hook was level with v1, and a `jsontext` token walk
+was -18% inside ±22% noise with more bytes. What paid was not going through a general decoder at
+all; see `internal/jsonr` in `executor.md`.
+
+**An argument struct nobody registered is derived** (`argsDecoderFor`). `FieldArgs`,
+`ResolveArgs`, `SubscribeArgs` and `DirectiveArgs` name the struct in their own signature, and
+an empty `Args[A]()` adds nothing to that -- it derives every field -- so requiring it was a
+second registration to forget, with an error ("no Args[...] registered") that did not say what
+to add. `Args[A]` is now only for decoding a field differently, with `InputField`. The derived
+binding is checked against the field's arguments exactly as a registered one is, by `build`, so
+a struct that does not fit is still a build error naming the argument
+(`args_derive_test.go`). A derived decoder makes its value with `reflect.New`, having been
+handed no typed constructor; that is on a path that already reads the struct reflectively.
 
 **A generic binding function carries only the typed closures; everything else is a
 non-generic function it calls** (`bindInput`, `bindArgs`, `bindObject`, `composeField`,

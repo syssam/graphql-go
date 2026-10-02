@@ -152,7 +152,8 @@ func Field[P, R any](name string, fn func(P) R, opts ...FieldSchedule) FieldOpti
 	})
 }
 
-// FieldArgs binds a pure field that takes arguments decoded into A.
+// FieldArgs binds a pure field that takes arguments decoded into A, a struct
+// matched to the arguments as for ResolveArgs.
 func FieldArgs[P, A, R any](name string, fn func(P, A) R, opts ...FieldSchedule) FieldOption {
 	return newFieldSpec[P, R](name, reflect.TypeFor[A](), true, opts, func(_ context.Context, p P, args any) (R, error) {
 		return fn(p, *args.(*A)), nil
@@ -168,8 +169,9 @@ func Resolve[P, R any](name string, fn func(context.Context, P) (R, error), opts
 	})
 }
 
-// ResolveArgs binds a resolver field that takes arguments decoded into A.
-// An Args[A] registration must be present in the same schema.
+// ResolveArgs binds a resolver field that takes arguments decoded into A, a
+// struct. Its fields are matched to the arguments as Args[A]() matches them;
+// register Args[A] only to decode one differently.
 func ResolveArgs[P, A, R any](name string, fn func(context.Context, P, A) (R, error), opts ...FieldSchedule) FieldOption {
 	return newFieldSpec[P, R](name, reflect.TypeFor[A](), false, opts, func(ctx context.Context, p P, args any) (R, error) {
 		return fn(ctx, p, *args.(*A))
@@ -240,9 +242,9 @@ func composeField(spec *fieldSpec, b *schemaBuilder, s *Schema, obj *objectType,
 		if len(def.Arguments) == 0 {
 			return fmt.Errorf("field %s: binding declares arguments %s but the field has none", coord, argsType)
 		}
-		ab := b.reg.argsDecoders[argsType]
-		if ab == nil {
-			return fmt.Errorf("field %s: no Args[%s] registered", coord, argsType)
+		ab, err := b.argsDecoderFor(argsType)
+		if err != nil {
+			return fmt.Errorf("field %s: %w", coord, err)
 		}
 		dec, err := ab.build(b, def.Arguments, coord)
 		if err != nil {

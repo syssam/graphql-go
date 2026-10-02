@@ -52,8 +52,9 @@ func SubscriptionRootDirective(names ...string) SchemaOption {
 	})
 }
 
-// DirectiveArgs binds a schema directive whose arguments decode into A.
-// Register Args[A] when A is not struct{}. Locations FIELD_DEFINITION and
+// DirectiveArgs binds a schema directive whose arguments decode into A, a
+// struct matched to them as Args[A]() matches a field's; register Args[A]
+// only to decode one differently. Locations FIELD_DEFINITION and
 // OBJECT are applied; an OBJECT directive wraps every field of that type. An
 // interface's field has no executor to wrap, so a bound directive written
 // there must also be written on each implementing object's field, and the
@@ -76,9 +77,9 @@ func DirectiveArgs[A any](name string, fn func(next FieldFunc, args A) FieldFunc
 			wrap: func(b *schemaBuilder, d *ast.Directive, def *ast.DirectiveDefinition, coord string) (func(FieldFunc) FieldFunc, error) {
 				var args A
 				if len(def.Arguments) > 0 {
-					tmpl := b.reg.argsDecoders[tA]
-					if tmpl == nil {
-						return nil, fmt.Errorf("directive @%s: no Args[%s] registered for its arguments", name, tA)
+					tmpl, err := b.argsDecoderFor(tA)
+					if err != nil {
+						return nil, fmt.Errorf("directive @%s: %w", name, err)
 					}
 					dec, err := tmpl.build(b, def.Arguments, "@"+name)
 					if err != nil {

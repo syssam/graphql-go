@@ -142,8 +142,6 @@ func newSchema(st *store) (*graphql.Schema, error) {
 			graphql.Field("title", func(n *Note) string { return n.Title }),
 			graphql.Field("body", func(n *Note) string { return n.Body }),
 		),
-		graphql.Args[noteArgs](),
-		graphql.Args[createNoteArgs](),
 		graphql.Query(
 			graphql.Field("notes", func(graphql.Root) []*Note { return st.Notes() }),
 			graphql.FieldArgs("note", func(_ graphql.Root, a noteArgs) *Note { return st.Note(string(a.ID)) }),

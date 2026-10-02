@@ -41,7 +41,7 @@ func Subscribe[R any](name string, fn func(context.Context) (<-chan R, error), o
 }
 
 // SubscribeArgs binds a subscription root field that takes arguments decoded
-// into A. An Args[A] registration must be present in the same schema.
+// into A, a struct matched to the arguments as for ResolveArgs.
 func SubscribeArgs[A, R any](name string, fn func(context.Context, A) (<-chan R, error), opts ...FieldSchedule) FieldOption {
 	return subscribeSpec[R](name, reflect.TypeFor[A](), opts, func(ctx context.Context, args any) (<-chan R, error) {
 		return fn(ctx, *args.(*A))

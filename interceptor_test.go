@@ -268,7 +268,12 @@ func TestSchemaDirectiveErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected errors")
 	}
-	for _, want := range []string{`Directive "missing": directive is not defined`, "no Args[graphql.prefixArgs] registered"} {
+	// prefixArgs is registered nowhere and is derived; only the unknown
+	// directive is an error.
+	if strings.Contains(err.Error(), "prefixArgs") {
+		t.Errorf("an unregistered directive argument struct should be derived: %v", err)
+	}
+	for _, want := range []string{`Directive "missing": directive is not defined`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q lacks %q", err, want)
 		}

@@ -234,8 +234,10 @@ func TestArgsValidation(t *testing.T) {
 			Field("noArgs", func(Root) *int { return nil }),
 		),
 	)
-	if err == nil || !strings.Contains(err.Error(), "no Args[") {
-		t.Fatalf("missing Args registration should fail, got %v", err)
+	// An argument struct nobody registered is derived, as Args[args]() would
+	// derive it; see args_derive_test.go.
+	if err != nil {
+		t.Fatalf("an unregistered argument struct that fits the field should be derived, got %v", err)
 	}
 
 	err = Validate(SDL(sdl),
