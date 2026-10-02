@@ -32,7 +32,11 @@ value keeps the whole copy reachable, and eight three-byte ids each from variabl
 carried a 4 MiB upload held 29 MB (`TestObjectDoesNotPinALargePayload`). Past the limit every
 string is its own allocation, as `encoding/json` made them, so a kept value pins at most 1 KiB;
 `TestObjectSharesASmallPayload` holds the other side, and each fails with the rule forced the
-other way. Interleaved n=12 against the commit before, with the map reuse below included:
+other way. Copying each string out does not give the gain back on a large payload
+(`large_bench_test.go`, against `encoding/json` in one binary, n=6, p=0.002 each): 10 000 input
+rows in 1.5 MB decode in 12.7 ms against 37.1 ms with 12.2 MiB allocated against 19.6; 100 rows
+in 14 KB, 143 µs against 435 µs; one 1 MB string, 2.85 ms against 3.40 ms and 2.0 MiB against
+7.0. Interleaved n=12 against the commit before, with the map reuse below included:
 `ExecuteVariableArgs` 2.022µs to 1.042µs (-48%, p=0.000), 31 to 17 allocations;
 `ExecuteInputVariable` -44% and -49% (p=0.000 both), 34 to 18 and 90 to 52. **Equivalence is
 held by test, not by care**: `TestObjectAgreesWithEncodingJSON` runs a corpus through both and

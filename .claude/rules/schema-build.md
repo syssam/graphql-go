@@ -120,7 +120,11 @@ the interface-field rule instead: every object behind it must carry the directiv
 (`rejectDirectivesLeftOnTheAbstractType`). This was the stated gap in the paragraph above until
 the owner decided it should fail. `TestABoundDirectiveWrittenWhereItNeverRunsIsABuildError`
 and `TestABoundDirectiveOnAnAbstractTypeMustBeOnEveryObjectBehindIt` fail in all twelve cases
-with the call removed.
+with the call removed. It walks every type once, at `NewSchema`, only when a directive is
+bound: 1.1 ms and 29 allocations on a schema of 5 500 types with a 4 000-field root. The first
+version named every argument and field before looking at it and took 2.5 ms and 26 500
+allocations to report nothing; a place's coordinate is now built when a bound directive is
+found there.
 
 **Four more mismatches are build errors now, each found by a review rather than by a user.**
 `Enum` collected the first bad value it met while ranging its map, so the message changed run

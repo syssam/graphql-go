@@ -203,32 +203,36 @@ func (b *schemaBuilder) rejectDirectivesThatNeverRun() {
 	if len(b.directives) == 0 {
 		return
 	}
-	reject := func(where string, ds ast.DirectiveList) {
+	// where is asked for only once a bound directive is found: nearly every
+	// place has none, and naming each one first cost a 5 500-type schema
+	// 26 000 allocations to report nothing.
+	reject := func(ds ast.DirectiveList, where func() string) {
 		for _, d := range ds {
 			if b.directives[d.Name] != nil {
 				b.errorf("%s: @%s is bound and written here, where a directive never runs; DirectiveArgs applies FIELD_DEFINITION and OBJECT",
-					where, d.Name)
+					where(), d.Name)
 			}
 		}
 	}
-	arguments := func(owner string, args ast.ArgumentDefinitionList) {
+	arguments := func(args ast.ArgumentDefinitionList, owner func() string) {
 		for _, a := range args {
-			reject(owner+"("+a.Name+":)", a.Directives)
+			reject(a.Directives, func() string { return owner() + "(" + a.Name + ":)" })
 		}
 	}
-	reject("schema", b.ast.SchemaDirectives)
+	reject(b.ast.SchemaDirectives, func() string { return "schema" })
 	for _, name := range slices.Sorted(maps.Keys(b.ast.Directives)) {
-		arguments("@"+name, b.ast.Directives[name].Arguments)
+		arguments(b.ast.Directives[name].Arguments, func() string { return "@" + name })
 	}
 	for _, name := range slices.Sorted(maps.Keys(b.ast.Types)) {
 		def := b.ast.Types[name]
 		if strings.HasPrefix(name, "__") {
 			continue
 		}
+		self := func() string { return name }
 		switch def.Kind {
 		case ast.Object, ast.Interface:
 			for _, f := range def.Fields {
-				arguments(coordinate(name, f.Name), f.Arguments)
+				arguments(f.Arguments, func() string { return coordinate(name, f.Name) })
 			}
 			if def.Kind == ast.Interface {
 				b.rejectDirectivesLeftOnTheAbstractType(def)
@@ -236,17 +240,17 @@ func (b *schemaBuilder) rejectDirectivesThatNeverRun() {
 		case ast.Union:
 			b.rejectDirectivesLeftOnTheAbstractType(def)
 		case ast.InputObject:
-			reject(name, def.Directives)
+			reject(def.Directives, self)
 			for _, f := range def.Fields {
-				reject(coordinate(name, f.Name), f.Directives)
+				reject(f.Directives, func() string { return coordinate(name, f.Name) })
 			}
 		case ast.Enum:
-			reject(name, def.Directives)
+			reject(def.Directives, self)
 			for _, v := range def.EnumValues {
-				reject(coordinate(name, v.Name), v.Directives)
+				reject(v.Directives, func() string { return coordinate(name, v.Name) })
 			}
 		case ast.Scalar:
-			reject(name, def.Directives)
+			reject(def.Directives, self)
 		}
 	}
 }
