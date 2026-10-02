@@ -7,11 +7,19 @@ executor, not by reading code.
 
 Four gaps remain, and every one of them is in the parser — `gqlparser/v2`,
 which the root package is restricted to — rather than in the engine. None can
-be fixed here without forking it, and `v2.5.58`, the newest release, carries
-all four: re-tested against it on 2026-09-24 after upgrading from `v2.5.37`,
-twenty-one releases of which fixed none of them. What was checked on the engine side is listed under *Verified
+be fixed here without forking it. `v2.5.59`, the newest release, narrows the
+first and carries the other three unchanged: re-tested against it on
+2026-10-02 after upgrading from `v2.5.58`. What was checked on the engine side is listed under *Verified
 conformant* below; that section is the extent of the claim, not a statement
 that nothing else could be wrong.
+
+`v2.5.59` also does two things this repository had worked around. Its walker
+indexes fragments by name, which `plan.md` once gave as the condition for
+dropping the fragment budget; measured without the budget, a fragment DAG at
+the token limit still validates in 2.3 s, so the budget stays. And its
+`MaxIntrospectionDepth` is memoized, which is what this repository had replaced
+it for: every introspection test passes on gqlparser's own rule, so the
+replacement was removed.
 
 Three patches in [`docs/upstream/`](upstream/) close the four gaps — the two
 lexer gaps share one. Each applies to a clean gqlparser checkout and passes
@@ -39,28 +47,31 @@ only route that reaches a consumer.
 
 ## Known gaps
 
-### 1. Surrogate escapes are silently corrupted (September 2025)
+### 1. Lone surrogate escapes are silently corrupted (September 2025)
 
-gqlparser's lexer passes the value of a four-digit escape straight to
-`bytes.Buffer.WriteRune`, which turns anything in the surrogate range into
-U+FFFD. It implements no pairing rule at all, so **both** halves of the
-production are wrong:
+Until `v2.5.59` gqlparser's lexer passed the value of every four-digit escape
+straight to `bytes.Buffer.WriteRune`, which turns anything in the surrogate
+range into U+FFFD, so a surrogate pair arrived as two replacement characters.
+`v2.5.59` pairs a leading surrogate with an escaped trailing one. A surrogate
+with no partner is still written as U+FFFD where the specification requires a
+syntax error:
 
-| Input | Produces | Specification |
-| --- | --- | --- |
-| a surrogate pair for U+1F600 | two U+FFFD | U+1F600 |
-| a lone leading surrogate | one U+FFFD | syntax error |
-| a lone trailing surrogate | one U+FFFD | syntax error |
+| Input | `v2.5.58` | `v2.5.59` | Specification |
+| --- | --- | --- | --- |
+| a surrogate pair for U+1F600 | two U+FFFD | U+1F600 | U+1F600 |
+| a lone leading surrogate | one U+FFFD | one U+FFFD | syntax error |
+| a lone trailing surrogate | one U+FFFD | one U+FFFD | syntax error |
+| a leading surrogate, then a non-surrogate escape | U+FFFD and the character | the same | syntax error |
 
 Section 2.1.7 pairs a leading surrogate with a trailing one and asserts that
 every other escaped value lies in the Unicode scalar range (`<= 0xD7FF` or
 `>= 0xE000`).
 
-This is the most damaging gap on the list, and the only one that corrupts data
-rather than rejecting it: nothing anywhere reports a problem. It is not an edge
-case. JSON-based clients routinely emit surrogate pairs for emoji and non-BMP
-CJK, so every such character sent inside a query string literal reaches the
-resolver as replacement characters.
+The damaging half is the one upstream fixed: JSON-based clients routinely emit
+surrogate pairs for emoji and non-BMP CJK, and every such character sent
+inside a query string literal used to reach the resolver as replacement
+characters. What is left corrupts only input that was already malformed, and
+still reports nothing.
 
 ### 2. Variable-width unicode escapes are rejected (September 2025)
 
@@ -68,8 +79,10 @@ The braced form `\u{1F600}` is a syntax error: `Unexpected <Invalid>`.
 `EscapedUnicode :: { HexDigit+ }` is grammar, not an extension, so any client
 emitting it cannot talk to this server.
 
-**Gaps 1 and 2 have a patch ready to submit:**
+**Gaps 1 and 2 have a patch, written against `v2.5.58`:**
 [`docs/upstream/0001-gqlparser-unicode-escapes.patch`](upstream/0001-gqlparser-unicode-escapes.patch).
+`v2.5.59` changed the same branch of `readString`, so it has to be rebased
+before it is submitted; that has not been done.
 It rewrites the escape branch of `readString` around a `readEscapedUnicode`
 helper covering both productions, adds seven cases to `lexer_test.yml`, and
 passes the whole gqlparser suite. Applied underneath this repo it makes every

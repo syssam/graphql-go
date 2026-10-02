@@ -10,7 +10,7 @@ require (
 	github.com/labstack/echo/v5 v5.3.1
 	github.com/syssam/graphql-go v0.0.0-00010101000000-000000000000
 	github.com/valyala/fasthttp v1.74.0
-	github.com/vektah/gqlparser/v2 v2.5.58
+	github.com/vektah/gqlparser/v2 v2.5.59
 )
 
 require (
