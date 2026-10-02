@@ -262,11 +262,11 @@ cores):
 | Binary | 25.0 MB | 22.5 MB |
 
 A constructor that already exists decides for itself. One that takes `Deps`
-is passed `d`, whatever fields `Deps` has: that is how a group needing more
-than its own field asks for everything, and it is why adding a field to
-`Deps` never breaks a constructor you wrote. The field rule applies to
-constructors gqlc scaffolds, and to ones that take something other than
-`Deps`.
+is passed `d` (or `&d`, for `*Deps`), whatever fields `Deps` has: that is how
+a group needing more than its own field asks for everything, and it is why
+adding a field to `Deps` never breaks a constructor you wrote. One that takes
+anything else is passed the field named after its group. `Deps` there means
+the configured type, by its package: a service's own `user.Deps` is not it.
 
 A group with no field named after it is given the whole value; so is a type
 that implements several groups, which is constructed once and shared. A field

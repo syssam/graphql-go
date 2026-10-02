@@ -90,6 +90,8 @@ func (f *depsField) placed(depsPath, depsQual, self string, qualify func(importP
 				bad = fmt.Errorf("its type names %s, which is not a name the file declaring it imports a package under; give that import an alias", x.Name)
 			case importPath == self:
 				c.Replace(n.Sel)
+			case !mayImport(self, importPath):
+				bad = fmt.Errorf("its type is from %s, an internal package the group's package may not import", importPath)
 			default:
 				x.Name = qualify(importPath, x.Name)
 			}
@@ -197,7 +199,7 @@ func (b *builder) readWire() {
 		return
 	}
 	b.wire.read = true
-	b.wire.fields, b.wire.targets, b.wire.ctors = map[string]*depsField{}, map[string]int{}, map[string]map[string]string{}
+	b.wire.fields, b.wire.targets, b.wire.ctors = map[string]*depsField{}, map[string]int{}, map[string]map[string]*constructor{}
 	for _, target := range b.cfg.Scaffold {
 		if dir, typ, err := b.splitTarget(target); err == nil {
 			b.wire.targets[dir+"\x00"+typ]++
@@ -227,11 +229,17 @@ func (b *builder) readWire() {
 				continue
 			}
 			for _, spec := range gd.Specs {
-				if ts, ok := spec.(*goast.TypeSpec); ok && ts.Name.Name == depsType && ts.TypeParams == nil {
-					count++
-					declared, _ = ts.Type.(*goast.StructType)
-					in = file
+				ts, ok := spec.(*goast.TypeSpec)
+				if !ok || ts.Name.Name != depsType {
+					continue
 				}
+				if ts.TypeParams != nil {
+					b.wire.generic = true
+					continue
+				}
+				count++
+				declared, _ = ts.Type.(*goast.StructType)
+				in = file
 			}
 		}
 	}
@@ -332,44 +340,117 @@ func (b *builder) wireAnyField() bool {
 	return *b.wire.anyField
 }
 
-// constructorParam is what the hand-written constructor ctor in dir takes: the
-// type of its one parameter, as written. ok is false when dir has no such
-// function, or it does not take exactly one thing.
+// constructor is a hand-written NewX: the type of its one parameter as
+// written, and the packages the file declaring it imports, by the name each
+// is known under there. param is empty when it does not take exactly one
+// thing.
+type constructor struct {
+	param   string
+	imports map[string]string
+}
+
+// takes reports whether the constructor's parameter is the dependencies type
+// itself, and whether it is a pointer to it. The qualifier is looked up in
+// the file's imports: a service that calls its own dependencies Deps is taken
+// by its package, not by the name it shares.
+func (c *constructor) takes(depsPath, depsType, self string) (whole, pointer bool) {
+	param := strings.TrimPrefix(c.param, "*")
+	pointer = param != c.param
+	if qual, name, ok := strings.Cut(param, "."); ok {
+		return name == depsType && c.imports[qual] == depsPath, pointer
+	}
+	return param == depsType && self == depsPath, pointer
+}
+
+// existingConstructor is the hand-written constructor ctor in dir, or nil.
 //
 // A constructor that exists is the author's, and it says what it wants. Wire
 // goes by it before going by the struct: deciding from the struct alone broke
 // every constructor written to take the whole value the moment a field named
 // after its group appeared, and left a group that needs the whole value with
 // a field it would have had to rename.
-func (b *builder) constructorParam(dir, ctor string) (param string, ok bool) {
+func (b *builder) existingConstructor(dir, ctor string) *constructor {
 	b.readWire()
 	found, read := b.wire.ctors[dir]
 	if !read {
-		found = map[string]string{}
+		found = map[string]*constructor{}
 		files := sourceFiles(dir)
-		for name, src := range files {
+		// In name order, so that two files a build chooses between give the
+		// same answer on every run.
+		for _, name := range slices.Sorted(maps.Keys(files)) {
 			// Never in generated code, which is most of what is here.
-			if isGeneratedSource(src) {
+			if isGeneratedSource(files[name]) {
 				continue
 			}
-			file, err := parser.ParseFile(token.NewFileSet(), name, src, parser.SkipObjectResolution)
+			file, err := parser.ParseFile(token.NewFileSet(), name, files[name], parser.SkipObjectResolution)
 			if err != nil {
 				continue
 			}
-			for _, d := range file.Decls {
-				fn, isFunc := d.(*goast.FuncDecl)
-				if !isFunc || fn.Recv != nil || !strings.HasPrefix(fn.Name.Name, "New") {
-					continue
+			var imports map[string]string
+			add := func(name string, ft *goast.FuncType) {
+				if !strings.HasPrefix(name, "New") || found[name] != nil {
+					return
 				}
-				if ps := fn.Type.Params.List; len(ps) == 1 && len(ps[0].Names) <= 1 {
-					found[fn.Name.Name] = types.ExprString(ps[0].Type)
+				if imports == nil {
+					imports = map[string]string{}
+					for _, spec := range file.Imports {
+						importPath := strings.Trim(spec.Path.Value, "\"`")
+						switch {
+						case spec.Name == nil:
+							imports[b.packageName(importPath)] = importPath
+						case spec.Name.Name != "_" && spec.Name.Name != ".":
+							imports[spec.Name.Name] = importPath
+						}
+					}
+				}
+				c := &constructor{imports: imports}
+				if ps := ft.Params.List; len(ps) == 1 && len(ps[0].Names) <= 1 {
+					c.param = types.ExprString(ps[0].Type)
+				}
+				found[name] = c
+			}
+			for _, d := range file.Decls {
+				switch d := d.(type) {
+				case *goast.FuncDecl:
+					if d.Recv == nil {
+						add(d.Name.Name, d.Type)
+					}
+				case *goast.GenDecl:
+					// var NewHandler = func(...) ... is a constructor too.
+					for _, spec := range d.Specs {
+						vs, ok := spec.(*goast.ValueSpec)
+						if !ok || len(vs.Names) != len(vs.Values) {
+							continue
+						}
+						for i, id := range vs.Names {
+							if lit, ok := vs.Values[i].(*goast.FuncLit); ok {
+								add(id.Name, lit.Type)
+							}
+						}
+					}
 				}
 			}
 		}
 		b.wire.ctors[dir] = found
 	}
-	param, ok = found[ctor]
-	return param, ok
+	return found[ctor]
+}
+
+// mayImport reports whether a package at importer may import importPath,
+// which it may not when that is under an internal directory of another tree.
+func mayImport(importer, importPath string) bool {
+	if importer == "" {
+		return true
+	}
+	elems := strings.Split(importPath, "/")
+	for i := len(elems) - 1; i >= 0; i-- {
+		if elems[i] != "internal" {
+			continue
+		}
+		parent := strings.Join(elems[:i], "/")
+		return parent == "" || importer == parent || strings.HasPrefix(importer, parent+"/")
+	}
+	return true
 }
 
 // wireDeps is Config.Wire.Deps taken apart: the package it is imported from,
@@ -378,13 +459,6 @@ func (b *builder) wireDeps() (importPath, qualifier, typeName string) {
 	importPath, ref := splitModelExpr(b.cfg.Wire.Deps)
 	qualifier, typeName, _ = strings.Cut(ref, ".")
 	return importPath, qualifier, typeName
-}
-
-// namesType reports whether a parameter's type, as written, is the type
-// called name or a pointer to it, under whatever qualifier.
-func namesType(param, name string) bool {
-	param = strings.TrimPrefix(param, "*")
-	return param == name || strings.HasSuffix(param, "."+name)
 }
 
 // constructorName is the function Wire calls to build an implementation:
@@ -420,6 +494,9 @@ var wireNames = map[string]bool{
 // scaffolding adds a constructor to an implementation that lacks one.
 func (b *builder) emitWire(groups []string) (string, error) {
 	depsPath, depsQual, depsType := b.wireDeps()
+	if b.readWire(); b.wire.generic {
+		return "", fmt.Errorf("codegen: wire: %s is generic, and Wire has to take one type: declare a type for the instantiation the application uses and name that", b.cfg.Wire.Deps)
+	}
 	flat := len(groups) <= 1
 	outDir := outputDir(b.dir, b.cfg.Output)
 
@@ -454,6 +531,7 @@ func (b *builder) emitWire(groups []string) (string, error) {
 
 	type line struct{ bindings, constructor, arg string }
 	var lines []line
+	builtBy := map[string]string{}
 	var missing []string
 	add := func(name, group string) error {
 		if !b.hasResolver(group) {
@@ -490,14 +568,30 @@ func (b *builder) emitWire(groups []string) (string, error) {
 		if implImport != b.cfg.Package {
 			constructor = qualify(implImport, identFrom(path.Base(implImport))) + "." + constructor
 		}
-		// What an existing constructor takes decides; for one still to be
-		// scaffolded, the struct does, as the scaffold will.
+		// What an existing constructor takes decides. One that takes the
+		// dependencies type is passed it. Any other is passed the group's
+		// field if there is one, whether or not gqlc could have written that
+		// field's type itself: nothing is being written. For a constructor
+		// still to be scaffolded the struct decides, as the scaffold will.
 		arg := "d"
-		if param, exists := b.constructorParam(dir, constructorName(typ)); !exists || !namesType(param, depsType) {
+		if existing := b.existingConstructor(dir, constructorName(typ)); existing == nil {
 			if f, _ := b.wireArg(name, target); f != nil {
-				arg += "." + f.name
+				arg = "d." + f.name
+			}
+		} else {
+			whole, pointer := existing.takes(depsPath, depsType, implImport)
+			if f := b.wire.fields[foldName(name)]; !whole && f != nil && !f.twice && !b.wireShared(target) {
+				arg = "d." + f.name
+			} else if whole && pointer {
+				arg = "&d"
 			}
 		}
+		// Two types in one package whose names differ only in their first
+		// letter's case are both built by one function, which returns one.
+		if other, ok := builtBy[constructor]; ok && other != typ {
+			return fmt.Errorf("codegen: wire: %s and %s in one package are both built by a function called %s, which can return only one of them; rename one", other, typ, constructorName(typ))
+		}
+		builtBy[constructor] = typ
 		lines = append(lines, line{bindings, constructor, arg})
 		return nil
 	}
@@ -526,7 +620,7 @@ func (b *builder) emitWire(groups []string) (string, error) {
 	for _, l := range lines {
 		uses[l.constructor]++
 	}
-	shared := map[string]string{}
+	shared, sharedArg := map[string]string{}, map[string]string{}
 	var sharedOrder []string
 	for _, l := range lines {
 		if uses[l.constructor] < 2 || shared[l.constructor] != "" {
@@ -546,7 +640,7 @@ func (b *builder) emitWire(groups []string) (string, error) {
 			name = fmt.Sprintf("%s%d", preferred, n)
 		}
 		taken[name] = true
-		shared[l.constructor] = name
+		shared[l.constructor], sharedArg[l.constructor] = name, l.arg
 		sharedOrder = append(sharedOrder, l.constructor)
 	}
 
@@ -572,7 +666,7 @@ func (b *builder) emitWire(groups []string) (string, error) {
 func Wire(d %s) []graphql.SchemaOption {
 `, depsRef)
 	for _, constructor := range sharedOrder {
-		fmt.Fprintf(&w, "\t%s := %s(d)\n", shared[constructor], constructor)
+		fmt.Fprintf(&w, "\t%s := %s(%s)\n", shared[constructor], constructor, sharedArg[constructor])
 	}
 	w.WriteString("\treturn []graphql.SchemaOption{\n")
 	for _, l := range lines {

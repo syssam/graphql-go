@@ -793,3 +793,123 @@ func TestWireNotesAreTrueAndOnlyWhereTheyApply(t *testing.T) {
 		})
 	}
 }
+
+// A third review, again by running the generator. What an existing
+// constructor takes is read for what it is, not for what it ends in.
+func TestWireReadsAnExistingConstructorExactly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping go vet subprocess")
+	}
+	both := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
+	handler := func(imports, param string) string {
+		return "package user\n\n" + imports + "\n// Handler is hand-written.\ntype Handler struct{}\n\n// NewHandler is hand-written.\nfunc NewHandler(" + param + ") *Handler { return &Handler{} }\n"
+	}
+	for name, c := range map[string]struct {
+		deps    string
+		files   map[string]string
+		want    string
+		twice   bool
+		noNotes bool
+	}{
+		// Each service calls its own dependencies Deps, as the application
+		// calls its own. Taken for the whole value by its last element, the
+		// scaffolded constructor was passed d on the second run.
+		"a field type with the dependencies type's name": {
+			deps: "package deps\n\nimport (\n\t\"hello/internal/svc/post\"\n\t\"hello/internal/svc/user\"\n)\n\n// Deps is the dependencies.\ntype Deps struct {\n\tUser user.Deps\n\tPost post.Deps\n}\n",
+			files: map[string]string{
+				"internal/svc/user/deps.go": "package user\n\n// Deps is what the user service needs.\ntype Deps struct{}\n",
+				"internal/svc/post/deps.go": "package post\n\n// Deps is what the post service needs.\ntype Deps struct{}\n",
+			},
+			want: "user.Bindings(user.NewHandler(d.User))", twice: true,
+		},
+		// Nothing has to be written for a constructor that exists, so whether
+		// the field's type could be written elsewhere does not come into it.
+		"a constructor taking a field gqlc could not have written": {
+			deps: "package deps\n\ntype store struct{}\n\n// Get is a method.\nfunc (store) Get() string { return \"\" }\n\n// Deps is the dependencies.\ntype Deps struct {\n\tUser store\n\tPost int\n}\n",
+			files: map[string]string{
+				"graph/user/handler.go": handler("type getter interface{ Get() string }\n", "g getter"),
+			},
+			want: "user.Bindings(user.NewHandler(d.User))",
+		},
+		"a constructor taking a pointer to the whole value": {
+			deps: wireFieldDeps,
+			files: map[string]string{
+				"graph/user/handler.go": handler("import \"hello/internal/deps\"\n", "d *deps.Deps"),
+			},
+			want: "user.Bindings(user.NewHandler(&d))",
+		},
+		// A constructor is a name in the package, however it is declared.
+		"a constructor declared as a variable": {
+			deps: wireFieldDeps,
+			files: map[string]string{
+				"graph/user/handler.go": "package user\n\nimport \"hello/internal/deps\"\n\n// Handler is hand-written.\ntype Handler struct{}\n\n// NewHandler is a variable.\nvar NewHandler = func(d deps.Deps) *Handler { return &Handler{} }\n",
+			},
+			want: "user.Bindings(user.NewHandler(d))", noNotes: true,
+		},
+		// The group's package is outside the tree that may import it.
+		"a field type from an internal package under the dependencies": {
+			deps: "package deps\n\nimport \"hello/internal/deps/internal/store\"\n\n// Deps is the dependencies.\ntype Deps struct {\n\tUser *store.Store\n\tPost int\n}\n",
+			files: map[string]string{
+				"internal/deps/internal/store/store.go": "// Package store is internal to deps.\npackage store\n\n// Store is a store.\ntype Store struct{}\n",
+			},
+			want: "user.Bindings(user.NewHandler(d))",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir, _ := wireFieldModule(t, both, c.deps)
+			writeFiles(t, dir, c.files)
+			var notes []string
+			generate := func() error {
+				return Generate(context.Background(), Config{
+					Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph",
+					Scaffold: both, Wire: Wire{Deps: "hello/internal/deps.Deps"},
+					Notef: func(format string, args ...any) { notes = append(notes, fmt.Sprintf(format, args...)) },
+				})
+			}
+			if err := generate(); err != nil {
+				t.Fatal(err)
+			}
+			if c.twice {
+				if err := generate(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if wire := readFile(t, filepath.Join(dir, "graph", "wire.go")); !strings.Contains(norm(wire), norm(c.want)) {
+				t.Errorf("wire.go lacks %q\n%s", c.want, wire)
+			}
+			if said := strings.Join(notes, "\n"); c.noNotes && strings.Contains(said, "has no NewHandler") {
+				t.Errorf("a constructor that is there was reported missing:\n%s", said)
+			}
+			goBuild(t, dir)
+		})
+	}
+}
+
+// What Wire cannot make compile is refused when it is generated.
+func TestWireRefusesWhatWouldNotCompile(t *testing.T) {
+	both := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
+	for name, c := range map[string]struct {
+		scaffold map[string]string
+		deps     string
+		want     string
+	}{
+		// There is no Deps to take: only Deps[T], and the configuration has
+		// nowhere to say which.
+		"a generic dependencies type": {both, "package deps\n\n// Deps is generic.\ntype Deps[T any] struct{ User T }\n", "generic"},
+		// Both are built by a function called NewHandler, which returns one.
+		"two types whose constructors have one name": {
+			map[string]string{"user": "internal/resolver.Handler", "post": "internal/resolver.handler"}, wireFieldDeps, "NewHandler",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir, _ := wireFieldModule(t, c.scaffold, c.deps)
+			err := Generate(context.Background(), Config{
+				Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph",
+				Scaffold: c.scaffold, Wire: Wire{Deps: "hello/internal/deps.Deps"},
+			})
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("err = %v, want one mentioning %q", err, c.want)
+			}
+		})
+	}
+}

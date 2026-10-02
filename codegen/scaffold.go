@@ -224,7 +224,7 @@ func (b *builder) scaffoldGroup(pkgs *pkgCache, name, group, target string) ([]s
 	// compile error. So nothing is written, the build fails on the missing
 	// name, and a note says what to write.
 	fields, constructor := "{}", ""
-	if ctor := constructorName(typ); !b.cfg.Wire.IsZero() && !idx.funcs[ctor] {
+	if ctor := constructorName(typ); !b.cfg.Wire.IsZero() && !idx.funcs[ctor] && !idx.names[ctor] {
 		depsPath, depsQual, depsType := b.wireDeps()
 		implImport, _ := b.importPathOf(dir)
 		// Each package the constructor's parameter names is imported once,

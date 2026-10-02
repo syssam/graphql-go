@@ -389,7 +389,34 @@ that, nine reproduced, four of them output that did not compile.** What it chang
 
 Eleven breaks, one per rule, each failed a test in `wire_test.go`; one reverse edit failed
 because its text was not unique in the file, which is the reason to check for leftover markers
-and not only for a green suite. Scaffolding writes
+and not only for a green suite.
+
+**A third review, of that rewrite, found the constructor rule itself too loose.** `namesType`
+took any parameter whose type *ended* in the dependencies type's name for the whole value, and
+a service that calls its own dependencies `Deps` is an ordinary thing: gqlc scaffolded
+`NewHandler(dep user2.Deps)`, wired `d.User`, and on the next run -- same input -- read its own
+constructor as taking everything and wired `d`. Now `constructor.takes` resolves the qualifier
+through the declaring file's imports. With it:
+
+- An existing constructor that does not take the dependencies type is passed the group's
+  field **whether or not `placed` could write that field's type**: nothing is being written,
+  so an unexported type or an inline interface is the author's business. `placed` is consulted
+  only for a constructor gqlc scaffolds.
+- A constructor taking `*Deps` is passed `&d`. `var NewHandler = func(...)` is a constructor
+  (`existingConstructor`, and `pkgIndex.names` on the scaffold side, which had reported it
+  missing). Files are read in name order, where ranging a map chose between two build-tagged
+  definitions differently from run to run.
+- Refused at generation, since nothing generated could compile: a generic dependencies type,
+  and two types in one package whose names differ only in the first letter's case, which one
+  `NewHandler` would have to build both of.
+- A field whose type is in an `internal` package the group's package may not import stays in
+  the whole value (`mayImport`).
+
+Seven more breaks, each failing a test. **Not fixed, and known:** two scaffold targets that
+spell one directory in different letter case on a case-insensitive filesystem are one type to
+the scaffold and two imports to `wire.go`, which then fails with Go's own case-collision error;
+and a constructor that exists only in a `_test.go` file is scaffolded again, which `go build`
+accepts and `go vet` does not. Scaffolding writes
 `NewType(d Deps)` with a new type and nothing where the constructor is there. **For a type that
 exists without one it writes nothing and says so in a note**: its fields are the author's, so a
 constructor could only panic, which compiles and stops the process at start-up -- the failure

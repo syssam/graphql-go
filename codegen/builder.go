@@ -28,9 +28,10 @@ type builder struct {
 		read    bool
 		fields  map[string]*depsField
 		targets map[string]int
-		// ctors is, per target directory, what each hand-written NewX
-		// function there takes.
-		ctors map[string]map[string]string
+		// ctors is, per target directory, each hand-written NewX there.
+		ctors map[string]map[string]*constructor
+		// generic is whether the dependencies type has type parameters.
+		generic bool
 		// anyField is whether any group is handed a field of its own; nil
 		// until asked.
 		anyField *bool
