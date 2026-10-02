@@ -3,6 +3,7 @@ package storefront
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -137,8 +138,9 @@ func TestRefusingANonNullFieldBubblesItsParent(t *testing.T) {
 	}
 }
 
-// A customer sees their own orders and is not told how many others exist:
-// the rows they may not see are dropped from the list rather than reported.
+// A customer sees their own orders: the rows they may not see are dropped
+// from the list rather than reported, with no gap and no error. (A page cut
+// with `first` is cut before the drop, so it comes back short; see the policy.)
 // c1 owns o1 and o3; o2 belongs to c2.
 func TestCustomerSeesOnlyTheirOwnOrdersInAList(t *testing.T) {
 	e, _ := newExecutor(t)
@@ -147,15 +149,25 @@ func TestCustomerSeesOnlyTheirOwnOrdersInAList(t *testing.T) {
 }
 
 // The same rule at a single-object position cannot drop -- there is no list
-// to drop out of -- so it refuses. The wording reveals neither the value nor
-// whether the order exists, which is the point of AIP-211: choosing between
-// "denied" and "not found" is itself an existence oracle.
-func TestCustomerIsRefusedSomeoneElsesOrder(t *testing.T) {
+// to drop out of -- so it answers null, with no error: exactly what an id
+// that does not exist answers. Refusing instead would be an error the missing
+// id does not get, and that difference tells a customer which order ids are
+// real however the refusal is worded.
+func TestSomeoneElsesOrderAnswersLikeOneThatDoesNotExist(t *testing.T) {
 	e, _ := newExecutor(t)
-	resp := run(t, e, CustomerPrincipal("c1"), `{ order(id: "o2") { reference } }`, "")
-	errorContaining(t, resp, "might not exist")
-	if got := string(resp.Data); got != `{"order":null}` {
-		t.Fatalf("data = %s, want a null order", got)
+	for _, tc := range []struct{ field, someoneElses string }{
+		{`order(id: %q) { reference }`, "o2"},
+		{`customer(id: %q) { name }`, "c2"},
+	} {
+		field := tc.field
+		foreign := run(t, e, CustomerPrincipal("c1"), "{ "+fmt.Sprintf(field, tc.someoneElses)+" }", "")
+		missing := run(t, e, CustomerPrincipal("c1"), "{ "+fmt.Sprintf(field, "no-such-id")+" }", "")
+		if len(foreign.Errors) != 0 || len(missing.Errors) != 0 {
+			t.Fatalf("%s: errors foreign=%v missing=%v, want none for either", field, foreign.Errors, missing.Errors)
+		}
+		if string(foreign.Data) != string(missing.Data) {
+			t.Fatalf("%s: someone else's row answers %s and a missing one %s", field, foreign.Data, missing.Data)
+		}
 	}
 }
 

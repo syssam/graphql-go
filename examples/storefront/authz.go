@@ -145,15 +145,28 @@ func (Policy) AuthorizeObjects(ctx context.Context, checks []graphql.ObjectCheck
 		if owner != "" && owner == p.CustomerID {
 			continue
 		}
-		// Drop in a list, Deny anywhere else. Dropping is what makes a
-		// listing show only your own rows without telling you how many
-		// others exist; it is valid only at a list element position, and a
-		// single non-null position has nothing to drop into.
-		if c.Site.ListElement {
+		// Withhold the row in the way that says least at this position.
+		//
+		// In a list, Drop: the listing shows only your own rows, with no gap
+		// and no error where the others were. It does not hide how many there
+		// are from a client that pages -- `first` is applied by the resolver,
+		// before this runs, so a page comes back short by the rows dropped
+		// from it. A listing that must not leak that filters in its query.
+		//
+		// At a single nullable position, Null: order(id:) then answers a
+		// row that is not yours exactly as it answers an id that does not
+		// exist. A Deny there is an error the missing id does not get, and
+		// that difference is an existence oracle whatever the message says.
+		//
+		// Only a non-null position has to refuse, since it can hold neither.
+		switch {
+		case c.Site.ListElement:
 			out[i] = graphql.Drop()
-			continue
+		case !c.Site.NonNull:
+			out[i] = graphql.Null()
+		default:
+			out[i] = graphql.Deny("order:read", c.Type)
 		}
-		out[i] = graphql.Deny("order:read", c.Type)
 	}
 	return out, nil
 }
