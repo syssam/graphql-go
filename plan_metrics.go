@@ -45,8 +45,8 @@ type metricWalker struct {
 	// effect on the result: operationMetrics never reads it, and nothing
 	// here acts on its value. It exists so a test can assert a structural
 	// bound on it directly, rather than the walk enforcing one itself — a
-	// pre-plan cost check is exactly the kind of thing Task 5 wires this
-	// walker into, and a hard cap living here would need to turn a "this
+	// pre-plan cost check is exactly the kind of thing this walker is wired
+	// into, and a hard cap living here would need to turn a "this
 	// document is merely large" case into an error, which is a product
 	// decision this file should not make unilaterally.
 	calls int
@@ -73,8 +73,8 @@ func (w *metricWalker) walk(obj *objectType, abs *abstractType, sels ast.Selecti
 		// ancestors with the same AST selection is computed once.
 		//
 		// Ranging over abs.possible (a map) visits concrete types in an
-		// unspecified order, unlike compileSelection's sorted iteration
-		// (plan.go:203-207). That is fine only because max is commutative;
+		// unspecified order, unlike compileSelection's sorted iteration.
+		// That is fine only because max is commutative;
 		// an edit that makes this loop order-sensitive needs the same sort.
 		for _, concrete := range abs.possible {
 			c := w.walk(concrete, nil, sels)
@@ -107,8 +107,8 @@ func (w *metricWalker) walkConcrete(obj *objectType, sels ast.SelectionSet) plan
 			// buildField drops this group and reports an error, so it
 			// contributes nothing to either number. buildField can also drop
 			// a field whose literal arguments fail to decode, but that
-			// disagreement is unobservable: compilePlan fails wholesale (plan.go
-			// line 167-169) if any error occurred during compilation,
+			// disagreement is unobservable: compilePlan fails wholesale
+			// if any error occurred during compilation,
 			// returning nil before a plan exists. When an argument decode error
 			// is recorded in c.errs, both comparison sites bail on error checks
 			// before any oracle value exists to compare against.

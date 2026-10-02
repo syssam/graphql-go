@@ -256,7 +256,7 @@ graphql: func Zero() Outcome
 graphql: func ZeroForNull() InputFieldOption
 graphql: type AbstractOption interface { applyAbstract(*abstractBinding) }
 graphql: type AuthShape struct { }
-graphql: type AuthSite struct { Coord string Field *ast.FieldDefinition Object *ast.Definition Kind SiteKind Requires Requirement Grants []string Arg string ListElement bool }
+graphql: type AuthSite struct { Coord string Field *ast.FieldDefinition Object *ast.Definition Kind SiteKind Requires Requirement Grants []string Arg string ListElement bool NonNull bool }
 graphql: type Authorizer interface { Authorize(ctx context.Context, shape *AuthShape, d *Decision) error }
 graphql: type AuthorizerFunc func(ctx context.Context, shape *AuthShape, d *Decision) error
 graphql: type Decision struct { }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 
 	"github.com/vektah/gqlparser/v2/ast"
 
@@ -31,6 +32,9 @@ func EnumMarshaler[T any, PT Marshaler[T]](name string) SchemaOption {
 	return schemaOptionFunc(func(b *schemaBuilder) {
 		declared := declaredEnumValues(b, name)
 		if declared == nil {
+			return
+		}
+		if !b.claimLeaf("EnumMarshaler", name, reflect.TypeFor[T]()) {
 			return
 		}
 		registerLeaf(b.reg, name, ast.Enum, func(w *jsonw.Writer, v T) error {
@@ -90,6 +94,9 @@ func ScalarMarshaler[T any, PT Marshaler[T]](name string) SchemaOption {
 		def := b.ast.Types[name]
 		if def == nil || def.Kind != ast.Scalar {
 			b.errorf("ScalarMarshaler %q: type is not a scalar in the schema", name)
+			return
+		}
+		if !b.claimLeaf("ScalarMarshaler", name, reflect.TypeFor[T]()) {
 			return
 		}
 		registerLeaf(b.reg, name, ast.Scalar, func(w *jsonw.Writer, v T) error {

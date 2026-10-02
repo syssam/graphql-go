@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"fmt"
+	"github.com/syssam/graphql-go/internal/bindhook"
 	"reflect"
 	"slices"
 	"strings"
@@ -141,6 +142,12 @@ type schemaBuilder struct {
 	// subDirectives names directives the application enforces itself when a subscription
 	// opens; see SubscriptionRootDirective.
 	subDirectives map[string]bool
+	// boundChecks are objects another package of this module needs bound to
+	// a particular Go type; see internal/bindhook.
+	boundChecks []boundCheck
+	// leafBound is every (leaf type, Go type) an option has bound, so a
+	// second binding of the pair is refused rather than replacing the first.
+	leafBound     map[typeKey]bool
 	introspection bool
 	authCoverage  bool
 	authCapped    map[string]bool
@@ -192,6 +199,7 @@ func NewSchema(src Source, opts ...SchemaOption) (*Schema, error) {
 		abstracts:     make(map[string]*abstractBinding),
 		directives:    make(map[string]*directiveBinding),
 		subDirectives: make(map[string]bool),
+		leafBound:     make(map[typeKey]bool),
 		introspection: true,
 		// Seeded before options apply, so the Apollo spelling is always present
 		// and a caller redeclaring it collides rather than silently winning.
@@ -249,6 +257,14 @@ func (b *schemaBuilder) build() *Schema {
 		if !obj.isRoot {
 			s.goTypes[ob.shapes.elem] = append(s.goTypes[ob.shapes.elem], obj)
 			s.goTypes[ob.shapes.ptr] = append(s.goTypes[ob.shapes.ptr], obj)
+		}
+	}
+
+	for _, c := range b.boundChecks {
+		// An unbound or undefined object is reported where its binding is
+		// missed; this is only about one bound to something else.
+		if ob := b.objects[c.name]; ob != nil && ob.shapes.elem != c.goType {
+			b.errorf("%s: it returns %s, but %s is bound to %s", c.what, c.goType, c.name, ob.shapes.elem)
 		}
 	}
 
@@ -420,4 +436,18 @@ func listDepth(t *ast.Type) int {
 // coordinate renders a schema coordinate such as User.posts.
 func coordinate(typeName, field string) string {
 	return typeName + "." + field
+}
+
+// boundCheck is one internal/bindhook request.
+type boundCheck struct {
+	what, name string
+	goType     reflect.Type
+}
+
+func init() {
+	bindhook.ObjectBoundTo = func(what, name string, t reflect.Type) any {
+		return schemaOptionFunc(func(b *schemaBuilder) {
+			b.boundChecks = append(b.boundChecks, boundCheck{what: what, name: name, goType: t})
+		})
+	}
 }

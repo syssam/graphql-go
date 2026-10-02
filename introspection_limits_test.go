@@ -11,7 +11,7 @@ import (
 // An IDE, a client generator and a schema registry all send the same
 // introspection query, and an API's depth, complexity and cost limits are
 // set against its own queries. Introspection is not charged against them --
-// it is bounded by maxIntrospectionDepthRule instead -- so a deployment with
+// it is bounded by the MaxIntrospectionDepth rule instead -- so a deployment with
 // sane limits still answers its tools.
 func TestIntrospectionIsNotChargedAgainstLimits(t *testing.T) {
 	_, e := newFixtureExecutor(t,

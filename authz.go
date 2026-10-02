@@ -246,6 +246,16 @@ type AuthSite struct {
 	// kind can read the same fact from Field.Type.
 	ListElement bool
 
+	// NonNull reports that the position a SiteInstance value occupies is
+	// non-null: the field's type with every list wrapper stripped, so
+	// Customer! and [Customer!]! say true and [Customer]! says false. It is
+	// the other half of what ListElement is for. Null is the outcome that
+	// gives nothing away -- a withheld row answers exactly as a missing one
+	// does -- and it is valid only where the position can hold null, which a
+	// policy otherwise had to know the schema to tell. Every other kind can
+	// read the same fact from Field.Type.
+	NonNull bool
+
 	// leaf records whether Field is a scalar or enum, precomputed at shape
 	// build from fieldDef.leaf (object.go). AuthSite carries only the AST,
 	// and a field's own ast.FieldDefinition cannot answer this on its own:
@@ -259,13 +269,6 @@ type AuthSite struct {
 	// against the request's variables.
 	argType  *ast.Type
 	argValue *ast.Value
-
-	// valueNonNull records whether the position a SiteInstance value occupies
-	// is non-null. Every other kind reads that from Field, which an instance
-	// site deliberately leaves nil, so without it validFor cannot tell
-	// Customer from Customer! and Null would pass at a position the schema
-	// forbids it.
-	valueNonNull bool
 }
 
 // positionNonNull reports whether the position an object value occupies --
@@ -380,6 +383,11 @@ func Allow() Outcome { return Outcome{} }
 // Deny refuses the field. The message follows AIP-211: it reveals neither the
 // value nor whether the resource exists, because choosing between
 // PERMISSION_DENIED and NOT_FOUND is itself an existence oracle.
+//
+// That holds for the wording, not for the error being there. For a row looked
+// up by id, a Deny is an error a missing id does not get, and that difference
+// is the oracle; where existence must not show, an ObjectAuthorizer answers
+// Null at a nullable position (AuthSite.NonNull says which) and Drop in a list.
 func Deny(permission, resource string) Outcome {
 	return Outcome{act: actionDeny, permission: permission, resource: resource}
 }
@@ -495,7 +503,7 @@ func (o Outcome) validFor(site AuthSite) error {
 		// site has no Field, and writeComposite hands its Null straight to
 		// writeNullValue, so a non-null position would bubble to the client
 		// as a bare spec error with nothing saying a policy decided it.
-		if site.Kind == SiteInstance && site.valueNonNull {
+		if site.Kind == SiteInstance && site.NonNull {
 			return Errorf("authorization: Null is not valid for %s, an instance site at a non-null position; use Drop in a list or Deny", site.Coord)
 		}
 	case actionZero:

@@ -302,6 +302,17 @@ func (w *Writer) Float64(v float64) error {
 	return nil
 }
 
+// Float32 writes a float32 with the digits encoding/json gives it. NaN and
+// the infinities are an error, as for Float64.
+func (w *Writer) Float32(v float32) error {
+	if f := float64(v); math.IsNaN(f) || math.IsInf(f, 0) {
+		return ErrNonFinite
+	}
+	w.sep()
+	w.buf = AppendFloat32(w.buf, v)
+	return nil
+}
+
 // String writes an escaped JSON string.
 func (w *Writer) String(s string) {
 	w.sep()
@@ -339,14 +350,20 @@ func EncodeKey(name string) []byte {
 
 // AppendFloat appends v formatted like encoding/json does: fixed notation in
 // the common range and exponent notation with a trimmed exponent otherwise.
-func AppendFloat(dst []byte, v float64) []byte {
+func AppendFloat(dst []byte, v float64) []byte { return appendFloat(dst, v, 64) }
+
+// AppendFloat32 is AppendFloat for a float32, which has shortest digits of
+// its own: widened to float64 first, 0.1 prints as 0.10000000149011612.
+func AppendFloat32(dst []byte, v float32) []byte { return appendFloat(dst, float64(v), 32) }
+
+func appendFloat(dst []byte, v float64, bits int) []byte {
 	abs := math.Abs(v)
 	format := byte('f')
 	if abs != 0 && (abs < 1e-6 || abs >= 1e21) {
 		format = 'e'
 	}
 	start := len(dst)
-	dst = strconv.AppendFloat(dst, v, format, -1, 64)
+	dst = strconv.AppendFloat(dst, v, format, -1, bits)
 	if format == 'e' {
 		// Turn "1e-09" into "1e-9" to match encoding/json.
 		n := len(dst)

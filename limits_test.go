@@ -302,3 +302,40 @@ func TestQueryCostConnectionsPricesTheLargerOfFirstAndLast(t *testing.T) {
 		}
 	}
 }
+
+type pagedBox struct{}
+
+type pagedItem struct{}
+
+type pagedArgs struct{ First *int }
+
+// With Connections on, a page size on a non-list field pays for the list
+// directly inside it. When that list names a page size of its own it is not
+// the connection's edges but a second page, and its size was ignored: the
+// client chose a number and the cost did not move.
+func TestQueryCostPricesAListsOwnPageSizeUnderAPaidField(t *testing.T) {
+	s, err := NewSchema(SDL(`
+		type Item { id: ID! }
+		type Box { items(first: Int): [Item!]! }
+		type Query { box(first: Int): Box }
+	`),
+		Args[pagedArgs](),
+		Object[pagedItem]("Item", Field("id", func(*pagedItem) ID { return "1" })),
+		Object[pagedBox]("Box", FieldArgs("items", func(*pagedBox, pagedArgs) []*pagedItem { return nil })),
+		Query(FieldArgs("box", func(Root, pagedArgs) *pagedBox { return &pagedBox{} })),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	cfg := QueryCost{DefaultListSize: 10, Connections: true}
+	small := connCost(t, s, cfg, `{ box(first: 2) { items(first: 5) { id } } }`)
+	large := connCost(t, s, cfg, `{ box(first: 2) { items(first: 500) { id } } }`)
+	if large <= small || large < 500 {
+		t.Fatalf("items(first: 5) costs %d and items(first: 500) costs %d: the list's own page size is not priced", small, large)
+	}
+	// The connection shape is untouched: edges with no page size of its own
+	// is still paid for by the connection's.
+	if got := connCost(t, connCostSchema(t), cfg, `{ conn(first: 2) { edges { node { id } } } }`); got != 7 {
+		t.Fatalf("a plain connection costs %d, want 7", got)
+	}
+}

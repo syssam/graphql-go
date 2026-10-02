@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"sync"
 	"testing"
 )
 
@@ -214,6 +215,8 @@ func TestFieldContextArgumentMapSeesWhatTheClientSent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The three posts fields are resolvers, so they run concurrently.
+	var mu sync.Mutex
 	got := map[string]map[string]any{}
 	e := NewExecutor(s, WithFieldInterceptor(FieldInterceptorFunc(
 		func(ctx context.Context, fc *FieldContext, next FieldHandler) (any, error) {
@@ -222,7 +225,9 @@ func TestFieldContextArgumentMapSeesWhatTheClientSent(t *testing.T) {
 				if err != nil {
 					t.Errorf("ArgumentMap: %v", err)
 				}
+				mu.Lock()
 				got[fc.Path().String()] = m
+				mu.Unlock()
 			}
 			return next(ctx)
 		})))

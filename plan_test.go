@@ -103,8 +103,10 @@ func TestPlanArgumentPreDecoding(t *testing.T) {
 	_, e := newFixtureExecutor(t)
 	p := compileFixture(t, e, `query($n: String) { a: users(filter: {limit: 1}) { id } b: users(filter: {name: $n}) { id } c: users { id } }`, nil)
 	a, b, c := p.sel.fields[0], p.sel.fields[1], p.sel.fields[2]
-	if a.dynamicArgs || a.args == nil || *a.args.(*usersArgs).Filter.Limit != 1 {
-		t.Fatalf("literal arguments must be pre-decoded: %+v", a.args)
+	// An input object literal is validated at compile and decoded per
+	// request: decoded once, it would be one struct shared by every request.
+	if !a.dynamicArgs || a.args != nil {
+		t.Fatalf("an input object literal must be decoded per request: %+v", a.args)
 	}
 	if !b.dynamicArgs || b.args != nil {
 		t.Fatal("arguments referencing variables must be dynamic")

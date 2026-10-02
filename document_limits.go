@@ -15,8 +15,13 @@ const (
 // each, measured). An introspection query makes 38; a 500-fragment document
 // shaped like a Relay application's, a tree ten deep, about a million; the
 // fragment DAGs the limit exists for, 500 million and more. It has no option
-// because no document a client writes comes near it, and it goes away when
-// gqlparser's walker indexes its fragments.
+// because no document a client writes comes near it.
+//
+// The lookup it is named for is no longer the cost: gqlparser v2.5.59 indexes
+// fragments by name. The count is still the right measure of the documents to
+// refuse, because the rules walk a fragment once per spread that reaches it:
+// measured on v2.5.59 with this check removed, the largest fragment DAG the
+// token limit admits (1 362 fragments, 58 KB) validates in 2.3 s.
 const fragmentLookupBudget = 1 << 24
 
 // documentShape is what one linear walk of a parsed document learns before

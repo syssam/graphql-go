@@ -184,3 +184,47 @@ func TestASingleValueAtAListPositionIsStillChecked(t *testing.T) {
 		t.Errorf("message does not name the element type:\n%s", body)
 	}
 }
+
+// A variable's default is a value like any other and has to coerce to the
+// variable's type. One that did not was handed on unchecked: the operation
+// ran, sibling resolvers with it, and the bad value failed one field -- where
+// the same value written as a literal is refused before anything runs.
+func TestAnUncoercibleVariableDefaultIsARequestError(t *testing.T) {
+	type args struct{ L *int }
+	ran := 0
+	s, err := NewSchema(SDL(`input In { n: Int } type Query { f(l: Int): Int g(in: In): Int side: Int }`),
+		Args[args](),
+		Input[struct{ N *int }]("In"),
+		Args[struct{ In *struct{ N *int } }](),
+		Query(
+			FieldArgs("f", func(_ Root, a args) *int { return a.L }),
+			FieldArgs("g", func(Root, struct{ In *struct{ N *int } }) *int { return nil }),
+			Field("side", func(Root) *int { ran++; return nil }),
+		))
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	e := NewExecutor(s)
+	for _, q := range []string{
+		`query($l: Int = 99999999999) { side f(l: $l) }`,
+		`query($in: In = {n: 99999999999}) { side g(in: $in) }`,
+	} {
+		ran = 0
+		resp := run(t, e, q, "")
+		if resp.Data != nil || len(resp.Errors) != 1 {
+			t.Fatalf("%s: data=%s errors=%s, want a request error and no data", q, resp.Data, errorsJSON(resp.Errors))
+		}
+		if ran != 0 {
+			t.Fatalf("%s: a resolver ran for an operation whose variables do not coerce", q)
+		}
+		if msg := resp.Errors[0].Message; !strings.Contains(msg, "default") {
+			t.Errorf("%s: error does not say the default is at fault: %s", q, msg)
+		}
+	}
+	// The default belongs to the document, so supplying the variable does not
+	// make the document valid.
+	if resp := run(t, e, `query($l: Int = 99999999999) { f(l: $l) }`, `{"l": 3}`); len(resp.Errors) != 1 || resp.Data != nil {
+		t.Fatalf("a supplied value excused an invalid default: data=%s errors=%s", resp.Data, errorsJSON(resp.Errors))
+	}
+	expectData(t, run(t, e, `query($l: Int = 7) { f(l: $l) }`, ""), `{"f":7}`)
+}

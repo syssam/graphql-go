@@ -21,6 +21,7 @@ func (f abstractOptFunc) applyAbstract(ab *abstractBinding) { f(ab) }
 // returning the concrete GraphQL object type name for a value.
 func TypeResolver[T any](fn func(T) string) AbstractOption {
 	return abstractOptFunc(func(ab *abstractBinding) {
+		ab.resolverType = reflect.TypeFor[T]()
 		ab.resolveType = func(v any) string { return fn(v.(T)) }
 	})
 }
@@ -29,6 +30,16 @@ type abstractBinding struct {
 	name        string
 	goType      reflect.Type
 	resolveType func(any) string
+	// resolverType is the TypeResolver's parameter type. Every value at the
+	// position is asserted to it, so it has to take whatever the binding's
+	// own type can hold.
+	resolverType reflect.Type
+}
+
+// resolverTakes reports whether a TypeResolver over rt can be handed every
+// value of the binding's type: the same type, or an interface it implements.
+func resolverTakes(rt, bound reflect.Type) bool {
+	return rt == bound || (rt.Kind() == reflect.Interface && bound.Implements(rt))
 }
 
 // Interface binds the GraphQL interface name to the Go type T, typically a
@@ -57,6 +68,11 @@ func bindAbstract[T any](name string, kind ast.DefinitionKind, opts []AbstractOp
 		ab := &abstractBinding{name: name, goType: reflect.TypeFor[T]()}
 		for _, o := range opts {
 			o.applyAbstract(ab)
+		}
+		if ab.resolverType != nil && !resolverTakes(ab.resolverType, ab.goType) {
+			b.errorf("%s %q: its TypeResolver takes %s, but the binding is for %s, and a value of any other type at this position would not reach it",
+				kindLabel(kind), name, ab.resolverType, ab.goType)
+			return
 		}
 		b.abstracts[name] = ab
 		registerAbstractShapes[T](b.reg)

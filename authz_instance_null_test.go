@@ -172,7 +172,7 @@ func TestInstanceOnlyPlanDoesNotCallTheAuthorizer(t *testing.T) {
 func TestCheckObjectsValidatesEachOutcomeAgainstItsOwnSite(t *testing.T) {
 	st := newInstanceState(t, constantObjectPolicy(Null()))
 	nullable := AuthSite{Coord: "Customer", Kind: SiteInstance}
-	nonNull := AuthSite{Coord: "Customer", Kind: SiteInstance, valueNonNull: true}
+	nonNull := AuthSite{Coord: "Customer", Kind: SiteInstance, NonNull: true}
 
 	if _, err := st.checkObjects(context.Background(), []ObjectCheck{{Site: nullable}}); err != nil {
 		t.Fatalf("Null rejected at a nullable position: %v", err)

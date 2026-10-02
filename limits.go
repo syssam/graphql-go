@@ -361,6 +361,13 @@ func fieldCost(f *planField, w costWalk) int {
 	mult, childPaid := 1, false
 	switch isList := f.def != nil && f.def.typ != nil && f.def.typ.Elem != nil; {
 	case isList && w.paid:
+		// Paid for by the connection above, unless it names a page size of
+		// its own: then it is not that connection's edges but a second page,
+		// and the client chose its length. Left at one, items(first: 500)
+		// cost what items(first: 5) did.
+		if n, ok := pageArg(f, w); ok {
+			mult = n
+		}
 	case isList:
 		mult = listMultiplier(f, w)
 	case w.cfg.Connections:
@@ -405,8 +412,9 @@ func listMultiplier(f *planField, w costWalk) int {
 }
 
 // pageArg returns the largest positive pagination argument on f, reporting
-// whether there was one. Absent is not zero: no first at all asks for every
-// element, while first: 0 asks for none. The largest wins because a request
+// whether there was one. Only a positive value counts, so first: 0 is priced
+// like no first at all, at the default list size: that errs high for a
+// request that asks for nothing, never low. The largest wins because a request
 // that sends both first and last must be priced at the bigger page, never the
 // smaller one the client happened to name first.
 func pageArg(f *planField, w costWalk) (int, bool) {

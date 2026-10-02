@@ -46,7 +46,11 @@ func (f inputFlag) applyInput(ib *inputBinding) {
 type inputFieldSpec struct {
 	name      string
 	valueType reflect.Type
-	resolve   func(b *schemaBuilder, typ *ast.Type, coord string) (func(target, raw any) error, error)
+	// targetType is the struct a hand-written setter writes into, nil for a
+	// derived field. The setter is handed the binding's own struct and
+	// asserts it to this type, so the two have to be the same one.
+	targetType reflect.Type
+	resolve    func(b *schemaBuilder, typ *ast.Type, coord string) (func(target, raw any) error, error)
 }
 
 func (f *inputFieldSpec) applyInput(ib *inputBinding) { ib.fields = append(ib.fields, f) }
@@ -320,6 +324,10 @@ func (ib *inputBinding) resolve(b *schemaBuilder) {
 			continue
 		}
 		seen[f.name] = true
+		if f.targetType != nil && f.targetType != ib.goType {
+			b.errorf("input field %s: its setter writes into %s, but the input is bound to %s", coord, f.targetType, ib.goType)
+			continue
+		}
 		set, err := f.resolve(b, fdef.Type, coord)
 		if err != nil {
 			b.errs = append(b.errs, fmt.Errorf("graphql: %w", err))
@@ -393,6 +401,9 @@ func (d *inputDecoder) build(b *schemaBuilder, args ast.ArgumentDefinitionList, 
 			return nil, fmt.Errorf("field %s: argument %q is bound more than once", coord, f.name)
 		}
 		seen[f.name] = true
+		if f.targetType != nil && f.targetType != d.goType {
+			return nil, fmt.Errorf("field %s: the setter for argument %q writes into %s, but the arguments are bound to %s", coord, f.name, f.targetType, d.goType)
+		}
 		set, err := f.resolve(b, adef.Type, coord+"("+f.name+":)")
 		if err != nil {
 			return nil, err
@@ -436,8 +447,9 @@ func ZeroForNull() InputFieldOption { return inputFlag{zeroForNull: true} }
 // input binding.
 func InputField[T, V any](name string, set func(*T, V)) InputFieldOption {
 	return &inputFieldSpec{
-		name:      name,
-		valueType: reflect.TypeFor[V](),
+		name:       name,
+		valueType:  reflect.TypeFor[V](),
+		targetType: reflect.TypeFor[T](),
 		resolve: func(b *schemaBuilder, typ *ast.Type, coord string) (func(target, raw any) error, error) {
 			dec, err := inputDecoderFor[V](b.reg, typ, coord)
 			if err != nil {
@@ -460,8 +472,9 @@ func InputField[T, V any](name string, set func(*T, V)) InputFieldOption {
 // its value is null.
 func OmittableField[T, V any](name string, set func(*T, Omittable[V])) InputFieldOption {
 	return &inputFieldSpec{
-		name:      name,
-		valueType: reflect.TypeFor[V](),
+		name:       name,
+		valueType:  reflect.TypeFor[V](),
+		targetType: reflect.TypeFor[T](),
 		resolve: func(b *schemaBuilder, typ *ast.Type, coord string) (func(target, raw any) error, error) {
 			dec, err := inputDecoderFor[V](b.reg, typ, coord)
 			if err != nil {

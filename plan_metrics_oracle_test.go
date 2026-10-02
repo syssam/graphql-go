@@ -49,7 +49,7 @@ func complexityMemo(sel *selectionSet, memo map[*selectionSet]int) int {
 }
 
 // introspectionRootField is one field to the limits, whatever it selects:
-// introspection is bounded by maxIntrospectionDepthRule instead.
+// introspection is bounded by the MaxIntrospectionDepth rule instead.
 func introspectionRootField(f *planField) bool {
 	return f.def != nil && isIntrospectionRoot(f.def.name)
 }

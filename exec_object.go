@@ -3,7 +3,9 @@ package graphql
 import (
 	"context"
 	"errors"
+	"math"
 	"reflect"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 
@@ -64,7 +66,13 @@ func (st *execState) writeField(ctx context.Context, w *jsonw.Writer, obj *objec
 func (st *execState) writeFieldValue(ctx context.Context, w *jsonw.Writer, obj *objectType, f *planField, parent any, path *pathNode, ord int32) bool {
 	// An unguarded __typename reads only the planField it is already on, so it
 	// pays no load from execState on the path every Apollo client exercises.
+	// It still reports to the response limit: a selection made only of
+	// __typename otherwise reaches no checkpoint at all, and a list of them is
+	// written to its end however far past the limit that is.
 	if f.kind == fieldTypename && f.authIdx < 0 {
+		if w.OverLimit() {
+			return false
+		}
 		w.String(obj.name)
 		return true
 	}
@@ -75,12 +83,12 @@ func (st *execState) writeFieldValue(ctx context.Context, w *jsonw.Writer, obj *
 			return ok
 		}
 	}
+	if w.OverLimit() {
+		return false
+	}
 	if f.kind == fieldTypename {
 		w.String(obj.name)
 		return true
-	}
-	if w.OverLimit() {
-		return false
 	}
 	if err := ctx.Err(); err != nil {
 		st.recordCancellation(ctx, err)
@@ -90,7 +98,7 @@ func (st *execState) writeFieldValue(ctx context.Context, w *jsonw.Writer, obj *
 	// atomic on the ordinary path. Placed after the limit and cancellation
 	// checks so a field that never resolves is never counted.
 	if f.costWeight != 0 {
-		st.actualCost.Add(int32(f.costWeight))
+		st.addActualCost(f.costWeight)
 	}
 	fd := f.def
 	args := f.args
@@ -124,6 +132,23 @@ func (st *execState) writeFieldValue(ctx context.Context, w *jsonw.Writer, obj *
 		return false
 	}
 	return st.writeValue(ctx, w, v, fd.typ, fd.shape, f, &pathNode{parent: path, key: f.alias, order: ord})
+}
+
+// addActualCost adds a field's weight to the request's actual cost,
+// saturating at the 32-bit bounds like every other cost sum: a wrapped total
+// changes sign, and a rate limiter refunds a negative cost. The sum is done in
+// 64 bits and compared, rather than inferred from the sign of the result,
+// because a weight may be negative and a negative total is then a real one.
+// It is out of line so the write path keeps one compare for the fields, all of
+// them unless actual cost is on, that weigh nothing.
+func (st *execState) addActualCost(weight int) {
+	for {
+		old := st.actualCost.Load()
+		sum := min(max(int64(old)+int64(weight), math.MinInt32), math.MaxInt32)
+		if st.actualCost.CompareAndSwap(old, int32(sum)) {
+			return
+		}
+	}
 }
 
 // fieldContext builds the FieldContext for a field and attaches it to the
@@ -316,6 +341,14 @@ func (st *execState) writeNullValue(ctx context.Context, w *jsonw.Writer, t *ast
 // concreteValue resolves the object type of an abstract value and normalizes
 // the value to *E.
 func (s *Schema) concreteValue(at *abstractType, v any) (obj *objectType, ptr any, isNil bool, err error) {
+	// A TypeResolver is the author's code and usually calls a method on the
+	// value, so a typed nil is answered here rather than handed to it. Without
+	// one the Go type decides, and the check below finds the nil.
+	if at.resolveType != nil {
+		if isNil := s.reg.nilChecks[reflect.TypeOf(v)]; isNil != nil && isNil(v) {
+			return nil, nil, true, nil
+		}
+	}
 	obj, err = s.concreteType(at, v)
 	if err != nil {
 		return nil, nil, false, err
@@ -361,10 +394,10 @@ func (st *execState) elementObject(f *planField, shape *valueShape, v any) (obj 
 func instanceSiteOf(f *planField) AuthSite {
 	t := f.def.def.Type
 	return AuthSite{
-		Coord:        t.Name(),
-		Kind:         SiteInstance,
-		ListElement:  t.Elem != nil,
-		valueNonNull: positionNonNull(t),
+		Coord:       t.Name(),
+		Kind:        SiteInstance,
+		ListElement: t.Elem != nil,
+		NonNull:     positionNonNull(t),
 	}
 }
 
@@ -567,6 +600,13 @@ func (st *execState) writeListGuarded(ctx context.Context, w *jsonw.Writer, v an
 	return true
 }
 
+// taskPanic is a panic recovered on a task's goroutine, with the stack it
+// happened on, on its way to the goroutine that will report it.
+type taskPanic struct {
+	value any
+	stack []byte
+}
+
 // taskResult is the outcome of a value written into its own buffer.
 type taskResult struct {
 	buf *jsonw.Writer
@@ -617,6 +657,14 @@ func (g *taskGroup) run(task func()) {
 		}
 		defer func() {
 			if r := recover(); r != nil && g.panicked.CompareAndSwap(false, true) {
+				// With recovery on, the panic is raised again on the waiting
+				// goroutine and turned into a response there, where the stack
+				// is the wait's and says nothing of what panicked. This one
+				// does, so it travels with the value. A panic that already
+				// carries one came up from a task of this task.
+				if _, carried := r.(*taskPanic); g.st.e.recover && !carried {
+					r = &taskPanic{value: r, stack: debug.Stack()}
+				}
 				g.panicVal = r
 			}
 		}()

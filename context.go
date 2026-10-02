@@ -25,8 +25,9 @@ type OperationContext struct {
 	// hub points at wave for an operation the executor started, and stays nil
 	// for an OperationContext built by hand, which is the distinction Waves
 	// documents. The coordinator is held by value because both are allocated
-	// together and always live as long as each other: 160 + 64 bytes in two
-	// allocations became 224 in one, the same size class either way.
+	// together and always live as long as each other, so the two are one
+	// allocation instead of two. TestStructSizes pins the result, and
+	// executor.md has why it must stay on a size class.
 	hub  *WaveCoordinator
 	wave WaveCoordinator
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"reflect"
 	"strconv"
 	"time"
 
@@ -33,6 +34,9 @@ func Scalar[T any](name string, marshal func(*Writer, T) error, unmarshal func(a
 		def := b.ast.Types[name]
 		if def == nil || def.Kind != ast.Scalar {
 			b.errorf("Scalar %q: type is not a scalar in the schema", name)
+			return
+		}
+		if !b.claimLeaf("Scalar", name, reflect.TypeFor[T]()) {
 			return
 		}
 		registerLeaf(b.reg, name, ast.Scalar, func(w *jsonw.Writer, v T) error {
@@ -101,7 +105,7 @@ func registerBuiltins(b *schemaBuilder) {
 		return nil
 	}, decodeFloat64)
 	registerLeaf(r, "Float", ast.Scalar, func(w *jsonw.Writer, v float32) error {
-		if err := w.Float64(float64(v)); err != nil {
+		if err := w.Float32(v); err != nil {
 			return fmt.Errorf("Float cannot represent non numeric value: %v", v)
 		}
 		return nil

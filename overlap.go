@@ -261,7 +261,11 @@ func wrapping(t *ast.Type) string {
 		if t.Elem != nil {
 			b.WriteByte('[')
 		}
-		if t.NonNull {
+		// Only the named type's own nullability: gqlparser's doTypesConflict
+		// steps into a list without comparing the list's, and this rule has
+		// to agree with it on what is valid, or the same selection would be
+		// valid or not depending on how large the document around it is.
+		if t.NonNull && t.Elem == nil {
 			b.WriteByte('!')
 		}
 	}

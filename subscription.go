@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"reflect"
-	"runtime/debug"
 	"time"
 
 	"github.com/syssam/graphql-go/internal/jsonw"
@@ -136,6 +134,22 @@ func (e *Executor) subscribeError(ctx context.Context, errs ...*Error) error {
 // On a request error nothing is started: the channel is nil and the error is
 // a *SubscribeError carrying the response to send.
 func (e *Executor) Subscribe(ctx context.Context, req *Request) (<-chan *Response, error) {
+	if e.recover {
+		return e.subscribeRecovering(ctx, req)
+	}
+	return e.subscribe(ctx, req)
+}
+
+func (e *Executor) subscribeRecovering(ctx context.Context, req *Request) (out <-chan *Response, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			out, err = nil, &SubscribeError{Response: panicResponse(ctx, "graphql: panic opening a subscription", r)}
+		}
+	}()
+	return e.subscribe(ctx, req)
+}
+
+func (e *Executor) subscribe(ctx context.Context, req *Request) (<-chan *Response, error) {
 	base, errs := e.prepareOperation(req, true)
 	if errs != nil {
 		return nil, e.subscribeError(ctx, errs...)
@@ -268,20 +282,13 @@ func (e *Executor) pump(ctx context.Context, base *OperationContext, f *planFiel
 	}
 }
 
-// runEvent recovers where Execute does not need to. Execute runs on the
-// caller's goroutine, so a panic in an interceptor or presenter reaches the
-// transport's recover; pump's goroutine has none above it, and the panic
-// would end the process. The error is built unpresented because the
-// presenter may be what panicked.
+// runEvent recovers as Execute does: pump's goroutine has nothing above it,
+// so a panic in an interceptor or presenter would end the process.
 func (e *Executor) runEvent(ctx context.Context, oc *OperationContext) (resp *Response) {
 	if e.recover {
 		defer func() {
 			if r := recover(); r != nil {
-				slog.ErrorContext(ctx, "graphql: subscription event panic",
-					"panic", r,
-					"stack", string(debug.Stack()),
-				)
-				resp = &Response{Errors: []*Error{Errorf("internal system error").WithCode(CodeInternal)}}
+				resp = panicResponse(ctx, "graphql: subscription event panic", r)
 			}
 		}()
 	}

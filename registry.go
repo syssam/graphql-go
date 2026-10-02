@@ -164,6 +164,23 @@ func registerLeaf[E any](r *registry, name string, kind ast.DefinitionKind, writ
 	r.addLeafShape(name, []bool{true, true, true}, leafShape(name, listWriter(wSPE), listDecoder(dSPE)))
 }
 
+// claimLeaf records that an option binds the leaf type name to Go type t, and
+// refuses a second binding of the same pair. Several Go types may back one
+// GraphQL type, so the pair is the key; without the check the later option
+// replaced the earlier one's writer and decoders while the first kept
+// validating variables, and which of two bindings answered depended on the
+// order of the options. It is not generic so that the binding functions, which
+// are instantiated once per type in generated code, only call it.
+func (b *schemaBuilder) claimLeaf(option, name string, t reflect.Type) bool {
+	key := typeKey{name: name, typ: t}
+	if b.leafBound[key] {
+		b.errorf("%s %q: Go type %s is bound more than once", option, name, t)
+		return false
+	}
+	b.leafBound[key] = true
+	return true
+}
+
 // leafAdapters are one Go shape V of a leaf type: its typed writer and
 // decoder, stored as any, and the type-erased forms directives and variable
 // coercion use.

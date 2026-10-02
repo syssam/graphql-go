@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // buildAuthShape sorts the possible-type names before descending, "so a
@@ -122,5 +123,25 @@ func TestAuthSiteOrderIsTheSameAcrossSchemaBuilds(t *testing.T) {
 	// possible types sorted by name, not the order the fragments appear in.
 	if !strings.Contains(first, fmt.Sprintf("%s.a", "Alpha")) {
 		t.Errorf("sites do not name the expected coordinates: %s", first)
+	}
+}
+
+// The authorization shape is built by walking the plan, and the plan is a DAG:
+// abstract expansion shares one selection set between many parents. The walk
+// memoizes on the set, and nothing held it to that -- with the memo removed
+// every test in this package still passed, and a plan eight levels deep over
+// eight implementers took the walk back to the tree it unfolds to.
+func TestAuthShapeWalkIsLinearInThePlanDAG(t *testing.T) {
+	s, e := newFanExecutor(t)
+	const depth = 8
+	start := time.Now()
+	p := fanPlan(t, s, e, depth)
+	elapsed := time.Since(start)
+	if sets := countSelectionSets(p.sel); sets > fanTypes*(depth+2)*2 {
+		t.Fatalf("plan holds %d selection sets; the fixture no longer shares them", sets)
+	}
+	// Linear, this is a few milliseconds; unfolded, it is 8^8 visits.
+	if elapsed > 3*time.Second {
+		t.Fatalf("compiling a plan %d levels deep took %v: the shape walk is following every path", depth, elapsed)
 	}
 }

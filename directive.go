@@ -54,7 +54,10 @@ func SubscriptionRootDirective(names ...string) SchemaOption {
 
 // DirectiveArgs binds a schema directive whose arguments decode into A.
 // Register Args[A] when A is not struct{}. Locations FIELD_DEFINITION and
-// OBJECT are applied; an OBJECT directive wraps every field of that type.
+// OBJECT are applied; an OBJECT directive wraps every field of that type. An
+// interface's field has no executor to wrap, so a bound directive written
+// there must also be written on each implementing object's field, and the
+// build fails when it is not.
 func DirectiveArgs[A any](name string, fn func(next FieldFunc, args A) FieldFunc) SchemaOption {
 	return schemaOptionFunc(func(b *schemaBuilder) {
 		def := b.ast.Directives[name]
@@ -170,12 +173,40 @@ func (b *schemaBuilder) applyDirectives(s *Schema) {
 				b.rejectDirectivesOnSubscriptionRoot(obj, fd)
 				continue
 			}
+			b.rejectDirectivesLeftOnTheInterface(obj, fd)
 			for i := len(fd.def.Directives) - 1; i >= 0; i-- {
 				b.wrapWithDirective(s, fd, fd.def.Directives[i], coordinate(obj.name, fd.name))
 			}
 			for i := len(obj.def.Directives) - 1; i >= 0; i-- {
 				b.wrapWithDirective(s, fd, obj.def.Directives[i], obj.name)
 			}
+		}
+	}
+}
+
+// rejectDirectivesLeftOnTheInterface fails the build for a bound directive
+// written on an interface's field and not on the field of an object
+// implementing it. FIELD_DEFINITION is a location this engine applies, and an
+// interface field is written at it, but only an object's field has an executor
+// to wrap: the directive on Node.secret wrapped nothing, and User.secret was
+// served without it. Repeating it on the object's field, or on the object,
+// is what runs, and a schema that does so builds.
+func (b *schemaBuilder) rejectDirectivesLeftOnTheInterface(obj *objectType, fd *fieldDef) {
+	for _, name := range obj.def.Interfaces {
+		iface := b.ast.Types[name]
+		if iface == nil {
+			continue
+		}
+		ifd := iface.Fields.ForName(fd.name)
+		if ifd == nil {
+			continue
+		}
+		for _, d := range ifd.Directives {
+			if b.directives[d.Name] == nil || fd.def.Directives.ForName(d.Name) != nil || obj.def.Directives.ForName(d.Name) != nil {
+				continue
+			}
+			b.errorf("field %s: @%s is bound and written on %s, but a directive on an interface field never runs; write it on %s as well",
+				coordinate(obj.name, fd.name), d.Name, coordinate(name, fd.name), coordinate(obj.name, fd.name))
 		}
 	}
 }

@@ -82,3 +82,64 @@ func TestADirectiveBindingWithOneUsableLocationBuilds(t *testing.T) {
 		})
 	}
 }
+
+type ifaceDirNode interface{ isIfaceDirNode() }
+
+type ifaceDirUser struct{}
+
+func (*ifaceDirUser) isIfaceDirNode() {}
+
+// FIELD_DEFINITION is a location this engine applies, and an interface's field
+// is written at it. The wrapper was attached to object fields only, so a
+// directive on an interface field built cleanly and never ran: a schema that
+// guards Node.secret that way served it through every implementer.
+func TestABoundDirectiveOnAnInterfaceFieldIsABuildError(t *testing.T) {
+	_, err := NewSchema(SDL(`
+		directive @adminOnly on FIELD_DEFINITION
+		interface Node { secret: String! @adminOnly }
+		type User implements Node { secret: String! }
+		type Query { node: Node! }
+	`),
+		Directive("adminOnly", func(next FieldFunc) FieldFunc { return next }),
+		Interface[ifaceDirNode]("Node"),
+		Object[ifaceDirUser]("User", Field("secret", func(*ifaceDirUser) string { return "s3cr3t" })),
+		Query(Field("node", func(Root) ifaceDirNode { return &ifaceDirUser{} })),
+	)
+	if err == nil {
+		t.Fatal("a bound directive on an interface field was accepted; it wraps nothing and nothing says so")
+	}
+	for _, want := range []string{"Node.secret", "@adminOnly", "User.secret"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not name %s: %v", want, err)
+		}
+	}
+}
+
+// Written on the implementing type's own field as well, the directive runs
+// there, so the interface's copy is documentation and the schema builds.
+func TestABoundDirectiveOnAnInterfaceFieldBuildsWhenEveryImplementerCarriesIt(t *testing.T) {
+	var ran int
+	s, err := NewSchema(SDL(`
+		directive @adminOnly on FIELD_DEFINITION
+		interface Node { secret: String! @adminOnly }
+		type User implements Node { secret: String! @adminOnly }
+		type Query { node: Node! }
+	`),
+		Directive("adminOnly", func(next FieldFunc) FieldFunc {
+			return func(ctx context.Context, parent, args any) (any, error) {
+				ran++
+				return next(ctx, parent, args)
+			}
+		}),
+		Interface[ifaceDirNode]("Node"),
+		Object[ifaceDirUser]("User", Field("secret", func(*ifaceDirUser) string { return "s3cr3t" })),
+		Query(Field("node", func(Root) ifaceDirNode { return &ifaceDirUser{} })),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	expectData(t, run(t, NewExecutor(s), `{ node { secret } }`, ""), `{"node":{"secret":"s3cr3t"}}`)
+	if ran != 1 {
+		t.Fatalf("the directive ran %d times, want 1", ran)
+	}
+}

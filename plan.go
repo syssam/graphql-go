@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"context"
 	"hash/maphash"
+	"math"
 	"slices"
 	"strconv"
 	"sync"
@@ -16,6 +17,13 @@ import (
 // @include for which plan variants are cached.
 const maxCondVars = 16
 
+// maxPlanVariants bounds the plans kept for one document. Sixteen conditional
+// variables are 65 536 variants of one query text, and a client chooses which
+// to ask for; a variant past the bound is compiled for its request and not
+// kept. Six variables explored in full fit, which is more than a client that
+// toggles a few fragments ever sends.
+const maxPlanVariants = 64
+
 // docEntry is a parsed and validated document together with the plans
 // compiled from it, one per (operation, skip/include variant).
 type docEntry struct {
@@ -25,6 +33,10 @@ type docEntry struct {
 
 	mu    sync.Mutex
 	plans map[planKey]*plan
+	// full is set once the cache's byte budget has refused this document a
+	// further plan. It stays set: the variants after that are compiled per
+	// request, outside mu, rather than asking again under it each time.
+	full bool
 }
 
 type planKey struct {
@@ -406,7 +418,9 @@ func (c *compiler) buildField(obj *objectType, g *fieldGroup) *planField {
 	pf.exec = fieldExec{writeLeaf: fd.writeLeaf, resolve: fd.resolve}
 	pf.schedulable = fd.schedulable
 	if c.e != nil && c.e.cost != nil && c.e.cost.Actual && !isIntrospection(obj.name, fd.name) {
-		pf.costWeight = c.e.cost.weight(coordinate(obj.name, fd.name))
+		// Held to what the request's 32-bit total can add without the
+		// conversion itself wrapping.
+		pf.costWeight = min(max(c.e.cost.weight(coordinate(obj.name, fd.name)), math.MinInt32), math.MaxInt32)
 	}
 	if c.e != nil && len(c.e.fieldInterceptors) > 0 {
 		pf.exec = c.e.interceptedExec(pf)
@@ -425,7 +439,17 @@ func (c *compiler) buildField(obj *objectType, g *fieldGroup) *planField {
 				c.errorf(first.Position, "Invalid argument for field %s: %v", coordinate(obj.name, fd.name), err)
 				return nil
 			}
-			pf.args = v
+			// The plan is shared by every request for this query, and a
+			// resolver receives its arguments by value: a list or an input
+			// object in them would still be one slice or one struct, which a
+			// resolver sorting or defaulting its own arguments changes for
+			// the next request. Those are decoded per request, as arguments
+			// with variables are; the decode above stays as the validation.
+			if literalAggregates(first) {
+				pf.dynamicArgs = true
+			} else {
+				pf.args = v
+			}
 		}
 	}
 
@@ -464,6 +488,26 @@ func (c *compiler) errorf(pos *ast.Position, format string, args ...any) {
 func argsHaveVariables(args ast.ArgumentList) bool {
 	for _, a := range args {
 		if valueHasVariables(a.Value) {
+			return true
+		}
+	}
+	return false
+}
+
+// literalAggregates reports whether f is given a list or an input object, as
+// written or through an argument's default. Those decode to a slice or to a
+// struct behind a pointer, which every holder of the decoded arguments shares;
+// a scalar or an enum decodes to a value a resolver's copy carries whole.
+func literalAggregates(f *ast.Field) bool {
+	aggregate := func(v *ast.Value) bool {
+		return v != nil && (v.Kind == ast.ListValue || v.Kind == ast.ObjectValue)
+	}
+	for _, def := range f.Definition.Arguments {
+		if arg := f.Arguments.ForName(def.Name); arg != nil {
+			if aggregate(arg.Value) {
+				return true
+			}
+		} else if aggregate(def.DefaultValue) {
 			return true
 		}
 	}
@@ -552,10 +596,19 @@ func (d *docEntry) planFor(s *Schema, e *Executor, op *ast.OperationDefinition, 
 	key := planKey{op: op.Name, variant: variantKey(d.condVars, vars)}
 
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	if p, ok := d.plans[key]; ok {
+		d.mu.Unlock()
 		return p, true, nil
 	}
+	// A variant that will not be kept is compiled outside the lock, as an
+	// uncacheable document's is: it is compiled again on every request for
+	// it, and under the lock each of those held up every other request for
+	// this document, the cached variants included.
+	if d.full || len(d.plans) >= maxPlanVariants {
+		d.mu.Unlock()
+		return d.compile(s, e, op, condValues(d.condVars, vars), planKey{}, false)
+	}
+	defer d.mu.Unlock()
 	return d.compile(s, e, op, condValues(d.condVars, vars), key, true)
 }
 
@@ -575,6 +628,12 @@ func (d *docEntry) compile(s *Schema, e *Executor, op *ast.OperationDefinition, 
 	}
 	p.complexity = m.complexity
 	p.depth = m.depth
+	// The document's own charge covers its first plan. Each one after that is
+	// kept only while the cache's byte budget has room for the query text
+	// again; planFor has already held the document to maxPlanVariants.
+	if store && len(d.plans) > 0 && !e.cache.charge(d) {
+		d.full, store = true, false
+	}
 	if store {
 		if d.plans == nil {
 			d.plans = make(map[planKey]*plan, 1)
@@ -600,6 +659,9 @@ type planCache struct {
 type cacheItem struct {
 	hash  uint64
 	entry *docEntry
+	// bytes is what this item is charged against the budget: the query text
+	// once for the document, and once more for each plan kept after its first.
+	bytes int64
 }
 
 func newPlanCache(size int, maxBytes int64) *planCache {
@@ -650,8 +712,8 @@ func (c *planCache) put(entry *docEntry) {
 	defer c.mu.Unlock()
 	if el, ok := c.items[h]; ok {
 		item := el.Value.(*cacheItem)
-		c.used += n - int64(len(item.entry.query))
-		item.entry = entry
+		c.used += n - item.bytes
+		item.entry, item.bytes = entry, n
 		c.lru.MoveToFront(el)
 		// A replacement can grow its slot past the budget. The replaced entry is
 		// now at the front and fits on its own, so this stops before reaching it.
@@ -663,8 +725,49 @@ func (c *planCache) put(entry *docEntry) {
 	for c.lru.Len() > 0 && (c.lru.Len() >= c.size || (c.maxBytes > 0 && c.used+n > c.maxBytes)) {
 		c.removeOldest()
 	}
-	c.items[h] = c.lru.PushFront(&cacheItem{hash: h, entry: entry})
+	c.items[h] = c.lru.PushFront(&cacheItem{hash: h, entry: entry, bytes: n})
 	c.used += n
+}
+
+// charge accounts for one more plan kept by entry and reports whether it may
+// be kept. The budget counts query text because that is what a client
+// controls, and a plan is the larger part of what that text retains, so a
+// further plan costs the text again: variants of one query then meet the same
+// budget distinct queries do, where they used to be free. Other documents are
+// evicted to make room, least recently used first; the plan is refused only
+// when this document's own charge would pass the whole budget.
+//
+// An entry the cache does not hold -- evicted since, or never cacheable --
+// lives no longer than the requests using it, so its plans are not counted.
+func (c *planCache) charge(entry *docEntry) bool {
+	if c == nil || c.size <= 0 {
+		return true
+	}
+	n := int64(len(entry.query))
+	h := c.hash(entry.query)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	el, ok := c.items[h]
+	if !ok {
+		return true
+	}
+	item := el.Value.(*cacheItem)
+	if item.entry != entry {
+		return true
+	}
+	if c.maxBytes > 0 {
+		if item.bytes+n > c.maxBytes {
+			return false
+		}
+		// At the front it is never the oldest, so the loop cannot evict it.
+		c.lru.MoveToFront(el)
+		for c.used+n > c.maxBytes && c.lru.Len() > 1 {
+			c.removeOldest()
+		}
+	}
+	item.bytes += n
+	c.used += n
+	return true
 }
 
 func (c *planCache) removeOldest() {
@@ -672,10 +775,10 @@ func (c *planCache) removeOldest() {
 	item := oldest.Value.(*cacheItem)
 	c.lru.Remove(oldest)
 	delete(c.items, item.hash)
-	c.used -= int64(len(item.entry.query))
+	c.used -= item.bytes
 }
 
-// bytes reports the query text the cache currently holds.
+// bytes reports what the cache currently holds against its budget.
 func (c *planCache) bytes() int64 {
 	if c == nil {
 		return 0

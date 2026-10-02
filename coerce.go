@@ -49,6 +49,31 @@ func (s *Schema) coerceVariables(op *ast.OperationDefinition, raw map[string]any
 	return out, nil
 }
 
+// variableDefaultErrors reports every variable default in doc that does not
+// coerce to its variable's type. gqlparser checks a default's kind -- a string
+// for an Int is refused -- and not its value, so an Int out of range or a
+// custom scalar's own refusal reached execution: the operation ran, and the
+// default failed whichever field used it, where the same value written as a
+// literal argument is a validation error.
+func (s *Schema) variableDefaultErrors(doc *ast.QueryDocument) []*Error {
+	var errs []*Error
+	for _, op := range doc.Operations {
+		for _, vd := range op.VariableDefinitions {
+			if vd.DefaultValue == nil {
+				continue
+			}
+			dv, err := astJSON(vd.DefaultValue, nil)
+			if err == nil && dv != nil && !s.validInput(vd.Type, dv) {
+				err = s.validateInput(vd.Type, dv, "$"+vd.Variable)
+			}
+			if err != nil {
+				errs = append(errs, variableError(vd, "has an invalid default value: %v", err).WithCode(CodeValidationFailed))
+			}
+		}
+	}
+	return errs
+}
+
 func variableError(vd *ast.VariableDefinition, format string, args ...any) *Error {
 	e := Errorf("Variable \"$%s\" "+format, append([]any{vd.Variable}, args...)...).WithCode(CodeBadUserInput)
 	if vd.Position != nil {

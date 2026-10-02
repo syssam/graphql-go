@@ -157,11 +157,12 @@ func DisableSuggestions() ExecutorOption {
 
 // WithRecover controls whether resolver panics are converted into
 // INTERNAL_SERVER_ERROR field errors, and Authorizer panics into the same
-// error for the whole operation or event. A subscription event's interceptors
-// and presenter run on the executor's own goroutine rather than the caller's,
-// so a panic there becomes an error event instead of reaching no recover at
-// all. It is enabled by default; disable it only in tests that want panics to
-// surface.
+// error for the whole operation or event. A panic anywhere else in Execute or
+// in opening a subscription -- an interceptor, the presenter, a scalar's
+// unmarshal, an input setter, a TypeResolver, a lazy list's body -- costs the
+// whole operation that same error and no data, and one in a subscription
+// event costs that event. It is enabled by default; disable it only in tests
+// that want panics to surface.
 func WithRecover(enabled bool) ExecutorOption {
 	return func(e *Executor) { e.recover = enabled }
 }
@@ -211,10 +212,8 @@ func (e *Executor) validationRules() *rules.Rules {
 		}
 	}
 	if !e.schema.introspection {
-		r.RemoveRule(maxIntrospectionDepthRule.Name)
+		r.RemoveRule(rules.MaxIntrospectionDepth.Name)
 		r.AddRule(noIntrospectionRule.Name, noIntrospectionRule.RuleFunc)
-	} else {
-		r.ReplaceRule(maxIntrospectionDepthRule.Name, maxIntrospectionDepthRule.RuleFunc)
 	}
 	return r
 }
@@ -230,7 +229,39 @@ func (e *Executor) Execute(ctx context.Context, req *Request) *Response {
 		ctx, cancel = context.WithTimeoutCause(ctx, e.operationTimeout, e.timeoutCause)
 		defer cancel()
 	}
+	if e.recover {
+		return e.executeRecovering(ctx, req)
+	}
 	return e.reqChain(ctx, req)
+}
+
+func (e *Executor) executeRecovering(ctx context.Context, req *Request) (resp *Response) {
+	defer func() {
+		if r := recover(); r != nil {
+			resp = panicResponse(ctx, "graphql: panic outside a resolver", r)
+		}
+	}()
+	return e.reqChain(ctx, req)
+}
+
+// panicResponse is the answer to a panic nothing nearer caught: an
+// interceptor, a scalar's unmarshal or an input setter decoding what the
+// client sent, a TypeResolver, the body of a lazy list. The transport cannot
+// be relied on for it, because gqlws and gqlfiber's WebSocket run an operation
+// on a goroutine of its own, where an unrecovered panic ends the process. The
+// error is built unpresented because the presenter may be what panicked.
+func panicResponse(ctx context.Context, msg string, r any) *Response {
+	stack := debug.Stack()
+	// Raised on a scheduled field's goroutine and brought here by the group
+	// that waited for it: the stack worth logging is the one it came with.
+	if tp, ok := r.(*taskPanic); ok {
+		r, stack = tp.value, tp.stack
+	}
+	slog.ErrorContext(ctx, msg,
+		"panic", r,
+		"stack", string(stack),
+	)
+	return &Response{Errors: []*Error{Errorf("internal system error").WithCode(CodeInternal)}}
 }
 
 // timeoutError is the cause attached to the executor's own deadline.
@@ -393,6 +424,12 @@ func (e *Executor) parseDocument(query string) (*docEntry, []*Error) {
 			verrs = verrs[:e.maxErrors+1]
 		}
 		return nil, gqlErrors(verrs, CodeValidationFailed)
+	}
+	// Once per document rather than per request: a default is part of the
+	// document, and a document whose default cannot be coerced is refused
+	// whether or not a request happens to supply the variable.
+	if derrs := e.schema.variableDefaultErrors(doc); len(derrs) > 0 {
+		return nil, derrs
 	}
 	entry := &docEntry{query: query, doc: doc, condVars: condVariables(doc)}
 	e.cache.put(entry)
@@ -791,9 +828,9 @@ type execState struct {
 	// It is 32 bits, and sits next to cancelled, so that the two share the
 	// padding the struct already had: as an int64 it pushed execState into
 	// the next size class and cost 16 bytes on every request, including the
-	// requests of everyone who never turns cost accounting on. Overflow needs
-	// two billion resolved fields in one operation, which the complexity and
-	// cost caps exist to prevent and which would take minutes to reach.
+	// requests of everyone who never turns cost accounting on. It
+	// saturates at MaxInt32 instead of wrapping: that is two billion fields at
+	// weight one, but 2^31 divided by the weight for a field given a large one.
 	actualCost atomic.Int32
 	cancelled  atomic.Bool
 }
