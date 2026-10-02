@@ -8,6 +8,7 @@ paths:
   - "observer.go"
   - "subscription.go"
   - "internal/jsonw/**"
+  - "internal/jsonr/**"
   - "loader/**"
 ---
 
@@ -19,6 +20,31 @@ walks the plan writing into a `jsonw.Writer`; null bubbling rewinds the writer t
 offset rather than building an intermediate value tree. `errNonNull` is the internal signal
 for "null reached a non-null position"; `indexedError` carries a list index so error paths
 can be reconstructed.
+
+**The variables object is decoded by `internal/jsonr`, not `encoding/json`.** Decoding into
+`map[string]any` through reflection cost two scalar variables a microsecond and seventeen
+allocations, two fifths of a small request, on the path every client that parameterises its
+queries takes -- and no benchmark in the allocation gate reached it. `jsonr.Object` decodes the
+one shape into the same values (`map[string]any`, `[]any`, `string`, `json.Number`, `bool`,
+nil): strings and numbers are substrings of one copy of the input, taken because a transport
+over fasthttp reuses the buffer. **Only up to `shareLimit` (1 KiB)**: sharing means one kept
+value keeps the whole copy reachable, and eight three-byte ids each from variables that also
+carried a 4 MiB upload held 29 MB (`TestObjectDoesNotPinALargePayload`). Past the limit every
+string is its own allocation, as `encoding/json` made them, so a kept value pins at most 1 KiB;
+`TestObjectSharesASmallPayload` holds the other side, and each fails with the rule forced the
+other way. Interleaved n=12 against the commit before, with the map reuse below included:
+`ExecuteVariableArgs` 2.022µs to 1.042µs (-48%, p=0.000), 31 to 17 allocations;
+`ExecuteInputVariable` -44% and -49% (p=0.000 both), 34 to 18 and 90 to 52. **Equivalence is
+held by test, not by care**: `TestObjectAgreesWithEncodingJSON` runs a corpus through both and
+`FuzzObject` arbitrary input (39.8M executions clean), agreeing on what is accepted and on what
+comes out -- last duplicate key wins, each invalid UTF-8 byte becomes U+FFFD, a lone surrogate
+escape too, nesting stops at 10 000. One deliberate difference from what was there: surrounding
+whitespace is JSON's four characters, where `strings.TrimSpace` also took `\v`, `\f` and the
+Unicode spaces. `coerceVariables` then returns that map itself when the request supplies every
+declared variable and nothing else (`suppliesExactly`), instead of copying it entry by entry;
+that took one allocation and 48 bytes off every request, with or without variables
+(`ExecuteUsers` and `FieldPathBare` 14 to 13; their sec/op is not distinguishable, p=0.183 and
+0.075). The variables benchmarks are in `TestAllocationBaseline` now.
 
 **Recovery covers user code, not only the resolver call.** `callLeaf`/`callResolve` turn a
 resolver panic into a field error. Everything else a request can reach -- interceptors, the

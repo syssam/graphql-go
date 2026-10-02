@@ -32,6 +32,12 @@ var allocGated = []struct {
 	{"BenchmarkListResultsSlice", BenchmarkListResultsSlice},
 	{"BenchmarkQueryCostDisabled", BenchmarkQueryCostDisabled},
 	{"BenchmarkResponseLimitOn", BenchmarkResponseLimitOn},
+	// The path a client that parameterises its queries takes. Nothing here
+	// reached it, so decoding the variables through encoding/json cost
+	// seventeen allocations a request for as long as nobody looked.
+	{"BenchmarkExecuteVariableArgs", BenchmarkExecuteVariableArgs},
+	{"BenchmarkExecuteInputVariable", BenchmarkExecuteInputVariable},
+	{"BenchmarkExecuteLiteralAggregateArgs", BenchmarkExecuteLiteralAggregateArgs},
 }
 
 // Allocation counts are deterministic; timings on a shared CI runner are not.

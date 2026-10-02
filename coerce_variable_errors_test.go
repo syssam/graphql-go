@@ -2,6 +2,9 @@ package graphql
 
 import (
 	"context"
+	"encoding/json"
+	"github.com/vektah/gqlparser/v2/ast"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -227,4 +230,60 @@ func TestAnUncoercibleVariableDefaultIsARequestError(t *testing.T) {
 		t.Fatalf("a supplied value excused an invalid default: data=%s errors=%s", resp.Data, errorsJSON(resp.Errors))
 	}
 	expectData(t, run(t, e, `query($l: Int = 7) { f(l: $l) }`, ""), `{"f":7}`)
+}
+
+// Coercion validates the variables and returns the map the executor reads. It
+// built that map afresh on every request, entry by entry, when in the ordinary
+// case -- every declared variable supplied and nothing else -- it is the map
+// that was just decoded.
+func TestCoerceVariablesReusesTheDecodedMapWhenNothingDiffers(t *testing.T) {
+	s, err := NewSchema(SDL(`type Query { f(a: Int, b: String): Int }`),
+		Query(FieldArgs("f", func(Root, struct {
+			A *int
+			B *string
+		}) *int {
+			return nil
+		})))
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	op := func(q string) *ast.OperationDefinition {
+		entry, errs := NewExecutor(s).document(q)
+		if errs != nil {
+			t.Fatalf("document: %v", errs[0])
+		}
+		return entry.doc.Operations[0]
+	}
+	same := func(a, b map[string]any) bool { return reflect.ValueOf(a).Pointer() == reflect.ValueOf(b).Pointer() }
+	const q = `query($a: Int, $b: String = "d") { f(a: $a, b: $b) }`
+
+	raw := map[string]any{"a": json.Number("1"), "b": "x"}
+	out, cerr := s.coerceVariables(op(q), raw)
+	if cerr != nil || !same(out, raw) {
+		t.Fatalf("every variable supplied and nothing else: want the decoded map itself (err %v)", cerr)
+	}
+
+	// Anything that makes the result differ still gets a map of its own.
+	for name, raw := range map[string]map[string]any{
+		"an undeclared variable is dropped":        {"a": json.Number("1"), "b": "x", "extra": true},
+		"an absent variable takes its default":     {"a": json.Number("1")},
+		"an absent nullable variable stays absent": {"b": "x"},
+	} {
+		out, cerr := s.coerceVariables(op(q), raw)
+		if cerr != nil {
+			t.Fatalf("%s: %v", name, cerr)
+		}
+		if same(out, raw) {
+			t.Errorf("%s: the decoded map was returned unchanged", name)
+		}
+		if _, ok := out["extra"]; ok {
+			t.Errorf("%s: an undeclared variable reached the executor", name)
+		}
+	}
+	if out, _ := s.coerceVariables(op(q), map[string]any{"a": json.Number("1")}); out["b"] != "d" {
+		t.Errorf("default not applied: %v", out)
+	}
+	if out, _ := s.coerceVariables(op(q), map[string]any{"b": "x"}); len(out) != 1 {
+		t.Errorf("an absent variable with no default must stay absent: %v", out)
+	}
 }
