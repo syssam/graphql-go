@@ -191,6 +191,20 @@ func (b *schemaBuilder) applyDirectives(s *Schema) {
 	}
 }
 
+// usesAreChecked reports whether each place a directive is written has to be
+// one where it runs. It does not for an unbound directive, which wraps
+// nothing anywhere. Nor for a built-in: @deprecated on an enum value or an
+// argument is the only way to say so, and binding it -- to count calls to
+// deprecated fields -- is no reason to refuse that. Nor for one declared for
+// no location this engine applies, which has been reported as such already.
+func (b *schemaBuilder) usesAreChecked(name string) bool {
+	if b.directives[name] == nil || builtinDirectives[name] {
+		return false
+	}
+	def := b.ast.Directives[name]
+	return def == nil || supportedDirectiveLocation(def.Locations)
+}
+
 // rejectDirectivesThatNeverRun fails the build for each use of a bound
 // directive at a place nothing applies it. The check on a binding's declared
 // locations passes a directive declared for FIELD_DEFINITION and for
@@ -207,11 +221,14 @@ func (b *schemaBuilder) rejectDirectivesThatNeverRun() {
 	// place has none, and naming each one first cost a 5 500-type schema
 	// 26 000 allocations to report nothing.
 	reject := func(ds ast.DirectiveList, where func() string) {
-		for _, d := range ds {
-			if b.directives[d.Name] != nil {
-				b.errorf("%s: @%s is bound and written here, where a directive never runs; DirectiveArgs applies FIELD_DEFINITION and OBJECT",
-					where(), d.Name)
+		for i, d := range ds {
+			// A repeatable directive written twice at one place is one
+			// mistake.
+			if !b.usesAreChecked(d.Name) || slices.ContainsFunc(ds[:i], func(e *ast.Directive) bool { return e.Name == d.Name }) {
+				continue
 			}
+			b.errorf("%s: @%s is bound and written here, where a directive never runs; DirectiveArgs applies FIELD_DEFINITION and OBJECT",
+				where(), d.Name)
 		}
 	}
 	arguments := func(args ast.ArgumentDefinitionList, owner func() string) {
@@ -256,23 +273,55 @@ func (b *schemaBuilder) rejectDirectivesThatNeverRun() {
 }
 
 // rejectDirectivesLeftOnTheAbstractType fails the build for a bound directive
-// written on an interface or union and not on an object behind it, which is
-// served without it.
+// written on an interface or union and not carried by an object behind it,
+// which is served without it. An object carries it by having it, or, where
+// the directive is not declared for OBJECT and cannot be written there, by
+// having it on each field the abstract type covers: an interface's own
+// fields, every field of a union's member. The subscription root carries
+// nothing -- its fields are not wrapped -- so it is sent to the rule it has.
 func (b *schemaBuilder) rejectDirectivesLeftOnTheAbstractType(def *ast.Definition) {
 	kind := "interface"
 	if def.Kind == ast.Union {
 		kind = "union"
 	}
-	for _, d := range def.Directives {
-		if b.directives[d.Name] == nil {
+	for i, d := range def.Directives {
+		if !b.usesAreChecked(d.Name) || slices.ContainsFunc(def.Directives[:i], func(e *ast.Directive) bool { return e.Name == d.Name }) {
 			continue
 		}
+		onObject := slices.Contains(b.ast.Directives[d.Name].Locations, ast.LocationObject)
 		for _, obj := range b.ast.GetPossibleTypes(def) {
 			if obj.Kind != ast.Object || obj.Directives.ForName(d.Name) != nil {
 				continue
 			}
-			b.errorf("type %s: @%s is bound and written on the %s %s, but a directive on an abstract type never runs; write it on %s as well",
-				obj.Name, d.Name, kind, def.Name, obj.Name)
+			if b.ast.Subscription != nil && obj.Name == b.ast.Subscription.Name {
+				if !b.subDirectives[d.Name] {
+					b.errorf("type %s: @%s is bound and written on the %s %s, but a directive on a subscription root field never runs; use a SubscriptionInterceptor (and declare it with SubscriptionRootDirective)",
+						obj.Name, d.Name, kind, def.Name)
+				}
+				continue
+			}
+			covered := obj.Fields
+			if def.Kind == ast.Interface {
+				covered = def.Fields
+			}
+			var missing []string
+			for _, f := range covered {
+				if strings.HasPrefix(f.Name, "__") {
+					continue
+				}
+				if own := obj.Fields.ForName(f.Name); own != nil && own.Directives.ForName(d.Name) == nil {
+					missing = append(missing, coordinate(obj.Name, f.Name))
+				}
+			}
+			if len(missing) == 0 {
+				continue
+			}
+			advice := "write it on " + obj.Name + " as well"
+			if !onObject {
+				advice = "it is not declared for OBJECT, so write it on " + strings.Join(missing, ", ")
+			}
+			b.errorf("type %s: @%s is bound and written on the %s %s, but a directive on an abstract type never runs; %s",
+				obj.Name, d.Name, kind, def.Name, advice)
 		}
 	}
 }
@@ -295,7 +344,7 @@ func (b *schemaBuilder) rejectDirectivesLeftOnTheInterface(obj *objectType, fd *
 			continue
 		}
 		for _, d := range ifd.Directives {
-			if b.directives[d.Name] == nil || fd.def.Directives.ForName(d.Name) != nil || obj.def.Directives.ForName(d.Name) != nil {
+			if !b.usesAreChecked(d.Name) || fd.def.Directives.ForName(d.Name) != nil || obj.def.Directives.ForName(d.Name) != nil {
 				continue
 			}
 			b.errorf("field %s: @%s is bound and written on %s, but a directive on an interface field never runs; write it on %s as well",
@@ -309,8 +358,18 @@ func (b *schemaBuilder) rejectDirectivesLeftOnTheInterface(obj *objectType, fd *
 // field is served by fd.subscribe, and the per-event writer substitutes its
 // executor outright. Reporting it beats a check that quietly never runs.
 func (b *schemaBuilder) rejectDirectivesOnSubscriptionRoot(obj *objectType, fd *fieldDef) {
-	for _, d := range append(append([]*ast.Directive(nil), fd.def.Directives...), obj.def.Directives...) {
-		if b.directives[d.Name] == nil || b.subDirectives[d.Name] {
+	ds := append(append([]*ast.Directive(nil), fd.def.Directives...), obj.def.Directives...)
+	// And what an interface the root implements writes on this field, which
+	// would otherwise be the one way around this rule.
+	for _, name := range obj.def.Interfaces {
+		if iface := b.ast.Types[name]; iface != nil {
+			if ifd := iface.Fields.ForName(fd.name); ifd != nil {
+				ds = append(ds, ifd.Directives...)
+			}
+		}
+	}
+	for i, d := range ds {
+		if b.directives[d.Name] == nil || b.subDirectives[d.Name] || slices.ContainsFunc(ds[:i], func(e *ast.Directive) bool { return e.Name == d.Name }) {
 			continue
 		}
 		b.errorf("field %s: @%s is bound, but a directive on a subscription root field never runs; use a SubscriptionInterceptor (and declare it with SubscriptionRootDirective)", coordinate(obj.name, fd.name), d.Name)

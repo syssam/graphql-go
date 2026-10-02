@@ -126,6 +126,22 @@ version named every argument and field before looking at it and took 2.5 ms and 
 allocations to report nothing; a place's coordinate is now built when a bound directive is
 found there.
 
+A review then found the rule too broad in one way and too narrow in two
+(`usesAreChecked`, `TestBindingABuiltInDirectiveLeavesItsOtherUsesAlone` and the three tests
+after it). **A built-in is exempt**: binding `@deprecated`, to count calls to deprecated
+fields, made its use on an enum value or an argument a build error, on schemas that had built.
+**One mistake is one error**: a directive declared for no applied location is reported as that
+and not again at each use, and a repeatable directive written twice at one place once. **The
+subscription root is sent to its own rule** when a directive reaches it through an interface's
+field or an interface it implements; the first had gone unreported and the second was told
+"write it on Subscription", which the build then refused. And an abstract type's directive may
+be carried by the object's *fields* -- the interface's own, or every field of a union's member
+-- because a directive not declared for `OBJECT` cannot be written on the object, and the
+advice says which fields. Still presence-only: `@role(r: "ADMIN")` on the interface and
+`@role(r: "GUEST")` on the object builds, since the object's is what runs. And a bound
+directive that is also declared for executable locations does nothing when a query uses it;
+that is a request, not a schema, and is not checked here.
+
 **Four more mismatches are build errors now, each found by a review rather than by a user.**
 `Enum` collected the first bad value it met while ranging its map, so the message changed run
 to run and named one of several; it reports every undefined and every doubly-mapped value,
