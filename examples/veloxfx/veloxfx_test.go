@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -20,8 +21,7 @@ import (
 	"go.uber.org/fx/fxtest"
 
 	"github.com/syssam/graphql-go/examples/veloxfx/graph"
-	"github.com/syssam/graphql-go/examples/veloxfx/internal/catalog"
-	"github.com/syssam/graphql-go/examples/veloxfx/internal/sales"
+	"github.com/syssam/graphql-go/examples/veloxfx/internal/service"
 	"github.com/syssam/graphql-go/examples/veloxfx/internal/viewer"
 	"github.com/syssam/graphql-go/examples/veloxfx/velox"
 )
@@ -34,9 +34,10 @@ func TestSchemaBinds(t *testing.T) {
 	}
 }
 
-// Every entity is its own group, and no root field stayed in root: the ones
-// velox declares follow the type they return, and the hand-written ones in
-// sdl/ follow their file.
+// Every entity is one package, graph/<entity>: gqlc's generated.go beside the
+// Handler written in <entity>.resolvers.go. No root field stayed in root: the
+// ones velox declares follow the type they return, and the hand-written ones
+// in sdl/ follow their file.
 func TestEveryEntityIsItsOwnGroup(t *testing.T) {
 	dirs, err := os.ReadDir("graph")
 	if err != nil {
@@ -51,6 +52,14 @@ func TestEveryEntityIsItsOwnGroup(t *testing.T) {
 	want := []string{"category", "customer", "order", "orderitem", "product", "root", "stock", "warehouse"}
 	if !slices.Equal(groups, want) {
 		t.Fatalf("groups = %v, want %v", groups, want)
+	}
+	for _, g := range want {
+		if g == "root" {
+			continue // velox's shared types: nothing to resolve
+		}
+		if _, err := os.Stat(filepath.Join("graph", g, g+".resolvers.go")); err != nil {
+			t.Errorf("group %s has no Handler beside its generated code: %v", g, err)
+		}
 	}
 	read := func(g string) string {
 		b, err := os.ReadFile(filepath.Join("graph", g, "generated.go"))
@@ -242,7 +251,7 @@ func TestTheAPIOffersOperationsNotRawWrites(t *testing.T) {
 	}
 }
 
-func TestServesThroughEveryDomain(t *testing.T) {
+func TestServesEveryEntity(t *testing.T) {
 	a := start(t)
 	a.seed()
 
@@ -282,7 +291,7 @@ func TestServesThroughEveryDomain(t *testing.T) {
 	}
 }
 
-// Every list root loads what the query selects beneath it, across domains,
+// Every list root loads what the query selects beneath it, across entities,
 // so one request is a fixed number of queries however many rows it returns.
 // Three orders of two items each, loaded one edge at a time, is 1 + 3
 // customers + 3 item lists + 6 products = 13 queries; collected it is 4, and
@@ -544,12 +553,15 @@ func TestORMValidationIsAFieldError(t *testing.T) {
 	a.refused(`mutation { createCategory(input: {name: ""}) { id } }`, "BAD_USER_INPUT", "name")
 }
 
-// A domain module left out of the app is a failed start that names what it
-// left unbound, not a schema that builds and fails the first request to
-// reach it. catalog depends on inventory through Product.stocks.
-func TestAMissingDomainFailsStart(t *testing.T) {
+// A group left out of the app is a failed start that names what it left
+// unbound, not a schema that builds and fails the first request to reach it.
+// Product.stocks is how the catalog reaches the stock group.
+func TestAMissingGroupFailsStart(t *testing.T) {
+	// Every other group, from the one list resolvers.go registers from, so an
+	// entity added there is in here too.
 	a := fx.New(
-		catalog.Module, sales.Module, // inventory.Module left out
+		service.Module,
+		fx.Options(resolverOptions("stock")...),
 		appCore,
 		fx.Supply(testConfig(t)),
 		fx.NopLogger,
@@ -557,6 +569,13 @@ func TestAMissingDomainFailsStart(t *testing.T) {
 	err := a.Err()
 	if err == nil || !strings.Contains(err.Error(), "type Stock has no Object binding") {
 		t.Fatalf("err = %v", err)
+	}
+	// And only stock: every unbound type it reports is Stock, once per field
+	// that reaches it, and nothing else went missing with it.
+	for _, m := range regexp.MustCompile(`type (\w+) has no Object binding`).FindAllStringSubmatch(err.Error(), -1) {
+		if m[1] != "Stock" {
+			t.Errorf("%s is unbound too; only stock was left out: %v", m[1], err)
+		}
 	}
 }
 

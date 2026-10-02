@@ -1,6 +1,7 @@
 // Package viewer is who is asking: a staff member, a signed-in customer, or
 // nobody. It is set on the request context once, by Middleware, and read by
-// the authorization policy and by the database's read filter.
+// the authorization policy, by the database's read filter, and by every
+// service write only staff may make (RequireStaff).
 package viewer
 
 import (
@@ -10,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/labstack/echo/v5"
+
+	"github.com/syssam/graphql-go/examples/veloxfx/internal/apperr"
 )
 
 // Scope names. The SDL spells them in @requiresScopes and the policy reads
@@ -40,6 +43,20 @@ func (v Viewer) Scopes() map[string]bool {
 		return nil
 	}
 	return map[string]bool{ScopePII: true, ScopeInventory: true}
+}
+
+// RequireStaff refuses anyone but staff: UNAUTHENTICATED when nobody is
+// signed in, FORBIDDEN for a customer. A service calls it itself, so the
+// rule holds for every caller, not only for requests mutationGate has seen.
+func RequireStaff(ctx context.Context) error {
+	switch v := From(ctx); {
+	case v.Staff:
+		return nil
+	case v.Anonymous():
+		return apperr.New(apperr.Unauthenticated, "sign in as staff to do this")
+	default:
+		return apperr.New(apperr.Forbidden, "only staff may do this")
+	}
 }
 
 type ctxKey struct{}

@@ -7,13 +7,17 @@
 // returns what the ORM returns:
 //
 //	schema/*.go --velox (generate.go)--> velox/ (ORM) + velox/schema/*.graphql
-//	velox/schema/*.graphql + sdl/*.graphql --gqlc (gqlc.yaml)--> graph/<entity>/
+//	velox/schema/*.graphql + sdl/*.graphql --gqlc (gqlc.yaml)--> graph/
 //
-// Entities are implemented by domain, the way a gRPC server package implements
-// services: internal/catalog, internal/sales and internal/inventory each hold a
-// Resolver per entity group they own and one Module registering them. Nothing
-// here lists entities; a new entity changes its domain, and a new domain
-// changes Domains by one line. GUIDE.md walks through adding one.
+// The layers are those of a gRPC server, one package per entity in each:
+//
+//	graph/<entity>            generated.go: bindings, args, Resolver interface
+//	                          <entity>.resolvers.go: the Handler, thin, scaffolded
+//	graph/model/<entity>      generated: types the SDL declares and Go lacks
+//	internal/service/<entity> written: the rules
+//
+// An edit to one entity recompiles that entity's packages. GUIDE.md walks
+// through adding one.
 //
 // fx runs start hooks in dependency order and stop hooks in reverse: the
 // database is migrated before the server listens, and the server has drained
@@ -26,9 +30,7 @@ package veloxfx
 import (
 	"go.uber.org/fx"
 
-	"github.com/syssam/graphql-go/examples/veloxfx/internal/catalog"
-	"github.com/syssam/graphql-go/examples/veloxfx/internal/inventory"
-	"github.com/syssam/graphql-go/examples/veloxfx/internal/sales"
+	"github.com/syssam/graphql-go/examples/veloxfx/internal/service"
 	"github.com/syssam/graphql-go/transport/drain"
 )
 
@@ -47,18 +49,11 @@ type Config struct {
 	MaxConns int
 }
 
-// Domains is one Module per domain package. Each registers the groups it
-// implements; this list is all that grows when a domain is added.
-var Domains = fx.Options(
-	catalog.Module,
-	sales.Module,
-	inventory.Module,
-)
+// Module is the application, minus its Config: the services, the GraphQL
+// layer in front of them, and the server.
+var Module = fx.Module("veloxfx", service.Module, Resolvers, appCore)
 
-// Module is the application, minus its Config.
-var Module = fx.Module("veloxfx", Domains, appCore)
-
-// appCore is everything but the domains.
+// appCore is everything but the services and the resolvers.
 var appCore = fx.Options(
 	fx.Provide(
 		NewClient,
@@ -68,9 +63,6 @@ var appCore = fx.Options(
 		NewEcho,
 		NewServer,
 	),
-	// Order reads are narrowed to the viewer's own, on whichever client the
-	// app ends up with -- a test decorating it keeps the filter.
-	fx.Invoke(ownOrders),
 	// Nothing depends on *Server, and fx builds only what is asked for.
 	fx.Invoke(func(*Server) {}),
 )

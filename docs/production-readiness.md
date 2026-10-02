@@ -29,7 +29,7 @@ Everything below is what makes that fork cheap.
 |---|---|
 | Authorization decided before execution, per field and per row; masking (per row with `RedactRow`: a customer sees their own email), null, zero, deny | `authz*.go`, `examples/storefront`, `examples/veloxfx/authz.go` |
 | A withheld field costs no database query | `SelectedField.Withheld` + velox `contrib/graphqlgo` |
-| Row ownership as a SQL filter, not load-then-drop | velox read interceptors; `examples/veloxfx` `ownOrders` |
+| Row ownership as a SQL filter, not load-then-drop | velox read interceptors; `examples/veloxfx` `order.OwnOrders`, and the same condition on its writes |
 | Query depth, complexity and cost limits, priced per connection page | `limits.go` (`Connections: true`) |
 | Persisted and trusted documents (Meta and Shopify style) | `ext/apq`, `ext/trusted` |
 | Rate limiting by cost | `ext/throttle` |

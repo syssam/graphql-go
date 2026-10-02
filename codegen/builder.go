@@ -69,6 +69,9 @@ type builder struct {
 	// exprQualifiers is its inverse, import path to qualifier, filled with it.
 	exprQualifiers map[string]string
 	exprScans      int
+	// scaffoldParses counts the files scaffold parses, which must be each
+	// file once per run however many groups share a package.
+	scaffoldParses int
 
 	// loads counts calls to packages.Load. "It reads no Go type information
 	// without AutoBind" is a promise the documentation makes and only the

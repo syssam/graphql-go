@@ -166,6 +166,48 @@ named, and nothing is deleted. The implementation's package is parsed, not
 loaded, so gqlc still type-checks no Go code of yours. With one group, the key
 is the output package's name.
 
+`groupDir` puts every group's package under one directory of the output
+rather than beside `model/` and `schema/`, so generated bindings, generated
+models and the resolvers you write can each have a directory of their own
+while every group stays its own package:
+
+```yaml
+output: graph
+groupDir: register        # graph/register/<group>; models stay in graph/model/<group>
+scaffold:
+  product: graph/resolver.ProductResolver   # every group's resolver in one package
+```
+
+A package gqlc no longer writes --
+a group moved by `groupDir`, or one whose models all became bindings -- is
+deleted on the next run, along with any directory that leaves empty; only
+files carrying gqlc's `Code generated` header are ever removed, and never in
+a directory the go command ignores (`testdata`, `vendor`, or a name starting
+with `.` or `_`), in another module (a directory with its own `go.mod`), or in
+another gqlc run's output nested inside this one. Whether a file is one this
+run wrote is asked of the filesystem: on Windows or macOS a directory whose
+letter case changed is the same directory and is kept, while on Linux a stale
+file differing only in case is a different file and is deleted. A directory
+this process may not read is stepped around, not a failed generate. Code you
+wrote that imports a moved package keeps the old path until you change it,
+which the compiler reports.
+
+The implementation can also live in the group's own generated package, so
+one entity is one package -- what `examples/veloxfx` does:
+
+```yaml
+scaffold:
+  product: graph/product.Handler   # beside graph/product/generated.go
+```
+
+The stubs there name the group's own types unqualified (`args ProductsArgs`)
+and do not import the package they are in. The type shares a namespace with
+the generated code, so a name gqlc declares there -- `Resolver`, `Bindings`,
+an args struct -- is refused with a message, not a redeclaration in a file
+marked DO NOT EDIT; so is a helper of yours in that package named like
+something gqlc emits, with the file it is in. Models stay in `model/<group>`: models of different groups
+refer to each other, and one package each would import in a circle.
+
 `codegen.Config` also offers `Manifest` (explicit bindings), and Go functions
 where these keys take a rule; call `codegen.Generate` from a small program for
 those. An unknown key in `gqlc.yaml` is an error rather than being ignored.

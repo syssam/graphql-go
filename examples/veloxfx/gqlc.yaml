@@ -40,17 +40,23 @@ inlineAccessors: true
 # Hand-written resolvers known to answer from memory. totalCents sums the
 # items that schema/sales.go's Loads("items") has velox load whole.
 inline: [Order.totalCents]
-# Each group's Resolver is implemented by a type in its domain package. A
-# method the type does not have yet is written as a stub into
-# internal/<domain>/<group>.resolvers.go; methods that exist are never touched.
+# Each entity is one package, graph/<entity>: gqlc's generated.go -- bindings,
+# args, its Resolver interface -- and the Handler implementing it, a thin
+# hand-off to internal/service/<entity>, where the rules are. A method the
+# Handler does not have yet is written as a stub into
+# graph/<entity>/<entity>.resolvers.go; methods that exist are never touched.
+# Generated models the SDL needs (graph/model/<entity>) stay apart: models of
+# different entities refer to each other, and one package each would import
+# in a circle.
 scaffold:
-  category:  internal/catalog.CategoryResolver
-  product:   internal/catalog.ProductResolver
-  customer:  internal/sales.CustomerResolver
-  order:     internal/sales.OrderResolver
-  orderitem: internal/sales.OrderItemResolver
-  warehouse: internal/inventory.WarehouseResolver
-  stock:     internal/inventory.StockResolver
+  category:  graph/category.Handler
+  product:   graph/product.Handler
+  customer:  graph/customer.Handler
+  order:     graph/order.Handler
+  orderitem: graph/orderitem.Handler
+  warehouse: graph/warehouse.Handler
+  stock:     graph/stock.Handler
 # An Apollo Federation subgraph: @key needs no declaration, and
-# graph.NewSchema takes the entity resolvers (entities.go).
+# graph.NewSchema takes the entity resolvers: each owning service answers its
+# type, and resolvers.go registers them with gqlfx.Entity.
 federation: true

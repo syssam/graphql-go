@@ -104,8 +104,10 @@ func TestScaffoldWritesStubsThatCompile(t *testing.T) {
 	for _, want := range []string{
 		"args postgql.PostArgs",
 		"args postgql.PublishArgs",
-		"// Who wrote it.",
-		"// PostAuthor resolves Post.author.",
+		// The method's name first, as the interface has it: a doc comment
+		// opening with the SDL description fails staticcheck's ST1020 on
+		// every described field of code the author now owns.
+		"// PostAuthor resolves Post.author.\n//\n// Who wrote it.\nfunc (r *PostResolver) PostAuthor(",
 	} {
 		if !strings.Contains(post, want) {
 			t.Errorf("post.resolvers.go lacks %q\n%s", want, post)

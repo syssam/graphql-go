@@ -1,14 +1,13 @@
 // Package schema declares the entities velox generates the ORM and the SDL
 // from. It is the only source of either: velox/ and graph/ are both output.
 //
-// The entities fall into three domains, which is how internal/ is laid out:
+// The entities are declared in three files by the part of the shop they
+// describe; the code generated from them, and internal/service, has one
+// package per entity:
 //
-//	catalog    Category, Product
-//	sales      Customer, Order, OrderItem
-//	inventory  Warehouse, Stock
-//
-// OrderItem.product, Stock.product and Order.warehouse cross from one domain
-// into another.
+//	catalog.go    Category, Product
+//	sales.go      Customer, Order, OrderItem
+//	inventory.go  Warehouse, Stock
 //
 // What velox would generate is not what the API should offer. Its create and
 // update mutations write any column and any edge, so the entities whose rows

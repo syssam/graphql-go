@@ -1,11 +1,12 @@
-// Package gqlfx registers a domain's GraphQL groups with fx, as
-// RegisterXServer registers a service with a gRPC server.
+// Package gqlfx registers GraphQL groups with fx, as RegisterXServer
+// registers a service with a gRPC server.
 package gqlfx
 
 import (
 	"go.uber.org/fx"
 
 	graphql "github.com/syssam/graphql-go"
+	"github.com/syssam/graphql-go/fed"
 )
 
 // Register provides a group's Resolver from newResolver and contributes the
@@ -22,8 +23,17 @@ func Register[R any](newResolver any, bindings func(R) graphql.SchemaOption) fx.
 	)
 }
 
-// Groups is every group's bindings, as the domain modules Register them.
+// Entity contributes a federation entity -- how the router's references to
+// one type are resolved -- from a constructor fx calls, so the service that
+// owns the type is the one that says how it is fetched.
+func Entity(newEntity any) fx.Option {
+	return fx.Provide(fx.Annotate(newEntity, fx.ResultTags(`group:"entities"`)))
+}
+
+// Groups is every group's bindings and every federation entity, as the
+// application's Resolvers module registers them.
 type Groups struct {
 	fx.In
 	Bindings []graphql.SchemaOption `group:"graphql"`
+	Entities []fed.Entity           `group:"entities"`
 }
