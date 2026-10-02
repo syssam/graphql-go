@@ -2,7 +2,7 @@
 
 This guide walks through `examples/backoffice` the way the gRPC basics tutorial
 walks through a route guide: define the service, generate the code, implement
-it, register it, run it, and then do the loop you will do every day -- add an
+it, wire it, run it, and then do the loop you will do every day -- add an
 entity. Every output below is what the commands printed.
 
 The service is a small shop: seven entities -- Category, Product, Customer,
@@ -143,7 +143,8 @@ six seconds. What comes out:
 | `graph/<entity>/generated.go` | the entity's `Resolver` interface, argument structs and `Bindings` | no |
 | `graph/<entity>/<entity>.resolvers.go` | stubs for methods the `Handler` lacks, in the same package | yes -- yours from then on |
 | `graph/model/<entity>/models.go` | types gqlc had to write, such as `PlaceOrderInput`; only order has any | no |
-| `graph/schema.go` | `NewSchema(opts...)` over the embedded SDL | no |
+| `graph/schema.go` | `NewSchema(entities, opts...)` over the embedded SDL | no |
+| `graph/wire.go` | `Wire(services)`: every entity's `Handler` constructed, and their bindings | no |
 
 A package gqlc stops writing is deleted on the next run, so a type that
 moves to a velox binding does not leave its old model behind.
@@ -525,7 +526,10 @@ queries (39). They are the service -- a second type, a constructor, a method
 per operation -- and its staff checks. What they buy is that the rules do not
 live in GraphQL code: a job or a test calls `supplier.Service` without an
 argument struct and meets the same checks, and changing an entity's rules
-recompiles its service and its own entity package, nothing else.
+recompiles its service, its own entity package, any service that uses it
+(the order service uses stock's), and the few packages that assemble
+everything -- `internal/service`, `graph`, the root and `cmd/server` -- but
+no other entity's.
 
 ## 8. Test it
 
@@ -550,7 +554,7 @@ removing the rule and watching the test fail:
 | `TestMutationGateRefusesEveryUnlistedMutation`, `TestMutationGateExpandsEachFragmentOnce` | every mutation the schema serves is refused to customers unless listed, through fragments and `@skip`; a fragment spread many times is walked once |
 | `TestServicesRefuseNonStaffWrites`, `TestOrderServiceRefusesAnonymousWrites` | the services' own half: every staff-only write, and anonymous order writes, refused with no GraphQL in front and nothing changed |
 | `TestUnclassifiedErrorsAreMasked` | a driver's error never reaches a client |
-| `TestAMissingGroupFailsStart` | a missing registration fails start |
+| `TestEveryGroupWireReturnsBindsItsOwnEntity` | each line of the generated `Wire` binds exactly its own entity; without it the schema does not build and names that entity |
 | `TestEveryEntityIsItsOwnGroup` | one package per entity, its `Handler` beside its generated code |
 | `TestStopWaitsOutAnUnusedConnection` | shutdown survives a client's idle pre-connection |
 

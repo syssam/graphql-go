@@ -554,32 +554,46 @@ func TestORMValidationIsAFieldError(t *testing.T) {
 }
 
 // graph.Wire is generated, so no entity can be left out of it by hand. What
-// it returns is still one binding per entity and every one is needed: with
-// any of them missing the schema does not build, and says what is unbound,
-// instead of building and failing the first request to reach it.
-func TestEveryGroupWireReturnsIsNeeded(t *testing.T) {
+// it returns is still one binding per entity, and each is needed for exactly
+// its own entity: left out, the schema does not build, and what it reports
+// unbound is that entity's type and no other -- not a schema that builds and
+// fails the first request to reach it, and not one group taking another down
+// with it.
+func TestEveryGroupWireReturnsBindsItsOwnEntity(t *testing.T) {
 	var services service.Services
 	fxtest.New(t, service.Module, fx.Provide(NewClient), fx.Supply(testConfig(t)),
 		fx.Populate(&services), fx.NopLogger).RequireStart().RequireStop()
 
-	bindings := graph.Wire(services)
-	if _, err := graph.NewSchema(services.Entities(), append(slices.Clone(bindings), scalars)...); err != nil {
+	// The app's own constructor, so this is the schema the server serves.
+	if _, err := NewSchema(services); err != nil {
 		t.Fatalf("the whole list does not build: %v", err)
 	}
-	var unbound []string
+	bindings := graph.Wire(services)
+	var entities []string
 	for i := range bindings {
 		_, err := graph.NewSchema(services.Entities(), append(slices.Delete(slices.Clone(bindings), i, i+1), scalars)...)
 		if err == nil {
 			t.Errorf("the schema builds without binding %d of Wire's", i)
 			continue
 		}
+		// A group binds its entity and, where velox pages it, the entity's
+		// connection and edge.
+		var unbound []string
 		for _, m := range regexp.MustCompile(`type (\w+) has no Object binding`).FindAllStringSubmatch(err.Error(), -1) {
-			unbound = append(unbound, m[1])
+			entity := strings.TrimSuffix(strings.TrimSuffix(m[1], "Connection"), "Edge")
+			if !slices.Contains(unbound, entity) {
+				unbound = append(unbound, entity)
+			}
 		}
+		if len(unbound) != 1 {
+			t.Errorf("without binding %d the unbound types are %v, want the one entity it binds: %v", i, unbound, err)
+			continue
+		}
+		entities = append(entities, unbound[0])
 	}
-	// Product.stocks is how the catalog reaches the stock group.
-	if !slices.Contains(unbound, "Stock") {
-		t.Errorf("leaving the stock group out was never reported as Stock being unbound: %v", unbound)
+	// Wire lists the groups in name order.
+	if want := []string{"Category", "Customer", "Order", "OrderItem", "Product", "Stock", "Warehouse"}; !slices.Equal(entities, want) {
+		t.Errorf("left out one at a time, the bindings leave %v unbound, want %v", entities, want)
 	}
 }
 

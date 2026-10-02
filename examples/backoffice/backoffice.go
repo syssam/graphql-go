@@ -59,10 +59,7 @@ type Config struct {
 
 // Module is the application, minus its Config: the services, the GraphQL
 // layer in front of them, and the server.
-var Module = fx.Module("backoffice", service.Module, appCore)
-
-// appCore is everything but the services.
-var appCore = fx.Options(
+var Module = fx.Module("backoffice", service.Module,
 	fx.Provide(
 		NewClient,
 		NewSchema,
