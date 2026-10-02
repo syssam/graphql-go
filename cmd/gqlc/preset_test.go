@@ -71,7 +71,7 @@ func TestWireKeyReachesTheGenerator(t *testing.T) {
 		"schema/post.graphql": "type Post { id: ID! }\nextend type Query { posts: [Post!]! }\n",
 		"gqlc.yaml": "schema: [schema/*.graphql]\noutput: graph\npackage: example/graph\n" +
 			"scaffold:\n  user: graph/user.Handler\n  post: graph/post.Handler\n" +
-			"wire:\n  deps: example/internal/deps.Deps\n",
+			"wire:\n  deps: example/internal/deps.Deps\n  pass:\n    user: \"&d\"\n",
 	} {
 		p := filepath.Join(dir, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -84,8 +84,12 @@ func TestWireKeyReachesTheGenerator(t *testing.T) {
 	if err := run([]string{"-config", filepath.Join(dir, "gqlc.yaml")}); err != nil {
 		t.Fatal(err)
 	}
-	if src := generated(t, dir, "graph/wire.go"); !strings.Contains(src, "func Wire(d deps.Deps)") {
+	src := generated(t, dir, "graph/wire.go")
+	if !strings.Contains(src, "func Wire(d deps.Deps)") {
 		t.Fatalf("the wire key did not reach the generator:\n%s", src)
+	}
+	if !strings.Contains(src, "user.NewHandler(&d)") || !strings.Contains(src, "post.NewHandler(d)") {
+		t.Fatalf("wire.pass did not reach the generator, or reached a group it does not name:\n%s", src)
 	}
 }
 

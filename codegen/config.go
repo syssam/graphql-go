@@ -392,6 +392,8 @@ func checkGoConfig(cfg Config) error {
 		if err != nil || !selector || path == "" || strings.ContainsAny(path, " \t\"`") {
 			errs = append(errs, fmt.Errorf("codegen: Wire.Deps = %q is not a Go type written as import/path.Type", cfg.Wire.Deps))
 		}
+	} else if len(cfg.Wire.Pass) > 0 {
+		errs = append(errs, errors.New("codegen: Wire.Pass says what constructors are given, and without Wire.Deps there is no Wire to give it"))
 	}
 	return errors.Join(errs...)
 }
@@ -454,6 +456,29 @@ type Wire struct {
 	// the whole value where there is none. Its package must not import the
 	// generated one, which imports it.
 	Deps string
+	// Pass says outright what a group's constructor is given, by scaffold
+	// key, as the expression wire.go writes: "d" for the whole value, "&d"
+	// for a pointer to it, "d.Field" for a field, "&d.Field" for a pointer to
+	// one. A group not listed is decided as Config.Wire describes.
+	//
+	// That decision is read from source without type information -- from the
+	// struct, and from a constructor that exists -- and a reading can be
+	// wrong: a constructor taking an interface the whole value satisfies, a
+	// field named for something other than its group. A wrong one lands in
+	// wire.go, which is not to be edited. An entry here is what wire.go
+	// writes, whatever the source looks like: a constructor that takes
+	// something else is a compile error naming it, and one gqlc scaffolds is
+	// written to take exactly this.
+	//
+	// Wire takes the dependencies by value, so a pointer is to Wire's own
+	// copy. A type implementing several groups has one constructor, and one
+	// entry under any of those groups speaks for all of them. An entry that
+	// cannot be meant is an error from Generate: a key that is no group, a
+	// field the struct does not have where the struct can be read, an
+	// unexported field of another package, two entries that differ for one
+	// type, and a field whose type gqlc would have to write into a
+	// constructor and cannot.
+	Pass map[string]string
 }
 
 // IsZero reports whether Wire is not configured.

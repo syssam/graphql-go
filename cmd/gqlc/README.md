@@ -278,6 +278,43 @@ or has no field where other groups have theirs, gqlc says so once, at the run
 that scaffolds its constructor. `Deps` is read from its source file, from the
 one file that declares it; no package is loaded.
 
+**When that reading is wrong, say so.** All of the above is worked out from
+source, without type information, and it can be wrong: a constructor that
+takes an interface the whole struct satisfies, a field named for something
+other than its group. The mistake would be in `wire.go`, which is not yours
+to edit, so `pass` states it instead, group by group, as the expression
+`wire.go` should write:
+
+```yaml
+wire:
+  deps: example.com/app/internal/deps.Deps
+  pass:
+    auth: d              # all of Deps
+    audit: "&d"          # a pointer to it; quoted, or YAML reads an anchor
+    orderitem: d.Items   # a field not named after the group
+```
+
+`d`, `&d`, `d.Field` and `&d.Field` are the four forms. `Wire` takes `Deps`
+by value, so a pointer is to `Wire`'s own copy: every group given `&d` shares
+it, and it is not the struct the caller holds.
+
+An entry is what `wire.go` writes, whatever the constructor's source looks
+like: one that takes something else is a compile error naming it, and one
+gqlc scaffolds is written to take exactly that. A field may be embedded, or
+promoted from something embedded. A type that implements several groups has
+one constructor, so one entry, under any of its groups, speaks for all of
+them. A group you do not list is decided as before.
+
+What cannot be meant is refused when you generate, before anything is
+written: a group that does not exist; a field `Deps` does not have, or that
+is unexported while `Deps` is in another package; two different entries for
+groups one type implements; and a field whose type gqlc would have to write
+into a constructor and cannot -- there, write the constructor yourself and
+the entry stands. A field is checked only where gqlc can read `Deps`, which
+it cannot when the type is in another module or declared in more than one
+file, and not when `Deps` embeds something whose fields it cannot list; then
+the compiler is the check.
+
 `preset: gqlgen` is the six keys a schema arriving from gqlgen needs, at once --
 `modelDirective`, `fieldDirective`, `tagDirective`, `jsonTags`,
 `inputListPointers`, `structObjectFields` -- and a key written beside it wins.

@@ -1116,3 +1116,369 @@ func TestWireReadsTestFilesAsItReadsTheRest(t *testing.T) {
 		})
 	}
 }
+
+// wirePassModule is wireFieldModule with Wire.Pass set.
+func wirePassModule(t *testing.T, scaffold map[string]string, deps string, pass map[string]string) (string, func() error) {
+	t.Helper()
+	dir, _ := wireFieldModule(t, scaffold, deps)
+	return dir, func() error {
+		return Generate(context.Background(), Config{
+			Dir: dir, SchemaGlobs: []string{"schema/*.graphql"},
+			Output: "graph", Package: "hello/graph",
+			Scaffold: scaffold,
+			Wire:     Wire{Deps: "hello/internal/deps.Deps", Pass: pass},
+		})
+	}
+}
+
+// What a constructor is given is read from the dependencies struct and from
+// the constructor, without type information, and that reading has a long
+// tail. Wrong, it lands in wire.go, which nobody may edit, and the only way
+// out was to rearrange one's own code around the generator. Wire.Pass says it
+// outright, as the expression wire.go writes, and is believed.
+func TestWirePassSaysWhatAGroupIsGiven(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping go vet subprocess")
+	}
+	both := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
+	const accounts = "package deps\n\nimport (\n\t\"hello/internal/svc/post\"\n\tusersvc \"hello/internal/svc/user\"\n)\n\n// Deps is the application's shared dependencies.\ntype Deps struct {\n\tAccounts *usersvc.Service\n\tUser     *usersvc.Service\n\tPost     post.Service\n}\n"
+	for name, c := range map[string]struct {
+		deps  string
+		pass  map[string]string
+		files map[string]string
+		wire  string
+		ctor  string // in graph/user/user.resolvers.go, when it is scaffolded
+	}{
+		// The field rule would hand over d.User.
+		"the whole value, for a group that has a field": {
+			deps: wireFieldDeps, pass: map[string]string{"user": "d"},
+			wire: "user.Bindings(user.NewHandler(d))", ctor: "func NewHandler(d deps.Deps) *Handler",
+		},
+		"a pointer to the whole value": {
+			deps: wireFieldDeps, pass: map[string]string{"user": "&d"},
+			wire: "user.Bindings(user.NewHandler(&d))", ctor: "func NewHandler(d *deps.Deps) *Handler",
+		},
+		// The group is user and the field is not.
+		"a field under another name": {
+			deps: accounts, pass: map[string]string{"user": "d.Accounts"},
+			wire: "user.Bindings(user.NewHandler(d.Accounts))", ctor: "func NewHandler(dep *usersvc.Service) *Handler",
+		},
+		"a pointer to a field": {
+			deps: wireFieldDeps, pass: map[string]string{"post": "&d.Post", "user": "d.User"},
+			wire: "post.Bindings(post.NewHandler(&d.Post))",
+		},
+		// A constructor the reading gets wrong: it takes an interface the
+		// whole value satisfies, there is a field named after the group, and
+		// nothing in the source says which was meant.
+		"over a constructor that is misread": {
+			deps: wireFieldDeps, pass: map[string]string{"user": "d"},
+			files: map[string]string{
+				"graph/user/handler.go": "package user\n\n// Handler is hand-written.\ntype Handler struct{}\n\n// NewHandler takes anything.\nfunc NewHandler(any) *Handler { return &Handler{} }\n",
+			},
+			wire: "user.Bindings(user.NewHandler(d))",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir, generate := wirePassModule(t, both, c.deps, c.pass)
+			writeFiles(t, dir, c.files)
+			if err := generate(); err != nil {
+				t.Fatal(err)
+			}
+			if wire := readFile(t, filepath.Join(dir, "graph", "wire.go")); !strings.Contains(norm(wire), norm(c.wire)) {
+				t.Errorf("wire.go lacks %q\n%s", c.wire, wire)
+			}
+			if c.ctor != "" {
+				if got := readFile(t, filepath.Join(dir, "graph", "user", "user.resolvers.go")); !strings.Contains(norm(got), norm(c.ctor)) {
+					t.Errorf("the scaffolded constructor is not %q\n%s", c.ctor, got)
+				}
+			}
+			// The same on a second run: what was scaffolded is read back.
+			if err := generate(); err != nil {
+				t.Fatal(err)
+			}
+			if wire := readFile(t, filepath.Join(dir, "graph", "wire.go")); !strings.Contains(norm(wire), norm(c.wire)) {
+				t.Errorf("a second run changed wire.go; it lacks %q\n%s", c.wire, wire)
+			}
+			goBuild(t, dir)
+		})
+	}
+}
+
+// An entry is believed, so one that cannot be right is refused where it is
+// written rather than left for the compiler to report in generated code.
+func TestWirePassRefusesWhatCannotBeMeant(t *testing.T) {
+	both := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
+	for name, c := range map[string]struct {
+		scaffold map[string]string
+		deps     string
+		pass     map[string]string
+		want     string
+	}{
+		"a group that is not one":             {both, wireFieldDeps, map[string]string{"usr": "d"}, "usr"},
+		"something that is not an expression": {both, wireFieldDeps, map[string]string{"user": "the user service"}, "d, &d, d.Field"},
+		"a path through a field":              {both, wireFieldDeps, map[string]string{"user": "d.User.Greeting"}, "d, &d, d.Field"},
+		"a field the struct does not have":    {both, wireFieldDeps, map[string]string{"user": "d.Users"}, "User"},
+		"a field another package cannot read": {both, strings.Replace(wireFieldDeps, "\tUser *usersvc.Service", "\tuser *usersvc.Service", 1), map[string]string{"user": "d.user"}, "exported"},
+		// One type is built once, from one thing.
+		"two things for one shared type": {
+			map[string]string{"user": "internal/resolver.R", "post": "internal/resolver.R"}, wireFieldDeps,
+			map[string]string{"user": "d.User", "post": "d.Post"}, "built once",
+		},
+		// Scaffolding has to write the field's type, and this one it cannot.
+		"a field whose type cannot be written, for a constructor still to be written": {
+			both, strings.Replace(wireFieldDeps, "\tUser *usersvc.Service", "\tUser struct{ n int }", 1), map[string]string{"user": "d.User"}, "write the constructor",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir, generate := wirePassModule(t, c.scaffold, c.deps, c.pass)
+			err := generate()
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("err = %v, want one mentioning %q", err, c.want)
+			}
+			if !strings.Contains(err.Error(), "wire") {
+				t.Errorf("the error does not say where the entry is: %v", err)
+			}
+			if _, serr := os.Stat(filepath.Join(dir, "graph", "wire.go")); serr == nil {
+				t.Error("wire.go was written although the entry was refused")
+			}
+		})
+	}
+}
+
+// With no Wire there is nothing for an entry to apply to, and it is more
+// likely that deps was left out than that pass was meant to do nothing.
+func TestWirePassNeedsWire(t *testing.T) {
+	dir, _ := scaffoldModule(t, map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"})
+	err := Generate(context.Background(), Config{
+		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph",
+		Wire: Wire{Pass: map[string]string{"user": "d"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "Wire.Deps") {
+		t.Fatalf("err = %v, want Pass without Deps refused", err)
+	}
+}
+
+// A group that is not listed is decided as it was.
+func TestWirePassLeavesOtherGroupsAlone(t *testing.T) {
+	both := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
+	dir, generate := wirePassModule(t, both, wireFieldDeps, map[string]string{"user": "d"})
+	if err := generate(); err != nil {
+		t.Fatal(err)
+	}
+	if wire := readFile(t, filepath.Join(dir, "graph", "wire.go")); !strings.Contains(norm(wire), norm("post.Bindings(post.NewHandler(d.Post))")) {
+		t.Errorf("the group not listed lost its field:\n%s", wire)
+	}
+}
+
+// A review of Wire.Pass, which ran the generator. An entry has to be able to
+// say whatever the right argument is, or the way out it offers is closed
+// exactly where it is needed.
+func TestWirePassReachesWhatTheStructDoesNotSpellOut(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping go vet subprocess")
+	}
+	both := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
+	handler := func(pkg, imports, param string) string {
+		return "package " + pkg + "\n\n" + imports + "\n// Handler is hand-written.\ntype Handler struct{}\n\n// NewHandler is hand-written.\nfunc NewHandler(" + param + ") *Handler { return &Handler{} }\n"
+	}
+	const embedded = "package deps\n\nimport (\n\t\"hello/internal/svc/post\"\n\tusersvc \"hello/internal/svc/user\"\n)\n\n// Core is embedded.\ntype Core struct{ Accounts *usersvc.Service }\n\n// Deps is the dependencies.\ntype Deps struct {\n\tCore\n\t*post.Service\n}\n"
+	userTakesService := handler("user", "import usersvc \"hello/internal/svc/user\"\n", "s *usersvc.Service")
+	postTakesService := handler("post", "import postsvc \"hello/internal/svc/post\"\n", "s *postsvc.Service")
+	for name, c := range map[string]struct {
+		deps  string
+		pass  map[string]string
+		files map[string]string
+		want  []string
+	}{
+		// A promoted field, and an embedded one, are fields: d.Accounts and
+		// d.Service compile, and only the entry can say so.
+		"a field promoted from an embedded struct, and an embedded field": {
+			deps: embedded, pass: map[string]string{"user": "d.Accounts", "post": "d.Service"},
+			files: map[string]string{"graph/user/handler.go": userTakesService, "graph/post/handler.go": postTakesService},
+			want:  []string{"user.NewHandler(d.Accounts)", "post.NewHandler(d.Service)"},
+		},
+		// An embedded field has a name and a type like any other, so a
+		// constructor can be written over it.
+		"an embedded field, for a constructor still to be written": {
+			deps: embedded, pass: map[string]string{"user": "d", "post": "d.Service"},
+			want: []string{"post.NewHandler(d.Service)"},
+		},
+		// The struct cannot be read -- two files declare it -- so the entry
+		// cannot be checked, and with constructors that exist it need not be.
+		"a field of a struct gqlc cannot read": {
+			deps: "//go:build !linux\n\n" + wireFieldDeps, pass: map[string]string{"user": "d.User", "post": "d.Post"},
+			files: map[string]string{
+				"internal/deps/deps_linux.go": wireFieldDeps,
+				"graph/user/handler.go":       userTakesService,
+				"graph/post/handler.go":       handler("post", "import postsvc \"hello/internal/svc/post\"\n", "s postsvc.Service"),
+			},
+			want: []string{"user.NewHandler(d.User)", "post.NewHandler(d.Post)"},
+		},
+		// One of two fields that are one name once folded: named exactly, it
+		// is no longer ambiguous, and its constructor can be written.
+		"one of two fields that fold alike": {
+			deps: strings.Replace(wireFieldDeps, "\tUser *usersvc.Service\n", "\tUser *usersvc.Service\n\tU_ser int\n", 1),
+			pass: map[string]string{"user": "d.User"},
+			want: []string{"user.NewHandler(d.User)", "post.NewHandler(d.Post)"},
+		},
+		"an entry with spaces round it": {
+			deps: wireFieldDeps, pass: map[string]string{"user": "  d  "},
+			want: []string{"user.NewHandler(d)"},
+		},
+		// A constructor is a name in the package however it is declared, and
+		// one that is there is not asked to be written.
+		"a constructor assigned from another function": {
+			deps: "package deps\n\nimport \"hello/internal/svc/post\"\n\n// Deps is the dependencies.\ntype Deps struct {\n\tUser interface{ Hello() string }\n\tPost post.Service\n}\n",
+			pass: map[string]string{"user": "d.User"},
+			files: map[string]string{
+				"graph/user/handler.go": "package user\n\n// Handler is hand-written.\ntype Handler struct{}\n\nfunc build(interface{ Hello() string }) *Handler { return &Handler{} }\n\n// NewHandler is assigned.\nvar NewHandler = build\n",
+			},
+			want: []string{"user.NewHandler(d.User)"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir, generate := wirePassModule(t, both, c.deps, c.pass)
+			writeFiles(t, dir, c.files)
+			if err := generate(); err != nil {
+				t.Fatal(err)
+			}
+			wire := readFile(t, filepath.Join(dir, "graph", "wire.go"))
+			for _, want := range c.want {
+				if !strings.Contains(norm(wire), norm(want)) {
+					t.Errorf("wire.go lacks %q\n%s", want, wire)
+				}
+			}
+			goBuild(t, dir)
+		})
+	}
+}
+
+// One type implementing several groups is one constructor and one value, so
+// one entry speaks for all of them: the group it is written under is which
+// line of the configuration it happens to be on.
+func TestWirePassForASharedTypeIsSaidOnce(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping go vet subprocess")
+	}
+	shared := map[string]string{"user": "internal/resolver.R", "post": "internal/resolver.R"}
+	for _, listed := range []string{"user", "post"} {
+		t.Run("under "+listed, func(t *testing.T) {
+			dir, generate := wirePassModule(t, shared, wireFieldDeps, map[string]string{listed: "d.User"})
+			if err := generate(); err != nil {
+				t.Fatalf("one entry for a shared type was refused: %v", err)
+			}
+			wire := readFile(t, filepath.Join(dir, "graph", "wire.go"))
+			if !strings.Contains(norm(wire), norm("r := resolver.NewR(d.User)")) {
+				t.Errorf("the shared type is not built once from the entry:\n%s", wire)
+			}
+			impl := readFile(t, filepath.Join(dir, "internal", "resolver", "post.resolvers.go"))
+			if !strings.Contains(norm(impl), norm("func NewR(dep *usersvc.Service) *R")) {
+				t.Errorf("the scaffolded constructor does not take what the entry says:\n%s", impl)
+			}
+			goBuild(t, dir)
+		})
+	}
+	// Two entries that disagree are refused naming both.
+	_, generate := wirePassModule(t, shared, wireFieldDeps, map[string]string{"user": "d.User", "post": "d.Post"})
+	err := generate()
+	if err == nil || !strings.Contains(err.Error(), "user") || !strings.Contains(err.Error(), "post") || !strings.Contains(err.Error(), "d.User") || !strings.Contains(err.Error(), "d.Post") {
+		t.Fatalf("err = %v, want both groups and both entries named", err)
+	}
+}
+
+// What the first tests of Wire.Pass left unguarded, each found by breaking it
+// and seeing nothing fail.
+func TestWirePassEdges(t *testing.T) {
+	both := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
+	run := func(t *testing.T, scaffold map[string]string, deps string, pass map[string]string, files map[string]string) (string, []string, error) {
+		t.Helper()
+		dir, _ := wireFieldModule(t, scaffold, deps)
+		writeFiles(t, dir, files)
+		var notes []string
+		err := Generate(context.Background(), Config{
+			Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph",
+			Scaffold: scaffold, Wire: Wire{Deps: "hello/internal/deps.Deps", Pass: pass},
+			Notef: func(format string, args ...any) { notes = append(notes, fmt.Sprintf(format, args...)) },
+		})
+		return dir, notes, err
+	}
+	twoFiles := map[string]string{"internal/deps/deps_linux.go": wireFieldDeps}
+
+	t.Run("a field of an unreadable struct, for a constructor still to be written, is refused", func(t *testing.T) {
+		dir, _, err := run(t, both, "//go:build !linux\n\n"+wireFieldDeps, map[string]string{"user": "d.User"}, twoFiles)
+		if err == nil || !strings.Contains(err.Error(), "cannot read") {
+			t.Fatalf("err = %v, want the entry refused because the field's type is unknown", err)
+		}
+		if _, serr := os.Stat(filepath.Join(dir, "graph", "wire.go")); serr == nil {
+			t.Error("wire.go was written")
+		}
+	})
+	t.Run("a blank field is not a field", func(t *testing.T) {
+		if _, _, err := run(t, both, wireFieldDeps, map[string]string{"user": "d._"}, nil); err == nil || !strings.Contains(err.Error(), "d, &d, d.Field") {
+			t.Fatalf("err = %v, want d._ refused", err)
+		}
+	})
+	t.Run("an empty entry says what YAML did to it", func(t *testing.T) {
+		if _, _, err := run(t, both, wireFieldDeps, map[string]string{"user": ""}, nil); err == nil || !strings.Contains(err.Error(), "quote") {
+			t.Fatalf("err = %v, want the empty entry explained: an unquoted &d is a YAML anchor", err)
+		}
+	})
+	t.Run("the fields offered are the ones the entry could name, in order", func(t *testing.T) {
+		deps := strings.Replace(wireFieldDeps, "type Deps struct {", "type Deps struct {\n\tsecret int\n\tZebra int\n\tAlpha int", 1)
+		_, _, err := run(t, both, deps, map[string]string{"user": "d.Nope"}, nil)
+		if err == nil || !strings.Contains(err.Error(), "Alpha, Post, User, Zebra") || strings.Contains(err.Error(), "secret") {
+			t.Fatalf("err = %v, want the exported fields, sorted, and no other", err)
+		}
+	})
+	t.Run("an entry for no group names the groups there are, in order", func(t *testing.T) {
+		if _, _, err := run(t, both, wireFieldDeps, map[string]string{"zzz": "d", "aaa": "d"}, nil); err == nil || !strings.Contains(err.Error(), "aaa") || !strings.Contains(err.Error(), "post, user") {
+			t.Fatalf("err = %v, want the first unknown key in order and the groups listed", err)
+		}
+	})
+	t.Run("a listed group is not told it has no field", func(t *testing.T) {
+		_, notes, err := run(t, both, strings.Replace(wireFieldDeps, "\tUser *usersvc.Service\n", "", 1), map[string]string{"user": "d"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if said := strings.Join(notes, "\n"); strings.Contains(said, "no field named after it") {
+			t.Errorf("the whole value was asked for, and the note advises against it:\n%s", said)
+		}
+	})
+	// Others being handed a field is what makes one that is not worth a word,
+	// and a group whose entry asks for the whole value is not being handed one.
+	t.Run("a group given the whole value by its entry is not counted as having a field", func(t *testing.T) {
+		deps := strings.Replace(wireFieldDeps, "\tPost post.Service\n", "\tItems post.Service\n", 1)
+		_, notes, err := run(t, both, deps, map[string]string{"user": "d"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if said := strings.Join(notes, "\n"); strings.Contains(said, "no field named after it") {
+			t.Errorf("no group is handed a field, and post was told others are:\n%s", said)
+		}
+	})
+}
+
+// With one group everything is in the generated package, and so may the
+// dependencies type be. Its unexported fields are then in reach of wire.go.
+func TestWirePassMayNameAnUnexportedFieldInItsOwnPackage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping go vet subprocess")
+	}
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{
+		"schema/schema.graphql": "type Thing { id: ID! }\ntype Query { thing(id: ID!): Thing }\n",
+		"graph/deps.go":         "package graph\n\n// Deps is the dependencies.\ntype Deps struct{ store *Store }\n\n// Store is a store.\ntype Store struct{}\n",
+	})
+	writeTempModule(t, dir)
+	if err := Generate(context.Background(), Config{
+		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph",
+		Scaffold: map[string]string{"graph": "graph.Handler"},
+		Wire:     Wire{Deps: "hello/graph.Deps", Pass: map[string]string{"graph": "d.store"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if wire := readFile(t, filepath.Join(dir, "graph", "wire.go")); !strings.Contains(norm(wire), norm("Bindings(NewHandler(d.store))")) {
+		t.Errorf("wire.go does not pass the unexported field:\n%s", wire)
+	}
+	goBuild(t, dir)
+}

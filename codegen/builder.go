@@ -33,6 +33,14 @@ type builder struct {
 		ctors map[string]map[string]*constructor
 		// generic is whether the dependencies type has type parameters.
 		generic bool
+		// named is every named field of the struct by its own name, exported
+		// or not, and structRead whether the struct was found to read them
+		// from. Wire.Pass names a field exactly.
+		named      map[string]*depsField
+		structRead bool
+		// embeds is whether the struct embeds anything, in which case it has
+		// promoted fields this run cannot list.
+		embeds bool
 		// dirs is each target directory by its lower-cased path, under the
 		// spelling first met. See wireDir.
 		dirs map[string]string

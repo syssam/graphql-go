@@ -259,7 +259,21 @@ func (b *builder) scaffoldGroup(pkgs *pkgCache, name, group, target string) ([]s
 		// What the constructor takes: the field named after the group, or
 		// the whole value. See wireArg.
 		param, paramType, what := "d", depsType, "the application's dependencies"
-		field, why := b.wireArg(name, target)
+		// Wire.Pass decides where it speaks, and has been checked by the
+		// time anything is scaffolded; otherwise the struct does.
+		pass, err := b.wirePass(name, target)
+		if err != nil {
+			return nil, err
+		}
+		var (
+			field *depsField
+			why   error
+		)
+		if pass != nil {
+			field = pass.field
+		} else {
+			field, why = b.wireArg(name, target)
+		}
 		switch {
 		case field != nil:
 			placed, err := field.placed(depsPath, depsQual, implImport, qualify)
@@ -269,6 +283,9 @@ func (b *builder) scaffoldGroup(pkgs *pkgCache, name, group, target string) ([]s
 			param, paramType, what = "dep", placed, "the "+field.name+" field of the application's dependencies"
 		case implImport != depsPath:
 			paramType = qualify(depsPath, depsQual) + "." + depsType
+		}
+		if pass != nil && pass.pointer {
+			paramType, what = "*"+paramType, "a pointer to "+what
 		}
 		if qualifyErr != nil {
 			return nil, fmt.Errorf("%s: %w", file, qualifyErr)
@@ -295,6 +312,8 @@ func (b *builder) scaffoldGroup(pkgs *pkgCache, name, group, target string) ([]s
 				// the field is still to be added. A type serving several
 				// groups takes the whole value by design.
 				switch {
+				case pass != nil:
+					// Asked for.
 				case why != nil:
 					b.notef("wire: %v. %s takes the whole value instead, so its package imports everything that names.", why, ctor)
 				case !b.wireShared(target) && b.wireAnyField():

@@ -211,7 +211,7 @@ func (b *builder) readWire() {
 	}
 	b.wire.read = true
 	b.wire.fields, b.wire.targets, b.wire.ctors = map[string]*depsField{}, map[string]int{}, map[string]map[string]*constructor{}
-	b.wire.dirs = map[string]string{}
+	b.wire.dirs, b.wire.named = map[string]string{}, map[string]*depsField{}
 	// What wire.go imports whatever the targets are -- the generated root,
 	// each group's package, the dependencies package -- goes in first, under
 	// the spelling generated code already uses, so a target is compared with
@@ -298,12 +298,30 @@ func (b *builder) readWire() {
 			imports[spec.Name.Name] = importPath
 		}
 	}
+	b.wire.structRead = true
 	for _, field := range declared.Fields.List {
+		// An embedded field is a field, named after its type, and brings the
+		// fields of that type with it, which nothing here can list.
+		if len(field.Names) == 0 {
+			b.wire.embeds = true
+			t := field.Type
+			if star, ok := t.(*goast.StarExpr); ok {
+				t = star.X
+			}
+			if sel, ok := t.(*goast.SelectorExpr); ok {
+				t = sel.Sel
+			}
+			if id, ok := t.(*goast.Ident); ok {
+				b.wire.named[id.Name] = &depsField{name: id.Name, typ: types.ExprString(field.Type), imports: imports, dot: dot}
+			}
+			continue
+		}
 		for _, name := range field.Names {
+			f := &depsField{name: name.Name, typ: types.ExprString(field.Type), imports: imports, dot: dot}
+			b.wire.named[f.name] = f
 			if !name.IsExported() {
 				continue
 			}
-			f := &depsField{name: name.Name, typ: types.ExprString(field.Type), imports: imports, dot: dot}
 			if other := b.wire.fields[foldName(f.name)]; other != nil {
 				other.twice, f.twice = true, true
 			}
@@ -400,6 +418,163 @@ func onDisk(base, dir string) string {
 	return at
 }
 
+// passed is what Wire.Pass says a group's constructor is given.
+type passed struct {
+	// expr is the entry, which is what wire.go writes.
+	expr string
+	// field is the field it names, or nil for the whole value; also nil for
+	// a field of a struct this run could not read.
+	field   *depsField
+	named   string
+	pointer bool
+}
+
+// wirePass is what Wire.Pass says the group's constructor is given, or nil
+// when it says nothing.
+//
+// It is the way out of a wrong reading. What a constructor is given is
+// otherwise worked out from source, and when that is wrong the mistake is in
+// wire.go, which nobody may edit. So an entry is believed -- nothing about
+// the constructor or the field's type is weighed against it -- and is checked
+// only for being something that could be meant, and only as far as this run
+// can see: a field is looked for where the struct can be read and embeds
+// nothing, since an embedded type's fields are the struct's too and are not
+// listed here.
+//
+// A type implementing several groups has one constructor and is built once,
+// so one entry speaks for every group it serves, whichever it is written
+// under; two that differ are refused.
+func (b *builder) wirePass(name, target string) (*passed, error) {
+	b.readWire()
+	entry, ok := b.cfg.Wire.Pass[name]
+	from, key := name, b.targetKey(target)
+	for _, other := range slices.Sorted(maps.Keys(b.cfg.Scaffold)) {
+		theirs, has := b.cfg.Wire.Pass[other]
+		if !has || other == name || b.targetKey(b.cfg.Scaffold[other]) != key {
+			continue
+		}
+		if !ok {
+			entry, from, ok = theirs, other, true
+			continue
+		}
+		if strings.TrimSpace(theirs) != strings.TrimSpace(entry) {
+			one, two := [2]string{from, strings.TrimSpace(entry)}, [2]string{other, strings.TrimSpace(theirs)}
+			if two[0] < one[0] {
+				one, two = two, one
+			}
+			return nil, fmt.Errorf("codegen: wire.pass: %s and %s are implemented by one type, which is built once from one thing, and are given %s and %s; say it once",
+				one[0], two[0], one[1], two[1])
+		}
+	}
+	if !ok {
+		return nil, nil
+	}
+	_, _, depsType := b.wireDeps()
+	p := &passed{expr: strings.TrimSpace(entry)}
+	if p.expr == "" {
+		return nil, fmt.Errorf("codegen: wire.pass: %s: the entry is empty; in YAML an unquoted &d is an anchor and not a value, so quote it: \"&d\"", from)
+	}
+	rest := strings.TrimPrefix(p.expr, "&")
+	p.pointer = rest != p.expr
+	if rest == "d" {
+		return p, nil
+	}
+	field, isField := strings.CutPrefix(rest, "d.")
+	if !isField || !token.IsIdentifier(field) || field == "_" {
+		return nil, fmt.Errorf("codegen: wire.pass: %s: %q is not what a constructor can be given; write d, &d, d.Field or &d.Field", from, entry)
+	}
+	p.named = field
+	if !b.wire.structRead {
+		return p, nil
+	}
+	// wire.go is in the generated package, so that is where an unexported
+	// field has to be.
+	inPackage := b.cfg.Wire.Deps[:strings.LastIndex(b.cfg.Wire.Deps, ".")] == b.cfg.Package
+	p.field = b.wire.named[field]
+	switch {
+	case p.field == nil && b.wire.embeds:
+		// Promoted from something embedded, perhaps; the compiler will say.
+		return p, nil
+	case p.field == nil:
+		var have []string
+		for n := range b.wire.named {
+			if n != "_" && (inPackage || goast.IsExported(n)) {
+				have = append(have, n)
+			}
+		}
+		slices.Sort(have)
+		return nil, fmt.Errorf("codegen: wire.pass: %s: %s has no field %s; it has %s", from, depsType, field, strings.Join(have, ", "))
+	case !goast.IsExported(field) && !inPackage:
+		return nil, fmt.Errorf("codegen: wire.pass: %s: %s.%s is not exported, and wire.go is in another package", from, depsType, field)
+	}
+	// Named exactly, so that another field folds to the same name is no
+	// longer a reason not to know which is meant.
+	exact := *p.field
+	exact.twice = false
+	p.field = &exact
+	return p, nil
+}
+
+// targetKey is what makes two scaffold targets one implementation: the
+// directory, under the spelling wire.go uses for it, and the type.
+func (b *builder) targetKey(target string) string {
+	dir, typ, err := b.splitTarget(target)
+	if err != nil {
+		return target
+	}
+	if d, err := b.wireDir(dir); err == nil {
+		dir = d
+	}
+	return dir + "\x00" + typ
+}
+
+// wireCall is what wire.go passes a group's constructor.
+//
+// Wire.Pass says, where it has an entry, and is believed over everything
+// below. Otherwise what an existing constructor takes decides: one that takes
+// the dependencies type is passed it, and any other is passed the group's
+// field if there is one, whether or not gqlc could have written that field's
+// type itself, since nothing is being written. For a constructor still to be
+// scaffolded the struct decides, as the scaffold will.
+func (b *builder) wireCall(name, target, dir, typ, implImport string) (string, error) {
+	depsPath, depsQual, depsType := b.wireDeps()
+	ctor := constructorName(typ)
+	existing := b.existingConstructor(dir, ctor)
+	pass, err := b.wirePass(name, target)
+	switch {
+	case err != nil:
+		return "", err
+	case pass != nil && existing == nil && pass.named != "":
+		// The scaffold will write this constructor and has to spell the
+		// field's type in the implementation's package. Whether it can is
+		// found out here, before anything is on disk.
+		if pass.field == nil {
+			return "", fmt.Errorf("codegen: wire.pass: %s: %s has no %s yet, and gqlc cannot read %s to write one that takes %s; write the constructor yourself",
+				name, target, ctor, b.cfg.Wire.Deps, pass.expr)
+		}
+		if _, err := pass.field.placed(depsPath, depsQual, implImport, func(_, preferred string) string { return preferred }); err != nil {
+			return "", fmt.Errorf("codegen: wire.pass: %s: %s has no %s yet, and gqlc cannot write one that takes %s (%w); write the constructor yourself",
+				name, target, ctor, pass.expr, err)
+		}
+		return pass.expr, nil
+	case pass != nil:
+		return pass.expr, nil
+	case existing == nil:
+		if f, _ := b.wireArg(name, target); f != nil {
+			return "d." + f.name, nil
+		}
+		return "d", nil
+	}
+	whole, pointer := existing.takes(depsPath, depsType, implImport, b.wire.ctors[dir])
+	if f := b.wire.fields[foldName(name)]; !whole && f != nil && !f.twice && !b.wireShared(target) {
+		return "d." + f.name, nil
+	}
+	if whole && pointer {
+		return "&d", nil
+	}
+	return "d", nil
+}
+
 // wireShared reports whether target implements more than one group.
 func (b *builder) wireShared(target string) bool {
 	b.readWire()
@@ -453,6 +628,14 @@ func (b *builder) wireAnyField() bool {
 	if b.wire.anyField == nil {
 		found := false
 		for name, target := range b.cfg.Scaffold {
+			// What a group is actually given: its entry's, where it has one.
+			if p, err := b.wirePass(name, target); err == nil && p != nil {
+				if p.named != "" {
+					found = true
+					break
+				}
+				continue
+			}
 			if f, _ := b.wireArg(name, target); f != nil {
 				found = true
 				break
@@ -592,12 +775,19 @@ func (b *builder) existingConstructor(dir, ctor string) *constructor {
 							// its value somewhere else.
 							declared, _ := spec.Type.(*goast.FuncType)
 							for i, id := range spec.Names {
-								if declared != nil {
+								var lit *goast.FuncLit
+								if i < len(spec.Values) {
+									lit, _ = spec.Values[i].(*goast.FuncLit)
+								}
+								switch {
+								case declared != nil:
 									add(id.Name, declared)
-								} else if i < len(spec.Values) {
-									if lit, ok := spec.Values[i].(*goast.FuncLit); ok {
-										add(id.Name, lit.Type)
-									}
+								case lit != nil:
+									add(id.Name, lit.Type)
+								case strings.HasPrefix(id.Name, "New") && found[id.Name] == nil:
+									// var NewHandler = build: there, and what
+									// it takes is not written here.
+									found[id.Name] = inFile()
 								}
 							}
 						}
@@ -703,7 +893,7 @@ func (b *builder) emitWire(groups []string) (string, error) {
 		return "", fmt.Errorf("codegen: wire: %s is declared in the generated root package, which imports every group's implementation, so none of them can import it for the type; declare it in a package of its own", b.cfg.Wire.Deps)
 	}
 
-	type line struct{ bindings, constructor, arg string }
+	type line struct{ name, bindings, constructor, arg string }
 	var lines []line
 	builtBy := map[string]string{}
 	var missing []string
@@ -745,23 +935,9 @@ func (b *builder) emitWire(groups []string) (string, error) {
 		if implImport != b.cfg.Package {
 			constructor = qualify(implImport, identFrom(path.Base(implImport))) + "." + constructor
 		}
-		// What an existing constructor takes decides. One that takes the
-		// dependencies type is passed it. Any other is passed the group's
-		// field if there is one, whether or not gqlc could have written that
-		// field's type itself: nothing is being written. For a constructor
-		// still to be scaffolded the struct decides, as the scaffold will.
-		arg := "d"
-		if existing := b.existingConstructor(dir, constructorName(typ)); existing == nil {
-			if f, _ := b.wireArg(name, target); f != nil {
-				arg = "d." + f.name
-			}
-		} else {
-			whole, pointer := existing.takes(depsPath, depsType, implImport, b.wire.ctors[dir])
-			if f := b.wire.fields[foldName(name)]; !whole && f != nil && !f.twice && !b.wireShared(target) {
-				arg = "d." + f.name
-			} else if whole && pointer {
-				arg = "&d"
-			}
+		arg, err := b.wireCall(name, target, dir, typ, implImport)
+		if err != nil {
+			return err
 		}
 		// Two types in one package whose names differ only in their first
 		// letter's case are both built by one function, which returns one.
@@ -769,7 +945,7 @@ func (b *builder) emitWire(groups []string) (string, error) {
 			return fmt.Errorf("codegen: wire: %s and %s in one package are both built by a function called %s, which can return only one of them; rename one", other, typ, constructorName(typ))
 		}
 		builtBy[constructor] = typ
-		lines = append(lines, line{bindings, constructor, arg})
+		lines = append(lines, line{name, bindings, constructor, arg})
 		return nil
 	}
 	if flat {
@@ -789,6 +965,17 @@ func (b *builder) emitWire(groups []string) (string, error) {
 		slices.Sort(missing)
 		return "", fmt.Errorf("codegen: wire: %s: a group with a Resolver needs a scaffold target, which is where Wire finds the constructor to call", strings.Join(missing, ", "))
 	}
+	// An entry for a group there is none of is a misspelling, and would
+	// otherwise be the one entry that silently does nothing.
+	for _, name := range slices.Sorted(maps.Keys(b.cfg.Wire.Pass)) {
+		if !slices.ContainsFunc(lines, func(l line) bool { return l.name == name }) {
+			var have []string
+			for _, l := range lines {
+				have = append(have, l.name)
+			}
+			return "", fmt.Errorf("codegen: wire.pass: %s is not a group with a Resolver; those are %s", name, strings.Join(have, ", "))
+		}
+	}
 
 	// One type may implement several groups. It is then one value, built once
 	// and handed to each, as anyone wiring it by hand would write it: a call
@@ -800,7 +987,13 @@ func (b *builder) emitWire(groups []string) (string, error) {
 	shared, sharedArg := map[string]string{}, map[string]string{}
 	var sharedOrder []string
 	for _, l := range lines {
-		if uses[l.constructor] < 2 || shared[l.constructor] != "" {
+		if uses[l.constructor] < 2 {
+			continue
+		}
+		// One value serves every group. They are all given the same thing:
+		// left to themselves they are, and wirePass has one entry speak for
+		// every group a type implements.
+		if _, seen := sharedArg[l.constructor]; seen {
 			continue
 		}
 		// Named after the type, and never after anything already in scope: a
@@ -839,7 +1032,8 @@ func (b *builder) emitWire(groups []string) (string, error) {
 // when the process starts: each line calls the constructor beside a group's
 // implementation, and a group whose constructor is missing, or takes
 // something else, does not compile. A group is given the field of d named
-// after it, where there is one, so its package imports that and no more.
+// after it, where there is one, so its package imports that and no more;
+// the configuration's wire.pass says otherwise for a group it lists.
 func Wire(d %s) []graphql.SchemaOption {
 `, depsRef)
 	for _, constructor := range sharedOrder {

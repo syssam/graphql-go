@@ -149,6 +149,10 @@ type fileConfig struct {
 	//	  deps: example.com/app/internal/deps.Deps
 	Wire struct {
 		Deps string `yaml:"deps"`
+		// pass says what a group's constructor is given where gqlc's own
+		// reading is wrong: the scaffold key, then d, &d, d.Field or
+		// &d.Field. See codegen.Wire.Pass.
+		Pass map[string]string `yaml:"pass"`
 	} `yaml:"wire"`
 }
 
@@ -301,7 +305,7 @@ func run(args []string) error {
 		FieldDirective:         codegen.FieldDirective{Name: fc.FieldDirective.Name, ForceResolverArg: fc.FieldDirective.ForceResolverArg},
 		TagDirective:           codegen.TagDirective{Name: fc.TagDirective.Name, KeyArg: fc.TagDirective.KeyArg, ValueArg: fc.TagDirective.ValueArg},
 		JSONTags:               set(fc.JSONTags),
-		Wire:                   codegen.Wire{Deps: fc.Wire.Deps},
+		Wire:                   codegen.Wire{Deps: fc.Wire.Deps, Pass: fc.Wire.Pass},
 		FieldNames:             fc.FieldNames,
 		Notef: func(format string, args ...any) {
 			fmt.Fprintf(os.Stderr, "gqlc: "+format+"\n", args...)

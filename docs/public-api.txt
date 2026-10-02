@@ -16,7 +16,7 @@ codegen: type ModelDirective struct { Name string Arg string }
 codegen: type RootField struct { Root string Name string SDLFile string ReturnType string ReturnGroup string }
 codegen: type TagDirective struct { Name string KeyArg string ValueArg string }
 codegen: type TypeBinding struct { Name string Go GoType Values map[string]string Group string Fields map[string]FieldBinding }
-codegen: type Wire struct { Deps string }
+codegen: type Wire struct { Deps string Pass map[string]string }
 ext/apq: const CodeNotFound
 ext/apq: const CodeNotInList
 ext/apq: const CodeNotSupported

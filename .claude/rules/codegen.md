@@ -446,6 +446,45 @@ And it kept the first spelling in group-name order, which need not be the direct
 `onDisk` reads the name from the directory listing, the only place a case-insensitive
 filesystem says it. Eight more breaks, each failing a test.
 
+**`Wire.Pass` is the way out, and the reason to stop chasing the tail.** Four reviews found
+10, 10, 15 and 13 items, most of them here: what a constructor is given is read from source
+without type information, and every unusual spelling of "takes everything" is another case.
+The defect that mattered was never a wrong reading. It was that a wrong reading lands in
+`wire.go`, which nobody may edit, leaving the author to rearrange their own code around the
+generator. `pass: {group: d | &d | d.Field | &d.Field}` in `gqlc.yaml` says it outright
+(`wirePass`): the value is the expression `wire.go` writes, so there is no vocabulary, and a
+field need not be named after its group. An entry is believed over the constructor and over
+`placed`; a constructor gqlc scaffolds is written to take exactly it. What cannot be meant is
+refused at generation -- a group that is not one, a field the struct lacks or that `wire.go`
+cannot read, two different things for one shared type, and a field whose type cannot be written
+when the constructor is still gqlc's to write -- and refused *before* `wire.go` is written,
+which the first version of the last check was not (it sat in the scaffold, which runs after).
+Ten breaks, each failing a test. A group not listed is decided exactly as before, so the
+inference is still the default and still has its tail; a miss there now costs one line of
+configuration.
+
+**A review of `Pass` found it closed in exactly the places it was for.** `readWire` recorded
+named fields only, so `d.Accounts` promoted from an embedded struct, and an embedded
+`*post.Service` itself, were refused as "no field" -- when inference had passed `d` and the
+entry was the only way to say otherwise. An embedded field is recorded under its type's name
+now, and a field not found in a struct that embeds anything is let through for the compiler to
+judge. `var NewHandler = build` was a constructor to the scaffold (`idx.names`) and not to
+`existingConstructor`, which only read function literals, so the entry was refused as needing a
+constructor gqlc could not write; any top-level `NewX` is one that exists. A type serving N
+groups needed N identical entries and blamed a group that had none; **one entry under any of
+its groups speaks for all** (`targetKey`), and that has to hold for the scaffold as well as for
+`wire.go`, since whichever group is scaffolded first writes the constructor. `d._` was accepted
+(`token.IsIdentifier("_")` is true) and did not compile. An empty entry is what YAML makes of an
+unquoted `&d`, an anchor, and the message says to quote it.
+
+It also found seven behaviours no test failed on, by mutating a copy of the tree: the exact-name
+override of `twice`, the refusal for an unreadable struct with a constructor still to write, the
+`structRead` gate, the same-package allowance for an unexported field, `TrimSpace`, the note
+suppressed for a listed group, and the two orderings in error text. Each has a test now, and
+seventeen breaks -- those and the new rules -- each fail one. **"Ten breaks, each failing a
+test" was true and was not the claim it read as**: it said the ten rules tried were guarded,
+not that every rule was.
+
 **Breaking by hand has a failure mode of its own, met here twice.** A reverse edit whose text
 is not unique lands nowhere or on the wrong line; and a break whose replacement *contains* the
 original text reverses into a doubled edit (`generic && count == 0 && count == 0`), which

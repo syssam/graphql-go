@@ -146,7 +146,10 @@ mux.Handle("/graphql", gqlmux.New(exec, gqlmux.WithDrain(d)))
 Once the schema has several groups, each registers its own bindings over its
 own Resolver, and `wire: { deps: ... }` in `gqlc.yaml` has gqlc write the list:
 `graph.NewSchema(graph.Wire(deps)...)`. A group left out is then a compile
-error rather than something a container reports at start-up; see
+error rather than something a container reports at start-up. Each group is
+given the field of `deps` named after it, which keeps its package from
+importing every other group's dependencies, and `wire: { pass: ... }` says
+otherwise where that is not what a constructor takes; see
 [`cmd/gqlc/README.md`](../cmd/gqlc/README.md).
 
 **Read [`operations.md`](operations.md) before this reaches anything
