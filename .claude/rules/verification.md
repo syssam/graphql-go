@@ -110,6 +110,13 @@ like if the thing under test were broken:
   with the same tar, which folds those entries into the next one when it lists. Remove the fix
   and the check stayed green. It runs where the archive is unpacked now, and was confirmed by
   removing the fix.
+- **A cached pass.** `scripts/ci-local.sh` keeps Go's build cache between runs, as CI does,
+  and Go's cache of test results is in it. The allocation job ran `go test -run
+  TestAllocationBaseline -v .` as the workflow writes it, with no `-count=1`, and on a run
+  where the root package had not changed it answered in one second: `ok (cached)`. That was a
+  true result and not a test that ran; it was noticed only because the same job had taken
+  seventeen seconds the run before. The mirror passes `-count=1` there now. The gate and the
+  PostgreSQL job always did.
 - **A break that hangs.** Removing the loader's key dedup leaves a second waiter on a key the
   queue carries once, and the test ran to the 600-second default timeout. Run a break that
   could deadlock with a short `-timeout`; the gqlwsproto and wave breaks after that were

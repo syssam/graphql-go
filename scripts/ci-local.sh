@@ -202,7 +202,11 @@ done
 
 job_bench() {
   # The timings CI records beside this are never asserted, so they are not run.
-  in_go "$1" 'go test -run TestAllocationBaseline -v .'
+  #
+  # -count=1 where the workflow has none: the build cache here outlives the
+  # run, and with it Go's cache of test results, so an unchanged package
+  # answered "ok (cached)" in a second. True, and not a test that ran.
+  in_go "$1" 'go test -count=1 -run TestAllocationBaseline -v .'
 }
 
 job_vuln() {
