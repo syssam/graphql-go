@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/syssam/graphql-go/internal/bindhook"
 	"io/fs"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -18,8 +20,11 @@ import (
 // BatchResolver.
 type Entity struct {
 	typename string
-	resolve  func(context.Context, Representation) (any, error)
-	batch    func(context.Context, []Representation) ([]any, error)
+	// goType is the Go type the resolver returns a pointer to, which has to
+	// be the one the entity's object type is bound to.
+	goType  reflect.Type
+	resolve func(context.Context, Representation) (any, error)
+	batch   func(context.Context, []Representation) ([]any, error)
 }
 
 // Resolver binds the resolver for the entity type named, the function the
@@ -30,7 +35,7 @@ type Entity struct {
 // field resolver reports one error; a caller that wants the other entities to
 // survive returns (nil, nil) for the one it cannot produce.
 func Resolver[E any](typename string, fn func(context.Context, Representation) (*E, error)) Entity {
-	return Entity{typename: typename, resolve: func(ctx context.Context, r Representation) (any, error) {
+	return Entity{typename: typename, goType: reflect.TypeFor[E](), resolve: func(ctx context.Context, r Representation) (any, error) {
 		v, err := fn(ctx, r)
 		if err != nil {
 			return nil, err
@@ -49,7 +54,7 @@ func Resolver[E any](typename string, fn func(context.Context, Representation) (
 // A nil element is "no such entity", reported as null. A result of the wrong
 // length, or an error, fails the whole _entities field.
 func BatchResolver[E any](typename string, fn func(context.Context, []Representation) ([]*E, error)) Entity {
-	return Entity{typename: typename, batch: func(ctx context.Context, reps []Representation) ([]any, error) {
+	return Entity{typename: typename, goType: reflect.TypeFor[E](), batch: func(ctx context.Context, reps []Representation) ([]any, error) {
 		vs, err := fn(ctx, reps)
 		if err != nil {
 			return nil, err
@@ -127,7 +132,7 @@ func subgraph(sdl string, author graphql.Source, entities []Entity) (graphql.Sou
 			return graphql.Source{}, nil, fmt.Errorf("fed: resolver for %q, an interface carrying @key: the router sends representations with a concrete __typename, so an entity interface is reached through its implementing types and has no resolver of its own", e.typename)
 		}
 		if _, ok := keyed[e.typename]; !ok {
-			return graphql.Source{}, nil, fmt.Errorf("fed: resolver for %q, which carries no @key in this subgraph", e.typename)
+			return graphql.Source{}, nil, fmt.Errorf("fed: resolver for %q, which carries no resolvable @key in this subgraph", e.typename)
 		}
 		if _, dup := byName[e.typename]; dup {
 			return graphql.Source{}, nil, fmt.Errorf("fed: two resolvers for %q", e.typename)
@@ -174,7 +179,7 @@ func keyTypes(sdl string) (objects, interfaces map[string]struct{}, err error) {
 	objects, interfaces = map[string]struct{}{}, map[string]struct{}{}
 	collect := func(defs ast.DefinitionList) {
 		for _, def := range defs {
-			if def.Directives.ForName("key") == nil {
+			if !hasResolvableKey(def) {
 				continue
 			}
 			switch def.Kind {
@@ -188,6 +193,19 @@ func keyTypes(sdl string) (objects, interfaces map[string]struct{}, err error) {
 	collect(doc.Definitions)
 	collect(doc.Extensions)
 	return objects, interfaces, nil
+}
+
+// hasResolvableKey reports whether def carries a @key this subgraph resolves.
+// @key(resolvable: false) names the key of an entity another subgraph owns:
+// the router never asks this one for it, so such a type is not an entity
+// here, needs no resolver and stays out of _Entity.
+func hasResolvableKey(def *ast.Definition) bool {
+	for _, d := range def.Directives.ForNames("key") {
+		if arg := d.Arguments.ForName("resolvable"); arg == nil || arg.Value == nil || arg.Value.Raw != "false" {
+			return true
+		}
+	}
+	return false
 }
 
 func bindings(sdl string, names []string, byName map[string]Entity) graphql.SchemaOption {
@@ -219,6 +237,19 @@ func bindings(sdl string, names []string, byName map[string]Entity) graphql.Sche
 	}
 	if len(names) > 0 {
 		opts = append(opts, graphql.Union[any]("_Entity"), graphql.Args[entitiesArgs]())
+		// _Entity picks the object by the value's Go type, so a resolver that
+		// returns another entity's type is not refused there: a User
+		// representation is answered as a Product. The builder knows what
+		// each entity is bound to, and is asked.
+		//
+		// A resolver over struct{} is exempt: no entity is bound to an empty
+		// struct, so it can only be a stand-in that resolves nothing, which is
+		// what gqlc's generated ValidateSchema passes for every @key type.
+		for _, name := range names {
+			if e := byName[name]; e.goType != nil && e.goType != reflect.TypeFor[struct{}]() {
+				opts = append(opts, bindhook.ObjectBoundTo("fed: the resolver for "+name, name, e.goType).(graphql.SchemaOption))
+			}
+		}
 		root = append(root, graphql.ResolveArgs("_entities",
 			func(ctx context.Context, _ graphql.Root, a entitiesArgs) ([]any, error) {
 				return resolveEntities(ctx, byName, a.Representations)

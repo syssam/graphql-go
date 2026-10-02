@@ -2,6 +2,7 @@ package relay_test
 
 import (
 	"encoding/base64"
+	"math"
 	"testing"
 
 	"github.com/syssam/graphql-go/relay"
@@ -156,5 +157,38 @@ func TestAnUnreadableCursorIsIgnoredRatherThanMisread(t *testing.T) {
 					bad, i, c.Edges[i].Node, c.Edges[i].Cursor, full.Edges[i].Node, full.Edges[i].Cursor)
 			}
 		}
+	}
+}
+
+// A cursor is client input, and its offset went into start = after + 1 and
+// end = start + first unchecked: an offset of MaxInt wrapped start to the
+// front of the list, so a cursor past the end returned the first page.
+func TestFromSliceDoesNotWrapOnACraftedCursor(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args relay.Args
+		want []string
+		next bool
+	}{
+		{name: "after MaxInt is past the end", args: relay.Args{After: ptr(relay.OffsetCursor(math.MaxInt)), First: ptr(2)}, want: nil},
+		{name: "after MaxInt with no first", args: relay.Args{After: ptr(relay.OffsetCursor(math.MaxInt))}, want: nil},
+		{name: "first MaxInt after a cursor", args: relay.Args{After: ptr(relay.OffsetCursor(1)), First: ptr(math.MaxInt)}, want: []string{"c", "d", "e"}},
+		// A before cursor past the end names no edge: every edge is returned,
+		// and there is no next page to claim.
+		{name: "before past the end", args: relay.Args{Before: ptr(relay.OffsetCursor(1000)), First: ptr(10)}, want: letters},
+		{name: "before below the start", args: relay.Args{Before: ptr(relay.OffsetCursor(-7)), First: ptr(10)}, want: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := relay.FromSlice(letters, tc.args)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got := nodes(c); !eq(got, tc.want) {
+				t.Fatalf("nodes = %v, want %v", got, tc.want)
+			}
+			if c.PageInfo.HasNextPage != tc.next {
+				t.Fatalf("hasNextPage = %v, want %v", c.PageInfo.HasNextPage, tc.next)
+			}
+		})
 	}
 }

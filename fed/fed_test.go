@@ -349,3 +349,79 @@ type Query { hello: String! }
 		t.Fatalf("data = %s", got)
 	}
 }
+
+// @key(resolvable: false) is how a subgraph refers to an entity another
+// subgraph owns: it can name the key and cannot resolve it. Such a type was
+// still required to have a resolver and still joined _Entity.
+func TestAnUnresolvableKeyNeedsNoResolverAndIsNotAnEntity(t *testing.T) {
+	const sdl = `
+		type User @key(fields: "id") { id: ID! name: String! }
+		type Product @key(fields: "sku", resolvable: false) { sku: String! }
+		type Query { me: User }
+	`
+	src, bindings, err := fed.Subgraph(sdl, fed.Resolver("User", resolveUser))
+	if err != nil {
+		t.Fatalf("Subgraph: %v", err)
+	}
+	s, err := graphql.NewSchema(src, bindings,
+		graphql.Object[user]("User",
+			graphql.Field("id", func(u *user) graphql.ID { return graphql.ID(u.ID) }),
+			graphql.Field("name", func(u *user) string { return u.Name }),
+		),
+		graphql.Object[product]("Product", graphql.Field("sku", func(p *product) string { return p.SKU })),
+		graphql.Query(graphql.Resolve("me", func(context.Context, graphql.Root) (*user, error) { return users["1"], nil })),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	members := s.AST().Types["_Entity"].Types
+	if len(members) != 1 || members[0] != "User" {
+		t.Fatalf("_Entity = %v, want User alone", members)
+	}
+
+	_, _, err = fed.Subgraph(sdl, fed.Resolver("User", resolveUser), fed.Resolver("Product", resolveProduct))
+	if err == nil || !strings.Contains(err.Error(), "Product") {
+		t.Fatalf("err = %v, want a refusal of the resolver for Product, which this subgraph cannot resolve", err)
+	}
+}
+
+// Resolver's type parameter is the Go type it returns, and nothing compared
+// it with the Go type the entity is bound to. A resolver for User that returns
+// *product built, and a User representation was answered as a Product: the
+// _Entity union picks the object by Go type, so the wrong one was not even an
+// error.
+func TestAResolverMustReturnTheEntitysBoundGoType(t *testing.T) {
+	wrong := func(context.Context, fed.Representation) (*product, error) { return &product{SKU: "not-a-user"}, nil }
+	for name, entity := range map[string]fed.Entity{
+		"Resolver": fed.Resolver("User", wrong),
+		"BatchResolver": fed.BatchResolver("User", func(_ context.Context, reps []fed.Representation) ([]*product, error) {
+			return make([]*product, len(reps)), nil
+		}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			src, bindings, err := fed.Subgraph(subgraphSDL, entity, fed.Resolver("Product", resolveProduct))
+			if err != nil {
+				t.Fatalf("Subgraph: %v", err)
+			}
+			_, err = graphql.NewSchema(src, bindings,
+				graphql.Object[user]("User",
+					graphql.Field("id", func(u *user) graphql.ID { return graphql.ID(u.ID) }),
+					graphql.Field("name", func(u *user) string { return u.Name }),
+				),
+				graphql.Object[product]("Product",
+					graphql.Field("sku", func(p *product) string { return p.SKU }),
+					graphql.Field("price", func(p *product) int { return p.Price }),
+				),
+				graphql.Query(graphql.Resolve("me", func(context.Context, graphql.Root) (*user, error) { return users["1"], nil })),
+			)
+			if err == nil {
+				t.Fatal("the schema built with a User resolver that returns a product")
+			}
+			for _, want := range []string{"User", "product", "user"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error does not mention %s: %v", want, err)
+				}
+			}
+		})
+	}
+}

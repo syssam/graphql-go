@@ -95,13 +95,17 @@ func FromSlice[T any](items []T, args Args) (Connection[T], error) {
 	}
 
 	length := len(items)
-	afterOffset := offsetOr(args.After, -1)
-	beforeOffset := offsetOr(args.Before, length)
+	// A cursor is client input and decodes to any int, so each offset is held
+	// inside the list before arithmetic is done on it: after+1 on MaxInt
+	// wrapped to the front, and a cursor past the end returned the first page.
+	afterOffset := min(max(offsetOr(args.After, -1), -1), length)
+	beforeOffset := min(max(offsetOr(args.Before, length), 0), length)
 
-	start := max(afterOffset+1, 0)
-	end := min(beforeOffset, length)
-	if args.First != nil {
-		end = min(end, start+*args.First)
+	start := min(afterOffset+1, length)
+	end := beforeOffset
+	// Compared as a width rather than added to start, which first can wrap.
+	if args.First != nil && *args.First < end-start {
+		end = start + *args.First
 	}
 	if args.Last != nil {
 		start = max(start, end-*args.Last)
