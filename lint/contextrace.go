@@ -7,8 +7,8 @@ package lint
 
 import (
 	"go/ast"
+	"go/token"
 	"go/types"
-	"strings"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
@@ -52,6 +52,12 @@ func runContextRace(pass *analysis.Pass) (any, error) {
 	// Bodies are examined one at a time: a Get in one function and a Set in
 	// another are not the pattern this looks for.
 	bodies := []ast.Node{(*ast.FuncDecl)(nil), (*ast.FuncLit)(nil)}
+	// A body is walked with the closures inside it, because a Get in a
+	// function and a Set in a closure it makes -- under a sync.Once, on a
+	// goroutine -- are one check-then-act. A closure is also a body of its
+	// own, so a pair wholly inside one is found twice, once from each; each
+	// Set is reported once.
+	reported := map[token.Pos]bool{}
 	insp.Preorder(bodies, func(n ast.Node) {
 		var body *ast.BlockStmt
 		switch fn := n.(type) {
@@ -66,10 +72,6 @@ func runContextRace(pass *analysis.Pass) (any, error) {
 
 		var gets, sets []call
 		ast.Inspect(body, func(n ast.Node) bool {
-			// Nested function literals are visited as their own body.
-			if _, ok := n.(*ast.FuncLit); ok && n != body {
-				return true
-			}
 			c, method, ok := operationContextCall(pass, n)
 			if !ok {
 				return true
@@ -85,7 +87,11 @@ func runContextRace(pass *analysis.Pass) (any, error) {
 
 		for _, g := range gets {
 			for _, s := range sets {
-				if g.recv != s.recv || g.key != s.key {
+				// The key alone. One operation has one context, and an alias, a
+				// field holding it or a second OperationFrom all reach the same
+				// state, so comparing the receiver's text as well missed every
+				// spelling but the one where both calls are written alike.
+				if g.key != s.key {
 					continue
 				}
 				// Only a Get that precedes the Set is check-then-act. Setting
@@ -93,6 +99,10 @@ func runContextRace(pass *analysis.Pass) (any, error) {
 				if g.pos.Pos() >= s.pos.Pos() {
 					continue
 				}
+				if reported[s.pos.Pos()] {
+					continue
+				}
+				reported[s.pos.Pos()] = true
 				pass.Reportf(s.pos.Pos(),
 					"%s.Get(%s) followed by Set on the same key is a check-then-act race; use GetOrSet",
 					g.recv, g.key)
@@ -144,36 +154,10 @@ func isOperationContext(t types.Type) bool {
 	return named.Obj().Pkg().Path()+"."+named.Obj().Name() == ContextType
 }
 
-// render prints an expression compactly, so two occurrences of the same
-// receiver or key compare equal.
+// render prints an expression so two occurrences of the same receiver or key
+// compare equal and two different ones do not. It used to print anything it
+// had no case for as "?", which made every composite literal one key -- and an
+// empty struct literal is the idiomatic context key.
 func render(e ast.Expr) string {
-	var b strings.Builder
-	writeExpr(&b, e)
-	return b.String()
-}
-
-func writeExpr(b *strings.Builder, e ast.Expr) {
-	switch x := e.(type) {
-	case *ast.Ident:
-		b.WriteString(x.Name)
-	case *ast.SelectorExpr:
-		writeExpr(b, x.X)
-		b.WriteByte('.')
-		b.WriteString(x.Sel.Name)
-	case *ast.StarExpr:
-		b.WriteByte('*')
-		writeExpr(b, x.X)
-	case *ast.BasicLit:
-		b.WriteString(x.Value)
-	case *ast.IndexExpr:
-		writeExpr(b, x.X)
-		b.WriteByte('[')
-		writeExpr(b, x.Index)
-		b.WriteByte(']')
-	case *ast.CallExpr:
-		writeExpr(b, x.Fun)
-		b.WriteString("(...)")
-	default:
-		b.WriteString("?")
-	}
+	return types.ExprString(ast.Unparen(e))
 }
