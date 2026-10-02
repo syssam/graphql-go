@@ -19,15 +19,16 @@ import (
 // pass to NewSchema. Nothing lists the groups by hand and nothing is resolved
 // when the process starts: each line calls the constructor beside a group's
 // implementation, and a group whose constructor is missing, or takes
-// something else, does not compile.
+// something else, does not compile. A group is given the field of d named
+// after it, where there is one, so its package imports that and no more.
 func Wire(d service.Services) []graphql.SchemaOption {
 	return []graphql.SchemaOption{
-		category.Bindings(category.NewHandler(d)),
-		customer.Bindings(customer.NewHandler(d)),
-		order.Bindings(order.NewHandler(d)),
-		orderitem.Bindings(orderitem.NewHandler(d)),
-		product.Bindings(product.NewHandler(d)),
-		stock.Bindings(stock.NewHandler(d)),
-		warehouse.Bindings(warehouse.NewHandler(d)),
+		category.Bindings(category.NewHandler(d.Category)),
+		customer.Bindings(customer.NewHandler(d.Customer)),
+		order.Bindings(order.NewHandler(d.Order)),
+		orderitem.Bindings(orderitem.NewHandler(d.OrderItem)),
+		product.Bindings(product.NewHandler(d.Product)),
+		stock.Bindings(stock.NewHandler(d.Stock)),
+		warehouse.Bindings(warehouse.NewHandler(d.Warehouse)),
 	}
 }

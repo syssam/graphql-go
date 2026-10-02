@@ -287,19 +287,25 @@ and gqlc writes `graph/wire.go` from the `scaffold` list above it:
 ```go
 func Wire(d service.Services) []graphql.SchemaOption {
 	return []graphql.SchemaOption{
-		category.Bindings(category.NewHandler(d)),
-		customer.Bindings(customer.NewHandler(d)),
+		category.Bindings(category.NewHandler(d.Category)),
+		customer.Bindings(customer.NewHandler(d.Customer)),
 		// ... one line per entity
 	}
 }
 ```
 
-Each `NewHandler` keeps the service its fields go to, and `NewSchema` is one
-call:
+Each entity is handed the field of `Services` named after it, so `Wire` reads
+
+```go
+		product.Bindings(product.NewHandler(d.Product)),
+```
+
+and each `NewHandler` takes its own service and nothing else. `NewSchema` is
+one call:
 
 ```go
 // graph/product/product.resolvers.go
-func NewHandler(s service.Services) *Handler { return &Handler{svc: s.Product} }
+func NewHandler(svc *productsvc.Service) *Handler { return &Handler{svc: svc} }
 
 // server.go
 func NewSchema(s service.Services) (*graphql.Schema, error) {
@@ -313,6 +319,13 @@ A Handler of the wrong type for its entity, or an entity with no
 container to resolve at start: building the whole app went from 2.46 ms to
 1.85 ms when the handlers left fx (interleaved n=12, p=0.000; 17.5k
 allocations to 14.2k), and a request costs what it did.
+
+That each Handler takes one service, and not `Services`, is what keeps the
+edit loop per entity: `graph/product` imports the product service alone, so
+changing the order service recompiles `graph/order` and not the other six. A
+Handler taking the whole struct would import every service; at 300 entities
+that turned one service's new method from 6 recompiled packages into 305
+(`cmd/gqlc/README.md` has the table).
 
 fx still runs the lifecycle: start hooks in dependency order -- migrate, then
 listen -- and stop hooks in reverse: drain streams, shut the server down,
@@ -397,7 +410,9 @@ Adding a `Supplier`, with `Product.supplier` pointing at it -- done on a copy
 of the example.
 
 **Declare it.** The type in `schema/inventory.go` (22 lines), one edge on
-Product, and which type implements the new group:
+Product, which type implements the new group, and where its service will
+live -- a type and a constructor for now, with its field in `Services`, so
+that what gqlc scaffolds takes the service and not the whole struct:
 
 ```go
 edge.From("supplier", Supplier.Type).Ref("products").Unique(),
@@ -408,6 +423,17 @@ scaffold:
   supplier:  graph/supplier.Handler
 ```
 
+```go
+// internal/service/supplier/supplier.go
+type Service struct{ client *velox.Client }
+
+func New(client *velox.Client) *Service { return &Service{client: client} }
+
+// internal/service/service.go
+supplier.New,                // in Module's fx.Provide
+Supplier *supplier.Service   // in Services
+```
+
 **Generate.** `go generate` (3.6 s, a second run over the same input) writes
 `graph/supplier/generated.go` and, in the same package,
 `graph/supplier/supplier.resolvers.go`:
@@ -415,14 +441,14 @@ scaffold:
 ```go
 // Handler implements the supplier group's Resolver.
 type Handler struct {
-	deps service.Services
+	dep *supplier.Service
 }
 
 var _ Resolver = (*Handler)(nil)
 
-// NewHandler builds the supplier group's Resolver from the application's dependencies.
+// NewHandler builds the supplier group's Resolver from the Supplier field of the application's dependencies.
 // The generated Wire calls it.
-func NewHandler(d service.Services) *Handler { return &Handler{deps: d} }
+func NewHandler(dep *supplier.Service) *Handler { return &Handler{dep: dep} }
 
 // CreateSupplier resolves Mutation.createSupplier.
 func (r *Handler) CreateSupplier(ctx context.Context, args CreateSupplierArgs) (*entity.Supplier, error) {
@@ -434,8 +460,9 @@ func (r *Handler) CreateSupplier(ctx context.Context, args CreateSupplierArgs) (
 ```
 
 and one more line in `graph/wire.go`,
-`supplier.Bindings(supplier.NewHandler(d))`. The type, its constructor and
-three stubs. `Supplier.id` binds to velox's `ID`, `Supplier.products` -- a
+`supplier.Bindings(supplier.NewHandler(d.Supplier))`. The type, its
+constructor and three stubs. (Generated before `Services` has the field, the
+constructor takes all of `Services` instead, and gqlc says so.) `Supplier.id` binds to velox's `ID`, `Supplier.products` -- a
 full connection -- to velox's edge method, and `Product.supplier` likewise;
 none of them is yours to write.
 
@@ -447,14 +474,10 @@ which is the reminder that the list changed:
 
     groups = [category customer order orderitem product root stock supplier warehouse], want [category customer order orderitem product root stock warehouse]
 
-**Implement.** The service, in `internal/service/supplier/supplier.go`, its
-writes staff's like every other entity's:
+**Implement.** The service's methods, its writes staff's like every other
+entity's:
 
 ```go
-type Service struct{ client *velox.Client }
-
-func New(client *velox.Client) *Service { return &Service{client: client} }
-
 func (s *Service) List(ctx context.Context) ([]*entity.Supplier, error) {
 	q, err := s.client.Supplier.Query().CollectFields(ctx)
 	if err != nil {
@@ -472,20 +495,12 @@ func (s *Service) Create(ctx context.Context, in supplierclient.CreateSupplierIn
 // Update likewise.
 ```
 
-**Provide it.** The service is the only thing registered anywhere, in
-`internal/service/service.go`:
-
-```go
-supplier.New,                // in Module's fx.Provide
-Supplier *supplier.Service   // in Services
-```
-
 and one line per stub in the `Handler`, which was scaffolded holding the
-services:
+service:
 
 ```go
 func (r *Handler) Suppliers(ctx context.Context) ([]*entity.Supplier, error) {
-	return r.deps.Supplier.List(ctx)
+	return r.dep.List(ctx)
 }
 ```
 

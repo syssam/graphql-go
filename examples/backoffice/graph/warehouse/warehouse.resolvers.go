@@ -3,7 +3,6 @@ package warehouse
 import (
 	"context"
 
-	"github.com/syssam/graphql-go/examples/backoffice/internal/service"
 	warehousesvc "github.com/syssam/graphql-go/examples/backoffice/internal/service/warehouse"
 	entity "github.com/syssam/graphql-go/examples/backoffice/velox/entity"
 )
@@ -12,9 +11,10 @@ import (
 // field to the warehouse service.
 type Handler struct{ svc *warehousesvc.Service }
 
-// NewHandler takes the services, as the generated graph.Wire passes them to
-// every entity, and keeps the one this entity's fields go to.
-func NewHandler(s service.Services) *Handler { return &Handler{svc: s.Warehouse} }
+// NewHandler takes this entity's service and no other: the generated
+// graph.Wire passes it services.Warehouse, so this package imports one service
+// and an edit to another does not recompile it.
+func NewHandler(svc *warehousesvc.Service) *Handler { return &Handler{svc: svc} }
 
 var _ Resolver = (*Handler)(nil)
 

@@ -58,8 +58,10 @@ scaffold:
   stock:     graph/stock.Handler
 # graph/wire.go: Wire(services) builds every entity's Handler and returns
 # their bindings, so nothing registers a group by hand or through a container.
-# An entity with no scaffold line above fails generation, and one whose
-# NewHandler is missing does not compile.
+# Each NewHandler is given the field of Services named after its entity --
+# product's gets services.Product -- so an entity's package imports its own
+# service and not the others'. An entity with no scaffold line above fails
+# generation, and one whose NewHandler is missing does not compile.
 wire:
   deps: github.com/syssam/graphql-go/examples/backoffice/internal/service.Services
 # An Apollo Federation subgraph: @key needs no declaration, and

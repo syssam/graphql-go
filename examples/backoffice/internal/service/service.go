@@ -37,11 +37,12 @@ import (
 	"github.com/syssam/graphql-go/fed"
 )
 
-// Services is every service, and all the GraphQL layer is given: gqlc's
-// generated graph.Wire hands it to each entity's NewHandler, which keeps the
-// service it needs. fx fills it in -- the services are built by fx, in
-// whatever order they depend on one another -- and that is the last thing fx
-// does for GraphQL: nothing in graph/ is registered, provided or looked up.
+// Services is every service, and all the GraphQL layer is built from: gqlc's
+// generated graph.Wire hands each entity's NewHandler the field named after
+// the entity, so graph/product imports the product service and nothing else
+// here. fx fills the struct in -- the services are built by fx, in whatever
+// order they depend on one another -- and that is the last thing fx does for
+// GraphQL: nothing in graph/ is registered, provided or looked up.
 type Services struct {
 	fx.In
 

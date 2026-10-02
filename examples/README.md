@@ -225,9 +225,11 @@ real run. In short:
   interface and a `Bindings` function, and a `Handler` beside them that
   hands each call to the entity's service.
 - **The GraphQL layer is not in the container.** gqlc generates
-  `graph.Wire(services)`, which constructs every `Handler`; fx builds the
-  services, which may depend on one another, and stops there. An entity left
-  out does not compile, and nothing is resolved by reflection at start.
+  `graph.Wire(services)`, which constructs every `Handler` from its own
+  service; fx builds the services, which may depend on one another, and
+  stops there. An entity left out does not compile, nothing is resolved by
+  reflection at start, and an edit to one service recompiles one entity's
+  packages.
 - **The API offers operations, not the ORM's raw writes.** Order and stock
   change only through `placeOrder`, `cancelOrder`, `adjustStock` and the
   like, each a conditional update or a transaction, and twenty concurrent
