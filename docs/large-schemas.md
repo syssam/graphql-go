@@ -107,11 +107,54 @@ relies on.
   against a production configuration, and introspection is bounded by its own
   rule. A public API should still `DisableIntrospection()`.
 
+## Wiring the GraphQL layer
+
+Something constructs each group's implementation and hands the list to
+`NewSchema`. How it does that reaches the build, the binary and start-up, so
+it was measured on its own: a synthetic service of 300 entities, each with a
+service package and a handler package, no ORM, built three ways. Measured
+2026-10-02 on a 14-core arm64 laptop, go1.27.1; package counts, CPU time and
+allocation counts are the figures to rely on, since wall time on that machine
+moved by half between runs of the same build.
+
+| | A container registers each handler | gqlc `Wire`, handlers take the whole dependencies struct | gqlc `Wire`, each handler takes its own field |
+|---|---|---|---|
+| A method added to one service | 6 packages, 6 s CPU | **305 packages, 70 s CPU** | 6 packages, 4 s CPU |
+| A service added | -- | **304 packages, 70 s CPU** | 4 packages, 4 s CPU |
+| A handler body edited | 4 packages | 3 packages | 3 packages |
+| Cold build | 72.5 s CPU, 560 MB peak | 89.2 s CPU, 625 MB peak | 76.7 s CPU, 551 MB peak |
+| Binary | 23.2 MB | 25.0 MB | 22.5 MB |
+| Start-up, to a built schema (median of 31, interleaved) | 65.8 ms | 31.7 ms | 31.8 ms |
+| Heap retained after start | 9.4 MB | 6.2 MB | 6.1 MB |
+| Allocations during start | 336 000, 24 MB | 199 000, 12.6 MB | 199 000, 12.6 MB |
+
+Peak memory is the largest single process of the build, the linker here.
+
+Two things follow.
+
+- **A container is a start-up and memory cost, not a request cost.** It
+  resolves constructors by reflection and keeps what it learned: twice the
+  start-up time and half again the retained heap at this size, for a list
+  the generator can write as plain code.
+- **What a handler's constructor takes is what its package imports.** One
+  dependencies struct naming every service, passed whole, makes every handler
+  package depend on every service -- the fan-in that one package per entity
+  exists to avoid. `Wire` therefore hands each group the field named after
+  it, and the middle column is what you get by defeating that: a constructor
+  written to take the whole struct. It also carried a 300-field struct into
+  300 packages, which is the extra 12 s of cold-build CPU, 65 MB of peak
+  memory and 2.5 MB of binary.
+
+`cmd/gqlc/README.md` has the configuration, and `benchmarks/wiring/` the
+scripts that generate the three services and time them.
+
 ## Not measured
 
 - The same schema on ent and gqlgen. velox's own benchmark compares velox and
   Ent at 50 entities: an entity edit rebuilds in 17.0 s against 27.5 s
   (`velox/benchmarks/run.sh inc`).
-- Memory of the cold build, and `gopls` on a workspace this size.
+- Memory of the velox schema's cold build, and `gopls` on a workspace this
+  size. The wiring comparison above has peak memory for its synthetic
+  service only.
 - Request latency under load at this schema size; `examples/backoffice` has the
   per-request figures for a small schema.

@@ -14,6 +14,10 @@
 // of three handlers leaves the third answering any query at all, and a drain
 // that only one of the streaming handlers knows about waits out its deadline
 // for the other's connections.
+//
+// It links all three transports, the WebSocket library among them: about half
+// a megabyte and eight packages more than gqlhttp alone. A server that will
+// never serve a subscription mounts gqlhttp and pays for nothing else.
 package gqlmux
 
 import (

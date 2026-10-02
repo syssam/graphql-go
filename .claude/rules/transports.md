@@ -241,7 +241,8 @@ decompresses, so a gzip body had two answers across transports, and a failed dec
 Fiber's error text standing in for the body (`TestARequestBodyIsNeverDecompressed`).
 
 **`transport/gqlmux` is the three net/http handlers on one path** and adds no transport of its
-own: a WebSocket upgrade goes to `gqlws`, a request that names `text/event-stream` and weighs
+own. It links all three: the quickstart went from 11.23 MB and 224 packages to 11.70 MB and 232
+(`coder/websocket` and `gqlwsproto`) when it moved from `gqlhttp` plus `gqlsse` to it. Dispatch: a WebSocket upgrade goes to `gqlws`, a request that names `text/event-stream` and weighs
 it above JSON goes to `gqlsse`, everything else to `gqlhttp`. `httpreq.PrefersEventStream`
 reads JSON's weight through `weigh`, the function `Negotiate` uses, so the two cannot rank a
 range differently: its first version counted only the two exact JSON types, and
