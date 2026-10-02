@@ -33,7 +33,10 @@ import (
 // scaffold writes stubs for every group Config.Scaffold names. Groups the
 // schema does not have, or that have no Resolver, are errors: a typo there
 // would otherwise scaffold nothing and say nothing.
-func (b *builder) scaffold(groups []string) error {
+// checkScaffold refuses what scaffold would refuse before writing anything:
+// a key that is no group with a Resolver, and a target that is not dir.Type.
+// It is the part a check can run, since nothing in it writes.
+func (b *builder) checkScaffold(groups []string) error {
 	if len(b.cfg.Scaffold) == 0 {
 		return nil
 	}
@@ -45,6 +48,30 @@ func (b *builder) scaffold(groups []string) error {
 	if flat {
 		known = map[string]bool{b.pkgName: true}
 	}
+	for _, name := range slices.Sorted(maps.Keys(b.cfg.Scaffold)) {
+		group := name
+		if flat {
+			group = ""
+		}
+		if !known[name] || !b.hasResolver(group) {
+			return fmt.Errorf("codegen: scaffold: %q is not a group with a Resolver (groups: %s)",
+				name, strings.Join(slices.Sorted(maps.Keys(known)), ", "))
+		}
+		if _, _, err := b.splitTarget(b.cfg.Scaffold[name]); err != nil {
+			return fmt.Errorf("codegen: scaffold %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func (b *builder) scaffold(groups []string) error {
+	if len(b.cfg.Scaffold) == 0 {
+		return nil
+	}
+	if err := b.checkScaffold(groups); err != nil {
+		return err
+	}
+	flat := len(groups) <= 1
 	groupOf := func(name string) string {
 		if flat {
 			return ""
@@ -52,12 +79,6 @@ func (b *builder) scaffold(groups []string) error {
 		return name
 	}
 	names := slices.Sorted(maps.Keys(b.cfg.Scaffold))
-	for _, name := range names {
-		if !known[name] || !b.hasResolver(groupOf(name)) {
-			return fmt.Errorf("codegen: scaffold: %q is not a group with a Resolver (groups: %s)",
-				name, strings.Join(slices.Sorted(maps.Keys(known)), ", "))
-		}
-	}
 	pkgs := &pkgCache{byFold: map[string][]*pkgIndex{}}
 	methods := make(map[string][]string, len(names))
 	for _, name := range names {

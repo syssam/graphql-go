@@ -6,7 +6,7 @@ codegen: func (d ModelDirective) IsZero() bool
 codegen: func (d TagDirective) IsZero() bool
 codegen: func (w Wire) IsZero() bool
 codegen: func Generate(ctx context.Context, cfg Config) error
-codegen: type Config struct { Dir string SchemaGlobs []string Output string Package string GroupFunc func(typeName, sdlFile string) string GroupDir string RootFieldGroup func(RootField) string Scaffold map[string]string Models map[string]string ModelDirective ModelDirective FieldDirective FieldDirective TagDirective TagDirective FieldNames map[string]string JSONTags bool Manifest *Manifest AutoBind []string Notef func(format string, args ...any) ZeroForNullInputs bool InlineAccessors bool Inline []string Federation bool NullableInputOmittable bool StructObjectFields bool Wire Wire InputListPointers bool }
+codegen: type Config struct { Dir string SchemaGlobs []string Output string Package string GroupFunc func(typeName, sdlFile string) string GroupDir string RootFieldGroup func(RootField) string Scaffold map[string]string Models map[string]string ModelDirective ModelDirective FieldDirective FieldDirective TagDirective TagDirective FieldNames map[string]string JSONTags bool Manifest *Manifest AutoBind []string Notef func(format string, args ...any) ZeroForNullInputs bool InlineAccessors bool Inline []string Federation bool NullableInputOmittable bool StructObjectFields bool Wire Wire Check bool InputListPointers bool }
 codegen: type FieldBinding struct { Kind FieldKind GoName string Context bool Error bool Convert bool Value bool }
 codegen: type FieldDirective struct { Name string ForceResolverArg string }
 codegen: type FieldKind int
@@ -17,6 +17,7 @@ codegen: type RootField struct { Root string Name string SDLFile string ReturnTy
 codegen: type TagDirective struct { Name string KeyArg string ValueArg string }
 codegen: type TypeBinding struct { Name string Go GoType Values map[string]string Group string Fields map[string]FieldBinding }
 codegen: type Wire struct { Deps string Pass map[string]string }
+codegen: var ErrStale
 ext/apq: const CodeNotFound
 ext/apq: const CodeNotInList
 ext/apq: const CodeNotSupported

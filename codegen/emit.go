@@ -126,10 +126,22 @@ func putGo(files map[string][]byte, rel, src string) error {
 	return nil
 }
 
+// sameContent reports whether old, a file on disk, says what src does. Line
+// endings are not what it says: a checkout with core.autocrlf -- the Windows
+// default -- turns every LF gqlc writes into CRLF, and comparing bytes
+// rewrote every generated file on every run and reported every one stale on
+// every check. gqlc writes LF, so only that difference is forgiven.
+func sameContent(old, src []byte) bool {
+	if bytes.Equal(old, src) {
+		return true
+	}
+	return bytes.Contains(old, []byte("\r\n")) && bytes.Equal(bytes.ReplaceAll(old, []byte("\r\n"), []byte("\n")), src)
+}
+
 // writeGo writes src to path unless old, what the file held before this run,
-// already equals it.
+// already says the same.
 func writeGo(path string, old, src []byte) error {
-	if old != nil && bytes.Equal(old, src) {
+	if old != nil && sameContent(old, src) {
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
