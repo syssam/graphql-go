@@ -226,38 +226,79 @@ func (b *builder) scaffoldGroup(pkgs *pkgCache, name, group, target string) ([]s
 	fields, constructor := "{}", ""
 	if ctor := constructorName(typ); !b.cfg.Wire.IsZero() && !idx.funcs[ctor] {
 		depsPath, depsQual, depsType := b.wireDeps()
-		deps, here := depsType, false
-		if implImport, err := b.importPathOf(dir); err == nil && implImport == depsPath {
-			here = true
+		implImport, _ := b.importPathOf(dir)
+		// Each package the constructor's parameter names is imported once,
+		// under a name free in this file.
+		chosen := map[string]string{}
+		var qualifyErr error
+		qualify := func(importPath, preferred string) string {
+			if q, ok := chosen[importPath]; ok {
+				return q
+			}
+			q, add, err := depsQualifier(old, importPath, preferred, idx, imports, alias, typ)
+			if err != nil {
+				qualifyErr = err
+			}
+			if add {
+				imports = append(imports, importSpec{q, importPath})
+			}
+			chosen[importPath] = q
+			return q
+		}
+		if declared {
+			// The note names the type as the dependencies file writes it;
+			// nothing is imported for a constructor that is not written.
+			qualify = func(_, preferred string) string { return preferred }
+		}
+		// What the constructor takes: the field named after the group, or
+		// the whole value. See wireArg.
+		param, paramType, what := "d", depsType, "the application's dependencies"
+		field, why := b.wireArg(name, target)
+		switch {
+		case field != nil:
+			placed, err := field.placed(depsPath, depsQual, implImport, qualify)
+			if err != nil {
+				return nil, fmt.Errorf("wire: %s.%s: %w", depsType, field.name, err)
+			}
+			param, paramType, what = "dep", placed, "the "+field.name+" field of the application's dependencies"
+		case implImport != depsPath:
+			paramType = qualify(depsPath, depsQual) + "." + depsType
+		}
+		if qualifyErr != nil {
+			return nil, fmt.Errorf("%s: %w", file, qualifyErr)
 		}
 		switch {
 		case declared:
-			if !here {
-				deps = depsQual + "." + depsType
-			}
 			if !idx.wanted[ctor] {
 				idx.wanted[ctor] = true
 				where := dir
 				if rel, err := filepath.Rel(b.dir, dir); err == nil {
 					where = rel
 				}
-				b.notef("wire: %s has no %s, which the generated Wire calls, so the build fails until there is one. Write func %s(d %s) *%s in %s.",
-					target, ctor, ctor, deps, typ, where)
+				b.notef("wire: %s has no %s, which the generated Wire calls, so the build fails until there is one. Write func %s(%s %s) *%s in %s.",
+					target, ctor, ctor, param, paramType, typ, where)
 			}
 		default:
-			if !here {
-				qual, add, err := depsQualifier(old, depsPath, depsQual, idx, imports, alias, typ)
-				if err != nil {
-					return nil, fmt.Errorf("%s: %w", file, err)
+			keep := param
+			if field == nil {
+				keep = "deps"
+				// Said once, by the run that writes the constructor, and
+				// only where there is something to do about it: a field that
+				// is there and could not be handed over, or a group left
+				// without one where others have theirs, which usually means
+				// the field is still to be added. A type serving several
+				// groups takes the whole value by design.
+				switch {
+				case why != nil:
+					b.notef("wire: %v. %s takes the whole value instead, so its package imports everything that names.", why, ctor)
+				case !b.wireShared(target) && b.wireAnyField():
+					b.notef("wire: the %s group has no field named after it in %s, so %s takes the whole value and its package imports everything that names. Add the field and change the constructor to keep its builds apart.",
+						name, depsType, ctor)
 				}
-				if add {
-					imports = append(imports, importSpec{qual, depsPath})
-				}
-				deps = qual + "." + depsType
 			}
-			fields = " {\n\tdeps " + deps + "\n}"
-			constructor = fmt.Sprintf("\n// %s builds the %s group's Resolver from the application's dependencies.\n// The generated Wire calls it.\nfunc %s(d %s) *%s { return &%s{deps: d} }\n",
-				ctor, name, ctor, deps, typ, typ)
+			fields = " {\n\t" + keep + " " + paramType + "\n}"
+			constructor = fmt.Sprintf("\n// %s builds the %s group's Resolver from %s.\n// The generated Wire calls it.\nfunc %s(%s %s) *%s { return &%s{%s: %s} }\n",
+				ctor, name, what, ctor, param, paramType, typ, typ, keep, param)
 			idx.funcs[ctor] = true
 		}
 	}
@@ -341,6 +382,9 @@ type pkgIndex struct {
 	// wanted is each constructor this run has already said is missing, so a
 	// type serving several groups is reported once.
 	wanted map[string]bool
+	// names is every top-level name the package declares, variables and
+	// constants included: an import cannot be given one of them.
+	names map[string]bool
 }
 
 // depsQualifier is the name a resolvers file refers to the dependencies
@@ -357,12 +401,7 @@ func depsQualifier(old []byte, depsPath, preferred string, idx *pkgIndex, import
 		}
 		// An import with no name is known by its package's, which is its last
 		// path element by convention and by nothing gqlc can check.
-		elems := strings.Split(im.path, "/")
-		last := elems[len(elems)-1]
-		if isMajorVersion(last) && len(elems) > 1 {
-			last = elems[len(elems)-2]
-		}
-		return identFrom(last)
+		return identFrom(lastElement(im.path))
 	}
 	if len(old) > 0 {
 		f, err := parser.ParseFile(token.NewFileSet(), "", old, parser.ImportsOnly)
@@ -381,9 +420,12 @@ func depsQualifier(old []byte, depsPath, preferred string, idx *pkgIndex, import
 		}
 	}
 	for _, im := range imports {
+		if im.path == depsPath {
+			return local(im), false, nil
+		}
 		taken[local(im)] = true
 	}
-	for _, names := range []map[string]bool{idx.declared, idx.funcs, idx.generated} {
+	for _, names := range []map[string]bool{idx.declared, idx.funcs, idx.generated, idx.names} {
 		for n := range names {
 			taken[n] = true
 		}
@@ -413,7 +455,7 @@ func (p *pkgIndex) add(pkg, typ string, sigs []resolverSig) {
 // indexPackage parses dir's non-test files once. A directory that does not
 // exist yet is an empty package.
 func (b *builder) indexPackage(dir string) (*pkgIndex, error) {
-	idx := &pkgIndex{dir: dir, methods: map[string]map[string]bool{}, declared: map[string]bool{}, generated: map[string]bool{}, funcs: map[string]bool{}, wanted: map[string]bool{}}
+	idx := &pkgIndex{dir: dir, methods: map[string]map[string]bool{}, declared: map[string]bool{}, generated: map[string]bool{}, funcs: map[string]bool{}, wanted: map[string]bool{}, names: map[string]bool{}}
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return idx, nil
@@ -454,6 +496,7 @@ func (b *builder) indexPackage(dir string) (*pkgIndex, error) {
 		gen := isGeneratedSource(src)
 		idx.pkg = f.Name.Name
 		top := func(name string) {
+			idx.names[name] = true
 			switch {
 			case name == "_" || name == "init":
 			case gen:

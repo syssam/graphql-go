@@ -224,15 +224,59 @@ schema, err := graph.NewSchema(graph.Wire(deps.Deps{DB: db})...)
 ```
 
 `Deps` is a type of yours holding what resolvers need -- a database client,
-configuration, services. Each implementation has a constructor from it,
-`NewHandler(d deps.Deps) *Handler`, which scaffolding writes with the type. For
-a type you wrote yourself it writes nothing: gqlc does not know its fields, so
-the build fails on the missing constructor and a note gives the signature to
-write. A type that implements several groups is constructed once and shared. A
-group with a Resolver and no scaffold target fails generation. Nothing is
-looked up when the process starts, so there is no container to run and no
-group to forget. The package holding `Deps` must not import `graph`, which
-imports it.
+configuration, services. Each implementation has a constructor,
+`NewHandler`, which scaffolding writes with the type. For a type you wrote
+yourself it writes nothing: gqlc does not know its fields, so the build fails
+on the missing constructor and a note gives the signature to write. A group
+with a Resolver and no scaffold target fails generation. Nothing is looked up
+when the process starts, so there is no container to run and no group to
+forget. The package holding `Deps` must not import `graph`, which imports it.
+
+**Give each group a field of its own.** What a constructor takes is what its
+package imports. When `Deps` has a field named after a group -- `Product` for
+`product`, `OrderItem` for `orderitem` -- that field is what the group's
+constructor is given:
+
+```go
+type Deps struct {
+	Product *product.Service
+	Order   *order.Service
+}
+```
+
+```go
+product.Bindings(product.NewHandler(d.Product)),   // wire.go
+func NewHandler(dep *product.Service) *Handler     // scaffolded
+```
+
+and `graph/product` imports the product service alone. A constructor taking
+all of `Deps` imports every service, so every group's package recompiles when
+any service changes. Measured at 300 groups with a service each (Go 1.27, 14
+cores):
+
+| | whole `Deps` | a field each |
+|---|---|---|
+| A method added to one service | 305 packages, 7.0 s, 70 s CPU | 6 packages, 2.1 s, 4 s CPU |
+| A service added to `Deps` | 304 packages, 7.1 s | 4 packages, 1.5-1.9 s |
+| Cold build | 89 s CPU, 625 MB peak | 77 s CPU, 551 MB peak |
+| Binary | 25.0 MB | 22.5 MB |
+
+A constructor that already exists decides for itself. One that takes `Deps`
+is passed `d`, whatever fields `Deps` has: that is how a group needing more
+than its own field asks for everything, and it is why adding a field to
+`Deps` never breaks a constructor you wrote. The field rule applies to
+constructors gqlc scaffolds, and to ones that take something other than
+`Deps`.
+
+A group with no field named after it is given the whole value; so is a type
+that implements several groups, which is constructed once and shared. A field
+is also left in the whole value when its type cannot be written exactly in
+another package: a struct or interface written inline, an unexported type, a
+type from a dot-import, or two fields whose names differ only in case and
+punctuation. When a new group gets the whole value for one of those reasons,
+or has no field where other groups have theirs, gqlc says so once, at the run
+that scaffolds its constructor. `Deps` is read from its source file, from the
+one file that declares it; no package is loaded.
 
 `preset: gqlgen` is the six keys a schema arriving from gqlgen needs, at once --
 `modelDirective`, `fieldDirective`, `tagDirective`, `jsonTags`,

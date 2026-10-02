@@ -19,8 +19,22 @@ import (
 )
 
 type builder struct {
-	cfg      Config
-	dir      string
+	cfg Config
+	dir string
+
+	// wire is what Config.Wire needs of the dependencies struct and the
+	// scaffold targets, read once. See wireFields and wireArg.
+	wire struct {
+		read    bool
+		fields  map[string]*depsField
+		targets map[string]int
+		// ctors is, per target directory, what each hand-written NewX
+		// function there takes.
+		ctors map[string]map[string]string
+		// anyField is whether any group is handed a field of its own; nil
+		// until asked.
+		anyField *bool
+	}
 	schema   *ast.Schema
 	sources  []*ast.Source
 	pkgName  string

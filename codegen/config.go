@@ -262,8 +262,26 @@ type Config struct {
 	// constructor does not compile, and nothing is resolved at run time.
 	//
 	// Every group with a Resolver needs a Scaffold target, and each
-	// implementation a constructor NewType(d Deps) beside it; scaffolding
-	// writes one with the type, and a stub where the type exists without it.
+	// implementation a constructor beside it, NewType; scaffolding writes one
+	// with a new type, and a note where the type exists without it.
+	//
+	// What the constructor takes decides what its package imports, and so
+	// what recompiles when something changes. A field of the dependencies
+	// struct named after a group -- Product for the product group, case and
+	// punctuation aside -- is what that group's constructor is given, and its
+	// package then imports that field's type alone. Taking the whole struct
+	// instead imports everything it names: at 300 groups with a service each,
+	// a method added to one service rebuilt 305 packages against 6. A group
+	// with no such field, and a type implementing several groups, get the
+	// whole value. The struct is read from source; nothing is loaded.
+	//
+	// A constructor that already exists decides for itself: one written to
+	// take the whole struct is passed it, field or no field, which is also
+	// how a group that needs more than its own field asks for everything. A
+	// field is handed over only when its type can be written exactly in the
+	// constructor's package; one with an inline struct or interface type, an
+	// unexported type, or a type from a dot-import is passed as part of the
+	// whole value instead.
 	Wire Wire
 	// InputListPointers spells a list of input objects []*T instead of []T, as
 	// gqlgen did. Callers written against that shape test elements for nil and
@@ -430,10 +448,11 @@ func (d FieldDirective) IsZero() bool { return d.Name == "" || d.ForceResolverAr
 
 // Wire configures the generated Wire function.
 type Wire struct {
-	// Deps is the Go type every implementation's constructor takes, written
-	// as import/path.Type: the application's shared dependencies -- a
-	// database client, configuration, services. Its package must not import
-	// the generated one, which imports it.
+	// Deps is the Go type Wire takes, written as import/path.Type: the
+	// application's shared dependencies -- a database client, configuration,
+	// services. A constructor is given the field named after its group, or
+	// the whole value where there is none. Its package must not import the
+	// generated one, which imports it.
 	Deps string
 }
 

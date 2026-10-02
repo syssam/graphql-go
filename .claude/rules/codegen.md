@@ -326,8 +326,70 @@ measured, 15 ms at 300 single-provider groups and 41 ms at 800 -- and a group le
 when the process starts. gqlc knows every group and, from `Scaffold`, where its implementation
 is, so it writes the list: a group whose constructor is missing or takes something else does
 not compile, and nothing is resolved at run time. Requests cost the same either way (19.3 µs,
-139 allocations, p=0.811 on `examples/backoffice`): a container is not on the request path. Every
-group with a Resolver needs a scaffold target, or generation fails naming it. Scaffolding writes
+139 allocations, p=0.811, on the example now called `backoffice`): a container is not on the
+request path. Every group with a Resolver needs a scaffold target, or generation fails naming it.
+
+**What a constructor takes is what its package imports, and the first version got that wrong.**
+`NewHandler(d Deps)` in every group makes every group's package import `Deps`, which names
+every service: the fan-in a per-entity layout exists to avoid, reintroduced by the wiring. It
+was shipped that way and found only because the owner asked about build time. Measured on a
+synthetic 300-entity service (a service package per entity, no ORM; Go 1.27, 14 cores; package
+counts and CPU are the reliable figures, wall time moved ±50% between runs):
+
+| | fx registers handlers | `NewHandler(d Deps)` | `NewHandler(d.Field)` |
+|---|---|---|---|
+| a method added to one service | 6 packages, 6 s CPU | **305 packages, 70 s CPU, 7.0 s** | 6 packages, 4 s CPU |
+| a service added | -- | **304 packages, 70 s CPU** | 4 packages, 4 s CPU |
+| cold build | 72.5 s CPU, 560 MB peak RSS | 89.2 s, 625 MB | 76.7 s, 551 MB |
+| binary | 23.2 MB | 25.0 MB | 22.5 MB |
+| start-up, to a built schema | 65.8 ms | 31.7 ms | 31.8 ms |
+| heap retained after start | 9.4 MB, 336k mallocs | 6.2 MB, 199k | 6.1 MB, 199k |
+
+So `wireArg` hands a group the field of `Deps` named after it (`foldName`: case and punctuation
+aside), and the scaffolded constructor takes that field's type, requalified for the file it is
+written into (`depsField.placed`: a package the dependencies file imports keeps its name there
+unless the stub file has it taken, and a type declared beside the struct gains the dependencies
+package's qualifier). `Deps` is found by parsing its directory with `go/parser`
+(`readWire`), like the scaffold targets; nothing is loaded. The whole value goes to a group with
+no such field, to an unexported field's group, and to a type implementing several groups, whose
+one constructor cannot take a field for each -- that rule is in `wireArg` and is visible only in
+the *scaffolded constructor*, since `Wire` emits the shared variable either way, so its test
+asserts the constructor (`TestWireHandsOverTheWholeValueWhereNoFieldFits`; the first version of
+it passed with the rule broken). A new group given the whole value while others have fields is
+reported once, at the run that scaffolds it. The lookup-side `foldName` is redundant today,
+because `sanitizeGroup` already strips a group's name to letters and digits; no test can fail
+on it.
+
+**A review that ran the generator on its own inputs found ten defects in the first version of
+that, nine reproduced, four of them output that did not compile.** What it changed:
+
+- **A constructor that exists decides** (`constructorParam`, `namesType`). Going by the struct
+  alone broke every constructor written to take the whole value the moment a like-named field
+  appeared -- in `wire.go`, a DO NOT EDIT file -- and gave a group needing more than its field
+  no way to ask. The field rule is for constructors gqlc scaffolds.
+- **The type written must be the field's type exactly**, since `Wire` passes one where the
+  constructor takes the other, so `placed` refuses instead of approximating: an inline struct
+  (`types.ExprString` drops tags, and an unexported member belongs to the package it is
+  written in), an inline interface with methods, an unexported type, a bare name in a file
+  with a dot-import. The check runs per target (`wireArg`), because an unexported type is
+  fine when the implementation is in the dependencies package.
+- **The struct is read from the file a build uses**: top-level declarations only (a type of
+  the same name inside a function had won), not a file `excludedEverywhere`, and no fields at
+  all when two files declare it, since those are build-constraint alternatives.
+- **An unaliased import is known by its package clause** (`packageName`), read with
+  `PackageClauseOnly`; guessed from the directory it resolved a type to the wrong package when
+  two imports had each other's names. `dirOf` refuses a directory outside the module root.
+- **Import qualifiers avoid every top-level name of the target package** (`pkgIndex.names`),
+  variables and constants included; a resolver package's own `var log` met a field of type
+  `*log.Logger`.
+- **Notes fire where someone can act**: at the run that scaffolds a constructor, for that
+  group, when its field could not be handed over or when other groups have fields and it has
+  none. Not for a type serving several groups, not when the struct has fields but none is a
+  group's, and never on later runs.
+
+Eleven breaks, one per rule, each failed a test in `wire_test.go`; one reverse edit failed
+because its text was not unique in the file, which is the reason to check for leftover markers
+and not only for a green suite. Scaffolding writes
 `NewType(d Deps)` with a new type and nothing where the constructor is there. **For a type that
 exists without one it writes nothing and says so in a note**: its fields are the author's, so a
 constructor could only panic, which compiles and stops the process at start-up -- the failure
@@ -342,11 +404,11 @@ the flat layout, where `Wire` names it unqualified; with several groups that is 
 implementation would import the root that imports it. In the flat layout an implementation
 outside the generated package is refused for the same reason. **`examples/backoffice` (once
 `veloxfx`) is the worked case**: fx builds the services, which may depend on one another, and
-fills `service.Services`; `graph.Wire(services)` builds every `Handler` and nothing in `graph/`
-is registered with fx. Building the whole app went from 2.46 ms to 1.85 ms (interleaved n=12,
-p=0.000, spread ±7-10%; 17.5k allocations to 14.2k). Its guide's add-an-entity walk-through was
-rerun on a copy: the type, constructor and stubs are scaffolded, `Wire` gains its line, and the
-only registration left by hand is the service's.
+fills `service.Services`; `graph.Wire(services)` hands each `Handler` its own service and
+nothing in `graph/` is registered with fx. Building the whole app went from 2.46 ms to 1.85 ms
+(interleaved n=12, p=0.000, spread ±7-10%; 17.5k allocations to 14.2k). Its guide's
+add-an-entity walk-through was rerun on a copy, twice: the type, constructor and stubs are
+scaffolded, `Wire` gains its line, and the only registration left by hand is the service's.
 
 **`preset: gqlgen` in gqlc.yaml** is `modelDirective`, `fieldDirective`, `tagDirective`,
 `jsonTags`, `inputListPointers` and `structObjectFields` at once; a key written beside it wins,
