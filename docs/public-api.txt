@@ -404,6 +404,17 @@ transport/gqlhttp: func WithPersistedQueries(cache apq.Cache) Option
 transport/gqlhttp: type Handler struct { }
 transport/gqlhttp: type Option func(*Handler)
 transport/gqlhttp: var DefaultCSRFHeaders
+transport/gqlmux: func New(exec *graphql.Executor, opts ...Option) http.Handler
+transport/gqlmux: func WithCSRFPrevention(enabled bool, headers ...string) Option
+transport/gqlmux: func WithDrain(d *drain.Drain) Option
+transport/gqlmux: func WithHTTP(opts ...gqlhttp.Option) Option
+transport/gqlmux: func WithLogger(l *slog.Logger) Option
+transport/gqlmux: func WithMaxBodyBytes(n int64) Option
+transport/gqlmux: func WithPersistedQueries(cache apq.Cache) Option
+transport/gqlmux: func WithSSE(opts ...gqlsse.Option) Option
+transport/gqlmux: func WithWS(opts ...gqlws.Option) Option
+transport/gqlmux: func WithWriteTimeout(d time.Duration) Option
+transport/gqlmux: type Option func(*config)
 transport/gqlsse: const MediaTypeEventStream
 transport/gqlsse: const MediaTypeGraphQLResponse
 transport/gqlsse: func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request)

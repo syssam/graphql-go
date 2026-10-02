@@ -113,3 +113,39 @@ func TestAcceptsEventStream(t *testing.T) {
 		}
 	}
 }
+
+// One endpoint serving JSON and streams has to choose from the Accept header
+// alone. A stream is chosen only when the client names it and prefers it: a
+// wildcard is a client that will take anything, which is answered with JSON.
+func TestPrefersEventStream(t *testing.T) {
+	for accept, want := range map[string]bool{
+		"":                                    false,
+		"*/*":                                 false,
+		"text/*":                              false,
+		"application/json":                    false,
+		"text/event-stream":                   true,
+		"text/event-stream, */*":              true,
+		"TEXT/EVENT-STREAM":                   true,
+		"text/event-stream;q=0":               false,
+		"text/event-stream;q=0.5":             true,
+		"application/json, text/event-stream": false,
+		"application/json;q=0.5, text/event-stream":                        true,
+		"application/json, text/event-stream;q=0.5":                        false,
+		"application/graphql-response+json, text/event-stream;q=0.9":       false,
+		"application/graphql-response+json;q=0.1, text/event-stream;q=0.9": true,
+		"application/json;q=0, text/event-stream":                          true,
+		// A range covers the JSON types as it does in Negotiate, so a client
+		// that ranks "anything" above the stream is not sent a stream.
+		"application/*, text/event-stream;q=0.1":       false,
+		"*/*, text/event-stream;q=0.1":                 false,
+		"application/*;q=0.5, text/event-stream;q=0.4": false,
+		// At one weight, the type the client named outranks the one a
+		// wildcard let in, as an explicit type does in Negotiate.
+		"*/*;q=0.5, text/event-stream;q=0.5": true,
+		"application/*, text/event-stream":   true,
+	} {
+		if got := httpreq.PrefersEventStream(accept); got != want {
+			t.Errorf("PrefersEventStream(%q) = %t, want %t", accept, got, want)
+		}
+	}
+}

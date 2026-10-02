@@ -27,58 +27,8 @@ func Negotiate(accept string) (string, bool) {
 	if strings.TrimSpace(accept) == "" {
 		return MediaTypeJSON, true
 	}
-	// The most specific range that covers a type decides for it: the type
-	// itself, then application/*, then */*. So a type named with q=0 is
-	// refused whatever a wildcard beside it says, and so is application/*;q=0
-	// beside a */* -- "application/json;q=0, */*" asks for anything but JSON
-	// and used to be answered with JSON.
-	const (
-		exactJSON = iota
-		exactGraphQL
-		anyApplication
-		anything
-		ranges
-	)
-	var q [ranges]float64
-	var named [ranges]bool
-	for _, part := range strings.Split(accept, ",") {
-		mt, params, err := mime.ParseMediaType(strings.TrimSpace(part))
-		if err != nil {
-			continue
-		}
-		i := -1
-		switch mt {
-		case MediaTypeJSON:
-			i = exactJSON
-		case MediaTypeGraphQLResponse:
-			i = exactGraphQL
-		case "application/*":
-			i = anyApplication
-		case "*/*":
-			i = anything
-		}
-		if i < 0 {
-			continue
-		}
-		w := 1.0
-		if qs, ok := params["q"]; ok {
-			w = parseQ(qs)
-		}
-		// A range given twice takes its better weight.
-		if !named[i] || w > q[i] {
-			q[i], named[i] = w, true
-		}
-	}
-	weigh := func(exact int) (w float64, explicit bool) {
-		for _, i := range []int{exact, anyApplication, anything} {
-			if named[i] {
-				return q[i], i == exact
-			}
-		}
-		return 0, false
-	}
-	jsonQ, _ := weigh(exactJSON)
-	graphQLQ, graphQLExplicit := weigh(exactGraphQL)
+	jsonQ, _ := weigh(accept, MediaTypeJSON)
+	graphQLQ, graphQLExplicit := weigh(accept, MediaTypeGraphQLResponse)
 	switch {
 	case jsonQ <= 0 && graphQLQ <= 0:
 		return MediaTypeGraphQLResponse, false
@@ -98,6 +48,55 @@ func Negotiate(accept string) (string, bool) {
 	// requires ("SHOULD accept */* and use application/json for the
 	// content-type").
 	return MediaTypeJSON, true
+}
+
+// weigh is the weight an Accept header gives one application/* media type,
+// and whether the header named it rather than covering it with a range. The
+// most specific range that covers a type decides for it: the type itself,
+// then application/*, then */*. So a type named with q=0 is refused whatever
+// a wildcard beside it says, and so is application/*;q=0 beside a */* --
+// "application/json;q=0, */*" asks for anything but JSON and used to be
+// answered with JSON. A range given twice takes its better weight.
+func weigh(accept, mediaType string) (q float64, explicit bool) {
+	const (
+		exact = iota
+		anyApplication
+		anything
+		ranges
+	)
+	var weight [ranges]float64
+	var named [ranges]bool
+	for _, part := range strings.Split(accept, ",") {
+		mt, params, err := mime.ParseMediaType(strings.TrimSpace(part))
+		if err != nil {
+			continue
+		}
+		i := -1
+		switch mt {
+		case mediaType:
+			i = exact
+		case "application/*":
+			i = anyApplication
+		case "*/*":
+			i = anything
+		}
+		if i < 0 {
+			continue
+		}
+		w := 1.0
+		if qs, ok := params["q"]; ok {
+			w = parseQ(qs)
+		}
+		if !named[i] || w > weight[i] {
+			weight[i], named[i] = w, true
+		}
+	}
+	for i := range named {
+		if named[i] {
+			return weight[i], i == exact
+		}
+	}
+	return 0, false
 }
 
 // MediaTypeEventStream is the type of a Server-Sent Events response.
@@ -144,6 +143,38 @@ func AcceptsEventStream(accept string) bool {
 		}
 	}
 	return false
+}
+
+// PrefersEventStream reports whether a request should be answered as a
+// stream by an endpoint that can answer either way. It is yes only when the
+// client names text/event-stream and weighs it above JSON. JSON's weight is
+// read as Negotiate reads it, ranges included, so "*/*, text/event-stream;
+// q=0.1" is a client that would rather have anything else. At one weight the
+// stream wins against a wildcard, which it was named beside, and loses to a
+// JSON type the client named too: that answers a query, and a stream does not
+// answer a client that cannot read one.
+func PrefersEventStream(accept string) bool {
+	stream := 0.0
+	for _, part := range strings.Split(accept, ",") {
+		mt, params, err := mime.ParseMediaType(strings.TrimSpace(part))
+		if err != nil || mt != MediaTypeEventStream {
+			continue
+		}
+		q := 1.0
+		if qs, ok := params["q"]; ok {
+			q = parseQ(qs)
+		}
+		stream = max(stream, q)
+	}
+	if stream <= 0 {
+		return false
+	}
+	for _, mediaType := range []string{MediaTypeJSON, MediaTypeGraphQLResponse} {
+		if q, explicit := weigh(accept, mediaType); q > stream || (q == stream && explicit) {
+			return false
+		}
+	}
+	return true
 }
 
 // parseQ reads an RFC 9110 qvalue, "0" [ "." 0*3DIGIT ] / "1" [ "." 0*3("0") ],

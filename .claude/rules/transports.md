@@ -240,6 +240,25 @@ the response on all three SSE handlers (`TestSSEFramesAPayloadThatContainsANewli
 decompresses, so a gzip body had two answers across transports, and a failed decode came back as
 Fiber's error text standing in for the body (`TestARequestBodyIsNeverDecompressed`).
 
+**`transport/gqlmux` is the three net/http handlers on one path** and adds no transport of its
+own: a WebSocket upgrade goes to `gqlws`, a request that names `text/event-stream` and weighs
+it above JSON goes to `gqlsse`, everything else to `gqlhttp`. `httpreq.PrefersEventStream`
+reads JSON's weight through `weigh`, the function `Negotiate` uses, so the two cannot rank a
+range differently: its first version counted only the two exact JSON types, and
+`*/*, text/event-stream;q=0.1` -- a client that would rather have anything else -- was sent a
+stream. At one weight the stream loses to a JSON type the client named and wins against a
+wildcard, as a named type does in `Negotiate`. The reason it exists is the options
+that must hold everywhere: `WithPersistedQueries` and `WithDrain` are given once, where three
+constructors let a safelist be handed to two handlers and leave the third resolving nothing.
+`WithHTTP`/`WithSSE`/`WithWS` pass an option to one handler and are applied after the shared
+ones, whatever order they were written in -- each option writes to a shared or an own list in
+`config`, where the first version inferred which it was from how many transports it touched
+(`TestATransportsOwnOptionWinsInEitherOrder`, which fails with the two lists appended the other
+way round). The safelist test asserts that a registered id
+*resolves* on each transport: a refusal alone shows nothing, because `Enforce` on the executor
+refuses everywhere on its own, and the test bites only on the first form (confirmed by removing
+the WebSocket line).
+
 **`TestEquivalence` asserts literal answers for the cases it lists; `agreement_test.go` asks
 only that a family agrees with itself**, over forty request shapes it did not list, so a probe
 needs no expected answer to be worth adding. It found one divergence -- a GET with invalid

@@ -1,11 +1,11 @@
 // Command quickstart is the smallest thing in this repository that runs: one
 // SDL file, hand-written bindings, no code generation and no layers.
 //
-//	/graphql         queries and mutations over HTTP
-//	/graphql/stream  Server-Sent Events
+// One path, /graphql, serves queries and mutations over HTTP, and subscriptions
+// over Server-Sent Events (send Accept: text/event-stream) or a WebSocket.
 //
-// Subscribe to noteCreated on the streaming endpoint, then run the createNote
-// mutation against /graphql to see the event arrive. For what this looks like
+// Subscribe to noteCreated, then run the createNote mutation to see the event
+// arrive. For what this looks like
 // once a service grows a database and a wire format, read examples/blog.
 package main
 
@@ -24,8 +24,7 @@ import (
 
 	"github.com/syssam/graphql-go"
 	"github.com/syssam/graphql-go/transport/drain"
-	"github.com/syssam/graphql-go/transport/gqlhttp"
-	"github.com/syssam/graphql-go/transport/gqlsse"
+	"github.com/syssam/graphql-go/transport/gqlmux"
 )
 
 func main() {
@@ -54,11 +53,11 @@ func run() error {
 		graphql.WithOperationTimeout(5*time.Second),
 	)
 	mux := http.NewServeMux()
-	mux.Handle("/graphql", gqlhttp.New(exec))
-	// The drain ends open subscription streams on shutdown; without it the
-	// server's own Shutdown waits out its whole timeout for each one.
+	// The drain ends open subscription streams and WebSockets on shutdown;
+	// without it the server's own Shutdown waits out its whole timeout for
+	// each stream and never closes a WebSocket at all.
 	d := drain.New()
-	mux.Handle("/graphql/stream", gqlsse.New(exec, gqlsse.WithDrain(d)))
+	mux.Handle("/graphql", gqlmux.New(exec, gqlmux.WithDrain(d)))
 
 	srv := &http.Server{
 		Addr:              *addr,
@@ -89,7 +88,7 @@ func run() error {
 		wg.Wait()
 	}()
 
-	slog.Info("serving GraphQL", "addr", *addr, "http", "/graphql", "sse", "/graphql/stream")
+	slog.Info("serving GraphQL", "addr", *addr, "path", "/graphql")
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		// Failed to start, so no shutdown began and there is nothing to wait
 		// for.
