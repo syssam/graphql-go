@@ -78,6 +78,9 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+# A trapped signal waits for a foreground command to return, and the job in a
+# container is minutes long; so each job runs in the background and is waited
+# for, which a signal does interrupt. Then cleanup removes the container.
 trap 'exit 130' INT TERM
 
 # The working tree as git sees it: tracked and untracked files, nothing
@@ -87,8 +90,13 @@ trap 'exit 130' INT TERM
 # has extended attributes. Unpacked on Linux those are files, and the
 # generated packages embed schema/*.graphql: the first run of this script
 # failed every schema-building test on "._velox_order.graphql".
+#
+# Files and symlinks only. git lists an untracked directory that is itself a
+# repository as one entry, and tar would take all of it, .git included.
 git ls-files -co --exclude-standard -z \
-  | while IFS= read -r -d '' f; do if [ -e "$f" ]; then printf '%s\0' "$f"; fi; done \
+  | while IFS= read -r -d '' f; do
+      if [ -L "$f" ] || { [ -e "$f" ] && [ ! -d "$f" ]; }; then printf '%s\0' "$f"; fi
+    done \
   | COPYFILE_DISABLE=1 tar --null -T - -cf "$work/src.tar"
 
 untracked=$(git ls-files -o --exclude-standard)
@@ -127,7 +135,8 @@ in_go() { # in_go <log> <script>: run script in a fresh copy of the tree
     -e GOTOOLCHAIN=local -e FUZZTIME="${FUZZTIME:-30s}" -e BACKOFFICE_POSTGRES="$pg_url" \
     -v "$work/src.tar:/ci/src.tar:ro" \
     -v graphql-go-ci-go:/go -v graphql-go-ci-build:/root/.cache/go-build \
-    "$go_image" bash -euo pipefail -c "$prelude$2" >"$1" 2>&1
+    "$go_image" bash -euo pipefail -c "$prelude$2" >"$1" 2>&1 &
+  wait $!
 }
 
 gen_compare='(cd compare && go run gen.go -n 25)'

@@ -526,10 +526,10 @@ queries (39). They are the service -- a second type, a constructor, a method
 per operation -- and its staff checks. What they buy is that the rules do not
 live in GraphQL code: a job or a test calls `supplier.Service` without an
 argument struct and meets the same checks, and changing an entity's rules
-recompiles its service, its own entity package, any service that uses it
-(the order service uses stock's), and the few packages that assemble
-everything -- `internal/service`, `graph`, the root and `cmd/server` -- but
-no other entity's.
+recompiles what uses that entity's service and nothing else: its own
+`graph/<entity>` package, `internal/service`, and any service that calls it
+-- the order service calls stock's, so an edit to stock reaches order's
+packages as well. An entity whose service does not use it is not rebuilt.
 
 ## 8. Test it
 

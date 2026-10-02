@@ -591,9 +591,12 @@ func TestEveryGroupWireReturnsBindsItsOwnEntity(t *testing.T) {
 		}
 		entities = append(entities, unbound[0])
 	}
-	// Wire lists the groups in name order.
-	if want := []string{"Category", "Customer", "Order", "OrderItem", "Product", "Stock", "Warehouse"}; !slices.Equal(entities, want) {
-		t.Errorf("left out one at a time, the bindings leave %v unbound, want %v", entities, want)
+	// One entity each and no entity twice. Which entities there are is
+	// TestEveryEntityIsItsOwnGroup's to pin, so that adding one changes one
+	// list.
+	slices.Sort(entities)
+	if len(entities) != len(bindings) || len(slices.Compact(slices.Clone(entities))) != len(entities) {
+		t.Errorf("left out one at a time, %d bindings leave %v unbound, want a different entity for each", len(bindings), entities)
 	}
 }
 
