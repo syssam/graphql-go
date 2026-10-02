@@ -913,3 +913,72 @@ func TestWireRefusesWhatWouldNotCompile(t *testing.T) {
 		})
 	}
 }
+
+// One directory spelled two ways. Go will not import two paths that differ
+// only in letter case into one package, so wire.go can name the directory
+// only once: by its first spelling where the filesystem says the two are one
+// directory, and not at all -- refused, saying why -- where they are not, or
+// where nothing exists yet to ask.
+func TestWireNamesADirectorySpelledTwoWaysOnce(t *testing.T) {
+	scaffold := map[string]string{"user": "internal/Resolver.R", "post": "internal/resolver.R"}
+	dir, generate := wireModule(t, scaffold)
+	if err := os.MkdirAll(filepath.Join(dir, "internal", "resolver"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !caseInsensitive(t, dir) {
+		// Two directories here, and Go cannot import both.
+		err := generate()
+		if err == nil || !strings.Contains(err.Error(), "letter case") {
+			t.Fatalf("err = %v, want the two spellings refused", err)
+		}
+		return
+	}
+	if err := generate(); err != nil {
+		t.Fatal(err)
+	}
+	wire := readFile(t, filepath.Join(dir, "graph", "wire.go"))
+	if n := strings.Count(strings.ToLower(wire), `"hello/internal/resolver"`); n != 1 {
+		t.Errorf("the directory is imported %d times:\n%s", n, wire)
+	}
+	if n := strings.Count(wire, ".NewR(d)"); n != 1 {
+		t.Errorf("the one type is constructed %d times, want once:\n%s", n, wire)
+	}
+	if !testing.Short() {
+		goBuild(t, dir)
+	}
+}
+
+// Nothing exists yet, so the filesystem cannot say whether the two spellings
+// are one directory; guessing would write a file that compiles on one machine
+// and not on another.
+func TestWireRefusesTwoSpellingsOfADirectoryNotYetThere(t *testing.T) {
+	_, generate := wireModule(t, map[string]string{"user": "internal/Resolver.R", "post": "internal/resolver.R"})
+	if err := generate(); err == nil || !strings.Contains(err.Error(), "letter case") {
+		t.Fatalf("err = %v, want the two spellings refused", err)
+	}
+}
+
+// A constructor in a test file is not in the build Wire is part of. Writing
+// another beside it compiled under go build and was a redeclaration under go
+// vet and go test; nothing is written, and the note says where it is.
+func TestWireDoesNotScaffoldOverAConstructorInATestFile(t *testing.T) {
+	scaffold := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
+	dir, _ := wireModule(t, scaffold)
+	writeFiles(t, dir, map[string]string{
+		"graph/user/handler_test.go": "package user\n\nimport \"hello/internal/deps\"\n\nfunc NewHandler(d deps.Deps) *Handler { return &Handler{} }\n",
+	})
+	var notes []string
+	if err := Generate(context.Background(), Config{
+		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph",
+		Scaffold: scaffold, Wire: Wire{Deps: "hello/internal/deps.Deps"},
+		Notef: func(format string, args ...any) { notes = append(notes, fmt.Sprintf(format, args...)) },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if stubs := readFile(t, filepath.Join(dir, "graph", "user", "user.resolvers.go")); strings.Contains(stubs, "func NewHandler") {
+		t.Errorf("a second NewHandler was written beside the one in the test file:\n%s", stubs)
+	}
+	if said := strings.Join(notes, "\n"); !strings.Contains(said, "handler_test.go") {
+		t.Errorf("no note says the constructor is in a test file:\n%s", said)
+	}
+}

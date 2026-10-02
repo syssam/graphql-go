@@ -200,9 +200,14 @@ func (b *builder) readWire() {
 	}
 	b.wire.read = true
 	b.wire.fields, b.wire.targets, b.wire.ctors = map[string]*depsField{}, map[string]int{}, map[string]map[string]*constructor{}
-	for _, target := range b.cfg.Scaffold {
-		if dir, typ, err := b.splitTarget(target); err == nil {
-			b.wire.targets[dir+"\x00"+typ]++
+	b.wire.dirs = map[string]string{}
+	// In name order, so that which spelling of a directory is met first does
+	// not change from run to run.
+	for _, name := range slices.Sorted(maps.Keys(b.cfg.Scaffold)) {
+		if dir, typ, err := b.splitTarget(b.cfg.Scaffold[name]); err == nil {
+			if dir, err = b.wireDir(dir); err == nil {
+				b.wire.targets[dir+"\x00"+typ]++
+			}
 		}
 	}
 	depsPath, _, depsType := b.wireDeps()
@@ -283,11 +288,43 @@ func lastElement(importPath string) string {
 	return last
 }
 
+// wireDir is a target directory under the one spelling wire.go may use for
+// it. Go will not import two paths that differ only in letter case into one
+// package, so a directory spelled two ways across the scaffold targets is
+// named by the first spelling where the filesystem says both are one
+// directory, and is an error where it says they are not -- or cannot say,
+// because neither exists yet and a guess would compile on one machine and
+// not on another.
+func (b *builder) wireDir(dir string) (string, error) {
+	fold := strings.ToLower(dir)
+	first, seen := b.wire.dirs[fold]
+	switch {
+	case !seen:
+		b.wire.dirs[fold] = dir
+		return dir, nil
+	case first == dir || samePath(first, dir):
+		return first, nil
+	}
+	rel := func(d string) string {
+		if r, err := filepath.Rel(b.dir, d); err == nil {
+			return filepath.ToSlash(r)
+		}
+		return d
+	}
+	return "", fmt.Errorf("codegen: wire: the scaffold targets name %s and %s, which differ only in letter case, and Go will not import both into one package; spell the directory one way", rel(first), rel(dir))
+}
+
 // wireShared reports whether target implements more than one group.
 func (b *builder) wireShared(target string) bool {
 	b.readWire()
 	dir, typ, err := b.splitTarget(target)
-	return err == nil && b.wire.targets[dir+"\x00"+typ] > 1
+	if err != nil {
+		return false
+	}
+	if dir, err = b.wireDir(dir); err != nil {
+		return false
+	}
+	return b.wire.targets[dir+"\x00"+typ] > 1
 }
 
 // wireArg is the field of the dependencies a new constructor for a group is
@@ -545,6 +582,9 @@ func (b *builder) emitWire(groups []string) (string, error) {
 		dir, typ, err := b.splitTarget(target)
 		if err != nil {
 			return fmt.Errorf("codegen: scaffold %s: %w", name, err)
+		}
+		if dir, err = b.wireDir(dir); err != nil {
+			return err
 		}
 		groupDir, groupImport := outDir, b.cfg.Package
 		if !flat {

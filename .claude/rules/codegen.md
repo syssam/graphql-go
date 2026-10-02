@@ -412,11 +412,17 @@ through the declaring file's imports. With it:
 - A field whose type is in an `internal` package the group's package may not import stays in
   the whole value (`mayImport`).
 
-Seven more breaks, each failing a test. **Not fixed, and known:** two scaffold targets that
-spell one directory in different letter case on a case-insensitive filesystem are one type to
-the scaffold and two imports to `wire.go`, which then fails with Go's own case-collision error;
-and a constructor that exists only in a `_test.go` file is scaffolded again, which `go build`
-accepts and `go vet` does not. Scaffolding writes
+Seven more breaks, each failing a test. The two things that review left open are closed too.
+**A directory spelled two ways across the scaffold targets** (`internal/Resolver`,
+`internal/resolver`) was one type to the scaffold and two imports to `wire.go`, and Go will not
+import two paths differing only in letter case into one package -- on any platform. `wireDir`
+names it by the first spelling, in group-name order, where the filesystem says both are one
+directory, and refuses it where they are two or where neither exists yet to ask: guessing there
+writes a file that compiles on a Mac and not on Linux. **A constructor that exists only in the
+package's own `_test.go` file** was scaffolded a second time, which `go build` accepted and
+`go vet` did not; `pkgIndex.inTests` (read only when `Wire` is on) stops the write and the note
+names the file. Three more breaks, each failing its test; the first of the two directory tests
+takes the other branch on a case-sensitive filesystem, so it runs on both. Scaffolding writes
 `NewType(d Deps)` with a new type and nothing where the constructor is there. **For a type that
 exists without one it writes nothing and says so in a note**: its fields are the author's, so a
 constructor could only panic, which compiles and stops the process at start-up -- the failure

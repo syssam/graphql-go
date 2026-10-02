@@ -32,6 +32,9 @@ type builder struct {
 		ctors map[string]map[string]*constructor
 		// generic is whether the dependencies type has type parameters.
 		generic bool
+		// dirs is each target directory by its lower-cased path, under the
+		// spelling first met. See wireDir.
+		dirs map[string]string
 		// anyField is whether any group is handed a field of its own; nil
 		// until asked.
 		anyField *bool

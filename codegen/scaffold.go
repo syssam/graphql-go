@@ -224,7 +224,13 @@ func (b *builder) scaffoldGroup(pkgs *pkgCache, name, group, target string) ([]s
 	// compile error. So nothing is written, the build fails on the missing
 	// name, and a note says what to write.
 	fields, constructor := "{}", ""
-	if ctor := constructorName(typ); !b.cfg.Wire.IsZero() && !idx.funcs[ctor] && !idx.names[ctor] {
+	ctor := constructorName(typ)
+	if in := idx.inTests[ctor]; in != "" && !b.cfg.Wire.IsZero() && !idx.funcs[ctor] && !idx.names[ctor] && !idx.wanted[ctor] {
+		idx.wanted[ctor] = true
+		b.notef("wire: %s is declared in %s, a test file, which is not in the build the generated Wire is part of; gqlc will not write a second one beside it. Move it to a file the build includes.",
+			ctor, in)
+	}
+	if !b.cfg.Wire.IsZero() && !idx.funcs[ctor] && !idx.names[ctor] && idx.inTests[ctor] == "" {
 		depsPath, depsQual, depsType := b.wireDeps()
 		implImport, _ := b.importPathOf(dir)
 		// Each package the constructor's parameter names is imported once,
@@ -385,6 +391,11 @@ type pkgIndex struct {
 	// names is every top-level name the package declares, variables and
 	// constants included: an import cannot be given one of them.
 	names map[string]bool
+	// inTests is each function the package's own test files declare, and
+	// the file. Read only when Wire is configured: a constructor there is
+	// not in the build Wire is part of, and a second one beside it is a
+	// redeclaration as soon as the tests are built.
+	inTests map[string]string
 }
 
 // depsQualifier is the name a resolvers file refers to the dependencies
@@ -455,7 +466,7 @@ func (p *pkgIndex) add(pkg, typ string, sigs []resolverSig) {
 // indexPackage parses dir's non-test files once. A directory that does not
 // exist yet is an empty package.
 func (b *builder) indexPackage(dir string) (*pkgIndex, error) {
-	idx := &pkgIndex{dir: dir, methods: map[string]map[string]bool{}, declared: map[string]bool{}, generated: map[string]bool{}, funcs: map[string]bool{}, wanted: map[string]bool{}, names: map[string]bool{}}
+	idx := &pkgIndex{dir: dir, methods: map[string]map[string]bool{}, declared: map[string]bool{}, generated: map[string]bool{}, funcs: map[string]bool{}, wanted: map[string]bool{}, names: map[string]bool{}, inTests: map[string]string{}}
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return idx, nil
@@ -476,7 +487,13 @@ func (b *builder) indexPackage(dir string) (*pkgIndex, error) {
 	authored := map[string]string{}
 	for _, e := range entries {
 		n := e.Name()
-		if e.IsDir() || !strings.HasSuffix(n, ".go") || strings.HasSuffix(n, "_test.go") {
+		if e.IsDir() || !strings.HasSuffix(n, ".go") {
+			continue
+		}
+		if strings.HasSuffix(n, "_test.go") {
+			if !b.cfg.Wire.IsZero() {
+				idx.readTestFile(filepath.Join(dir, n))
+			}
 			continue
 		}
 		path := filepath.Join(dir, n)
@@ -540,6 +557,20 @@ func (b *builder) indexPackage(dir string) (*pkgIndex, error) {
 		}
 	}
 	return idx, nil
+}
+
+// readTestFile records the functions a test file of the package itself
+// declares; one of an external _test package is another package's.
+func (p *pkgIndex) readTestFile(path string) {
+	f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
+	if err != nil || strings.HasSuffix(f.Name.Name, "_test") {
+		return
+	}
+	for _, d := range f.Decls {
+		if fn, ok := d.(*goast.FuncDecl); ok && fn.Recv == nil {
+			p.inTests[fn.Name.Name] = filepath.Base(path)
+		}
+	}
 }
 
 // excludedEverywhere reports whether src's //go:build line leaves it out of
