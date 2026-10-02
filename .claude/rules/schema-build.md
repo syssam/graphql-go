@@ -109,9 +109,18 @@ lists the declared locations rather than making the author guess which two are a
 (`rejectDirectivesLeftOnTheInterface`). `FIELD_DEFINITION` is an applied location and an
 interface field is written at it, but only an object's field has an executor to wrap, so
 `@adminOnly` on `Node.secret` wrapped nothing and `User.secret` was served without it. Writing
-it on the implementing field, or on the object, is what runs, and then the schema builds. Not
-covered, and still silent: a bound directive on an interface *type*, an input field or an
-argument when one of its declared locations is usable -- the paragraph above is why.
+it on the implementing field, or on the object, is what runs, and then the schema builds.
+
+**Every other use of a bound directive that cannot run is a build error naming the place**
+(`rejectDirectivesThatNeverRun`). The check on declared locations passes a directive declared
+for `FIELD_DEFINITION` and `ARGUMENT_DEFINITION`, which could then be written on an argument,
+an input field or object, an enum or its value, a scalar, the schema definition or another
+directive's argument -- each read as a guard and wrapped nothing. An interface or union follows
+the interface-field rule instead: every object behind it must carry the directive too
+(`rejectDirectivesLeftOnTheAbstractType`). This was the stated gap in the paragraph above until
+the owner decided it should fail. `TestABoundDirectiveWrittenWhereItNeverRunsIsABuildError`
+and `TestABoundDirectiveOnAnAbstractTypeMustBeOnEveryObjectBehindIt` fail in all twelve cases
+with the call removed.
 
 **Four more mismatches are build errors now, each found by a review rather than by a user.**
 `Enum` collected the first bad value it met while ranging its map, so the message changed run

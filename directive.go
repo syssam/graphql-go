@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/vektah/gqlparser/v2/ast"
@@ -58,7 +60,10 @@ func SubscriptionRootDirective(names ...string) SchemaOption {
 // OBJECT are applied; an OBJECT directive wraps every field of that type. An
 // interface's field has no executor to wrap, so a bound directive written
 // there must also be written on each implementing object's field, and the
-// build fails when it is not.
+// build fails when it is not; one written on an interface or union must be
+// on every object behind it. Anywhere else a directive may be declared for --
+// an argument, an input field, an enum value -- nothing would run it, and the
+// build fails naming the place.
 func DirectiveArgs[A any](name string, fn func(next FieldFunc, args A) FieldFunc) SchemaOption {
 	return schemaOptionFunc(func(b *schemaBuilder) {
 		def := b.ast.Directives[name]
@@ -167,6 +172,7 @@ func (b *schemaBuilder) applyDirectives(s *Schema) {
 			b.errorf("SubscriptionRootDirective(%q): no directive of that name is bound", name)
 		}
 	}
+	b.rejectDirectivesThatNeverRun()
 	for _, obj := range s.objects {
 		subRoot := b.ast.Subscription != nil && obj.name == b.ast.Subscription.Name
 		for _, fd := range obj.fields {
@@ -181,6 +187,88 @@ func (b *schemaBuilder) applyDirectives(s *Schema) {
 			for i := len(obj.def.Directives) - 1; i >= 0; i-- {
 				b.wrapWithDirective(s, fd, obj.def.Directives[i], obj.name)
 			}
+		}
+	}
+}
+
+// rejectDirectivesThatNeverRun fails the build for each use of a bound
+// directive at a place nothing applies it. The check on a binding's declared
+// locations passes a directive declared for FIELD_DEFINITION and for
+// ARGUMENT_DEFINITION, and it could then be written on an argument, an input
+// field or an enum value, where it read as a guard and wrapped nothing. An
+// interface or union is the one case with an answer other than no: it has no
+// executor, but each object behind it does, so the directive has to be on
+// those -- the rule an interface's field already had.
+func (b *schemaBuilder) rejectDirectivesThatNeverRun() {
+	if len(b.directives) == 0 {
+		return
+	}
+	reject := func(where string, ds ast.DirectiveList) {
+		for _, d := range ds {
+			if b.directives[d.Name] != nil {
+				b.errorf("%s: @%s is bound and written here, where a directive never runs; DirectiveArgs applies FIELD_DEFINITION and OBJECT",
+					where, d.Name)
+			}
+		}
+	}
+	arguments := func(owner string, args ast.ArgumentDefinitionList) {
+		for _, a := range args {
+			reject(owner+"("+a.Name+":)", a.Directives)
+		}
+	}
+	reject("schema", b.ast.SchemaDirectives)
+	for _, name := range slices.Sorted(maps.Keys(b.ast.Directives)) {
+		arguments("@"+name, b.ast.Directives[name].Arguments)
+	}
+	for _, name := range slices.Sorted(maps.Keys(b.ast.Types)) {
+		def := b.ast.Types[name]
+		if strings.HasPrefix(name, "__") {
+			continue
+		}
+		switch def.Kind {
+		case ast.Object, ast.Interface:
+			for _, f := range def.Fields {
+				arguments(coordinate(name, f.Name), f.Arguments)
+			}
+			if def.Kind == ast.Interface {
+				b.rejectDirectivesLeftOnTheAbstractType(def)
+			}
+		case ast.Union:
+			b.rejectDirectivesLeftOnTheAbstractType(def)
+		case ast.InputObject:
+			reject(name, def.Directives)
+			for _, f := range def.Fields {
+				reject(coordinate(name, f.Name), f.Directives)
+			}
+		case ast.Enum:
+			reject(name, def.Directives)
+			for _, v := range def.EnumValues {
+				reject(coordinate(name, v.Name), v.Directives)
+			}
+		case ast.Scalar:
+			reject(name, def.Directives)
+		}
+	}
+}
+
+// rejectDirectivesLeftOnTheAbstractType fails the build for a bound directive
+// written on an interface or union and not on an object behind it, which is
+// served without it.
+func (b *schemaBuilder) rejectDirectivesLeftOnTheAbstractType(def *ast.Definition) {
+	kind := "interface"
+	if def.Kind == ast.Union {
+		kind = "union"
+	}
+	for _, d := range def.Directives {
+		if b.directives[d.Name] == nil {
+			continue
+		}
+		for _, obj := range b.ast.GetPossibleTypes(def) {
+			if obj.Kind != ast.Object || obj.Directives.ForName(d.Name) != nil {
+				continue
+			}
+			b.errorf("type %s: @%s is bound and written on the %s %s, but a directive on an abstract type never runs; write it on %s as well",
+				obj.Name, d.Name, kind, def.Name, obj.Name)
 		}
 	}
 }

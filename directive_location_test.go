@@ -143,3 +143,106 @@ func TestABoundDirectiveOnAnInterfaceFieldBuildsWhenEveryImplementerCarriesIt(t 
 		t.Fatalf("the directive ran %d times, want 1", ran)
 	}
 }
+
+// A directive declared for several locations builds as long as one of them is
+// applied, and may then be written at the others. Each such use wrapped
+// nothing: @adminOnly on an argument, an input field or an enum value read as
+// a guard and was not one. Where a bound directive is written is checked use
+// by use, and each one that cannot run is named.
+func TestABoundDirectiveWrittenWhereItNeverRunsIsABuildError(t *testing.T) {
+	const locations = `FIELD_DEFINITION | OBJECT | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | INPUT_OBJECT | ENUM | ENUM_VALUE | UNION | SCALAR | INTERFACE | SCHEMA`
+	for name, c := range map[string]struct{ sdl, want string }{
+		"a field argument": {
+			`type Query { ping(secret: String @adminOnly): String! }`, "Query.ping(secret:)",
+		},
+		"an interface field's argument": {
+			`interface Node { ping(secret: String @adminOnly): String! }
+			 type Query implements Node { ping(secret: String): String! }`, "Node.ping(secret:)",
+		},
+		"an input field": {
+			`input Filter { secret: String @adminOnly }
+			 type Query { ping(f: Filter): String! }`, "Filter.secret",
+		},
+		"an input object": {
+			`input Filter @adminOnly { secret: String }
+			 type Query { ping(f: Filter): String! }`, "Filter",
+		},
+		"an enum": {
+			`enum Level @adminOnly { LOW HIGH }
+			 type Query { ping(l: Level): String! }`, "Level",
+		},
+		"an enum value": {
+			`enum Level { LOW HIGH @adminOnly }
+			 type Query { ping(l: Level): String! }`, "Level.HIGH",
+		},
+		"a scalar": {
+			`scalar Token @adminOnly
+			 type Query { ping(t: Token): String! }`, "Token",
+		},
+		"the schema": {
+			`schema @adminOnly { query: Query }
+			 type Query { ping: String! }`, "schema",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := NewSchema(SDL("directive @adminOnly on "+locations+"\n"+c.sdl),
+				Directive("adminOnly", func(next FieldFunc) FieldFunc { return next }))
+			if err == nil {
+				t.Fatal("a bound directive written where nothing applies it was accepted")
+			}
+			var found bool
+			for line := range strings.SplitSeq(err.Error(), "\n") {
+				if strings.Contains(line, "@adminOnly") && strings.Contains(line, c.want) && strings.Contains(line, "never runs") {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("no error names @adminOnly at %s as never running:\n%v", c.want, err)
+			}
+		})
+	}
+}
+
+// An interface or a union has no executor of its own. Written on one, a bound
+// directive runs only where each object behind it carries it too, which is
+// the rule an interface's field already had.
+func TestABoundDirectiveOnAnAbstractTypeMustBeOnEveryObjectBehindIt(t *testing.T) {
+	build := func(sdl string) error {
+		abstract := Interface[ifaceDirNode]("Node")
+		if strings.HasPrefix(sdl, "union") {
+			abstract = Union[ifaceDirNode]("Node")
+		}
+		_, err := NewSchema(SDL("directive @adminOnly on OBJECT | INTERFACE | UNION\n"+sdl),
+			Directive("adminOnly", func(next FieldFunc) FieldFunc { return next }),
+			abstract,
+			Object[ifaceDirUser]("User", Field("secret", func(*ifaceDirUser) string { return "s3cr3t" })),
+			Query(Field("node", func(Root) ifaceDirNode { return &ifaceDirUser{} })),
+		)
+		return err
+	}
+	for name, sdl := range map[string]string{
+		"an interface": `interface Node @adminOnly { secret: String! }
+			type User implements Node { secret: String! }
+			type Query { node: Node! }`,
+		"a union": `union Node @adminOnly = User
+			type User { secret: String! }
+			type Query { node: Node! }`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := build(sdl)
+			if err == nil {
+				t.Fatal("a bound directive on an abstract type was accepted, and User is served without it")
+			}
+			for _, want := range []string{"@adminOnly", "Node", "User"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error does not name %s: %v", want, err)
+				}
+			}
+		})
+		t.Run(name+", carried by the object", func(t *testing.T) {
+			if err := build(strings.Replace(strings.Replace(sdl, "type User implements Node {", "type User implements Node @adminOnly {", 1), "type User {", "type User @adminOnly {", 1)); err != nil {
+				t.Fatalf("the object carries the directive, so it runs there: %v", err)
+			}
+		})
+	}
+}
