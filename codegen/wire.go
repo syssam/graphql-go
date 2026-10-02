@@ -178,11 +178,22 @@ func sourceFiles(dir string) map[string][]byte {
 // a package this run cannot read.
 func (b *builder) packageName(importPath string) string {
 	if dir := b.dirOf(importPath); dir != "" {
-		files := sourceFiles(dir)
+		// A directory can hold a file of package main under a build tag -- a
+		// generator kept beside what it generates -- so main is the answer
+		// only when nothing says otherwise.
+		files, main := sourceFiles(dir), false
 		for _, name := range slices.Sorted(maps.Keys(files)) {
-			if f, err := parser.ParseFile(token.NewFileSet(), name, files[name], parser.PackageClauseOnly); err == nil {
+			f, err := parser.ParseFile(token.NewFileSet(), name, files[name], parser.PackageClauseOnly)
+			switch {
+			case err != nil:
+			case f.Name.Name == "main":
+				main = true
+			default:
 				return f.Name.Name
 			}
+		}
+		if main {
+			return "main"
 		}
 	}
 	return identFrom(lastElement(importPath))
@@ -201,6 +212,25 @@ func (b *builder) readWire() {
 	b.wire.read = true
 	b.wire.fields, b.wire.targets, b.wire.ctors = map[string]*depsField{}, map[string]int{}, map[string]map[string]*constructor{}
 	b.wire.dirs = map[string]string{}
+	// What wire.go imports whatever the targets are -- the generated root,
+	// each group's package, the dependencies package -- goes in first, under
+	// the spelling generated code already uses, so a target is compared with
+	// those as well as with other targets.
+	out := outputDir(b.dir, b.cfg.Output)
+	seeds := []string{out}
+	if d := b.dirOf(b.cfg.Wire.Deps[:strings.LastIndex(b.cfg.Wire.Deps, ".")]); d != "" {
+		seeds = append(seeds, d)
+	}
+	for _, name := range slices.Sorted(maps.Keys(b.cfg.Scaffold)) {
+		if name != b.pkgName {
+			seeds = append(seeds, filepath.Join(out, filepath.FromSlash(b.groupRel(name))))
+		}
+	}
+	for _, d := range seeds {
+		if _, seen := b.wire.dirs[strings.ToLower(d)]; !seen {
+			b.wire.dirs[strings.ToLower(d)] = d
+		}
+	}
 	// In name order, so that which spelling of a directory is met first does
 	// not change from run to run.
 	for _, name := range slices.Sorted(maps.Keys(b.cfg.Scaffold)) {
@@ -219,6 +249,7 @@ func (b *builder) readWire() {
 		declared *goast.StructType
 		in       *goast.File
 		count    int
+		generic  bool
 	)
 	files := sourceFiles(dir)
 	for _, name := range slices.Sorted(maps.Keys(files)) {
@@ -239,7 +270,7 @@ func (b *builder) readWire() {
 					continue
 				}
 				if ts.TypeParams != nil {
-					b.wire.generic = true
+					generic = true
 					continue
 				}
 				count++
@@ -248,6 +279,10 @@ func (b *builder) readWire() {
 			}
 		}
 	}
+	// Generic only if nothing plain declares it: a generic declaration under
+	// a build constraint beside a plain one is an alternative, and this run
+	// evaluates no constraint.
+	b.wire.generic = generic && count == 0
 	if count != 1 || declared == nil {
 		return
 	}
@@ -290,19 +325,28 @@ func lastElement(importPath string) string {
 
 // wireDir is a target directory under the one spelling wire.go may use for
 // it. Go will not import two paths that differ only in letter case into one
-// package, so a directory spelled two ways across the scaffold targets is
-// named by the first spelling where the filesystem says both are one
-// directory, and is an error where it says they are not -- or cannot say,
-// because neither exists yet and a guess would compile on one machine and
-// not on another.
+// package, so a directory met under two spellings -- two scaffold targets, or
+// a target and a package generated code imports anyway -- is one import where
+// the filesystem says both are one directory, and an error where it says they
+// are not, or cannot say because nothing exists yet and a guess would compile
+// on one machine and not on another. The spelling is the directory's name on
+// disk where it has one, since that is what every other file importing the
+// package uses; the first one met in the configuration may be the wrong one.
 func (b *builder) wireDir(dir string) (string, error) {
 	fold := strings.ToLower(dir)
 	first, seen := b.wire.dirs[fold]
+	if seen && first == dir {
+		return dir, nil
+	}
+	real := onDisk(b.dir, dir)
 	switch {
 	case !seen:
+		if real != "" {
+			dir = real
+		}
 		b.wire.dirs[fold] = dir
 		return dir, nil
-	case first == dir || samePath(first, dir):
+	case real != "" && samePath(first, dir):
 		return first, nil
 	}
 	rel := func(d string) string {
@@ -311,7 +355,49 @@ func (b *builder) wireDir(dir string) (string, error) {
 		}
 		return d
 	}
-	return "", fmt.Errorf("codegen: wire: the scaffold targets name %s and %s, which differ only in letter case, and Go will not import both into one package; spell the directory one way", rel(first), rel(dir))
+	return "", fmt.Errorf("codegen: wire: %s and %s differ only in letter case, and Go will not import both into one package; spell the directory one way", rel(first), rel(dir))
+}
+
+// onDisk is dir, under base, with each element as the filesystem spells it,
+// or "" when it does not exist. On a filesystem that ignores case a path
+// opens whatever case it is written in, and only the directory listing says
+// what the name is.
+func onDisk(base, dir string) string {
+	rel, err := filepath.Rel(base, dir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		if _, err := os.Stat(dir); err != nil {
+			return ""
+		}
+		return dir
+	}
+	at := base
+	if rel == "." {
+		return at
+	}
+	for _, elem := range strings.Split(rel, string(filepath.Separator)) {
+		entries, err := os.ReadDir(at)
+		if err != nil {
+			return ""
+		}
+		name := ""
+		for _, e := range entries {
+			if e.Name() == elem {
+				name = elem
+				break
+			}
+			if name == "" && strings.EqualFold(e.Name(), elem) {
+				name = e.Name()
+			}
+		}
+		if name == "" {
+			return ""
+		}
+		at = filepath.Join(at, name)
+	}
+	if !samePath(at, dir) {
+		return ""
+	}
+	return at
 }
 
 // wireShared reports whether target implements more than one group.
@@ -378,25 +464,55 @@ func (b *builder) wireAnyField() bool {
 }
 
 // constructor is a hand-written NewX: the type of its one parameter as
-// written, and the packages the file declaring it imports, by the name each
-// is known under there. param is empty when it does not take exactly one
-// thing.
+// written, and what the file declaring it imports. param is empty when it
+// does not take exactly one thing. An alias the package declares is kept in
+// the same shape, param being what it is an alias for.
 type constructor struct {
-	param   string
+	param string
+	// imports is each imported package by the name it is known under in the
+	// file; plain, the paths imported with no name of the file's own, whose
+	// name is the package's and may not have been readable; dots, the paths
+	// dot-imported.
 	imports map[string]string
+	plain   map[string]bool
+	dots    []string
 }
 
 // takes reports whether the constructor's parameter is the dependencies type
-// itself, and whether it is a pointer to it. The qualifier is looked up in
-// the file's imports: a service that calls its own dependencies Deps is taken
-// by its package, not by the name it shares.
-func (c *constructor) takes(depsPath, depsType, self string) (whole, pointer bool) {
+// itself, and whether it is a pointer to it. aliases are the package's own,
+// by name.
+//
+// It is read from syntax, so it is read carefully: getting it wrong passes a
+// constructor that wants everything a single field, in a file marked DO NOT
+// EDIT. A service that calls its own dependencies Deps is told apart by its
+// package; the application's reached through a dot-import, or through an
+// alias the package declares for it, is recognised.
+func (c *constructor) takes(depsPath, depsType, self string, aliases map[string]*constructor) (whole, pointer bool) {
 	param := strings.TrimPrefix(c.param, "*")
-	pointer = param != c.param
-	if qual, name, ok := strings.Cut(param, "."); ok {
-		return name == depsType && c.imports[qual] == depsPath, pointer
+	return c.names(param, depsPath, depsType, self, aliases, 0), param != c.param
+}
+
+func (c *constructor) names(expr, depsPath, depsType, self string, aliases map[string]*constructor, depth int) bool {
+	if qual, name, ok := strings.Cut(expr, "."); ok {
+		if name != depsType {
+			return false
+		}
+		if importPath, known := c.imports[qual]; known {
+			return importPath == depsPath
+		}
+		// A qualifier no import here is known by. The file compiles, so it
+		// is some unnamed import's package name, and the dependencies
+		// package is imported that way: a package outside this module, say,
+		// whose name is not its directory's.
+		return c.plain[depsPath]
 	}
-	return param == depsType && self == depsPath, pointer
+	if expr == depsType && (self == depsPath || slices.Contains(c.dots, depsPath)) {
+		return true
+	}
+	if alias := aliases["type "+expr]; alias != nil && depth < 4 {
+		return alias.names(strings.TrimPrefix(alias.param, "*"), depsPath, depsType, self, aliases, depth+1)
+	}
+	return false
 }
 
 // existingConstructor is the hand-written constructor ctor in dir, or nil.
@@ -423,24 +539,31 @@ func (b *builder) existingConstructor(dir, ctor string) *constructor {
 			if err != nil {
 				continue
 			}
-			var imports map[string]string
-			add := func(name string, ft *goast.FuncType) {
-				if !strings.HasPrefix(name, "New") || found[name] != nil {
-					return
-				}
-				if imports == nil {
-					imports = map[string]string{}
+			var in *constructor
+			inFile := func() *constructor {
+				if in == nil {
+					in = &constructor{imports: map[string]string{}, plain: map[string]bool{}}
 					for _, spec := range file.Imports {
 						importPath := strings.Trim(spec.Path.Value, "\"`")
 						switch {
 						case spec.Name == nil:
-							imports[b.packageName(importPath)] = importPath
-						case spec.Name.Name != "_" && spec.Name.Name != ".":
-							imports[spec.Name.Name] = importPath
+							in.imports[b.packageName(importPath)] = importPath
+							in.plain[importPath] = true
+						case spec.Name.Name == ".":
+							in.dots = append(in.dots, importPath)
+						case spec.Name.Name != "_":
+							in.imports[spec.Name.Name] = importPath
 						}
 					}
 				}
-				c := &constructor{imports: imports}
+				c := *in
+				return &c
+			}
+			add := func(name string, ft *goast.FuncType) {
+				if !strings.HasPrefix(name, "New") || found[name] != nil {
+					return
+				}
+				c := inFile()
 				if ps := ft.Params.List; len(ps) == 1 && len(ps[0].Names) <= 1 {
 					c.param = types.ExprString(ps[0].Type)
 				}
@@ -453,15 +576,29 @@ func (b *builder) existingConstructor(dir, ctor string) *constructor {
 						add(d.Name.Name, d.Type)
 					}
 				case *goast.GenDecl:
-					// var NewHandler = func(...) ... is a constructor too.
 					for _, spec := range d.Specs {
-						vs, ok := spec.(*goast.ValueSpec)
-						if !ok || len(vs.Names) != len(vs.Values) {
-							continue
-						}
-						for i, id := range vs.Names {
-							if lit, ok := vs.Values[i].(*goast.FuncLit); ok {
-								add(id.Name, lit.Type)
+						switch spec := spec.(type) {
+						case *goast.TypeSpec:
+							// type Deps = deps.Deps: kept under a key no
+							// function can have.
+							if spec.Assign.IsValid() && spec.TypeParams == nil && found["type "+spec.Name.Name] == nil {
+								c := inFile()
+								c.param = types.ExprString(spec.Type)
+								found["type "+spec.Name.Name] = c
+							}
+						case *goast.ValueSpec:
+							// var NewHandler = func(...) ... is a constructor
+							// too, and so is var NewHandler func(...), given
+							// its value somewhere else.
+							declared, _ := spec.Type.(*goast.FuncType)
+							for i, id := range spec.Names {
+								if declared != nil {
+									add(id.Name, declared)
+								} else if i < len(spec.Values) {
+									if lit, ok := spec.Values[i].(*goast.FuncLit); ok {
+										add(id.Name, lit.Type)
+									}
+								}
 							}
 						}
 					}
@@ -619,7 +756,7 @@ func (b *builder) emitWire(groups []string) (string, error) {
 				arg = "d." + f.name
 			}
 		} else {
-			whole, pointer := existing.takes(depsPath, depsType, implImport)
+			whole, pointer := existing.takes(depsPath, depsType, implImport, b.wire.ctors[dir])
 			if f := b.wire.fields[foldName(name)]; !whole && f != nil && !f.twice && !b.wireShared(target) {
 				arg = "d." + f.name
 			} else if whole && pointer {

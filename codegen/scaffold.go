@@ -562,13 +562,30 @@ func (b *builder) indexPackage(dir string) (*pkgIndex, error) {
 // readTestFile records the functions a test file of the package itself
 // declares; one of an external _test package is another package's.
 func (p *pkgIndex) readTestFile(path string) {
-	f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
+	// Read as the other files are: one no build includes is not there, and a
+	// constructor is a name, however it is declared.
+	src, err := os.ReadFile(path)
+	if err != nil || excludedEverywhere(src) {
+		return
+	}
+	f, err := parser.ParseFile(token.NewFileSet(), path, src, parser.SkipObjectResolution)
 	if err != nil || strings.HasSuffix(f.Name.Name, "_test") {
 		return
 	}
 	for _, d := range f.Decls {
-		if fn, ok := d.(*goast.FuncDecl); ok && fn.Recv == nil {
-			p.inTests[fn.Name.Name] = filepath.Base(path)
+		switch d := d.(type) {
+		case *goast.FuncDecl:
+			if d.Recv == nil {
+				p.inTests[d.Name.Name] = filepath.Base(path)
+			}
+		case *goast.GenDecl:
+			for _, spec := range d.Specs {
+				if vs, ok := spec.(*goast.ValueSpec); ok {
+					for _, id := range vs.Names {
+						p.inTests[id.Name] = filepath.Base(path)
+					}
+				}
+			}
 		}
 	}
 }

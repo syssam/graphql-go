@@ -422,7 +422,35 @@ writes a file that compiles on a Mac and not on Linux. **A constructor that exis
 package's own `_test.go` file** was scaffolded a second time, which `go build` accepted and
 `go vet` did not; `pkgIndex.inTests` (read only when `Wire` is on) stops the write and the note
 names the file. Three more breaks, each failing its test; the first of the two directory tests
-takes the other branch on a case-sensitive filesystem, so it runs on both. Scaffolding writes
+takes the other branch on a case-sensitive filesystem, so it runs on both.
+
+**A fourth review found two of those fixes had regressed what they replaced.** Resolving the
+dependencies type through imports recognised `deps.Deps` and nothing else, so a constructor
+taking the whole value through a dot-import, through `type Deps = deps.Deps` declared in the
+package, or from a file whose guess at the package's name was thrown by a `//go:build
+generate` `package main` beside it, was passed a field -- where the cruder rule it replaced had
+compiled. `constructor.names` now follows dot-imports and the package's own aliases, and
+`packageName` takes `main` only when no file says otherwise. For a qualifier no import is
+known by, it falls back to "the dependencies package is imported with no name": that covers a
+package outside the module, whose name cannot be read, and **has no test**, since a fixture
+needs a second module; it also makes the `main` rule redundant for that one input, so breaking
+either alone stays green.
+
+The same review, on the rest: `var NewX func(...)` with its value assigned elsewhere is a
+constructor; a generic declaration beside a plain one is an alternative under a build
+constraint and not a reason to refuse; a test file is read like any other (not when no build
+includes it, and variables too). And `wireDir` had two holes. It compared targets only with
+each other, so `graph/User` against the group package `graph/user` was found on the second
+run, once the directory existed; the packages `wire.go` imports anyway are seeded first now.
+And it kept the first spelling in group-name order, which need not be the directory's:
+`onDisk` reads the name from the directory listing, the only place a case-insensitive
+filesystem says it. Eight more breaks, each failing a test.
+
+**Breaking by hand has a failure mode of its own, met here twice.** A reverse edit whose text
+is not unique lands nowhere or on the wrong line; and a break whose replacement *contains* the
+original text reverses into a doubled edit (`generic && count == 0 && count == 0`), which
+compiled, meant the same, and left every later result in that batch unreliable. The helper
+that applies a break now refuses both before touching the file. Scaffolding writes
 `NewType(d Deps)` with a new type and nothing where the constructor is there. **For a type that
 exists without one it writes nothing and says so in a note**: its fields are the author's, so a
 constructor could only panic, which compiles and stops the process at start-up -- the failure

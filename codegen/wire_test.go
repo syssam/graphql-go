@@ -982,3 +982,137 @@ func TestWireDoesNotScaffoldOverAConstructorInATestFile(t *testing.T) {
 		t.Errorf("no note says the constructor is in a test file:\n%s", said)
 	}
 }
+
+// A fourth review, of the fixes above. A constructor that takes the whole
+// value has to be recognised however the file spells that, because the price
+// of missing it is a wire.go that passes it a field.
+func TestWireRecognisesTheWholeValueHoweverItIsSpelled(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping go vet subprocess")
+	}
+	scaffold := map[string]string{"user": "graph/user.Handler", "post": "internal/resolver.Posts"}
+	posts := func(imports, extra, ctor string) map[string]string {
+		return map[string]string{
+			"internal/resolver/posts.go": "package resolver\n\n" + imports + "\n// Posts is hand-written.\ntype Posts struct{}\n\n" + extra + ctor + "\n",
+		}
+	}
+	for name, c := range map[string]struct {
+		files map[string]string
+		deps  map[string]string
+		want  string
+	}{
+		"through a dot-import": {
+			files: posts("import . \"hello/internal/deps\"\n", "", "func NewPosts(d Deps) *Posts { return &Posts{} }"),
+			want:  "post.Bindings(resolver.NewPosts(d))",
+		},
+		"through an alias declared in the package": {
+			files: posts("import \"hello/internal/deps\"\n", "// Deps is short for the application's.\ntype Deps = deps.Deps\n\n", "func NewPosts(d Deps) *Posts { return &Posts{} }"),
+			want:  "post.Bindings(resolver.NewPosts(d))",
+		},
+		// A generator kept beside the package, under a build tag, in package
+		// main: the package's name is not that file's.
+		"from a package with a tagged main file beside it": {
+			files: posts("import \"hello/internal/deps\"\n", "", "func NewPosts(d deps.Deps) *Posts { return &Posts{} }"),
+			deps:  map[string]string{"internal/deps/a_gen.go": "//go:build generate\n\npackage main\n\nfunc main() {}\n"},
+			want:  "post.Bindings(resolver.NewPosts(d))",
+		},
+		"declared as a variable with no value yet": {
+			files: posts("import \"hello/internal/deps\"\n", "", "var NewPosts func(d deps.Deps) *Posts\n\nfunc init() { NewPosts = func(deps.Deps) *Posts { return &Posts{} } }"),
+			want:  "post.Bindings(resolver.NewPosts(d))",
+		},
+		"as a pointer, through a dot-import": {
+			files: posts("import . \"hello/internal/deps\"\n", "", "func NewPosts(d *Deps) *Posts { return &Posts{} }"),
+			want:  "post.Bindings(resolver.NewPosts(&d))",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir, generate := wireFieldModule(t, scaffold, wireFieldDeps)
+			writeFiles(t, dir, c.files)
+			writeFiles(t, dir, c.deps)
+			if err := generate(); err != nil {
+				t.Fatal(err)
+			}
+			if wire := readFile(t, filepath.Join(dir, "graph", "wire.go")); !strings.Contains(norm(wire), norm(c.want)) {
+				t.Errorf("wire.go lacks %q\n%s", c.want, wire)
+			}
+			goBuild(t, dir)
+		})
+	}
+}
+
+// A plain declaration is the type; a generic one of the same name under a
+// build constraint beside it is an alternative this run cannot evaluate, and
+// no reason to refuse.
+func TestWireTakesThePlainDeclarationOverAGenericAlternative(t *testing.T) {
+	both := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
+	dir, generate := wireFieldModule(t, both, wireFieldDeps)
+	writeFiles(t, dir, map[string]string{
+		"internal/deps/alt.go": "//go:build never\n\npackage deps\n\n// Deps is the generic alternative.\ntype Deps[T any] struct{ V T }\n",
+	})
+	if err := generate(); err != nil {
+		t.Fatalf("refused, though the type a build uses is not generic: %v", err)
+	}
+	if wire := readFile(t, filepath.Join(dir, "graph", "wire.go")); !strings.Contains(norm(wire), norm("user.NewHandler(d.User)")) {
+		t.Errorf("the plain declaration's fields were not read:\n%s", wire)
+	}
+}
+
+// wire.go imports each group's own package and the dependencies package as
+// well as the scaffold targets, so a target is compared with those too: a
+// spelling of the group's package in another letter case is the same
+// collision, and it was found only on the second run.
+func TestWireComparesATargetWithThePackagesItAlreadyImports(t *testing.T) {
+	_, generate := wireModule(t, map[string]string{"user": "graph/User.Handler", "post": "graph/post.Handler"})
+	if err := generate(); err == nil || !strings.Contains(err.Error(), "letter case") {
+		t.Fatalf("err = %v, want graph/User refused beside the group package graph/user", err)
+	}
+}
+
+// Where the directory exists, its name on disk is the spelling: the first one
+// met in the configuration may be the wrong one, and every other file that
+// imports the package uses the directory's.
+func TestWireSpellsADirectoryAsItIsOnDisk(t *testing.T) {
+	scaffold := map[string]string{"post": "internal/Resolver.R", "user": "internal/resolver.R"}
+	dir, generate := wireModule(t, scaffold)
+	if err := os.MkdirAll(filepath.Join(dir, "internal", "resolver"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !caseInsensitive(t, dir) {
+		t.Skip("case-sensitive filesystem: the two spellings are two directories, refused above")
+	}
+	if err := generate(); err != nil {
+		t.Fatal(err)
+	}
+	wire := readFile(t, filepath.Join(dir, "graph", "wire.go"))
+	if !strings.Contains(wire, `"hello/internal/resolver"`) || strings.Contains(wire, `"hello/internal/Resolver"`) {
+		t.Errorf("the directory is not imported under its name on disk:\n%s", wire)
+	}
+	if !testing.Short() {
+		goBuild(t, dir)
+	}
+}
+
+// A test file is read as the other files are: one no build includes is not
+// there, and a constructor is a name however it is declared.
+func TestWireReadsTestFilesAsItReadsTheRest(t *testing.T) {
+	scaffold := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
+	for name, c := range map[string]struct {
+		file     string
+		scaffold bool
+	}{
+		"a constructor declared as a variable": {"package user\n\nimport \"hello/internal/deps\"\n\nvar NewHandler = func(d deps.Deps) *Handler { return &Handler{} }\n", false},
+		"a test file no build includes":        {"//go:build ignore\n\npackage user\n\nimport \"hello/internal/deps\"\n\nfunc NewHandler(d deps.Deps) *Handler { return &Handler{} }\n", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir, generate := wireModule(t, scaffold)
+			writeFiles(t, dir, map[string]string{"graph/user/handler_test.go": c.file})
+			if err := generate(); err != nil {
+				t.Fatal(err)
+			}
+			stubs := readFile(t, filepath.Join(dir, "graph", "user", "user.resolvers.go"))
+			if got := strings.Contains(stubs, "func NewHandler"); got != c.scaffold {
+				t.Errorf("constructor scaffolded = %v, want %v:\n%s", got, c.scaffold, stubs)
+			}
+		})
+	}
+}
