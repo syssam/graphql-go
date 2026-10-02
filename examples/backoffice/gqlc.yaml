@@ -1,0 +1,68 @@
+# Step two of go generate: bind the SDL velox wrote (and the hand-written
+# extensions in sdl/) to velox's own entity types.
+schema:
+  - velox/schema/*.graphql
+  - sdl/*.graphql
+output: graph
+package: github.com/syssam/graphql-go/examples/backoffice/graph
+models:
+  Time: time.Time
+  # velox keys every row by int, and the engine writes an int ID as a
+  # string; mapped here, ids bind to the entities' own ID fields and
+  # arrive in arguments as the int velox takes.
+  ID: int
+# velox writes @goModel on every type it owns; reading it keeps the SDL the
+# only place those bindings are stated.
+modelDirective: { name: goModel, arg: model }
+fieldDirective: { name: goField, forceResolverArg: forceResolver }
+# Fields velox's structs and edge methods already answer are bound to them;
+# the rest is left to each group's Resolver.
+autoBind: [./velox/entity]
+# velox_product.graphql and sdl/product.graphql are both the product group;
+# velox's shared file, which declares the roots and scalars, is root.
+groups:
+  trimPrefix: velox_
+  rename: { schema: root }
+# velox declares every root field in the shared file, so by file they would
+# all be root. createProduct goes beside Product instead; deleteProduct
+# returns an ID, has no type to follow, and keeps sdl/product.graphql's group.
+rootFields: returnType
+# velox's update inputs carry clearItems: Boolean over a Go bool, and read
+# false as "leave the items alone" -- absent, null and false are one value,
+# which is the case graphql.ZeroForNull exists for. Without it NewSchema
+# refuses the binding, as it should for a bool whose false means something.
+zeroForNullInputs: true
+# velox's edge accessors -- order.Customer(ctx), order.Items(ctx) -- answer
+# from what field collection loaded with the parent, so they run inline
+# rather than on a goroutine each: 1.9x on a fifty-order page. Connection
+# edges take arguments, may page per row, and stay concurrent.
+inlineAccessors: true
+# Hand-written resolvers known to answer from memory. totalCents sums the
+# items that schema/sales.go's Loads("items") has velox load whole.
+inline: [Order.totalCents]
+# Each entity is one package, graph/<entity>: gqlc's generated.go -- bindings,
+# args, its Resolver interface -- and the Handler implementing it, a thin
+# hand-off to internal/service/<entity>, where the rules are. A method the
+# Handler does not have yet is written as a stub into
+# graph/<entity>/<entity>.resolvers.go; methods that exist are never touched.
+# Generated models the SDL needs (graph/model/<entity>) stay apart: models of
+# different entities refer to each other, and one package each would import
+# in a circle.
+scaffold:
+  category:  graph/category.Handler
+  product:   graph/product.Handler
+  customer:  graph/customer.Handler
+  order:     graph/order.Handler
+  orderitem: graph/orderitem.Handler
+  warehouse: graph/warehouse.Handler
+  stock:     graph/stock.Handler
+# graph/wire.go: Wire(services) builds every entity's Handler and returns
+# their bindings, so nothing registers a group by hand or through a container.
+# An entity with no scaffold line above fails generation, and one whose
+# NewHandler is missing does not compile.
+wire:
+  deps: github.com/syssam/graphql-go/examples/backoffice/internal/service.Services
+# An Apollo Federation subgraph: @key needs no declaration, and
+# graph.NewSchema takes the entity resolvers: each owning service answers its
+# type, and service.Services.Entities lists them.
+federation: true

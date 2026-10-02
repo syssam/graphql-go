@@ -128,7 +128,7 @@ an order fell to a hand-written resolver converting a generated string enum back
 now binds such a type directly (`EnumMarshaler`, `ScalarMarshaler`; output of an enum is still
 checked against its declared values), and `isGQLMarshaler` makes AutoBind emit that binding
 instead of dropping, for scalars as well: velox's `Cursor` no longer needs a hand-written
-`graphql.Scalar`. In `examples/veloxfx` it removed the orderBy conversion package and every
+`graphql.Scalar`. In `examples/backoffice` it removed the orderBy conversion package and every
 connection-edge resolver. `TestAutoBindBindsTypesThatEncodeThemselves` fails with detection or
 emission removed.
 
@@ -219,7 +219,7 @@ It used to be the path's last element, unaliased, which is right only while a pa
 named after its directory, no two mapped paths share a last element, and none ends in
 `graphql`. velox breaks the first two at once: entity enums in `.../velox/todo`, mutation
 inputs in `.../velox/client/todo` under `package todoclient`. The first generate of
-`examples/veloxfx` did not compile, and one of the two `todo` imports had silently won the
+`examples/backoffice` did not compile, and one of the two `todo` imports had silently won the
 qualifier map. `modelExprImports` now assigns qualifiers once (last element, then the last
 two joined, then a number, never `graphql` or `context`) and `exprRef` writes references from
 the same table. **AutoBind has to compare under that table too**: it matched a Go type to the
@@ -239,8 +239,8 @@ compiled, passed `NewSchema` (the zero value is what `ValidateSchema` builds wit
 failed on the first request to reach it. Now the grouped `NewSchema(opts...)` takes each
 group's `Bindings(r)`, so a group left out fails the build with `type X has no Object
 binding`, and one passed twice fails with `bound more than once`. It also means a large
-service has no 800-field struct to fill: each group is one registration, which with uber/fx
-is a value group (`examples/veloxfx`'s `Resolvers`). Each Resolver method carries its
+service has no 800-field struct to fill: each group is one registration, which `Config.Wire`
+writes (`examples/backoffice`'s `graph/wire.go`). Each Resolver method carries its
 field's coordinate and SDL description, as a gRPC service interface carries the `.proto`
 comments (`TestGeneratedGroupIsDocumented`).
 Groups with no Resolver are registered by
@@ -326,7 +326,7 @@ measured, 15 ms at 300 single-provider groups and 41 ms at 800 -- and a group le
 when the process starts. gqlc knows every group and, from `Scaffold`, where its implementation
 is, so it writes the list: a group whose constructor is missing or takes something else does
 not compile, and nothing is resolved at run time. Requests cost the same either way (19.3 µs,
-139 allocations, p=0.811 on `examples/veloxfx`): a container is not on the request path. Every
+139 allocations, p=0.811 on `examples/backoffice`): a container is not on the request path. Every
 group with a Resolver needs a scaffold target, or generation fails naming it. Scaffolding writes
 `NewType(d Deps)` with a new type and nothing where the constructor is there. **For a type that
 exists without one it writes nothing and says so in a note**: its fields are the author's, so a
@@ -340,8 +340,13 @@ otherwise avoids every name in that file's scope, since a dependencies package c
 meets the `user` model package there. The dependencies type may be in the generated package in
 the flat layout, where `Wire` names it unqualified; with several groups that is refused, as each
 implementation would import the root that imports it. In the flat layout an implementation
-outside the generated package is refused for the same reason. `examples/veloxfx` still uses fx,
-on purpose: it is the fx example.
+outside the generated package is refused for the same reason. **`examples/backoffice` (once
+`veloxfx`) is the worked case**: fx builds the services, which may depend on one another, and
+fills `service.Services`; `graph.Wire(services)` builds every `Handler` and nothing in `graph/`
+is registered with fx. Building the whole app went from 2.46 ms to 1.85 ms (interleaved n=12,
+p=0.000, spread ±7-10%; 17.5k allocations to 14.2k). Its guide's add-an-entity walk-through was
+rerun on a copy: the type, constructor and stubs are scaffolded, `Wire` gains its line, and the
+only registration left by hand is the service's.
 
 **`preset: gqlgen` in gqlc.yaml** is `modelDirective`, `fieldDirective`, `tagDirective`,
 `jsonTags`, `inputListPointers` and `structObjectFields` at once; a key written beside it wins,
@@ -356,7 +361,7 @@ it -- renaming it always would have moved a package a non-federated schema alrea
 
 **A file gqlc stops writing is deleted, and only if it is gqlc's.** `pruneGenerated` removes
 every `.go` under `Output` that starts with `generatedHeader` and was not written this run,
-then any directory that left empty. Before it, `examples/veloxfx` carried four
+then any directory that left empty. Before it, `examples/backoffice` carried four
 `graph/model/<group>` packages for types that had since become velox bindings or left the SDL;
 they compiled, so nothing reported them. Four limits are the safety of it: no header, no
 delete (hand-written, scaffolded, another generator's); a directory the go command ignores
@@ -399,7 +404,7 @@ rewrite imports in code the author wrote, which the compiler reports instead.
 `TestGroupDirHoldsEveryGroupPackage` fails with any one of the three sites reverted.
 
 **A group's implementation can be scaffolded into the group's own package**
-(`graph/product.Handler`), which is `examples/veloxfx`'s layout: one package per entity,
+(`graph/product.Handler`), which is `examples/backoffice`'s layout: one package per entity,
 generated code and `Handler` together. Measured at 300 entities against the alternatives
 (one `graph/resolver` package, or `graph/resolver/<entity>` beside `graph/register/<entity>`),
 it had the fastest edit loop of the layouts with a service layer -- a single resolver package

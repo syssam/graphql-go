@@ -27,7 +27,7 @@ sh scripts/gate.sh [-short]                    # vet + test EVERY module (there 
 GATE_REQUIRE_ALL=1 sh scripts/gate.sh          # and fail on a skipped module, as CI does
 ```
 
-`go test ./...` reaches one module of five: `benchmarks/`, `compare/`, `lint/` and `examples/veloxfx/` are separate
+`go test ./...` reaches one module of five: `benchmarks/`, `compare/`, `lint/` and `examples/backoffice/` are separate
 modules. **Run `scripts/gate.sh` before calling a change clean.** `compare/` is generated and
 gitignored; the gate skips it unless you run `cd compare && go run gen.go -n 25` first.
 
@@ -176,7 +176,8 @@ The root package is ~36 files on purpose, because Go scopes encapsulation to the
   `docs/large-schemas.md`: a 300-entity monolith measured end to end, and where its edit loop goes.
 - Examples: `quickstart` (smallest), `blog` (layering, codegen; `echo`/`fiber` serve it),
   `storefront` (authorization and production wiring), `federation`, `relaynode`, and
-  `veloxfx` (velox ORM + uber/fx + Echo; its own module, so the library never requires them).
+  `backoffice` (velox ORM, a service layer built by uber/fx, generated `Wire` for the GraphQL
+  layer, Echo; its own module, so the library never requires them).
 - **Status:** phases 1-4 are merged. **Not built:** `ext/authz` (only a batched `Guard` is
   left; `@policy` and `@authenticated` are already one option call each). **Declined:**
   `@defer`/`@stream`, which `introspection.go` strips on purpose, so adding them reverses a

@@ -100,7 +100,7 @@ relies on.
   schema package, and the annotations and the generator were one package.
   velox has split them (`contrib/graphql` is annotations only, the generator is
   `contrib/graphql/graphqlgen`), and the same server is 198 MB and links
-  1 214 packages instead of 1 280. `examples/veloxfx`'s server links none of
+  1 214 packages instead of 1 280. `examples/backoffice`'s server links none of
   the tooling.
 - **Leave limits on.** `WithMaxDepth`, `WithMaxComplexity` and `QueryCost` do
   not charge introspection, so GraphiQL and client generators still work
@@ -113,5 +113,5 @@ relies on.
   Ent at 50 entities: an entity edit rebuilds in 17.0 s against 27.5 s
   (`velox/benchmarks/run.sh inc`).
 - Memory of the cold build, and `gopls` on a workspace this size.
-- Request latency under load at this schema size; `examples/veloxfx` has the
+- Request latency under load at this schema size; `examples/backoffice` has the
   per-request figures for a small schema.

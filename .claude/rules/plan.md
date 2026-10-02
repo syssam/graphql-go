@@ -194,7 +194,7 @@ Reverting `fieldArguments` to `ArgumentMap` fails it on the exponent, trailing-z
 precision cases and panics the binary on the wide-integer one.
 
 **Introspection is not charged against depth, complexity or cost, and gqlparser's
-`MaxIntrospectionDepth` is replaced.** `examples/veloxfx`, configured the way the docs
+`MaxIntrospectionDepth` is replaced.** `examples/backoffice`, configured the way the docs
 recommend (`WithMaxDepth(10)`), refused the introspection query GraphiQL and every client
 generator send with `MAX_DEPTH_EXCEEDED`: its `TypeRef` fragment nests `ofType` seven deep. On a
 300-entity schema that query is also 4.3 MB and, priced by list sizes, costlier than any

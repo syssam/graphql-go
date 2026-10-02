@@ -72,9 +72,9 @@ jobs:
         shell: bash
         run: |
           (cd examples/blog && go generate ./...)
-          (cd examples/veloxfx && go generate .)
+          (cd examples/backoffice && go generate .)
           if ! git diff --quiet -- .; then
-            echo "generated code is stale; run go generate in examples/blog or examples/veloxfx"
+            echo "generated code is stale; run go generate in examples/blog or examples/backoffice"
             git diff --stat; exit 1
           fi
 
@@ -83,7 +83,7 @@ jobs:
     # (ROW_NUMBER), the ownership filter and error classification all meet a
     # planner that is not SQLite's. The first run here found a foreign-key
     # violation reported as a duplicate.
-    name: veloxfx on PostgreSQL
+    name: backoffice on PostgreSQL
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -99,10 +99,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Test examples/veloxfx on PostgreSQL
+      - name: Test examples/backoffice on PostgreSQL
         env:
-          VELOXFX_POSTGRES: postgres://postgres:pass@localhost:5432/postgres?sslmode=disable
-        run: go -C examples/veloxfx test -race -count=1 ./...
+          BACKOFFICE_POSTGRES: postgres://postgres:pass@localhost:5432/postgres?sslmode=disable
+        run: go -C examples/backoffice test -race -count=1 ./...
 
   lint:
     name: lint
@@ -140,7 +140,7 @@ jobs:
       - name: Lint every other module
         shell: bash
         run: |
-          # Found, not listed: a list is how examples/veloxfx, the fifth module,
+          # Found, not listed: a list is how examples/backoffice, the fifth module,
           # would have gone unlinted.
           for mod in $(find . -name go.mod -not -path "./ref/*" -not -path "./go.mod" | sed "s|/go.mod$||"); do
             echo "== $mod"

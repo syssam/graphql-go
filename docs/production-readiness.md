@@ -27,13 +27,13 @@ Everything below is what makes that fork cheap.
 
 | Concern | Where |
 |---|---|
-| Authorization decided before execution, per field and per row; masking (per row with `RedactRow`: a customer sees their own email), null, zero, deny | `authz*.go`, `examples/storefront`, `examples/veloxfx/authz.go` |
+| Authorization decided before execution, per field and per row; masking (per row with `RedactRow`: a customer sees their own email), null, zero, deny | `authz*.go`, `examples/storefront`, `examples/backoffice/authz.go` |
 | A withheld field costs no database query | `SelectedField.Withheld` + velox `contrib/graphqlgo` |
-| Row ownership as a SQL filter, not load-then-drop | velox read interceptors; `examples/veloxfx` `order.OwnOrders`, and the same condition on its writes |
+| Row ownership as a SQL filter, not load-then-drop | velox read interceptors; `examples/backoffice` `order.OwnOrders`, and the same condition on its writes |
 | Query depth, complexity and cost limits, priced per connection page | `limits.go` (`Connections: true`) |
 | Persisted and trusted documents (Meta and Shopify style) | `ext/apq`, `ext/trusted` |
 | Rate limiting by cost | `ext/throttle` |
-| Tracing and metrics, from a field to the SQL it ran | `ext/otel` (`WithResolverSpans`), velox `contrib/otelvelox`; `examples/veloxfx/tracing.go` wires both and a test checks every statement lands under its resolver |
+| Tracing and metrics, from a field to the SQL it ran | `ext/otel` (`WithResolverSpans`), velox `contrib/otelvelox`; `examples/backoffice/tracing.go` wires both and a test checks every statement lands under its resolver |
 | Federation (Apollo router), including gqlc-generated subgraphs | `fed/` (`SubgraphFS`), gqlc `federation: true`; velox `graphqlgo.Entities` answers a router's batch in one query per type |
 | Graceful drain of HTTP, SSE and WebSocket | `transport/drain` |
 | Introspection off in production | `DisableIntrospection()` |
@@ -104,4 +104,4 @@ without introspection enabled (replaced here; gqlgen uses the same rule).
   exhaustion at the database's own limit.
 - gqlgen is still in velox's root module graph, for the gqlgen side of its
   GraphQL support; a server generated with `graphqlgen.WithoutGQLGen()` links
-  none of it (`examples/veloxfx`: 0 gqlgen packages).
+  none of it (`examples/backoffice`: 0 gqlgen packages).

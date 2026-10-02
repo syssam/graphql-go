@@ -144,7 +144,7 @@ because the observer's context is the one the resolver runs under. **The skip ha
 `EndField` too**: `BeginField` returns its context unchanged for a pure field, so the span in
 that context is the parent's, and ending it closed the operation span before its resolvers
 (`TestResolverSpansSkipPureFields`, which fails with either half broken).
-`examples/veloxfx` wires it with `otelsql` and `TestScenarioTracesReachFromFieldToSQL` checks
+`examples/backoffice` wires it with `otelsql` and `TestScenarioTracesReachFromFieldToSQL` checks
 every statement of a page lands under a resolver span, on SQLite and PostgreSQL.
 
 **Review fixes, 2026-10-02.** `ext/otel`: an operation's name is client text, so it is a metric

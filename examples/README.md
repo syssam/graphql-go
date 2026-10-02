@@ -9,7 +9,7 @@
 | [`relaynode`](relaynode) | The Relay contract: global ids, `Query.node` re-fetch, and cursor connections. |
 | [`echo`](echo) | Serving `blog` through Echo v5 — routing and shutdown wiring only. |
 | [`fiber`](fiber) | Serving `blog` through Fiber v3 — routing and shutdown wiring only. |
-| [`veloxfx`](veloxfx) | A real service: velox writes the ORM and the SDL for seven entities in three domains, gqlc binds them, uber/fx assembles each domain like a gRPC service behind Echo. [`GUIDE.md`](veloxfx/GUIDE.md) is the developer guide. Its own module. |
+| [`backoffice`](backoffice) | A real service, the staff side of a shop: velox writes the ORM and the SDL for seven entities in three domains, gqlc binds them and generates the wiring, uber/fx assembles the services and the lifecycle behind Echo. [`GUIDE.md`](backoffice/GUIDE.md) is the developer guide. Its own module. |
 
 `storefront` is the one to read for anything about authorization, limits or
 shutdown; `blog` is the one to read for layering and codegen. They do not
@@ -200,16 +200,17 @@ support at all, since an unbound interface resolves from the dynamic Go type.
     # the id from that response, handed straight back
     $GQL -d '{"query":"query($id:ID!){ node(id:$id){ __typename ... on User { name } } }","variables":{"id":"VXNlcjox"}}'
 
-## velox, fx and Echo in `veloxfx`
+## An ORM, a service layer and generated wiring in `backoffice`
 
-`blog` writes its SDL by hand and generates models from it. `veloxfx` goes the
-other way, which is how an ORM-backed service is usually built: the velox
+`blog` writes its SDL by hand and generates models from it. `backoffice` goes
+the other way, which is how an ORM-backed service is usually built: the velox
 schema in `schema/` is the only source, and both the ORM and the SDL are
-output. Seven entities in three domains, served through Echo and assembled by
-uber/fx.
+output. Seven entities in three domains, served through Echo. uber/fx builds
+the services and runs the lifecycle; the GraphQL layer in front of them is
+generated, wiring included.
 
-**[`veloxfx/GUIDE.md`](veloxfx/GUIDE.md) is the developer guide**, laid out
-like the gRPC basics tutorial: define, generate, implement, register, run,
+**[`backoffice/GUIDE.md`](backoffice/GUIDE.md) is the developer guide**, laid out
+like the gRPC basics tutorial: define, generate, implement, wire, run,
 then the everyday loop of adding an entity, with every output recorded from a
 real run. In short:
 
@@ -221,9 +222,12 @@ real run. In short:
   (`graphql.EnumMarshaler`, `graphql.ScalarMarshaler`), so connection edges are
   velox's own methods and a resolver takes velox's types as arguments.
 - **It is laid out like a gRPC service.** Each group has a `Resolver`
-  interface and a `Bindings` function; a domain package implements its
-  groups and registers each with one `gqlfx.Register` line in its fx
-  `Module`; nothing lists every entity.
+  interface and a `Bindings` function, and a `Handler` beside them that
+  hands each call to the entity's service.
+- **The GraphQL layer is not in the container.** gqlc generates
+  `graph.Wire(services)`, which constructs every `Handler`; fx builds the
+  services, which may depend on one another, and stops there. An entity left
+  out does not compile, and nothing is resolved by reflection at start.
 - **The API offers operations, not the ORM's raw writes.** Order and stock
   change only through `placeOrder`, `cancelOrder`, `adjustStock` and the
   like, each a conditional update or a transaction, and twenty concurrent
@@ -237,7 +241,7 @@ It is a separate module because velox, fx and SQLite are dependencies of the
 example, not of the library. `scripts/gate.sh` finds it like every other
 `go.mod`.
 
-    cd examples/veloxfx
+    cd examples/backoffice
     go generate            # after editing schema/ or sdl/
     go run ./cmd/server
 
@@ -250,4 +254,4 @@ example, not of the library. `scripts/gate.sh` finds it like every other
     go run ./examples/fiber                 # same schema, Fiber v3
     go run ./examples/federation/cmd/subgraphs # two subgraphs on two paths
     go run ./examples/relaynode/cmd/server   # global ids and connections
-    (cd examples/veloxfx && go run ./cmd/server) # velox + fx + Echo, own module
+    (cd examples/backoffice && go run ./cmd/server) # velox + fx + Echo, own module

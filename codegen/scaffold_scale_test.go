@@ -10,7 +10,7 @@ import (
 )
 
 // Every group scaffolded into one package -- a resolver layer, as
-// examples/veloxfx has -- used to reparse that whole package once per group:
+// examples/backoffice has -- used to reparse that whole package once per group:
 // quadratic, and 41 s of a 300-entity generate that took 1.6 s with the same
 // resolvers spread over thirty packages. A timing test would be flaky, so this
 // counts parses: each file at most once per run, however many groups.
