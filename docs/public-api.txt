@@ -123,6 +123,7 @@ graphql: func (f SubscriptionInterceptorFunc) InterceptSubscription(ctx context.
 graphql: func (fc *FieldContext) ArgumentMap(vars map[string]any) (map[string]any, error)
 graphql: func (fc *FieldContext) Path() Path
 graphql: func (fc *FieldContext) Selection() Selection
+graphql: func (o *Omittable[T]) UnmarshalJSON(b []byte) error
 graphql: func (o Omittable[T]) IsSet() bool
 graphql: func (o Omittable[T]) MarshalJSON() ([]byte, error)
 graphql: func (o Omittable[T]) Or(def T) T

@@ -52,6 +52,19 @@ func (o Omittable[T]) MarshalJSON() ([]byte, error) {
 	return json.Marshal(o.value)
 }
 
+// UnmarshalJSON decodes into the value and marks it set. A field absent from the JSON never reaches
+// this method, so it stays unset; an explicit null does, and is set with the zero value. That is
+// the distinction Omittable exists for, and it lets an input struct be filled from JSON (a stored
+// definition, a test fixture) as well as from a GraphQL request.
+func (o *Omittable[T]) UnmarshalJSON(b []byte) error {
+	var v T
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	o.value, o.set = v, true
+	return nil
+}
+
 // assign is used by Auto input bindings. Application code should keep
 // using OmittableOf / IsSet / Value.
 func (o *Omittable[T]) assign(v any, set bool) {
