@@ -385,3 +385,55 @@ func TestABoundDirectiveReachingTheSubscriptionRootThroughAnInterface(t *testing
 		})
 	}
 }
+
+// Carrying an interface's directive on the fields is for a directive that
+// cannot be written on the object. One that can has to be, because the
+// object's other fields are reached through the interface too -- node { ...
+// on User { extra } } -- and a directive on the interface reads as covering
+// what is behind it.
+func TestAnAbstractTypesDirectiveIsCarriedByFieldsOnlyWhereItCannotBeOnTheObject(t *testing.T) {
+	_, err := NewSchema(SDL(`directive @adminOnly on INTERFACE | OBJECT | FIELD_DEFINITION
+		interface Node @adminOnly { secret: String! }
+		type User implements Node { secret: String! @adminOnly extra: String! }
+		type Query { node: Node! }`),
+		Directive("adminOnly", func(next FieldFunc) FieldFunc { return next }),
+		Interface[ifaceDirNode]("Node"),
+		Object[ifaceDirUser]("User",
+			Field("secret", func(*ifaceDirUser) string { return "s3cr3t" }),
+			Field("extra", func(*ifaceDirUser) string { return "also" })),
+		Query(Field("node", func(Root) ifaceDirNode { return &ifaceDirUser{} })),
+	)
+	if err == nil {
+		t.Fatal("User.extra is served without the directive its interface carries")
+	}
+	if !strings.Contains(err.Error(), "write it on User as well") {
+		t.Errorf("the error does not say to write it on the object: %v", err)
+	}
+}
+
+// A built-in is exempt on the subscription root as everywhere else: binding
+// @deprecated is no reason to refuse a deprecated subscription field, written
+// there or on an interface the root implements.
+func TestABoundBuiltInIsAllowedOnTheSubscriptionRoot(t *testing.T) {
+	for name, sdl := range map[string]string{
+		"on the root's field": `type Subscription { tick: Int! @deprecated }
+			type Query { ping: String! }`,
+		"on an interface's field": `interface I { tick: Int! @deprecated }
+			type Subscription implements I { tick: Int! }
+			type Query { ping: String! }`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts := []SchemaOption{
+				DirectiveArgs("deprecated", func(next FieldFunc, _ struct{ Reason *string }) FieldFunc { return next }),
+				Query(Field("ping", func(Root) string { return "pong" })),
+				Subscription(Subscribe("tick", func(context.Context) (<-chan int, error) { return nil, nil })),
+			}
+			if strings.Contains(sdl, "interface I") {
+				opts = append(opts, Interface[any]("I"))
+			}
+			if _, err := NewSchema(SDL(sdl), opts...); err != nil {
+				t.Fatalf("NewSchema: %v", err)
+			}
+		})
+	}
+}

@@ -201,8 +201,8 @@ func (b *schemaBuilder) usesAreChecked(name string) bool {
 	if b.directives[name] == nil || builtinDirectives[name] {
 		return false
 	}
-	def := b.ast.Directives[name]
-	return def == nil || supportedDirectiveLocation(def.Locations)
+	// Declared, or the binding itself was refused.
+	return supportedDirectiveLocation(b.ast.Directives[name].Locations)
 }
 
 // rejectDirectivesThatNeverRun fails the build for each use of a bound
@@ -274,10 +274,10 @@ func (b *schemaBuilder) rejectDirectivesThatNeverRun() {
 
 // rejectDirectivesLeftOnTheAbstractType fails the build for a bound directive
 // written on an interface or union and not carried by an object behind it,
-// which is served without it. An object carries it by having it, or, where
-// the directive is not declared for OBJECT and cannot be written there, by
-// having it on each field the abstract type covers: an interface's own
-// fields, every field of a union's member. The subscription root carries
+// which is served without it. An object carries it by having it. Only where
+// the directive is not declared for OBJECT, and so cannot be written there,
+// does having it on each field the abstract type covers count instead: an
+// interface's own fields, every field of a union's member. The subscription root carries
 // nothing -- its fields are not wrapped -- so it is sent to the rule it has.
 func (b *schemaBuilder) rejectDirectivesLeftOnTheAbstractType(def *ast.Definition) {
 	kind := "interface"
@@ -300,24 +300,27 @@ func (b *schemaBuilder) rejectDirectivesLeftOnTheAbstractType(def *ast.Definitio
 				}
 				continue
 			}
-			covered := obj.Fields
-			if def.Kind == ast.Interface {
-				covered = def.Fields
-			}
-			var missing []string
-			for _, f := range covered {
-				if strings.HasPrefix(f.Name, "__") {
-					continue
-				}
-				if own := obj.Fields.ForName(f.Name); own != nil && own.Directives.ForName(d.Name) == nil {
-					missing = append(missing, coordinate(obj.Name, f.Name))
-				}
-			}
-			if len(missing) == 0 {
-				continue
-			}
+			// On the object, where the directive can be written there: its
+			// other fields are reached through the abstract type too, so
+			// having it on some of them is not having it.
 			advice := "write it on " + obj.Name + " as well"
 			if !onObject {
+				covered := obj.Fields
+				if def.Kind == ast.Interface {
+					covered = def.Fields
+				}
+				var missing []string
+				for _, f := range covered {
+					if strings.HasPrefix(f.Name, "__") {
+						continue
+					}
+					if own := obj.Fields.ForName(f.Name); own != nil && own.Directives.ForName(d.Name) == nil {
+						missing = append(missing, coordinate(obj.Name, f.Name))
+					}
+				}
+				if len(missing) == 0 {
+					continue
+				}
 				advice = "it is not declared for OBJECT, so write it on " + strings.Join(missing, ", ")
 			}
 			b.errorf("type %s: @%s is bound and written on the %s %s, but a directive on an abstract type never runs; %s",
@@ -369,7 +372,10 @@ func (b *schemaBuilder) rejectDirectivesOnSubscriptionRoot(obj *objectType, fd *
 		}
 	}
 	for i, d := range ds {
-		if b.directives[d.Name] == nil || b.subDirectives[d.Name] || slices.ContainsFunc(ds[:i], func(e *ast.Directive) bool { return e.Name == d.Name }) {
+		// A built-in is metadata here as everywhere: a deprecated
+		// subscription field is deprecated whether or not something counts
+		// calls to deprecated fields elsewhere.
+		if b.directives[d.Name] == nil || builtinDirectives[d.Name] || b.subDirectives[d.Name] || slices.ContainsFunc(ds[:i], func(e *ast.Directive) bool { return e.Name == d.Name }) {
 			continue
 		}
 		b.errorf("field %s: @%s is bound, but a directive on a subscription root field never runs; use a SubscriptionInterceptor (and declare it with SubscriptionRootDirective)", coordinate(obj.name, fd.name), d.Name)

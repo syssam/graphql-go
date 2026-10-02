@@ -142,6 +142,14 @@ advice says which fields. Still presence-only: `@role(r: "ADMIN")` on the interf
 directive that is also declared for executable locations does nothing when a query uses it;
 that is a request, not a schema, and is not checked here.
 
+That relaxation was itself too wide, found by the next review: the fields path was taken
+whether or not the directive could be written on the object, so `interface Node @g` over
+`type User implements Node { secret @g  extra }`, refused before, built -- and `extra`, reached
+through `node { ... on User { extra } }`, was served bare. It applies only where the directive
+is not declared for `OBJECT` now. And the built-in exemption had not reached the
+subscription-root rule, which the interface-field collection then made refuse a deprecated
+subscription field declared on an interface.
+
 **Four more mismatches are build errors now, each found by a review rather than by a user.**
 `Enum` collected the first bad value it met while ranging its map, so the message changed run
 to run and named one of several; it reports every undefined and every doubly-mapped value,
