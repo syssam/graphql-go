@@ -164,7 +164,7 @@ func (b *builder) scaffoldGroup(pkgs *pkgCache, name, group, target string) ([]s
 	}
 
 	groupImport := b.cfg.Package
-	groupDir := filepath.Join(b.dir, filepath.FromSlash(b.cfg.Output))
+	groupDir := outputDir(b.dir, b.cfg.Output)
 	if name != b.pkgName || group != "" {
 		groupImport = b.groupImport(group)
 		groupDir = filepath.Join(groupDir, filepath.FromSlash(b.groupRel(group)))

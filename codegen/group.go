@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"go/token"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -218,10 +219,16 @@ func sanitizeGroup(name, pkgName string) string {
 	switch s {
 	case "schema":
 		s = "types"
-	case "model", "internal":
+	case "model", "internal",
+		// A program, not an importable package.
+		"main",
+		// Names the generated code already imports under: a group package
+		// called one of them redeclares it in every file that imports both.
+		"graphql", "context", "embed":
 		s += "grp"
 	default:
-		if s == pkgName {
+		// func.graphql would otherwise ask for `package func`.
+		if s == pkgName || token.IsKeyword(s) {
 			s += "grp"
 		}
 	}

@@ -644,10 +644,16 @@ type goField struct {
 	tag  string
 	typ  types.Type
 	deep int
+	// ambiguous marks a name two embedded structs promote from one depth.
+	ambiguous bool
+	// hidden marks a field tagged json:"-".
+	hidden bool
 }
 
 // structFields collects the fields of a struct, following embedded ones. A
-// shallower field wins, which is the promotion rule Go itself uses.
+// shallower field wins, which is the promotion rule Go itself uses, and so is
+// the other half of it: a name promoted twice from one depth is ambiguous and
+// selects nothing, so it is left out rather than bound to the first one met.
 func structFields(named *types.Named) map[string]goField {
 	out := map[string]goField{}
 	var walk func(t types.Type, depth int)
@@ -663,8 +669,16 @@ func structFields(named *types.Named) map[string]goField {
 		}
 		for i := range st.NumFields() {
 			f := st.Field(i)
+			// A hidden field is not offered at all, rather than offered under
+			// its Go name: the engine's Input[T] reads the tag the same way,
+			// and a field falls to a resolver when the author does want it
+			// served. On an embedded struct the tag hides everything it would
+			// promote.
+			tag, hidden := jsonName(st.Tag(i))
 			if f.Embedded() {
-				walk(f.Type(), depth+1)
+				if !hidden {
+					walk(f.Type(), depth+1)
+				}
 				continue
 			}
 			if !f.Exported() {
@@ -672,12 +686,25 @@ func structFields(named *types.Named) map[string]goField {
 			}
 			key := strings.ToLower(f.Name())
 			if prev, taken := out[key]; taken && prev.deep <= depth {
+				if prev.deep == depth {
+					prev.ambiguous = true
+					out[key] = prev
+				}
 				continue
 			}
-			out[key] = goField{name: f.Name(), tag: jsonName(st.Tag(i)), typ: f.Type(), deep: depth}
+			// A hidden field is recorded like any other and removed below, so
+			// that it shadows a deeper field of its name as it does in Go:
+			// v.Secret is the outer one, and offering the embedded one would
+			// bind to the value the tag hides.
+			out[key] = goField{name: f.Name(), tag: tag, typ: f.Type(), deep: depth, hidden: hidden}
 		}
 	}
 	walk(named, 0)
+	for key, f := range out {
+		if f.ambiguous || f.hidden {
+			delete(out, key)
+		}
+	}
 	return out
 }
 
@@ -688,22 +715,26 @@ func underlying(t types.Type) types.Type {
 	return types.Unalias(t).Underlying()
 }
 
-func jsonName(tag string) string {
+// jsonName is the name a struct tag gives a field for JSON, and whether the
+// tag hides the field altogether: json:"-", which is encoding/json's "never on
+// the wire" and how an ORM marks a sensitive column. json:"-," is its escape
+// for a field really named "-", and names it.
+func jsonName(tag string) (name string, hidden bool) {
 	v := reflect.StructTag(tag).Get("json")
-	if i := strings.Index(v, ","); i >= 0 {
-		v = v[:i]
-	}
 	if v == "-" {
-		return ""
+		return "", true
 	}
-	return v
+	name, _, _ = strings.Cut(v, ",")
+	return name, false
 }
 
 // matchField resolves an SDL field name to a Go field: an exact json tag
 // first, since it was written deliberately, then a case-insensitive name.
 func matchField(fields map[string]goField, sdlName string) (goField, bool) {
-	for _, f := range fields {
-		if f.tag != "" && f.tag == sdlName {
+	// In key order: two fields can carry one tag, and ranging the map picked
+	// a different one of them from one generate to the next.
+	for _, key := range slices.Sorted(maps.Keys(fields)) {
+		if f := fields[key]; f.tag != "" && f.tag == sdlName {
 			return f, true
 		}
 	}

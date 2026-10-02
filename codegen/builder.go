@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"errors"
 	"fmt"
 	"github.com/syssam/graphql-go/fed"
 	"go/token"
@@ -270,10 +271,58 @@ func newBuilder(dir string, cfg Config) (*builder, error) {
 	if err := b.checkFieldNames(); err != nil {
 		return nil, fmt.Errorf("codegen: %w", err)
 	}
+	if err := b.checkListDepth(); err != nil {
+		return nil, err
+	}
 	if err := b.checkTagDirectives(); err != nil {
 		return nil, fmt.Errorf("codegen: %w", err)
 	}
 	return b, nil
+}
+
+// checkListDepth refuses a position whose list nesting the engine has no
+// binding for: a scalar or enum through more than two list levels, an input
+// object through more than one. The Go type generated for it compiles and
+// NewSchema then cannot bind it, and no model the author substitutes helps,
+// because the limit belongs to the position. An object, interface or union in
+// an output position is bound at any depth and is not checked.
+func (b *builder) checkListDepth() error {
+	var errs []error
+	check := func(coord string, t *ast.Type) {
+		depth := 0
+		for ; t.Elem != nil; t = t.Elem {
+			depth++
+		}
+		def := b.schema.Types[t.NamedType]
+		if def == nil {
+			return
+		}
+		limit, what := 0, ""
+		switch def.Kind {
+		case ast.Scalar, ast.Enum:
+			limit, what = 2, "a scalar or enum through two list levels"
+		case ast.InputObject:
+			limit, what = 1, "an input object through one list level"
+		default:
+			return
+		}
+		if depth > limit {
+			errs = append(errs, fmt.Errorf("codegen: %s nests %s in %d lists, and the engine binds %s; flatten it, or wrap the inner list in a type of its own", coord, t.NamedType, depth, what))
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(b.schema.Types)) {
+		def := b.schema.Types[name]
+		if def.BuiltIn || strings.HasPrefix(name, "__") {
+			continue
+		}
+		for _, fd := range def.Fields {
+			check(name+"."+fd.Name, fd.Type)
+			for _, arg := range fd.Arguments {
+				check(name+"."+fd.Name+"("+arg.Name+":)", arg.Type)
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // checkTagDirectives refuses a tag directive the struct-tag syntax cannot carry. The
@@ -293,11 +342,25 @@ func (b *builder) checkTagDirectives() error {
 	return nil
 }
 
+func isStringValue(v *ast.Value) bool {
+	return v != nil && (v.Kind == ast.StringValue || v.Kind == ast.BlockValue)
+}
+
 // jsonTag renders the json struct tag Config.JSONTags asks for, as ` json:"name"` (with
-// ",omitempty" for a nullable field) and empty when the option is off.
+// ",omitempty" for a nullable field) and empty when the option is off. It is empty too
+// for a field whose Config.TagDirective writes a json tag of its own: reflect answers a
+// repeated key with the first, so the generated tag would silently win over the one the
+// author spelled out.
 func (b *builder) jsonTag(fd *ast.FieldDefinition) string {
 	if !b.cfg.JSONTags || fd == nil {
 		return ""
+	}
+	if td := b.cfg.TagDirective; !td.IsZero() {
+		for _, d := range fd.Directives.ForNames(td.Name) {
+			if k := d.Arguments.ForName(td.KeyArg); k != nil && k.Value != nil && k.Value.Raw == "json" {
+				return ""
+			}
+		}
 	}
 	if fd.Type != nil && fd.Type.NonNull {
 		return " json:\"" + fd.Name + "\""
@@ -320,14 +383,22 @@ func (b *builder) tagsFor(fd *ast.FieldDefinition) (string, error) {
 		if k == nil || v == nil {
 			return "", fmt.Errorf("@%s needs both %q and %q", td.Name, td.KeyArg, td.ValueArg)
 		}
+		// Anything but a string was written into the tag as its source text,
+		// so `value: null` became the tag "null".
+		if !isStringValue(k.Value) || !isStringValue(v.Value) {
+			return "", fmt.Errorf("@%s needs string values for %q and %q", td.Name, td.KeyArg, td.ValueArg)
+		}
 		key, val := k.Value.Raw, v.Value.Raw
 		switch {
-		case key == "" || strings.ContainsAny(key, " \t\n\r\"`:"):
+		// reflect.StructTag ends a key at a space, a quote, a colon or a
+		// control character, and gives up on the rest of the tag there: a
+		// control character in one key silently hid every tag after it.
+		case key == "" || strings.ContainsAny(key, " \"`:") || strings.ContainsFunc(key, unicode.IsControl):
 			return "", fmt.Errorf("@%s key %q cannot be a struct-tag key", td.Name, key)
 		case key == "graphql":
 			return "", fmt.Errorf("@%s key %q is reserved for the field's GraphQL name", td.Name, key)
-		case strings.ContainsAny(val, "\"`\n\r\\"):
-			return "", fmt.Errorf("@%s value for %q contains a quote, backtick, backslash or newline, which a struct tag cannot carry", td.Name, key)
+		case strings.ContainsAny(val, "\"`\\") || strings.ContainsFunc(val, unicode.IsControl):
+			return "", fmt.Errorf("@%s value for %q contains a quote, backtick, backslash or control character, which a struct tag cannot carry", td.Name, key)
 		case seen[key]:
 			return "", fmt.Errorf("@%s repeats key %q", td.Name, key)
 		}
@@ -513,11 +584,34 @@ func (b *builder) ident(sdlName string) string {
 
 // checkFieldNames refuses a Config.FieldNames value that is not an exported Go identifier,
 // since the field it names would be unexported and the schema would not bind.
+//
+// It also refuses a key that names no field or argument in the schema: that is a typo,
+// and every other configuration key is checked the same way. Keys are visited in order,
+// so the same configuration reports the same thing.
 func (b *builder) checkFieldNames() error {
-	for sdl, g := range b.cfg.FieldNames {
-		if !token.IsIdentifier(g) || !token.IsExported(g) {
+	if len(b.cfg.FieldNames) == 0 {
+		return nil
+	}
+	known := map[string]bool{}
+	for _, def := range b.schema.Types {
+		for _, fd := range def.Fields {
+			known[fd.Name] = true
+			for _, arg := range fd.Arguments {
+				known[arg.Name] = true
+			}
+		}
+	}
+	var unknown []string
+	for _, sdl := range slices.Sorted(maps.Keys(b.cfg.FieldNames)) {
+		if g := b.cfg.FieldNames[sdl]; !token.IsIdentifier(g) || !token.IsExported(g) {
 			return fmt.Errorf("FieldNames[%q] = %q is not an exported Go identifier", sdl, g)
 		}
+		if !known[sdl] {
+			unknown = append(unknown, strconv.Quote(sdl))
+		}
+	}
+	if len(unknown) > 0 {
+		return fmt.Errorf("FieldNames names no field or argument in the schema: %s", strings.Join(unknown, ", "))
 	}
 	return nil
 }

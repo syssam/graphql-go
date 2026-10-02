@@ -175,7 +175,16 @@ func run(args []string) error {
 	nullableOmittable := fs.Bool("nullable-input-omittable", false, "give nullable input fields Omittable")
 	zeroForNull := fs.Bool("zero-for-null-inputs", false, "let a non-nullable Go field back a nullable input; read the graphql.ZeroForNull godoc first")
 	if err := fs.Parse(args); err != nil {
+		// The usage has been printed, which is what was asked for.
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
+	}
+	// A stray argument is a mistyped flag or a forgotten -schema; ignoring it
+	// generates from gqlc.yaml instead of from what was named.
+	if fs.NArg() > 0 {
+		return fmt.Errorf("gqlc: unexpected argument %q; schema files are passed with -schema", fs.Arg(0))
 	}
 
 	if len(schema) > 0 {

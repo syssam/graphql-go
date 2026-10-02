@@ -252,3 +252,20 @@ models:
 		t.Fatal("-model was not applied: a wrong Go type produced identical output")
 	}
 }
+
+// -h printed the usage and then exited 1 with "flag: help requested", which a
+// script reads as a failure of the thing it asked for.
+func TestHelpIsNotAnError(t *testing.T) {
+	if err := run([]string{"-h"}); err != nil {
+		t.Fatalf("run(-h) = %v, want nil", err)
+	}
+}
+
+// A stray argument is a mistyped flag or a forgotten -schema, and was ignored:
+// `gqlc schema.graphql` read gqlc.yaml and generated from that instead.
+func TestPositionalArgumentsAreRefused(t *testing.T) {
+	err := run([]string{"schema.graphql"})
+	if err == nil || !strings.Contains(err.Error(), "schema.graphql") {
+		t.Fatalf("err = %v, want one naming the stray argument", err)
+	}
+}

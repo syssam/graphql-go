@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"io"
 	"io/fs"
 	"maps"
@@ -269,6 +271,9 @@ func Generate(ctx context.Context, cfg Config) error {
 	if err := checkGroupDir(cfg.GroupDir); err != nil {
 		return err
 	}
+	if err := checkGoConfig(cfg); err != nil {
+		return err
+	}
 	dir := cfg.Dir
 	if dir == "" {
 		var err error
@@ -277,7 +282,7 @@ func Generate(ctx context.Context, cfg Config) error {
 			return err
 		}
 	}
-	outDir := filepath.Join(dir, cfg.Output)
+	outDir := outputDir(dir, cfg.Output)
 	// Before the schema is loaded: a refused GroupDir costs nothing to report.
 	if err := checkGroupDirRoot(outDir, cfg.GroupDir); err != nil {
 		return err
@@ -301,8 +306,17 @@ func Generate(ctx context.Context, cfg Config) error {
 	// opens, which on Windows was most of a generate.
 	rels := slices.Sorted(maps.Keys(files))
 	errs := make([]error, len(rels))
+	// Every refusal is found before anything is written, so a refused generate
+	// leaves no package that is half this run's.
+	olds := make([][]byte, len(rels))
 	boundedEach(len(rels), func(i int) {
-		errs[i] = writeGo(filepath.Join(outDir, rels[i]), files[rels[i]])
+		olds[i], errs[i] = readExisting(filepath.Join(outDir, rels[i]))
+	})
+	if err := errors.Join(append(errs, authoredSchemaFiles(outDir, b.sourceNames(), files))...); err != nil {
+		return err
+	}
+	boundedEach(len(rels), func(i int) {
+		errs[i] = writeGo(filepath.Join(outDir, rels[i]), olds[i], files[rels[i]])
 	})
 	if err := errors.Join(errs...); err != nil {
 		return err
@@ -311,6 +325,39 @@ func Generate(ctx context.Context, cfg Config) error {
 		return err
 	}
 	return b.scaffold(b.uniqueGroups())
+}
+
+// checkGoConfig refuses the two settings that are written into generated code
+// as they stand and may not be Go: the package name Package ends in, and the
+// type each Models entry names. Left to the formatter they failed as a line
+// and column in a file that was never written, followed by its source.
+func checkGoConfig(cfg Config) error {
+	name := cfg.Package
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	if cfg.Package != "" && !token.IsIdentifier(name) {
+		return fmt.Errorf("codegen: Package %q ends in %q, which is not a Go package name", cfg.Package, name)
+	}
+	var errs []error
+	for _, gql := range slices.Sorted(maps.Keys(cfg.Models)) {
+		expr := cfg.Models[gql]
+		path, ref := splitModelExpr(expr)
+		if _, err := parser.ParseExpr(ref); err != nil || strings.ContainsAny(path, " \t\"`") {
+			errs = append(errs, fmt.Errorf("codegen: Models[%q] = %q is not a Go type, written as import/path.Type", gql, expr))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// outputDir is where Output is on disk: under dir when it is relative, and
+// where it says when it is absolute, which Join would have put under dir too.
+func outputDir(dir, output string) string {
+	output = filepath.FromSlash(output)
+	if filepath.IsAbs(output) {
+		return output
+	}
+	return filepath.Join(dir, output)
 }
 
 // RootField is what Config.RootFieldGroup is told about a root field.
@@ -601,6 +648,50 @@ func pruneGenerated(outDir string, written map[string][]byte, notef func(string,
 		errs = append(errs, fmt.Errorf("codegen: %s is no longer generated but is still embedded, and could not be deleted: %w", f.path, f.err))
 	}
 	return errors.Join(errs...)
+}
+
+// authoredSchemaFiles refuses a generate that would delete an SDL file its
+// author wrote. gqlc owns outDir/schema and prunes what it did not write
+// there, which is right while that directory holds only copies. When the
+// sources themselves are read from it, a file the globs do not name is not a
+// stale copy but the author's own, and it carries no header to say so. It
+// cannot be left either -- the root package embeds the directory by glob, so
+// its types would be served -- which leaves saying so.
+func authoredSchemaFiles(outDir string, sources []string, written map[string][]byte) error {
+	schemaDir := filepath.Join(outDir, "schema")
+	inPlace := false
+	for _, src := range sources {
+		if sameDir(filepath.Dir(filepath.FromSlash(src)), schemaDir) {
+			inPlace = true
+			break
+		}
+	}
+	if !inPlace {
+		return nil
+	}
+	stale, err := staleSchemaCopies(outDir, writtenKeys(outDir, written))
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, path := range stale {
+		errs = append(errs, fmt.Errorf("codegen: %s is not one of the schema sources, but it is in the directory they are read from, which the generated package embeds whole; add it to the schema globs, or move or delete it", filepath.ToSlash(path)))
+	}
+	return errors.Join(errs...)
+}
+
+// sameDir reports whether two directory paths name one directory, through
+// links and case-folding filesystems as well as by spelling.
+func sameDir(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	ai, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	bi, err := os.Stat(b)
+	return err == nil && os.SameFile(ai, bi)
 }
 
 // staleSchemaCopies is the SDL copies in outDir/schema this run did not write.
