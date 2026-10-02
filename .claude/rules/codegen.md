@@ -545,6 +545,35 @@ the other reserved names, since the root package declares each beside its unalia
 imports; `fed` is renamed only when `Federation` is on, which is the only time the root imports
 it -- renaming it always would have moved a package a non-federated schema already had.
 
+**`gqlc -check` (`Config.Check`) is a generate that writes and deletes nothing** and returns
+`ErrStale` naming each file it would create, rewrite or delete, relative to `Config.Dir`. It
+runs every refusal a generate runs first, so a broken configuration is an error and never
+"current"; what it would delete comes from `pruneList`, the listing half of `pruneGenerated`,
+so the two cannot disagree. Scaffolding is left out on purpose, apart from its configuration
+(`checkScaffold`): it adds to code the author owns, and the compiler reports what is missing.
+
+**A review of `-check` ran it and then a generate on nine setups and compared**, and found what
+reading had not. Stale SDL copies were named with the output directory twice -- the glob
+returns paths under it and the namer joined it again -- in the commonest invocation, a
+relative `-config`; every test had used an absolute `t.TempDir()`. A broken scaffold
+configuration was reported current, because the check returned before `scaffold`, whose
+refusals came first in it. Paths are made absolute before they are named now, a symlink
+between `Config.Dir` and `Output` is resolved before giving up on a relative name, and the
+deletion report is named under `Output` as written, not as `EvalSymlinks` found it -- macOS
+puts `TMPDIR` under `/var`, a link to `/private/var`. A file that differs only in CRLF line
+endings is `sameContent` for a generate and a check alike: comparing bytes rewrote, and
+reported stale, every generated file in a Windows checkout with `core.autocrlf`. A check that
+passes prints nothing, notes included, so that it can stand in a hook. Its mutation run left
+nineteen of thirty-five alive; each real one has a test now, among them an exact report whose
+three deletions are found in an order that is not the report's -- with two, reversing them
+happened to sort them. `gqlc -h` lists every
+`gqlc.yaml` key in a line (`TestHelpNamesEveryConfigurationKey` reads `fileConfig`'s tags, so a
+key added without a line fails), and `-version` prints the graphql-go version from the binary's
+build information -- under `go tool` the version `go.mod` requires and, after `=>`, what a
+`replace` points it at (`examples/backoffice` prints `=> ../.. (devel)`). A cached binary built
+from the code before the replace was read printed the required version alone, which is how the
+first version of this comment came to say a replace is not recorded.
+
 **A file gqlc stops writing is deleted, and only if it is gqlc's.** `pruneGenerated` removes
 every `.go` under `Output` that starts with `generatedHeader` and was not written this run,
 then any directory that left empty. Before it, `examples/backoffice` carried four

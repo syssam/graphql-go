@@ -13,6 +13,13 @@
 //	gqlc -config gqlc.yaml
 //
 // The two forms do not mix: -schema means the flags are the configuration.
+// Either takes -check, which generates in memory, writes nothing, and fails
+// naming every file a generate would create, rewrite or delete -- the "is
+// the generated code current" step of a CI job or a pre-commit hook:
+//
+//	gqlc -config gqlc.yaml -check
+//
+// gqlc -h lists every gqlc.yaml key; the README describes each.
 package main
 
 import (
@@ -227,16 +234,39 @@ func main() {
 	}
 }
 
-func run(args []string) error {
+func run(args []string) error { return runTo(args, os.Stdout, os.Stderr) }
+
+// options is what the flags say.
+type options struct {
+	config, out, pkg             string
+	schema, models               repeatable
+	nullableOmittable, zeroNulls bool
+	check, version               bool
+}
+
+// newFlags is the command's flag set, apart so that a test can list every
+// flag the help has to show.
+func newFlags(stderr io.Writer) (*flag.FlagSet, *options) {
+	o := &options{}
 	fs := flag.NewFlagSet("gqlc", flag.ContinueOnError)
-	configPath := fs.String("config", "gqlc.yaml", "path to gqlc.yaml")
-	var schema, models repeatable
-	fs.Var(&schema, "schema", "SDL file or glob; repeat or comma-separate. Implies the flag form.")
-	out := fs.String("out", "", "output directory for generated Go")
-	pkg := fs.String("pkg", "", "import path of -out; derived from the nearest go.mod when empty")
-	fs.Var(&models, "model", "NAME=go/import/path.Type; repeat or comma-separate")
-	nullableOmittable := fs.Bool("nullable-input-omittable", false, "give nullable input fields Omittable")
-	zeroForNull := fs.Bool("zero-for-null-inputs", false, "let a non-nullable Go field back a nullable input; read the graphql.ZeroForNull godoc first")
+	fs.SetOutput(stderr)
+	fs.Usage = func() { usage(fs, stderr) }
+	fs.StringVar(&o.config, "config", "gqlc.yaml", "path to gqlc.yaml")
+	fs.BoolVar(&o.check, "check", false, "write nothing; fail naming each file a generate would change")
+	fs.BoolVar(&o.version, "version", false, "print the graphql-go version gqlc was built from")
+	fs.Var(&o.schema, "schema", "SDL file or glob, repeated or comma-separated; the flag form")
+	fs.StringVar(&o.out, "out", "", "output directory for generated Go")
+	fs.StringVar(&o.pkg, "pkg", "", "import path of -out; read from the nearest go.mod when empty")
+	fs.Var(&o.models, "model", "NAME=go/import/path.Type, repeated or comma-separated")
+	fs.BoolVar(&o.nullableOmittable, "nullable-input-omittable", false, "give nullable input fields Omittable")
+	fs.BoolVar(&o.zeroNulls, "zero-for-null-inputs", false, "let a non-null Go field back a nullable input (see ZeroForNull)")
+	return fs, o
+}
+
+// runTo is run with its output given, so a test can read what -h, -version
+// and the notes print.
+func runTo(args []string, stdout, stderr io.Writer) error {
+	fs, o := newFlags(stderr)
 	if err := fs.Parse(args); err != nil {
 		// The usage has been printed, which is what was asked for.
 		if errors.Is(err, flag.ErrHelp) {
@@ -249,8 +279,21 @@ func run(args []string) error {
 	if fs.NArg() > 0 {
 		return fmt.Errorf("gqlc: unexpected argument %q; schema files are passed with -schema", fs.Arg(0))
 	}
+	if o.version {
+		_, err := fmt.Fprintln(stdout, version())
+		return err
+	}
+	notef := func(format string, args ...any) {
+		// A check that passes says nothing, so that it can stand in a CI job
+		// or a pre-commit hook; the notes are a generate's to make.
+		if o.check {
+			return
+		}
+		// A note that cannot be written to stderr has nowhere else to go.
+		_, _ = fmt.Fprintf(stderr, "gqlc: "+format+"\n", args...)
+	}
 
-	if len(schema) > 0 {
+	if len(o.schema) > 0 {
 		explicitConfig := false
 		fs.Visit(func(f *flag.Flag) {
 			if f.Name == "config" {
@@ -260,12 +303,13 @@ func run(args []string) error {
 		if explicitConfig {
 			return errors.New("gqlc: -config and -schema are two ways to say the same thing; pass one")
 		}
-		return runFlags(schema, *out, *pkg, models, *nullableOmittable, *zeroForNull)
+		return runFlags(o.schema, o.out, o.pkg, o.models, o.nullableOmittable, o.zeroNulls, o.check, notef)
 	}
 
-	raw, err := os.ReadFile(*configPath)
+	configPath := o.config
+	raw, err := os.ReadFile(configPath)
 	if err != nil {
-		return fmt.Errorf("gqlc: read %s: %w", *configPath, err)
+		return fmt.Errorf("gqlc: read %s: %w", configPath, err)
 	}
 	// KnownFields, because a misspelled key is otherwise ignored and the
 	// generator quietly does the default thing: nullableInputOmitable with one
@@ -274,14 +318,14 @@ func run(args []string) error {
 	dec := yaml.NewDecoder(bytes.NewReader(raw))
 	dec.KnownFields(true)
 	if err := dec.Decode(&fc); err != nil && !errors.Is(err, io.EOF) {
-		return fmt.Errorf("gqlc: parse %s: %w", *configPath, err)
+		return fmt.Errorf("gqlc: parse %s: %w", configPath, err)
 	}
 	rootFieldGroup, err := fc.rootFieldGroup()
 	if err != nil {
-		return fmt.Errorf("gqlc: %s: %w", *configPath, err)
+		return fmt.Errorf("gqlc: %s: %w", configPath, err)
 	}
 	if err := fc.applyPreset(); err != nil {
-		return fmt.Errorf("gqlc: %s: %w", *configPath, err)
+		return fmt.Errorf("gqlc: %s: %w", configPath, err)
 	}
 	cfg := codegen.Config{
 		AutoBind:               fc.AutoBind,
@@ -289,7 +333,7 @@ func run(args []string) error {
 		RootFieldGroup:         rootFieldGroup,
 		Scaffold:               fc.Scaffold,
 		GroupDir:               fc.GroupDir,
-		Dir:                    filepath.Dir(*configPath),
+		Dir:                    filepath.Dir(configPath),
 		SchemaGlobs:            fc.Schema,
 		Output:                 fc.Output,
 		Package:                fc.Package,
@@ -307,16 +351,15 @@ func run(args []string) error {
 		JSONTags:               set(fc.JSONTags),
 		Wire:                   codegen.Wire{Deps: fc.Wire.Deps, Pass: fc.Wire.Pass},
 		FieldNames:             fc.FieldNames,
-		Notef: func(format string, args ...any) {
-			fmt.Fprintf(os.Stderr, "gqlc: "+format+"\n", args...)
-		},
+		Check:                  o.check,
+		Notef:                  notef,
 	}
 	return codegen.Generate(context.Background(), cfg)
 }
 
 // runFlags is the config-file-free path. Dir stays the process working
 // directory, so -schema and -out are read the way a shell would read them.
-func runFlags(schema repeatable, out, pkg string, models repeatable, nullableOmittable, zeroForNull bool) error {
+func runFlags(schema repeatable, out, pkg string, models repeatable, nullableOmittable, zeroForNull, check bool, notef func(string, ...any)) error {
 	if out == "" {
 		return errors.New("gqlc: -out is required with -schema")
 	}
@@ -336,8 +379,7 @@ func runFlags(schema repeatable, out, pkg string, models repeatable, nullableOmi
 		Models:                 m,
 		NullableInputOmittable: nullableOmittable,
 		ZeroForNullInputs:      zeroForNull,
-		Notef: func(format string, args ...any) {
-			fmt.Fprintf(os.Stderr, "gqlc: "+format+"\n", args...)
-		},
+		Check:                  check,
+		Notef:                  notef,
 	})
 }

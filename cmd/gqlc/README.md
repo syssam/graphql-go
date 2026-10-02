@@ -16,8 +16,40 @@ models:
 ```
 
 ```sh
-go run github.com/syssam/graphql-go/cmd/gqlc -config gqlc.yaml
+go tool gqlc -config gqlc.yaml        # or go run github.com/syssam/graphql-go/cmd/gqlc
 ```
+
+`go tool gqlc` needs `tool github.com/syssam/graphql-go/cmd/gqlc` in your
+`go.mod` (`go get -tool github.com/syssam/graphql-go/cmd/gqlc`), which pins
+gqlc to the graphql-go version the project builds against.
+
+| | |
+|---|---|
+| `gqlc -h` | what gqlc does, every flag, and every `gqlc.yaml` key in a line |
+| `gqlc -check` | generate in memory, write nothing, and fail naming each file a generate would create, rewrite or delete |
+| `gqlc -version` | the graphql-go version gqlc was built from, and the Go that built it |
+| `gqlc -schema FILES -out DIR` | generate with no `gqlc.yaml`; the package is read from the nearest `go.mod` |
+
+`-check` is the step that keeps generated code honest in CI and in a
+pre-commit hook, without running the generator over the tree and asking
+git what changed:
+
+```sh
+go tool gqlc -config gqlc.yaml -check
+```
+
+A check that passes prints nothing and exits 0; one that fails names each
+file, relative to the directory of `gqlc.yaml`, and exits 1. It refuses
+whatever a generate would refuse, scaffold configuration included, so a broken
+configuration is never reported as up to date. A file that differs only in
+line endings is the same file, to a check as to a generate: a Windows
+checkout with `core.autocrlf` does not make everything stale.
+
+It does not check scaffolding. Stubs are added to code you own, so whether
+they are all there is the compiler's to say: a missing method at the
+`var _ Resolver` line beside the implementation, a missing implementation
+where it is used -- in `wire.go`, with `wire` configured, or in your own
+call to `Bindings`.
 
 With one SDL group, implement `graph.Resolver` and call
 `graph.NewSchema(r, extra...)`. With two or more, implement each group's
