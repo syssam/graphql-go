@@ -412,6 +412,7 @@ transport/gqlsse: func WithLogger(l *slog.Logger) Option
 transport/gqlsse: func WithMaxBodyBytes(n int64) Option
 transport/gqlsse: func WithMaxStreamAge(d time.Duration) Option
 transport/gqlsse: func WithPersistedQueries(cache apq.Cache) Option
+transport/gqlsse: func WithWriteTimeout(d time.Duration) Option
 transport/gqlsse: type Handler struct { }
 transport/gqlsse: type Option func(*Handler)
 transport/gqlsse: var DefaultCSRFHeaders

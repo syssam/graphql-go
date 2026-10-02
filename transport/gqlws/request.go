@@ -11,6 +11,12 @@ func withRequest(ctx context.Context, r *http.Request) context.Context {
 	return context.WithValue(ctx, requestKey{}, r)
 }
 
+// withoutRequest hides the request from everything derived from ctx: a nil
+// under the same key shadows the value withRequest put there.
+func withoutRequest(ctx context.Context) context.Context {
+	return context.WithValue(ctx, requestKey{}, (*http.Request)(nil))
+}
+
 // RequestFrom returns the HTTP request that opened the connection, or nil.
 //
 // It is available inside a ConnectFunc, where cookies and headers are often

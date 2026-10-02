@@ -112,7 +112,7 @@ func (h *handler) serve(c fiber.Ctx) error {
 		case malformed:
 			status = http.StatusBadRequest
 		case mediaType == MediaTypeGraphQLResponse && resp.HasRequestErrors() && !apq.IsRetryHandshake(resp):
-			status = http.StatusBadRequest
+			status = httpreq.ErrorStatus(resp)
 		}
 		h.writeResponse(c, mediaType, status, func(out io.Writer) error {
 			_, err := resp.WriteTo(out)
@@ -124,24 +124,14 @@ func (h *handler) serve(c fiber.Ctx) error {
 
 	// Batches are always 200: each entry carries its own errors.
 	h.writeResponse(c, mediaType, http.StatusOK, func(out io.Writer) error {
-		if _, err := io.WriteString(out, "["); err != nil {
+		return httpreq.WriteBatch(out, len(reqs), func(i int, entry io.Writer) error {
+			resp, _ := h.execute(ctx, reqs[i], false)
+			defer resp.Release()
+			_, err := resp.WriteTo(entry)
 			return err
-		}
-		for i, req := range reqs {
-			if i > 0 {
-				if _, err := io.WriteString(out, ","); err != nil {
-					return err
-				}
-			}
-			resp, _ := h.execute(ctx, req, false)
-			_, err := resp.WriteTo(out)
-			resp.Release()
-			if err != nil {
-				return err
-			}
-		}
-		_, err := io.WriteString(out, "]")
-		return err
+		}, func(i int, err error) {
+			h.logger.Warn("gqlfiber: serializing batch entry", "entry", i, "error", err)
+		})
 	})
 	return nil
 }
@@ -178,7 +168,7 @@ func (h *handler) resolvePersisted(req *graphql.Request) *graphql.Response {
 func (h *handler) writeGraphQLError(c fiber.Ctx, mediaType string, resp *graphql.Response) {
 	status := http.StatusOK
 	if mediaType == MediaTypeGraphQLResponse && resp.HasRequestErrors() && !apq.IsRetryHandshake(resp) {
-		status = http.StatusBadRequest
+		status = httpreq.ErrorStatus(resp)
 	}
 	h.writeResponse(c, mediaType, status, func(out io.Writer) error {
 		_, err := resp.WriteTo(out)

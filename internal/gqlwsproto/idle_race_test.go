@@ -25,7 +25,7 @@ func idleConn(sock Socket) *conn {
 		sock:   sock,
 		ctx:    ctx,
 		cancel: cancel,
-		subs:   map[string]context.CancelFunc{},
+		subs:   map[string]*operation{},
 	}
 }
 
@@ -82,7 +82,7 @@ func TestCloseIfIdleDoesNotCloseWithASubscriptionOrWhileDraining(t *testing.T) {
 		c.mu.Lock()
 		go func() { defer close(done); c.closeIfIdle() }()
 		_, cancel := context.WithCancel(context.Background())
-		c.subs["1"] = cancel
+		c.subs["1"] = &operation{cancel: cancel}
 		c.mu.Unlock()
 		<-done
 		cancel()
@@ -126,7 +126,7 @@ func TestCancelAllCallsEveryRegisteredCancel(t *testing.T) {
 	// which is exactly the blind spot being closed.
 	called := map[string]bool{}
 	for _, id := range []string{"1", "2", "3"} {
-		c.subs[id] = func() { called[id] = true }
+		c.subs[id] = &operation{cancel: func() { called[id] = true }}
 	}
 
 	c.cancelAll()

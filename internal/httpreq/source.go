@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 )
 
 // ErrBodyTooLarge reports a body over the configured limit. Transports turn
@@ -37,7 +38,17 @@ func FromRequest(w http.ResponseWriter, r *http.Request) Source { return netHTTP
 
 func (s netHTTP) Method() string                { return s.r.Method }
 func (s netHTTP) Header(name string) string     { return s.r.Header.Get(name) }
-func (s netHTTP) QueryParam(name string) string { return s.r.URL.Query().Get(name) }
+func (s netHTTP) QueryParam(name string) string { return QueryValue(s.r.URL.RawQuery, name) }
+
+// QueryValue is the first value of name in a raw query string, by net/url's
+// rules: a pair that does not unescape is dropped, so a parameter with invalid
+// percent-encoding is absent rather than passed on half decoded. Every Source
+// reads its parameters through it. fasthttp decodes leniently, and a GET that
+// net/http refused for a missing query reached the parser on Fiber.
+func QueryValue(rawQuery, name string) string {
+	values, _ := url.ParseQuery(rawQuery)
+	return values.Get(name)
+}
 
 func (s netHTTP) Body(limit int64) ([]byte, error) {
 	body, err := io.ReadAll(http.MaxBytesReader(s.w, s.r.Body, limit))

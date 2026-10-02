@@ -92,12 +92,12 @@ type Option func(*config)
 // WithMaxBodyBytes limits the size of request bodies. The default is 1 MiB.
 //
 // Unlike its gqlhttp namesake this does not bound the wire read. fasthttp has
-// already read the whole body, and Fiber has already decompressed a
-// Content-Encoding one, before a handler runs, so n is checked against a body
-// that is by then fully in memory: a compressed expansion bomb is
-// materialised before it is rejected. fiber.Config.BodyLimit is what bounds
-// the read from the socket, at 4 MiB by default -- set the two together, or a
-// hardened n here promises a bound the server does not have.
+// already read the whole body before a handler runs, so n is checked against
+// a body that is by then fully in memory. fiber.Config.BodyLimit is what
+// bounds the read from the socket, at 4 MiB by default -- set the two
+// together, or a hardened n here promises a bound the server does not have.
+// The body is read as sent: a Content-Encoding one is not decompressed, as it
+// is not by gqlhttp.
 func WithMaxBodyBytes(n int64) Option { return func(c *config) { c.maxBody = n } }
 
 // WithBatching accepts JSON arrays of requests with at most maxEntries entries,
@@ -178,6 +178,10 @@ func WithReadLimit(n int64) Option { return func(c *config) { c.readLimit = n } 
 //
 // It also bounds the handshake: the 101 response is a write to the same peer
 // asking the same question, so it is held to the same deadline.
+//
+// On an SSE stream it bounds each write the same way, for the same peer: one
+// that stops reading parks the stream in a write where it sees neither a
+// drain nor its context.
 func WithWriteTimeout(d time.Duration) Option { return func(c *config) { c.writeTimeout = d } }
 
 // WithOriginPatterns authorizes cross-origin WebSocket connections from hosts

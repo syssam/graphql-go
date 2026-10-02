@@ -217,6 +217,11 @@ func WS(exec *graphql.Executor, opts ...Option) fiber.Handler {
 			DecorateContext: func(ctx context.Context) context.Context {
 				return context.WithValue(ctx, connKey{}, conn)
 			},
+			// A nil under the same key hides the value above: ConnFrom then
+			// finds no UpgradeConn in an operation's context.
+			ClearContext: func(ctx context.Context) context.Context {
+				return context.WithValue(ctx, connKey{}, nil)
+			},
 			Logger: cfg.logger,
 		})
 	}, websocket.Config{

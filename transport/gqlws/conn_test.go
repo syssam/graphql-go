@@ -741,3 +741,47 @@ func TestCancelledConnectContextCloses(t *testing.T) {
 		t.Fatalf("close code = %d after the connection context ended, want %d", code, gqlws.StatusGoingAway)
 	}
 }
+
+// RequestFrom is documented as available to a ConnectFunc and to nothing
+// later, because the request is finished by then. But the idiomatic hook
+// returns a context derived from the one it was given, and that became the
+// parent of every operation: the request reached every resolver.
+func TestTheUpgradeRequestDoesNotReachOperations(t *testing.T) {
+	s, err := graphql.NewSchema(graphql.SDL(`type Query { seen: String! }`),
+		graphql.Query(graphql.Resolve("seen", func(ctx context.Context, _ graphql.Root) (string, error) {
+			name, _ := ctx.Value(userKey{}).(string)
+			if gqlws.RequestFrom(ctx) != nil {
+				return name + ": the upgrade request", nil
+			}
+			return name + ": nothing", nil
+		})))
+	if err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	sawRequest := false
+	c := dial(t, graphql.NewExecutor(s), gqlws.WithOnConnect(func(ctx context.Context, _ []byte) (context.Context, error) {
+		sawRequest = gqlws.RequestFrom(ctx) != nil
+		return context.WithValue(ctx, userKey{}, "ada"), nil
+	}))
+	c.init("")
+	if !sawRequest {
+		t.Fatal("the ConnectFunc itself was not given the upgrade request")
+	}
+	c.subscribe("1", `{ seen }`)
+	if got := c.recv(); string(got.Payload) != `{"data":{"seen":"ada: nothing"}}` {
+		t.Fatalf("frame = %s: what the hook put on the context must reach a resolver, and the upgrade request must not", got.Payload)
+	}
+}
+
+// An oversized client message must end the connection rather than be
+// buffered. gqlfiber had this test and gqlws did not, so nothing held the
+// option to the socket here: with the limit not applied the message is read
+// whole and the handshake succeeds.
+func TestReadLimitClosesAnOversizedMessage(t *testing.T) {
+	_, e := newTestExecutor(t)
+	c := dial(t, e, gqlws.WithReadLimit(128))
+	c.send(frame{Type: "connection_init", Payload: json.RawMessage(`{"pad":"` + strings.Repeat("x", 512) + `"}`)})
+	if got := c.recvErr(); got != websocket.StatusMessageTooBig {
+		t.Fatalf("close code = %d, want %d", got, websocket.StatusMessageTooBig)
+	}
+}

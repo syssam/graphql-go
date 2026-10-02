@@ -49,8 +49,8 @@ func run() error {
 	exec := graphql.NewExecutor(s)
 
 	// BodyLimit is set alongside gqlfiber's own default of 1 MiB because the
-	// two bound different things: fasthttp has read and decompressed the
-	// whole body before a handler sees it, so gqlfiber's limit is a length
+	// two bound different things: fasthttp has read the whole body before a
+	// handler sees it, so gqlfiber's limit is a length
 	// check on memory already spent, and BodyLimit (4 MiB if left alone) is
 	// the only thing bounding the read from the socket.
 	app := fiber.New(fiber.Config{BodyLimit: 1 << 20})

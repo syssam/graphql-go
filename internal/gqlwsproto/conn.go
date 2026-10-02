@@ -35,7 +35,7 @@ func Serve(ctx context.Context, sock Socket, cfg Config) {
 		ctx:         ctx,
 		cancel:      cancel,
 		life:        ctx,
-		subs:        make(map[string]context.CancelFunc),
+		subs:        make(map[string]*operation),
 		streams:     streams,
 		stopStreams: stopStreams,
 	}
@@ -163,7 +163,7 @@ type conn struct {
 	writeMu sync.Mutex
 
 	mu   sync.Mutex
-	subs map[string]context.CancelFunc
+	subs map[string]*operation
 
 	// draining is set under mu, beside every wg.Add, so an operation either
 	// starts before the drain waits or is refused.
@@ -264,6 +264,9 @@ func (c *conn) handshake() bool {
 				}
 				if next != nil {
 					opCtx = next
+					if c.cfg.ClearContext != nil {
+						opCtx = c.cfg.ClearContext(next)
+					}
 				}
 			}
 			// Decided before the ack is written, not when handshake returns:
@@ -382,6 +385,15 @@ func (c *conn) dispatch(msg InMessage) bool {
 	}
 }
 
+// operation is one running subscribe. The protocol names it by an id the
+// client may reuse the moment it has completed it, while the goroutine serving
+// the first use is still running, so everything that goroutine does to the id
+// afterwards is checked against the operation that registered it: retiring an
+// id by name alone deleted whichever operation held it now.
+type operation struct {
+	cancel context.CancelFunc
+}
+
 func (c *conn) subscribe(msg InMessage) bool {
 	if msg.ID == "" {
 		c.close(StatusBadRequest, "Subscribe message is missing an id")
@@ -438,7 +450,8 @@ func (c *conn) subscribe(msg InMessage) bool {
 		cancel()
 		return c.writeError(msg.ID, graphql.Errorf("This connection allows at most %d operations at a time.", c.cfg.MaxSubs)) == nil
 	}
-	c.subs[msg.ID] = cancel
+	op := &operation{cancel: cancel}
+	c.subs[msg.ID] = op
 	// Redundant with closeIfIdle's own re-check under mu, on purpose: Stop is
 	// too late for a timer that fired while this subscribe waited for the
 	// lock, and the re-check is what catches that. Either alone keeps a busy
@@ -460,16 +473,16 @@ func (c *conn) subscribe(msg InMessage) bool {
 	go func() {
 		defer c.wg.Done()
 		defer cancel()
-		c.run(ctx, msg.ID, req)
+		c.run(ctx, op, msg.ID, req)
 	}()
 	return true
 }
 
 // run executes one operation and streams its results.
-func (c *conn) run(ctx context.Context, id string, req *graphql.Request) {
+func (c *conn) run(ctx context.Context, op *operation, id string, req *graphql.Request) {
 	kind, kerr := c.cfg.Exec.OperationKind(req.Query, req.OperationName)
 	if kerr != nil || kind != ast.Subscription {
-		c.runOnce(ctx, id, req)
+		c.runOnce(ctx, op, id, req)
 		return
 	}
 
@@ -487,10 +500,10 @@ func (c *conn) run(ctx context.Context, id string, req *graphql.Request) {
 		}
 		var se *graphql.SubscribeError
 		if errors.As(err, &se) {
-			c.finishWithErrors(id, se.Response.Errors)
+			c.finishWithErrors(op, id, se.Response.Errors)
 			return
 		}
-		c.finishWithErrors(id, []*graphql.Error{graphql.Errorf("%v", err)})
+		c.finishWithErrors(op, id, []*graphql.Error{graphql.Errorf("%v", err)})
 		return
 	}
 
@@ -506,8 +519,9 @@ func (c *conn) run(ctx context.Context, id string, req *graphql.Request) {
 		resp.Release()
 		if err != nil {
 			// Stop consuming so the executor's pump is not left producing
-			// into a connection that can no longer take it.
-			c.stop(id)
+			// into a connection that can no longer take it; returning cancels
+			// the operation.
+			c.forget(op, id)
 			return
 		}
 	}
@@ -516,7 +530,7 @@ func (c *conn) run(ctx context.Context, id string, req *graphql.Request) {
 		// protocol expects no further message for this id.
 		return
 	}
-	c.finish(id, OutMessage{ID: id, Type: TypeComplete})
+	c.finish(op, id, OutMessage{ID: id, Type: TypeComplete})
 }
 
 // persistedResult sends a persisted-query resolution as an ordinary result
@@ -529,36 +543,49 @@ func (c *conn) persistedResult(id string, resp *graphql.Response) {
 		return
 	}
 	// Through finish like every other terminal message, so a failed write is
-	// logged rather than dropped. Its forget is a no-op here: a persisted
+	// logged rather than dropped. There is no operation to retire: a persisted
 	// result returns before the id is ever registered.
-	c.finish(id, OutMessage{ID: id, Type: TypeComplete})
+	c.finish(nil, id, OutMessage{ID: id, Type: TypeComplete})
 }
 
 // runOnce serves a query or mutation as one next followed by complete.
-func (c *conn) runOnce(ctx context.Context, id string, req *graphql.Request) {
+func (c *conn) runOnce(ctx context.Context, op *operation, id string, req *graphql.Request) {
 	resp := c.cfg.Exec.Execute(ctx, req)
 	defer resp.Release()
 
+	// Completed by the client while it ran, or the connection is ending. The
+	// protocol expects nothing more for this id, and the client may already
+	// have given it to another operation, which a result or an error sent now
+	// would be read as belonging to.
+	if ctx.Err() != nil {
+		c.forget(op, id)
+		return
+	}
 	// An operation that never ran is a protocol error, not a payload: the
 	// spec reserves the error message for exactly this.
 	if resp.HasRequestErrors() {
-		c.finishWithErrors(id, resp.Errors)
+		c.finishWithErrors(op, id, resp.Errors)
 		return
 	}
 	if err := c.writeNext(id, resp); err != nil {
-		c.stop(id)
+		c.forget(op, id)
 		return
 	}
 	if ctx.Err() != nil {
 		return
 	}
-	c.finish(id, OutMessage{ID: id, Type: TypeComplete})
+	c.finish(op, id, OutMessage{ID: id, Type: TypeComplete})
 }
 
 // finish sends a terminal message and retires the id, so that the client may
-// immediately reuse it.
-func (c *conn) finish(id string, msg OutMessage) {
-	c.forget(id)
+// immediately reuse it. An operation that no longer holds its id sends
+// nothing: the client completed it, and a terminal message now would end
+// whatever the client has started under that id since. op is nil for a
+// message about an id that was never registered.
+func (c *conn) finish(op *operation, id string, msg OutMessage) {
+	if op != nil && !c.forget(op, id) {
+		return
+	}
 	if err := c.write(c.life, msg); err != nil {
 		c.cfg.Logger.Debug("gqlwsproto: writing terminal message", "id", id, "error", err)
 	}
@@ -566,12 +593,12 @@ func (c *conn) finish(id string, msg OutMessage) {
 
 // finishWithErrors ends an operation with an error message, which the
 // protocol treats as terminal: no complete follows it.
-func (c *conn) finishWithErrors(id string, errs []*graphql.Error) {
+func (c *conn) finishWithErrors(op *operation, id string, errs []*graphql.Error) {
 	payload, err := json.Marshal(errs)
 	if err != nil {
 		payload = []byte(`[{"message":"Internal server error."}]`)
 	}
-	c.finish(id, OutMessage{ID: id, Type: TypeError, Payload: payload})
+	c.finish(op, id, OutMessage{ID: id, Type: TypeError, Payload: payload})
 }
 
 func (c *conn) writeError(id string, e *graphql.Error) error {
@@ -595,30 +622,32 @@ func (c *conn) writeNext(id string, resp *graphql.Response) error {
 	return c.write(c.life, OutMessage{ID: id, Type: TypeNext, Payload: payload})
 }
 
-// stop cancels an operation without sending anything, for an unsubscribe or a
-// write failure.
+// stop cancels whichever operation holds id without sending anything, for a
+// client's complete.
 func (c *conn) stop(id string) {
 	c.mu.Lock()
-	cancel, ok := c.subs[id]
+	op, ok := c.subs[id]
 	delete(c.subs, id)
 	if ok {
 		c.resetIdleLocked()
 	}
 	c.mu.Unlock()
-	if cancel != nil {
-		cancel()
+	if ok {
+		op.cancel()
 	}
 }
 
-// forget retires an id but leaves its context alone; the caller's deferred
-// cancel handles that.
-func (c *conn) forget(id string) {
+// forget retires id if op still holds it, and reports whether it did. It
+// leaves the context alone; the operation's deferred cancel handles that.
+func (c *conn) forget(op *operation, id string) bool {
 	c.mu.Lock()
-	if _, ok := c.subs[id]; ok {
-		delete(c.subs, id)
-		c.resetIdleLocked()
+	defer c.mu.Unlock()
+	if c.subs[id] != op {
+		return false
 	}
-	c.mu.Unlock()
+	delete(c.subs, id)
+	c.resetIdleLocked()
+	return true
 }
 
 // resetIdleLocked starts the idle period again when the last operation has
@@ -677,8 +706,8 @@ func (c *conn) closeIfIdle() {
 func (c *conn) cancelAll() {
 	c.mu.Lock()
 	cancels := make([]context.CancelFunc, 0, len(c.subs))
-	for id, cancel := range c.subs {
-		cancels = append(cancels, cancel)
+	for id, op := range c.subs {
+		cancels = append(cancels, op.cancel)
 		delete(c.subs, id)
 	}
 	c.mu.Unlock()

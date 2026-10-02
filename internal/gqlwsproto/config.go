@@ -90,5 +90,13 @@ type Config struct {
 	// equivalent. Optional.
 	DecorateContext func(context.Context) context.Context
 
+	// ClearContext removes what DecorateContext added from the context the
+	// ConnectFunc returned, before it becomes the parent of the connection's
+	// operations. The hook usually returns a context derived from the one it
+	// was given, which would otherwise carry the upgrade request, or a
+	// recycled fasthttp connection, into every resolver. Set it whenever
+	// DecorateContext is set.
+	ClearContext func(context.Context) context.Context
+
 	Logger *slog.Logger
 }

@@ -197,6 +197,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		DecorateContext: func(ctx context.Context) context.Context {
 			return withRequest(ctx, r)
 		},
-		Logger: h.logger,
+		ClearContext: withoutRequest,
+		Logger:       h.logger,
 	})
 }

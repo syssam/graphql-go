@@ -55,7 +55,7 @@ func SSE(exec *graphql.Executor, opts ...Option) fiber.Handler {
 // producing the same statuses and messages. It always returns nil, because
 // the response is already written.
 func (h *sseHandler) serve(c fiber.Ctx) error {
-	if !acceptsEventStream(c.Get("Accept")) {
+	if !httpreq.AcceptsEventStream(c.Get("Accept")) {
 		h.writeError(c, http.StatusNotAcceptable, "Accept header does not allow %s.", MediaTypeEventStream)
 		return nil
 	}
@@ -145,7 +145,7 @@ func (h *sseHandler) single(c fiber.Ctx, req *graphql.Request) error {
 	// way New's handler reports it rather than as a payload on an opened
 	// stream.
 	if resp.HasRequestErrors() {
-		h.writeResponse(c, http.StatusBadRequest, resp)
+		h.writeResponse(c, httpreq.ErrorStatus(resp), resp)
 		return nil
 	}
 
@@ -176,7 +176,7 @@ func (h *sseHandler) subscribe(c fiber.Ctx, req *graphql.Request) error {
 		cancel()
 		var se *graphql.SubscribeError
 		if errors.As(err, &se) {
-			h.writeResponse(c, http.StatusBadRequest, se.Response)
+			h.writeResponse(c, httpreq.ErrorStatus(se.Response), se.Response)
 			return nil
 		}
 		h.writeError(c, http.StatusInternalServerError, "%v", err)
@@ -195,6 +195,19 @@ func (h *sseHandler) subscribe(c fiber.Ctx, req *graphql.Request) error {
 	// Nothing below may capture c: it is not merely stale by then, it is
 	// serving another request while this goroutine is still writing.
 	//
+	// The connection is the exception, and is taken here for that reason:
+	// it belongs to this response until the stream writer returns. It is what
+	// carries the write deadline. A subscriber that stays connected and stops
+	// reading blocks fasthttp's write to the socket, then the pipe this
+	// closure writes into, then the closure -- in a Flush, where it sees
+	// neither the drain nor its context, so the stream outlived both.
+	conn := c.RequestCtx().Conn()
+	arm := func() {
+		if h.writeTimeout > 0 {
+			_ = conn.SetWriteDeadline(time.Now().Add(h.writeTimeout))
+		}
+	}
+
 	// Its error is discarded rather than returned, because by now the
 	// response is committed to a stream: handing fiber an error would let
 	// the application's error handler write a second body over it.
@@ -230,14 +243,22 @@ func (h *sseHandler) subscribe(c fiber.Ctx, req *graphql.Request) error {
 					"panic", r, "stack", string(debug.Stack()))
 			}
 		}()
-		h.stream(ctx, w, events)
+		h.stream(ctx, w, events, arm)
+		// However the stream ended, fasthttp still has what is in the pipe
+		// and the chunk that terminates the response to write, to a peer that
+		// may not be reading. The deadline of the last event is no bound on
+		// that: after a quiet spell it has already passed, and the response
+		// was cut short. A fresh one is, and it can stay armed, because the
+		// connection is closed after this response (beginStream).
+		arm()
 	})
 	return nil
 }
 
 // stream pumps events onto an open stream until the source ends, the context
-// is cancelled, or a write shows that nobody is reading.
-func (h *sseHandler) stream(ctx context.Context, w *bufio.Writer, events <-chan *graphql.Response) {
+// is cancelled, or a write shows that nobody is reading. arm is called before
+// each write, to give it the write timeout.
+func (h *sseHandler) stream(ctx context.Context, w *bufio.Writer, events <-chan *graphql.Response, arm func()) {
 	var idle <-chan time.Time
 	if h.keepAlive > 0 {
 		t := time.NewTicker(h.keepAlive)
@@ -255,6 +276,7 @@ func (h *sseHandler) stream(ctx context.Context, w *bufio.Writer, events <-chan 
 	for {
 		select {
 		case resp, ok := <-events:
+			arm()
 			if !ok {
 				if err := h.writeComplete(w); err != nil {
 					h.logWrite(err)
@@ -273,6 +295,7 @@ func (h *sseHandler) stream(ctx context.Context, w *bufio.Writer, events <-chan 
 				return
 			}
 		case <-idle:
+			arm()
 			if _, err := w.WriteString(":\n\n"); err != nil {
 				h.logWrite(err)
 				return
@@ -297,18 +320,24 @@ func (h *sseHandler) beginStream(c fiber.Ctx) {
 	c.Set("Content-Type", MediaTypeEventStream)
 	// Proxies that buffer or transform the body would defeat streaming.
 	c.Set("Cache-Control", "no-cache, no-transform")
-	c.Set("Connection", "keep-alive")
+	// Closed after the stream rather than kept alive. The write deadline that
+	// bounds each event lives on the connection, and fasthttp does not reset
+	// it between responses unless a WriteTimeout is configured, so a
+	// connection handed back for reuse would carry the stream's last deadline
+	// into whatever response came next.
+	c.Response().SetConnectionClose()
 	c.Set("X-Accel-Buffering", "no")
 	c.Status(http.StatusOK)
 }
 
-// writeNext frames one response. Execution buffers hold compact JSON with no
-// literal newline, so the payload always fits a single data line.
+// writeNext frames one response as the data of a next event, as gqlsse's
+// does: through httpreq.EventData, so a line break a custom scalar wrote
+// continues the data rather than ending the event.
 func (h *sseHandler) writeNext(w io.Writer, resp *graphql.Response) error {
 	if _, err := io.WriteString(w, "event: next\ndata: "); err != nil {
 		return err
 	}
-	if err := h.writePayload(w, resp); err != nil {
+	if err := h.writePayload(httpreq.EventData(w), resp); err != nil {
 		return err
 	}
 	_, err := io.WriteString(w, "\n\n")
@@ -370,21 +399,4 @@ func (h *sseHandler) writeResponse(c fiber.Ctx, status int, resp *graphql.Respon
 
 func (h *sseHandler) writeError(c fiber.Ctx, status int, format string, args ...any) {
 	h.writeResponse(c, status, &graphql.Response{Errors: []*graphql.Error{graphql.Errorf(format, args...)}})
-}
-
-// acceptsEventStream reports whether the client will take a stream. An absent
-// header is taken as yes so that command-line clients work; a header that
-// names only other types is a client pointed at the wrong endpoint.
-func acceptsEventStream(accept string) bool {
-	if strings.TrimSpace(accept) == "" {
-		return true
-	}
-	for _, part := range strings.Split(accept, ",") {
-		mt, _, _ := strings.Cut(strings.TrimSpace(part), ";")
-		switch strings.TrimSpace(mt) {
-		case MediaTypeEventStream, "text/*", "*/*":
-			return true
-		}
-	}
-	return false
 }

@@ -75,6 +75,94 @@ func WriteBody(w io.Writer, write func(io.Writer) error) (err error, wroteNothin
 	return err, err != nil && cw.n == 0
 }
 
+// ErrorStatus is the status of a response that carries errors and no data,
+// where the media type lets the status say so. Such a response is usually the
+// client's doing -- a document that did not parse or validate, a variable
+// that did not coerce -- and that is 400. One carrying INTERNAL_SERVER_ERROR
+// is not: a panic, or a policy backend that could not be reached, leaves no
+// data either, and is the server's failure. Answered 400 it never reached
+// 5xx alerting, and told a client not to retry.
+func ErrorStatus(resp *graphql.Response) int {
+	for _, e := range resp.Errors {
+		if e.Extensions["code"] == graphql.CodeInternal {
+			return http.StatusInternalServerError
+		}
+	}
+	return http.StatusBadRequest
+}
+
+// WriteBatch writes n responses as one JSON array, calling entry for each. An
+// entry that fails having written nothing -- a response that would not
+// serialize -- is replaced by FallbackBody and the batch goes on: the array is
+// already open by then, so stopping would leave the client `[{...},`, which is
+// not JSON, and cost it the entries that did succeed. A failure after bytes
+// went out is the client leaving, and ends the batch.
+//
+// warn is told about each entry replaced, since the client is not told why.
+func WriteBatch(out io.Writer, n int, entry func(i int, w io.Writer) error, warn func(i int, err error)) error {
+	if _, err := io.WriteString(out, "["); err != nil {
+		return err
+	}
+	for i := range n {
+		if i > 0 {
+			if _, err := io.WriteString(out, ","); err != nil {
+				return err
+			}
+		}
+		err, wroteNothing := WriteBody(out, func(w io.Writer) error { return entry(i, w) })
+		if err == nil {
+			continue
+		}
+		if !wroteNothing {
+			return err
+		}
+		warn(i, err)
+		if _, err := io.WriteString(out, FallbackBody); err != nil {
+			return err
+		}
+	}
+	_, err := io.WriteString(out, "]")
+	return err
+}
+
+// EventData returns a writer that keeps what is written through it inside one
+// Server-Sent Event's data field: a line break in the payload starts another
+// "data: " line instead of ending the field, and with it the event. A client
+// joins the lines of one event with a newline, so the payload arrives whole,
+// and a line break between JSON tokens is whitespace.
+//
+// The execution buffer holds compact JSON, but not everything in it is the
+// engine's: a custom scalar writes its own bytes, and one built on
+// json.Encoder ends them with a newline.
+func EventData(w io.Writer) io.Writer { return &eventDataWriter{w: w} }
+
+type eventDataWriter struct{ w io.Writer }
+
+func (e *eventDataWriter) Write(p []byte) (int, error) {
+	written := 0
+	for len(p) > 0 {
+		i := bytes.IndexAny(p, "\r\n")
+		if i < 0 {
+			n, err := e.w.Write(p)
+			return written + n, err
+		}
+		if n, err := e.w.Write(p[:i]); err != nil {
+			return written + n, err
+		}
+		if _, err := io.WriteString(e.w, "\ndata: "); err != nil {
+			return written + i, err
+		}
+		// CRLF is one line break, not two.
+		skip := 1
+		if p[i] == '\r' && i+1 < len(p) && p[i+1] == '\n' {
+			skip = 2
+		}
+		written += i + skip
+		p = p[i+skip:]
+	}
+	return written, nil
+}
+
 type countingWriter struct {
 	w io.Writer
 	n int64

@@ -45,6 +45,7 @@ type Handler struct {
 	csrfHeaders  []string
 	keepAlive    time.Duration
 	maxStreamAge time.Duration
+	writeTimeout time.Duration
 	apq          apq.Cache
 	logger       *slog.Logger
 	drain        *drain.Drain
@@ -82,6 +83,18 @@ func WithKeepAlive(d time.Duration) Option { return func(h *Handler) { h.keepAli
 // means no limit, the default.
 func WithMaxStreamAge(d time.Duration) Option { return func(h *Handler) { h.maxStreamAge = d } }
 
+// WithWriteTimeout bounds how long one write to a stream may take before the
+// stream is ended. The default is 10s; zero disables it.
+//
+// It is what ends a subscriber that stays connected but stops reading. The
+// handler is then parked in a socket write, where it sees neither a drain nor
+// its cancelled context, so without a deadline the stream outlives
+// drain.Shutdown and http.Server.Shutdown both. http.Server.WriteTimeout is no
+// substitute: it is one deadline for the whole response and would end every
+// stream. A ResponseWriter that cannot set a deadline -- one wrapped by
+// middleware that does not expose Unwrap -- is written without one.
+func WithWriteTimeout(d time.Duration) Option { return func(h *Handler) { h.writeTimeout = d } }
+
 // WithPersistedQueries enables automatic persisted queries backed by cache,
 // for example apq.NewCache(1000). Disabled by default.
 func WithPersistedQueries(cache apq.Cache) Option { return func(h *Handler) { h.apq = cache } }
@@ -104,6 +117,8 @@ func New(exec *graphql.Executor, opts ...Option) *Handler {
 		csrf:        true,
 		csrfHeaders: DefaultCSRFHeaders,
 		keepAlive:   15 * time.Second,
+
+		writeTimeout: 10 * time.Second,
 	}
 	for _, o := range opts {
 		o(h)
@@ -116,7 +131,7 @@ func New(exec *graphql.Executor, opts ...Option) *Handler {
 
 // ServeHTTP implements http.Handler.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !acceptsEventStream(r.Header.Get("Accept")) {
+	if !httpreq.AcceptsEventStream(r.Header.Get("Accept")) {
 		h.writeError(w, http.StatusNotAcceptable, "Accept header does not allow %s.", MediaTypeEventStream)
 		return
 	}
@@ -198,7 +213,7 @@ func (h *Handler) single(w http.ResponseWriter, r *http.Request, req *graphql.Re
 	// An operation that never ran is a transport-level failure, reported the
 	// way gqlhttp reports it rather than as a payload on an opened stream.
 	if resp.HasRequestErrors() {
-		h.writeResponse(w, http.StatusBadRequest, resp)
+		h.writeResponse(w, httpreq.ErrorStatus(resp), resp)
 		return
 	}
 
@@ -228,7 +243,7 @@ func (h *Handler) subscribe(w http.ResponseWriter, r *http.Request, req *graphql
 	if err != nil {
 		var se *graphql.SubscribeError
 		if errors.As(err, &se) {
-			h.writeResponse(w, http.StatusBadRequest, se.Response)
+			h.writeResponse(w, httpreq.ErrorStatus(se.Response), se.Response)
 			return
 		}
 		h.writeError(w, http.StatusInternalServerError, "%v", err)
@@ -236,8 +251,9 @@ func (h *Handler) subscribe(w http.ResponseWriter, r *http.Request, req *graphql
 	}
 
 	rc := http.NewResponseController(w)
+	h.armWrite(rc)
 	h.beginStream(w)
-	h.flush(rc)
+	h.flushed(rc)
 
 	var idle <-chan time.Time
 	if h.keepAlive > 0 {
@@ -256,12 +272,13 @@ func (h *Handler) subscribe(w http.ResponseWriter, r *http.Request, req *graphql
 	for {
 		select {
 		case resp, ok := <-events:
+			h.armWrite(rc)
 			if !ok {
 				if err := h.writeComplete(w); err != nil {
 					h.logWrite(err)
 					return
 				}
-				h.flush(rc)
+				h.flushed(rc)
 				return
 			}
 			err := h.writeNext(w, resp)
@@ -272,13 +289,14 @@ func (h *Handler) subscribe(w http.ResponseWriter, r *http.Request, req *graphql
 				h.logWrite(err)
 				return
 			}
-			h.flush(rc)
+			h.flushed(rc)
 		case <-idle:
+			h.armWrite(rc)
 			if _, err := io.WriteString(w, ":\n\n"); err != nil {
 				h.logWrite(err)
 				return
 			}
-			h.flush(rc)
+			h.flushed(rc)
 		case <-h.drain.Closing():
 			// No complete: it would tell the client the subscription ended
 			// for good, where ending the response makes it reconnect.
@@ -292,6 +310,27 @@ func (h *Handler) subscribe(w http.ResponseWriter, r *http.Request, req *graphql
 	}
 }
 
+// armWrite gives the write about to be made, and its flush, the write timeout.
+// The deadline is per write rather than per stream: it is set before each one
+// and taken off again by flush once the bytes are out.
+func (h *Handler) armWrite(rc *http.ResponseController) {
+	if h.writeTimeout > 0 {
+		// A writer with no deadline to set is written without one.
+		_ = rc.SetWriteDeadline(time.Now().Add(h.writeTimeout))
+	}
+}
+
+// disarmWrite takes the deadline off between writes. Left in place it is a
+// deadline on the stream, not on a write: HTTP/2 resets a stream whose write
+// deadline passes whether or not anything is being written, so a subscription
+// quiet for longer than the timeout was cut off, and on HTTP/1.1 the chunk
+// that ends the response was written past it and failed.
+func (h *Handler) disarmWrite(rc *http.ResponseController) {
+	if h.writeTimeout > 0 {
+		_ = rc.SetWriteDeadline(time.Time{})
+	}
+}
+
 func (h *Handler) beginStream(w http.ResponseWriter) {
 	head := w.Header()
 	head.Set("Content-Type", MediaTypeEventStream)
@@ -302,13 +341,15 @@ func (h *Handler) beginStream(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// writeNext frames one response. Execution buffers hold compact JSON with no
-// literal newline, so the payload always fits a single data line.
+// writeNext frames one response as the data of a next event. The payload is
+// written through httpreq.EventData, so a line break inside it -- a custom
+// scalar's, the engine writes none -- continues the data rather than ending
+// the event.
 func (h *Handler) writeNext(w io.Writer, resp *graphql.Response) error {
 	if _, err := io.WriteString(w, "event: next\ndata: "); err != nil {
 		return err
 	}
-	if err := h.writePayload(w, resp); err != nil {
+	if err := h.writePayload(httpreq.EventData(w), resp); err != nil {
 		return err
 	}
 	_, err := io.WriteString(w, "\n\n")
@@ -343,6 +384,13 @@ func (h *Handler) flush(rc *http.ResponseController) {
 	}
 }
 
+// flushed is flush for a write armWrite gave a deadline: the deadline covers
+// the flush and comes off after it.
+func (h *Handler) flushed(rc *http.ResponseController) {
+	h.flush(rc)
+	h.disarmWrite(rc)
+}
+
 func (h *Handler) logWrite(err error) {
 	h.logger.Warn("gqlsse: writing event", "error", err)
 }
@@ -362,21 +410,4 @@ func (h *Handler) writeResponse(w http.ResponseWriter, status int, resp *graphql
 
 func (h *Handler) writeError(w http.ResponseWriter, status int, format string, args ...any) {
 	h.writeResponse(w, status, &graphql.Response{Errors: []*graphql.Error{graphql.Errorf(format, args...)}})
-}
-
-// acceptsEventStream reports whether the client will take a stream. An absent
-// header is taken as yes so that command-line clients work; a header that
-// names only other types is a client pointed at the wrong endpoint.
-func acceptsEventStream(accept string) bool {
-	if strings.TrimSpace(accept) == "" {
-		return true
-	}
-	for _, part := range strings.Split(accept, ",") {
-		mt, _, _ := strings.Cut(strings.TrimSpace(part), ";")
-		switch strings.TrimSpace(mt) {
-		case MediaTypeEventStream, "text/*", "*/*":
-			return true
-		}
-	}
-	return false
 }

@@ -159,7 +159,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case malformed:
 			status = http.StatusBadRequest
 		case mediaType == MediaTypeGraphQLResponse && resp.HasRequestErrors() && !apq.IsRetryHandshake(resp):
-			status = http.StatusBadRequest
+			status = httpreq.ErrorStatus(resp)
 		}
 		h.writeResponse(w, mediaType, status, func(out io.Writer) error {
 			_, err := resp.WriteTo(out)
@@ -171,24 +171,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Batches are always 200: each entry carries its own errors.
 	h.writeResponse(w, mediaType, http.StatusOK, func(out io.Writer) error {
-		if _, err := io.WriteString(out, "["); err != nil {
+		return httpreq.WriteBatch(out, len(reqs), func(i int, entry io.Writer) error {
+			resp, _ := h.execute(ctx, reqs[i], false)
+			defer resp.Release()
+			_, err := resp.WriteTo(entry)
 			return err
-		}
-		for i, req := range reqs {
-			if i > 0 {
-				if _, err := io.WriteString(out, ","); err != nil {
-					return err
-				}
-			}
-			resp, _ := h.execute(ctx, req, false)
-			_, err := resp.WriteTo(out)
-			resp.Release()
-			if err != nil {
-				return err
-			}
-		}
-		_, err := io.WriteString(out, "]")
-		return err
+		}, func(i int, err error) {
+			h.logger.Warn("gqlhttp: serializing batch entry", "entry", i, "error", err)
+		})
 	})
 }
 
@@ -224,7 +214,7 @@ func (h *Handler) resolvePersisted(req *graphql.Request) *graphql.Response {
 func (h *Handler) writeGraphQLError(w http.ResponseWriter, mediaType string, resp *graphql.Response) {
 	status := http.StatusOK
 	if mediaType == MediaTypeGraphQLResponse && resp.HasRequestErrors() && !apq.IsRetryHandshake(resp) {
-		status = http.StatusBadRequest
+		status = httpreq.ErrorStatus(resp)
 	}
 	h.writeResponse(w, mediaType, status, func(out io.Writer) error {
 		_, err := resp.WriteTo(out)

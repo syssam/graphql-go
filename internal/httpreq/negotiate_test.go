@@ -47,6 +47,20 @@ func TestNegotiate(t *testing.T) {
 
 		// q=0 is a refusal, not a low preference.
 		{gql + ";q=0, " + json, json, true, "q=0 refuses that type"},
+		// A refused type stays refused when a wildcard follows: the wildcard
+		// is "anything else", and the client has said what else is not.
+		{json + ";q=0, */*", gql, true, "a wildcard does not bring back a refused type"},
+		{"*/*, " + json + ";q=0", gql, true, "nor when the refusal comes second"},
+		{gql + ";q=0, */*", json, true, "the other one refused"},
+		{json + ";q=0, " + gql + ";q=0, */*", gql, false, "both refused: the wildcard has nothing left"},
+		// The most specific range that covers a type decides for it, so a
+		// refusal of application/* is not undone by the */* beside it.
+		{"application/*;q=0, */*", gql, false, "application/* refuses both types whatever */* says"},
+		{"*/*, application/*;q=0", gql, false, "nor in the other order"},
+		{"application/*;q=0, " + json, json, true, "an explicit type outranks the range that refuses it"},
+		{"*/*;q=0, application/*", json, true, "application/* outranks */*"},
+		{"*/*;q=0, " + gql, gql, true, "an explicit type outranks */*"},
+		{"application/*;q=0.2, */*;q=0.9", json, true, "application/* decides, at its own weight"},
 
 		// RFC 9110: a weight outside the qvalue grammar does not make the
 		// range acceptable. It used to count as q=1, so a typo for q=0 made
@@ -71,5 +85,31 @@ func TestNegotiate(t *testing.T) {
 					tc.accept, got, ok, tc.want, tc.ok, tc.why)
 			}
 		})
+	}
+}
+
+// The stream handlers asked only whether the header named a stream type and
+// ignored its weight, so a client that refused one was sent one.
+func TestAcceptsEventStream(t *testing.T) {
+	for accept, want := range map[string]bool{
+		"":                                true,
+		"text/event-stream":               true,
+		"text/*":                          true,
+		"*/*":                             true,
+		"application/json":                false,
+		"text/event-stream;q=0.5":         true,
+		"text/event-stream;q=0":           false,
+		"text/event-stream;q=0, */*":      false,
+		"*/*, text/event-stream;q=0":      false,
+		"*/*;q=0":                         false,
+		"text/*;q=0, text/event-stream":   true,
+		"application/json, text/*;q=0.1":  true,
+		"text/event-stream;q=bogus":       false,
+		"TEXT/EVENT-STREAM":               true,
+		"text/event-stream; charset=utf8": true,
+	} {
+		if got := httpreq.AcceptsEventStream(accept); got != want {
+			t.Errorf("AcceptsEventStream(%q) = %t, want %t", accept, got, want)
+		}
 	}
 }
