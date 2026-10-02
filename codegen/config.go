@@ -473,11 +473,12 @@ type Wire struct {
 	// Wire takes the dependencies by value, so a pointer is to Wire's own
 	// copy. A type implementing several groups has one constructor, and one
 	// entry under any of those groups speaks for all of them. An entry that
-	// cannot be meant is an error from Generate: a key that is no group, a
-	// field the struct does not have where the struct can be read, an
+	// cannot be meant is an error from Generate: a key that is no group, an
 	// unexported field of another package, two entries that differ for one
 	// type, and a field whose type gqlc would have to write into a
-	// constructor and cannot.
+	// constructor and cannot. A field that does not exist is one too, but
+	// only where every field can be read: a struct declared once, in this
+	// module, that embeds nothing. Otherwise the compiler reports it.
 	Pass map[string]string
 }
 

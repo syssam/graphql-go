@@ -485,6 +485,30 @@ seventeen breaks -- those and the new rules -- each fail one. **"Ten breaks, eac
 test" was true and was not the claim it read as**: it said the ten rules tried were guarded,
 not that every rule was.
 
+**The fix for `var NewHandler = build` broke "a group not listed is decided as before", and a
+sixth review found it by diffing eighteen modules against the parent commit's gqlc.** Recorded
+as a constructor that exists with an empty parameter, it sent an unlisted group down the
+existing-constructor path, which hands over the group's field without asking whether it can be
+placed -- so `Deps{User secret}` with that constructor went from `NewHandler(d)`, which
+compiled, to `NewHandler(d.User)`, which did not. It is `constructor.unknown` now: there, so
+nothing is scaffolded over it and an entry is not refused for wanting one written; unread, so
+inference treats the group as it did when it saw no constructor. A later declaration that does
+say what it takes replaces it, in whichever file. **The lesson is the method**: "behaves as
+before" is a claim about every input, and the only test of it is the old binary beside the new
+one.
+
+The same review ran 74 mutations of a copy; 23 survived, 17 of them real. Most were one
+mistake: every error about an entry had been tested on an unshared type, where the group being
+decided and the group the entry is under are the same, so `from` and `name` were
+interchangeable (`TestWirePassErrorsNameTheGroupTheEntryIsUnder` uses a shared type whose first
+group has no entry). The rest: an unexported field was refused only after the struct was known
+to be readable, though the name alone decides it; "gqlc cannot read Deps" was said of a struct
+that had been read and merely embeds something; the missing-field note was printed about a
+struct that had not been read; an embedded `Box[int]` was not named; and a refusal that should
+come before `wire.go` is written came after, from a later stage, with the same words -- so the
+tests of those refusals assert that the file is absent. Twenty-five breaks, each failing a
+test.
+
 **Breaking by hand has a failure mode of its own, met here twice.** A reverse edit whose text
 is not unique lands nowhere or on the wrong line; and a break whose replacement *contains* the
 original text reverses into a doubled edit (`generic && count == 0 && count == 0`), which

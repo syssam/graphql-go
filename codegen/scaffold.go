@@ -316,7 +316,9 @@ func (b *builder) scaffoldGroup(pkgs *pkgCache, name, group, target string) ([]s
 					// Asked for.
 				case why != nil:
 					b.notef("wire: %v. %s takes the whole value instead, so its package imports everything that names.", why, ctor)
-				case !b.wireShared(target) && b.wireAnyField():
+				// Only of a struct that was read: of one that was not, what
+				// fields it has is not known.
+				case b.wire.structRead && !b.wireShared(target) && b.wireAnyField():
 					b.notef("wire: the %s group has no field named after it in %s, so %s takes the whole value and its package imports everything that names. Add the field and change the constructor to keep its builds apart.",
 						name, depsType, ctor)
 				}

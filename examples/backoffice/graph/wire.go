@@ -21,7 +21,8 @@ import (
 // implementation, and a group whose constructor is missing, or takes
 // something else, does not compile. A group is given the field of d named
 // after it, where there is one, so its package imports that and no more;
-// the configuration's wire.pass says otherwise for a group it lists.
+// an entry in the configuration's wire.pass decides instead, for every
+// group its type implements.
 func Wire(d service.Services) []graphql.SchemaOption {
 	return []graphql.SchemaOption{
 		category.Bindings(category.NewHandler(d.Category)),

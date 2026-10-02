@@ -310,10 +310,14 @@ written: a group that does not exist; a field `Deps` does not have, or that
 is unexported while `Deps` is in another package; two different entries for
 groups one type implements; and a field whose type gqlc would have to write
 into a constructor and cannot -- there, write the constructor yourself and
-the entry stands. A field is checked only where gqlc can read `Deps`, which
-it cannot when the type is in another module or declared in more than one
-file, and not when `Deps` embeds something whose fields it cannot list; then
-the compiler is the check.
+the entry stands.
+
+Whether a field exists is checked only where gqlc can read every field
+`Deps` has: a struct, declared once, in this module, embedding nothing. A
+type in another module, one declared in two files under build constraints,
+one defined from another type (`type Deps Base`), and a struct that embeds
+anything -- whose promoted fields are not listed -- are not checked, so a
+misspelt field there is accepted and the compiler reports it in `wire.go`.
 
 `preset: gqlgen` is the six keys a schema arriving from gqlgen needs, at once --
 `modelDirective`, `fieldDirective`, `tagDirective`, `jsonTags`,

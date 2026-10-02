@@ -308,6 +308,12 @@ func (b *builder) readWire() {
 			if star, ok := t.(*goast.StarExpr); ok {
 				t = star.X
 			}
+			switch g := t.(type) {
+			case *goast.IndexExpr:
+				t = g.X
+			case *goast.IndexListExpr:
+				t = g.X
+			}
 			if sel, ok := t.(*goast.SelectorExpr); ok {
 				t = sel.Sel
 			}
@@ -420,8 +426,11 @@ func onDisk(base, dir string) string {
 
 // passed is what Wire.Pass says a group's constructor is given.
 type passed struct {
-	// expr is the entry, which is what wire.go writes.
+	// expr is the entry, which is what wire.go writes, and from the group it
+	// is written under, which for a type implementing several need not be
+	// the group being decided.
 	expr string
+	from string
 	// field is the field it names, or nil for the whole value; also nil for
 	// a field of a struct this run could not read.
 	field   *depsField
@@ -470,7 +479,7 @@ func (b *builder) wirePass(name, target string) (*passed, error) {
 		return nil, nil
 	}
 	_, _, depsType := b.wireDeps()
-	p := &passed{expr: strings.TrimSpace(entry)}
+	p := &passed{expr: strings.TrimSpace(entry), from: from}
 	if p.expr == "" {
 		return nil, fmt.Errorf("codegen: wire.pass: %s: the entry is empty; in YAML an unquoted &d is an anchor and not a value, so quote it: \"&d\"", from)
 	}
@@ -484,12 +493,16 @@ func (b *builder) wirePass(name, target string) (*passed, error) {
 		return nil, fmt.Errorf("codegen: wire.pass: %s: %q is not what a constructor can be given; write d, &d, d.Field or &d.Field", from, entry)
 	}
 	p.named = field
+	// wire.go is in the generated package, so that is where an unexported
+	// field has to be. The name is all it takes to know, whether or not the
+	// struct could be read, and whether it is declared or promoted.
+	inPackage := b.cfg.Wire.Deps[:strings.LastIndex(b.cfg.Wire.Deps, ".")] == b.cfg.Package
+	if !goast.IsExported(field) && !inPackage {
+		return nil, fmt.Errorf("codegen: wire.pass: %s: %s.%s is not exported, and wire.go is in another package", from, depsType, field)
+	}
 	if !b.wire.structRead {
 		return p, nil
 	}
-	// wire.go is in the generated package, so that is where an unexported
-	// field has to be.
-	inPackage := b.cfg.Wire.Deps[:strings.LastIndex(b.cfg.Wire.Deps, ".")] == b.cfg.Package
 	p.field = b.wire.named[field]
 	switch {
 	case p.field == nil && b.wire.embeds:
@@ -504,8 +517,6 @@ func (b *builder) wirePass(name, target string) (*passed, error) {
 		}
 		slices.Sort(have)
 		return nil, fmt.Errorf("codegen: wire.pass: %s: %s has no field %s; it has %s", from, depsType, field, strings.Join(have, ", "))
-	case !goast.IsExported(field) && !inPackage:
-		return nil, fmt.Errorf("codegen: wire.pass: %s: %s.%s is not exported, and wire.go is in another package", from, depsType, field)
 	}
 	// Named exactly, so that another field folds to the same name is no
 	// longer a reason not to know which is meant.
@@ -548,18 +559,24 @@ func (b *builder) wireCall(name, target, dir, typ, implImport string) (string, e
 		// The scaffold will write this constructor and has to spell the
 		// field's type in the implementation's package. Whether it can is
 		// found out here, before anything is on disk.
-		if pass.field == nil {
+		switch {
+		case pass.field == nil && b.wire.structRead:
+			return "", fmt.Errorf("codegen: wire.pass: %s: %s has no %s yet, and gqlc cannot write one that takes %s: %s declares no field %s, and what it embeds is not read; write the constructor yourself",
+				pass.from, target, ctor, pass.expr, depsType, pass.named)
+		case pass.field == nil:
 			return "", fmt.Errorf("codegen: wire.pass: %s: %s has no %s yet, and gqlc cannot read %s to write one that takes %s; write the constructor yourself",
-				name, target, ctor, b.cfg.Wire.Deps, pass.expr)
+				pass.from, target, ctor, b.cfg.Wire.Deps, pass.expr)
 		}
 		if _, err := pass.field.placed(depsPath, depsQual, implImport, func(_, preferred string) string { return preferred }); err != nil {
 			return "", fmt.Errorf("codegen: wire.pass: %s: %s has no %s yet, and gqlc cannot write one that takes %s (%w); write the constructor yourself",
-				name, target, ctor, pass.expr, err)
+				pass.from, target, ctor, pass.expr, err)
 		}
 		return pass.expr, nil
 	case pass != nil:
 		return pass.expr, nil
-	case existing == nil:
+	case existing == nil || existing.unknown:
+		// As it was before such a constructor was known to be there: a group
+		// with no entry is decided exactly as it would be without Wire.Pass.
 		if f, _ := b.wireArg(name, target); f != nil {
 			return "d." + f.name, nil
 		}
@@ -652,6 +669,10 @@ func (b *builder) wireAnyField() bool {
 // the same shape, param being what it is an alias for.
 type constructor struct {
 	param string
+	// unknown is a constructor that is there and whose parameter is not
+	// written where it is declared: var NewHandler = build. Nothing is
+	// scaffolded over it, and nothing is inferred from it.
+	unknown bool
 	// imports is each imported package by the name it is known under in the
 	// file; plain, the paths imported with no name of the file's own, whose
 	// name is the package's and may not have been readable; dots, the paths
@@ -743,7 +764,9 @@ func (b *builder) existingConstructor(dir, ctor string) *constructor {
 				return &c
 			}
 			add := func(name string, ft *goast.FuncType) {
-				if !strings.HasPrefix(name, "New") || found[name] != nil {
+				// The first that says what it takes: one that does not is
+				// replaced by a later one that does, in whichever file.
+				if !strings.HasPrefix(name, "New") || (found[name] != nil && !found[name].unknown) {
 					return
 				}
 				c := inFile()
@@ -785,9 +808,12 @@ func (b *builder) existingConstructor(dir, ctor string) *constructor {
 								case lit != nil:
 									add(id.Name, lit.Type)
 								case strings.HasPrefix(id.Name, "New") && found[id.Name] == nil:
-									// var NewHandler = build: there, and what
-									// it takes is not written here.
-									found[id.Name] = inFile()
+									// var NewHandler = build, or anything
+									// else of that name: there, and what it
+									// takes is not written here.
+									c := inFile()
+									c.unknown = true
+									found[id.Name] = c
 								}
 							}
 						}
@@ -1033,7 +1059,8 @@ func (b *builder) emitWire(groups []string) (string, error) {
 // implementation, and a group whose constructor is missing, or takes
 // something else, does not compile. A group is given the field of d named
 // after it, where there is one, so its package imports that and no more;
-// the configuration's wire.pass says otherwise for a group it lists.
+// an entry in the configuration's wire.pass decides instead, for every
+// group its type implements.
 func Wire(d %s) []graphql.SchemaOption {
 `, depsRef)
 	for _, constructor := range sharedOrder {
