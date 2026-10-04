@@ -6,7 +6,7 @@ replace github.com/syssam/graphql-go => ../..
 
 require (
 	github.com/XSAM/otelsql v0.44.0
-	github.com/labstack/echo/v5 v5.3.1
+	github.com/labstack/echo/v5 v5.4.0
 	github.com/lib/pq v1.12.3
 	github.com/syssam/graphql-go v0.0.0-20260926154251-135bb6be891a
 	github.com/syssam/velox v0.3.1-0.20260927083806-b69dda8e0d24
@@ -15,7 +15,7 @@ require (
 	go.opentelemetry.io/otel/sdk v1.46.0
 	go.opentelemetry.io/otel/trace v1.46.0
 	go.uber.org/fx v1.24.0
-	modernc.org/sqlite v1.59.0
+	modernc.org/sqlite v1.60.1
 )
 
 require (
@@ -53,7 +53,7 @@ require (
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/tools v0.50.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	modernc.org/libc v1.75.7 // indirect
+	modernc.org/libc v1.77.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
