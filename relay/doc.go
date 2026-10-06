@@ -18,4 +18,13 @@
 //				return &c, err
 //			})),
 //	)
+//
+// Args decodes first, after, last and before, so the field has to declare all
+// four. A connection that pages forward only declares first and after, and
+// takes ForwardArgs instead:
+//
+//	func(ctx context.Context, _ graphql.Root, a relay.ForwardArgs) (*relay.Connection[*User], error) {
+//		c, err := relay.FromSlice(users, a.Args())
+//		return &c, err
+//	}
 package relay

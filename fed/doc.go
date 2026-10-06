@@ -25,6 +25,18 @@
 //	}
 //	s, err := graphql.NewSchema(src, bindings, graphql.Object[User]("User", ...))
 //
+// A Federation 2 schema chooses how it writes the directives, and Subgraph
+// reads all three ways from the schema's @link: imported and bare (@key),
+// under the link's namespace when not imported (@federation__key, or
+// @fed__key under as: "fed"), and renamed by an import
+// ({name: "@key", as: "@entity"}). The constant Directives declares only the
+// bare names.
+//
+// A @key is checked when the subgraph is built: every field it selects must
+// exist, a field of an object, interface or union type must say which of its
+// own fields are the key, and a field set carries no alias, argument or
+// directive. Composition refuses each of those; the build says so first.
+//
 // A datastore lookup belongs in fed.BatchResolver, which receives every
 // representation of its type at once; fed.Resolver resolves them one by one.
 //

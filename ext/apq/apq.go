@@ -10,6 +10,23 @@
 // "mutations are not allowed over GET" would see nothing to inspect and wave
 // it through. The HTTP transports therefore resolve as part of parsing rather
 // than at execution time.
+//
+// # What registration does not check
+//
+// Resolving that early means registering that early. Resolve verifies that
+// the text hashes to the hash sent and stores it; it is handed a cache and a
+// request, not an executor, so nothing has parsed the text yet and text that
+// is not GraphQL is stored like any other. Storing only what parses would not
+// change what a client can do to the cache: the same client registers
+// documents that are valid and differ by an alias, and each of those takes a
+// slot just the same.
+//
+// So registration is open, and what bounds it is the cache: NewCache holds a
+// fixed number of entries and of bytes, and past either the least recently
+// used query is dropped. A client that keeps registering costs the queries it
+// pushes out one extra round trip each, the retry with the full text, and
+// costs the server no memory beyond the bound. Where clients must not be able
+// to register at all, use ext/trusted.
 package apq
 
 import (
@@ -70,6 +87,8 @@ func Hash(query string) string {
 // that does not hash to the hash given. Registration is verified rather than
 // trusted, because a server that stored whatever text arrived alongside a
 // hash would let one client choose what every later client's hash executes.
+// The hash is all that is verified: the package documentation says what that
+// leaves open and what bounds it.
 func Resolve(c Cache, req *graphql.Request) *graphql.Response {
 	_, trusted := c.(TrustedStore)
 	ext, ok := req.Extensions["persistedQuery"]

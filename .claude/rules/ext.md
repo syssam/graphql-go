@@ -61,6 +61,19 @@ dimension, to keep cardinality bounded. `graphql.server.active_requests` wraps `
 only `Execute` runs, so subscriptions never show there; `graphqlgo.transport.active_connections` is
 where they do.
 
+**What `otel.New` records beyond a request that returned.** A subscription that fails to open
+gets a span with error status and a record on both metrics, through a `SubscriptionInterceptor`;
+a successful open adds nothing, because a span for it would have to sit in the context its events
+inherit and would parent each to a span already ended. **Only failures inside the subscription
+chain are seen** (source, Authorizer, a later interceptor): parse, validation, variable and limit
+refusals return from `Executor.Subscribe` before any interceptor, and observing them needs a root
+hook on the raw request. A panic outside a resolver is recorded in a deferred function at both
+layers and re-panicked, since the executor recovers above every interceptor and `next` never
+returns. **Client text on a span is bounded and opt-in**: an operation name is cut to 256 bytes of
+valid UTF-8 (over GET an unparsed `operationName` is raw bytes, and protobuf refuses non-UTF-8),
+and an error coded parse, validation, bad-input or operation-resolution reaches the span as its
+code only unless `WithDocument` — "got invalid value" quotes the variable.
+
 `otel.Batch` / `otel.MappedBatch` wrap a `loader.BatchFunc` so every flush gets a span under
 the request that caused it. They live in `ext/otel` rather than as a loader option so
 `loader/` keeps depending on nothing but the engine and the standard library.
@@ -91,6 +104,11 @@ every later client's hash executes. `httpreq` takes a `queryOptional` flag so th
 off the missing-query errors are byte-identical to before. **`apq.NewCache` is bounded by
 query text as well as entry count** (`WithMaxBytes`, 16 MiB by default): registration is open
 to any client that can hash, so an entry count alone let 1000 entries of 1 MiB hold a gigabyte.
+**Registration checks the hash and nothing else**: `Resolve` has a cache and a request, not an
+executor, so unparsed text is stored. Gating on a parse was measured and declined -- 100 valid
+documents differing by an alias evict a warm entry exactly as 100 lines of garbage do, and a parse
+here would run outside `WithMaxTokens`. The bound is the defence; the cost of churn is one retry
+per evicted query.
 **A hash is lower-cased before lookup and verification** (hex is case-insensitive and `Hash`
 writes lower case), but **not against a `TrustedStore`**, whose ids are opaque build ids as
 often as digests (`TestHashCaseIsIgnored`, `TestIDsAreMatchedExactly`).
@@ -116,6 +134,11 @@ cost after. **It must be the first operation interceptor, and nothing checks tha
 needs a root API (an ordering hook, or a read-only view of the registered interceptors). **It charges per subscription event**, because each event runs the whole
 operation chain; a stream billed once at open is unmetered. A quote is clamped at zero before
 it is charged: a negative `FieldWeight` makes a negative quote, and charging one added points.
+**A request refused below the limiter is refunded in full** (`resp.HasRequestErrors()`: a cost,
+depth or complexity limit, an Authorizer error): it resolved nothing, and keeping the quote
+throttled a client's small queries for one oversized one. A request that ran keeps the quote
+unless `QueryCost.Actual` measured less. `MaxBuckets`, the LRU order and the refund cap each have
+a test that fails without them (`bucket_test.go`).
 
 `fed/` makes a schema an Apollo Federation subgraph and needs no engine change: `_entities`
 is an ordinary root field returning a union, and a union resolves its concrete type from the
@@ -127,9 +150,23 @@ is reached through its implementing types, so a resolver for one is rejected at 
 `fed.BatchResolver` exists because `_entities` is the canonical N+1: the router sends every
 representation in one call, `fed.Resolver` resolves them in turn, and a DataLoader inside it
 cannot coalesce sequential `Load`s.
+**A federation directive has three spellings and `internal/fedlink` reads all of them** from the
+schema's `@link` to `https://specs.apollo.dev/federation/`: bare when imported, `@federation__key`
+(or `@<as>__key`) when not, and whatever an import object renames it to. The renamed ones are
+declared by copying the line `Directives` gives the canonical name, appended to the prelude.
+`fed.Subgraph` and `gqlc` both read through that one package, entity test included
+(`HasResolvableKey`): `gqlc` used to load with the bare declarations and look for a bare `@key`,
+so a schema the runtime served did not generate
+(`TestFederationReadsEverySpellingTheRuntimeDoes`). **A `@key` field set is refused at build for what composition
+refuses**: an alias, an argument, a directive, or a composite field with no sub-selection. A
+block-string `fields` is accepted.
 
 `relay/` binds the Relay contract: global ids (`base64("Type:id")`, byte for byte what
-graphql-relay-js and graphql-java produce), `Node`, and cursor connections. It emits no
+graphql-relay-js and graphql-java produce, and **`FromGlobalID` accepts only that**: standard
+decoding skips line breaks and ignores a final character's unused bits, so it re-encodes and
+compares), `Node`, and cursor connections. `relay.Args` names all four pagination arguments and
+a binding naming one the schema lacks is a build error, so a forward-only connection takes
+`relay.ForwardArgs`. It emits no
 types — the SDL still declares `Node`, the connection and the edge, as in every reference
 implementation. `Query.node` needed no engine change: it binds through the existing
 `any`-returning resolver on an unbound interface.

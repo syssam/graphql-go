@@ -3,6 +3,7 @@ package federation
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	graphql "github.com/syssam/graphql-go"
 	"github.com/syssam/graphql-go/fed"
@@ -114,6 +115,9 @@ func NewReviews() (*graphql.Executor, error) {
 		),
 		graphql.Query(
 			graphql.ResolveArgs("latestReviews", func(_ context.Context, _ graphql.Root, a latestReviewsArgs) ([]*Review, error) {
+				if a.First < 0 {
+					return nil, fmt.Errorf("first must not be negative, got %d", a.First)
+				}
 				n := min(a.First, len(reviewRows))
 				out := make([]*Review, 0, n)
 				out = append(out, reviewRows[:n]...)

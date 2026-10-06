@@ -253,3 +253,34 @@ func TestBothSubgraphsAgreeOnTheSharedKey(t *testing.T) {
 		t.Fatalf("the two subgraphs disagree about Product's key:\n  products: %s\n  reviews:  %s", p, r)
 	}
 }
+
+// first is the client's number. Slicing by it unchecked turned a negative one
+// into a panic the executor answers as an internal error: a bad argument
+// reported as a server fault, with a stack trace in the log for each.
+func TestANegativeFirstIsAnErrorNotAPanic(t *testing.T) {
+	products, reviews := subgraphs(t)
+	for _, tc := range []struct {
+		name  string
+		exec  *graphql.Executor
+		query string
+	}{
+		{"products", products, `{ topProducts(first: -1) { sku } }`},
+		{"reviews", reviews, `{ latestReviews(first: -1) { id } }`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := tc.exec.Execute(context.Background(), &graphql.Request{Query: tc.query})
+			defer resp.Release()
+			if len(resp.Errors) != 1 || !strings.Contains(resp.Errors[0].Message, "first") {
+				t.Fatalf("errors = %v, want one saying what is wrong with first", resp.Errors)
+			}
+		})
+	}
+
+	// Zero is a count like any other, and more than there are is all of them.
+	if got := string(execute(t, products, `{ topProducts(first: 0) { sku } }`, nil)); got != `{"topProducts":[]}` {
+		t.Fatalf("first: 0 = %s", got)
+	}
+	if got := string(execute(t, reviews, `{ latestReviews(first: 99) { id } }`, nil)); got != `{"latestReviews":[{"id":"r1"},{"id":"r2"},{"id":"r3"}]}` {
+		t.Fatalf("first: 99 = %s", got)
+	}
+}

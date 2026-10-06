@@ -3,6 +3,21 @@
 // a query is quoted before it runs, and what it really cost is charged
 // afterwards.
 //
+// The quote is taken from the bucket before the query runs, and what happens
+// to it afterwards depends on how far the query got:
+//
+//   - Throttled, or quoted above MaximumAvailable: nothing is taken.
+//   - Refused before it ran -- the response is a request error with no data,
+//     as the cost, depth and complexity limits, an Authorizer error and a
+//     later interceptor's refusal all are: the whole quote is returned.
+//   - Ran, with QueryCost.Actual: the quote less what it really cost is
+//     returned. It is never charged more than the quote.
+//   - Ran, without QueryCost.Actual: the quote is kept, whether or not the
+//     response carries field errors. The work was done and nothing measured it.
+//
+// A document that does not parse or validate never reaches the limiter, so it
+// is not charged either; bound those at the transport.
+//
 // A subscription is charged per event, not once at open: each event runs the
 // whole operation chain, and a stream billed once would be an unmetered
 // firehose. Size the bucket for that, or key subscriptions separately.
@@ -122,7 +137,15 @@ func (t *limiter) intercept(ctx context.Context, oc *graphql.OperationContext, n
 	// them, so refunding the difference is the honest charge.
 	// The actual cost is clamped the way the quote was: a negative one would
 	// refund more than was charged, refilling the bucket for running a query.
-	if actual, measured := oc.ActualCost(); measured && max(actual, 0) < quoted {
+	switch actual, measured := oc.ActualCost(); {
+	case resp != nil && resp.HasRequestErrors():
+		// Refused below this interceptor, by a limit or the Authorizer: it
+		// resolved nothing, and keeping the quote made a client that sent one
+		// oversized query pay for it on every small one that followed.
+		if quoted > 0 {
+			available = t.refund(key, float64(quoted))
+		}
+	case measured && max(actual, 0) < quoted:
 		available = t.refund(key, float64(quoted-max(actual, 0)))
 	}
 	t.report(resp, available)

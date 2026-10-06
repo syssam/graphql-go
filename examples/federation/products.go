@@ -20,6 +20,7 @@ package federation
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	graphql "github.com/syssam/graphql-go"
 	"github.com/syssam/graphql-go/fed"
@@ -95,6 +96,12 @@ func NewProducts() (*graphql.Executor, error) {
 		),
 		graphql.Query(
 			graphql.ResolveArgs("topProducts", func(_ context.Context, _ graphql.Root, a topProductsArgs) ([]*Product, error) {
+				// first is the client's number, and slicing by a negative
+				// one panics. Refused rather than read as zero: a client
+				// that sent -1 has a bug it should hear about.
+				if a.First < 0 {
+					return nil, fmt.Errorf("first must not be negative, got %d", a.First)
+				}
 				return productRows[:min(a.First, len(productRows))], nil
 			}),
 			graphql.ResolveArgs("product", func(_ context.Context, _ graphql.Root, a productArgs) (*Product, error) {

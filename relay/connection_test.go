@@ -69,6 +69,59 @@ func TestFromSliceFollowsTheSpecAlgorithm(t *testing.T) {
 	}
 }
 
+// hasPreviousPage asks whether last cut anything off the edges that follow
+// the after cursor. Measured from the start of the list instead, every page
+// after the first reported a previous page that last had not hidden.
+func TestHasPreviousPageIsMeasuredFromTheAfterCursor(t *testing.T) {
+	c, err := relay.FromSlice(letters, relay.Args{After: ptr(relay.OffsetCursor(0)), Last: ptr(5)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := nodes(c); !eq(got, []string{"b", "c", "d", "e"}) {
+		t.Fatalf("nodes = %v", got)
+	}
+	if c.PageInfo.HasPreviousPage {
+		t.Fatal("hasPreviousPage is true though last: 5 kept all four edges after the cursor")
+	}
+
+	c, err = relay.FromSlice(letters, relay.Args{After: ptr(relay.OffsetCursor(0)), Last: ptr(2)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := nodes(c); !eq(got, []string{"d", "e"}) || !c.PageInfo.HasPreviousPage {
+		t.Fatalf("nodes = %v, hasPreviousPage = %v, want d, e and a previous page", got, c.PageInfo.HasPreviousPage)
+	}
+}
+
+// Both cursors are the client's, so before can name an edge at or ahead of
+// after. ApplyCursorsToEdges leaves nothing between them, which is an empty
+// page and neither an error nor a negative length.
+func TestCrossedCursorsAreAnEmptyPage(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args relay.Args
+	}{
+		{"before ahead of after", relay.Args{After: ptr(relay.OffsetCursor(3)), Before: ptr(relay.OffsetCursor(1))}},
+		{"the same edge", relay.Args{After: ptr(relay.OffsetCursor(2)), Before: ptr(relay.OffsetCursor(2))}},
+		{"with first", relay.Args{After: ptr(relay.OffsetCursor(3)), Before: ptr(relay.OffsetCursor(1)), First: ptr(2)}},
+		{"with last", relay.Args{After: ptr(relay.OffsetCursor(3)), Before: ptr(relay.OffsetCursor(1)), Last: ptr(2)}},
+		{"after past the end", relay.Args{After: ptr(relay.OffsetCursor(9)), Before: ptr(relay.OffsetCursor(1))}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := relay.FromSlice(letters, tc.args)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if c.Edges == nil || len(c.Edges) != 0 {
+				t.Fatalf("edges = %v, want an empty page", c.Edges)
+			}
+			if c.PageInfo != (relay.PageInfo{}) {
+				t.Fatalf("pageInfo = %+v, want no cursors and no further pages", c.PageInfo)
+			}
+		})
+	}
+}
+
 func TestFromSliceCursorsBoundTheEdges(t *testing.T) {
 	c, err := relay.FromSlice(letters, relay.Args{After: ptr(relay.OffsetCursor(0)), First: ptr(2)})
 	if err != nil {

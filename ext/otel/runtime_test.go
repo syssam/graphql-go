@@ -55,14 +55,20 @@ func TestObserveExecutorReportsStats(t *testing.T) {
 	got := collectInts(t, reader)
 	want := map[string]int64{
 		"graphqlgo.plan_cache.count":           1,
-		"graphqlgo.plan_cache.bytes":           int64(len(`{ me { id } }`)),
+		"graphqlgo.plan_cache.bytes":           e.Stats().PlanCacheBytes,
 		"graphqlgo.plan_cache.lookups":         3,
 		"graphqlgo.executor.concurrency.limit": 7,
+		// No depth, complexity or cost limit: the default, and the one an
+		// operator should be shown.
+		"graphqlgo.executor.requests_unbounded": 1,
 	}
 	for name, v := range want {
 		if got[name] != v {
 			t.Errorf("%s = %d, want %d (all: %v)", name, got[name], v, got)
 		}
+	}
+	if got["graphqlgo.plan_cache.bytes"] <= int64(len(`{ me { id } }`)) {
+		t.Errorf("graphqlgo.plan_cache.bytes = %d, want the query text and its plan", got["graphqlgo.plan_cache.bytes"])
 	}
 	if _, ok := got["graphqlgo.executor.concurrency.in_use"]; !ok {
 		t.Errorf("graphqlgo.executor.concurrency.in_use not reported (all: %v)", got)

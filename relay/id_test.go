@@ -31,6 +31,34 @@ func TestGlobalIDKeepsColonsInTheLocalID(t *testing.T) {
 	}
 }
 
+// One node has one id. Standard base64 decoding is lenient about line breaks
+// and about the bits a final character does not use, so several strings
+// decoded to the same node: a client cache keyed by id held it several times,
+// and anything keyed by id on the server could be stepped around.
+func TestFromGlobalIDAcceptsOnlyWhatToGlobalIDProduces(t *testing.T) {
+	issued := string(relay.ToGlobalID("User", "123"))
+	if issued != "VXNlcjoxMjM=" {
+		t.Fatalf("fixture drifted: %q", issued)
+	}
+	for _, tc := range []struct{ name, gid string }{
+		{"trailing newline", issued + "\n"},
+		{"embedded line break", "VXNl\r\ncjoxMjM="},
+		{"leading space", " " + issued},
+		{"unused bits set in the last character", "VXNlcjoxMjN="},
+		{"padding dropped", "VXNlcjoxMjM"},
+		{"URL-safe alphabet", "UG9zdDo_Pz8="}, // "Post:???" is UG9zdDo/Pz8= in the standard one
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if typ, id, err := relay.FromGlobalID(graphql.ID(tc.gid)); err == nil {
+				t.Fatalf("FromGlobalID(%q) = (%q, %q), want it refused: ToGlobalID never produces it", tc.gid, typ, id)
+			}
+		})
+	}
+	if typ, id, err := relay.FromGlobalID(relay.ToGlobalID("Post", "???")); err != nil || typ != "Post" || id != "???" {
+		t.Fatalf("FromGlobalID = (%q, %q, %v)", typ, id, err)
+	}
+}
+
 func TestFromGlobalIDRejectsMalformed(t *testing.T) {
 	for _, tc := range []struct{ name, gid string }{
 		{"not base64", "not-base64!!"},

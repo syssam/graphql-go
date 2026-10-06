@@ -14,6 +14,7 @@ import (
 func Pagination() graphql.SchemaOption {
 	return graphql.Options(
 		graphql.Args[Args](),
+		graphql.Args[ForwardArgs](),
 		graphql.Object[PageInfo]("PageInfo",
 			graphql.Field("hasNextPage", func(p *PageInfo) bool { return p.HasNextPage }),
 			graphql.Field("hasPreviousPage", func(p *PageInfo) bool { return p.HasPreviousPage }),

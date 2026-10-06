@@ -15,11 +15,45 @@
 // whatever span was active when Subscribe was called, which is the useful
 // shape — an event is the unit of work, and a subscription open for a day
 // should not be one span.
+//
+// # What is observed
+//
+// A query or mutation: one span and one duration record, whether it ran,
+// failed to parse, was refused, or panicked outside a resolver.
+//
+// A subscription event: the same, per event.
+//
+// A subscription that fails to open: a span with error status and a record on
+// both metrics, when the failure is one a SubscriptionInterceptor can see —
+// the source refusing to open, the Authorizer denying it, or an interceptor
+// registered after this one refusing it. An open that succeeds adds nothing:
+// its events are the spans.
+//
+// Not observed: a subscription refused before its plan exists — a document
+// that does not parse or validate, variables that do not coerce, a depth,
+// complexity or cost limit. Executor.Subscribe answers those before any
+// interceptor runs, so nothing installed through executor options can see
+// them; count them at the transport.
+//
+// # What is recorded
+//
+// Neither the document nor any variable is recorded unless WithDocument asks.
+// That covers error messages too: the engine composes the message of a parse,
+// validation, input or operation-selection error from the client's text —
+// "got invalid value" quotes the value — so by default such an error reaches
+// the span as its extensions.code and nothing else. Every other message is
+// the server's own and is recorded.
+//
+// An operation's name is the client's choice of text and length, so it is cut
+// to 256 bytes on the span and in the span's name.
 package otel
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -112,9 +146,10 @@ func WithResolverSpans(enabled bool) Option {
 	return func(c *config) { c.resolverSpans = enabled }
 }
 
-// WithDocument records the query text on the span. It is off by default
-// because a document can carry data in inline arguments, and traces are
-// usually retained longer and read more widely than logs.
+// WithDocument records the query text on the span, and with it the messages
+// of errors that quote the document or a variable's value. It is off by
+// default because a document can carry data in inline arguments, and traces
+// are usually retained longer and read more widely than logs.
 func WithDocument(enabled bool) Option {
 	return func(c *config) { c.recordQuery = enabled }
 }
@@ -149,6 +184,7 @@ func New(opts ...Option) []graphql.ExecutorOption {
 	out := []graphql.ExecutorOption{
 		graphql.WithRequestInterceptor(graphql.RequestInterceptorFunc(c.interceptRequest)),
 		graphql.WithOperationInterceptor(graphql.OperationInterceptorFunc(c.interceptOperation)),
+		graphql.WithSubscriptionInterceptor(graphql.SubscriptionInterceptorFunc(c.interceptSubscription)),
 	}
 	if c.fieldSpans || c.resolverSpans {
 		out = append(out, graphql.WithFieldObserver(fieldSpanObserver{c}))
@@ -183,8 +219,10 @@ func (c *config) interceptRequest(ctx context.Context, req *graphql.Request, nex
 	ctx, span := c.tracer.Start(ctx, "graphql.request", trace.WithSpanKind(trace.SpanKindServer))
 	defer span.End()
 
+	// Unvalidated until the document parses: over GET it is whatever bytes the
+	// query string held. The operation layer replaces it with the parsed name.
 	if req.OperationName != "" {
-		span.SetAttributes(AttrOperationName.String(req.OperationName))
+		span.SetAttributes(AttrOperationName.String(boundName(req.OperationName)))
 	}
 	if c.recordQuery {
 		span.SetAttributes(AttrDocument.String(req.Query))
@@ -199,12 +237,25 @@ func (c *config) interceptRequest(ctx context.Context, req *graphql.Request, nex
 	ctx = context.WithValue(ctx, recordedKey{}, recorded)
 
 	start := time.Now()
+	// The executor recovers a panic above every interceptor, so one that
+	// passes through here never returns from next: without this the request
+	// that failed worst would be the one with no record and a clean span.
+	// Re-panicking leaves the recovery, and its answer to the client, as is.
+	defer func() {
+		if r := recover(); r != nil {
+			recordPanic(span)
+			if !*recorded {
+				c.recordMetrics(ctx, 1, start, nil)
+			}
+			panic(r)
+		}
+	}()
 	resp := next(ctx, req)
 	c.recordSpan(span, resp)
 	if !*recorded {
 		// No attributes: the operation never ran, so its type is unknown, and
 		// the operationName beside the document is unvalidated client text.
-		c.recordMetrics(ctx, resp, start, nil)
+		c.recordMetrics(ctx, errorCount(resp), start, nil)
 	}
 	return resp
 }
@@ -218,7 +269,7 @@ type recordedKey struct{}
 func (c *config) interceptOperation(ctx context.Context, oc *graphql.OperationContext, next graphql.OperationHandler) *graphql.Response {
 	span := trace.SpanFromContext(ctx)
 	kind := string(oc.Operation.Operation)
-	name := oc.Operation.Name
+	name := boundName(oc.Operation.Name)
 
 	// A subscription event never passed through interceptRequest, so it has no
 	// span of ours to rename and needs one of its own. The flag that layer
@@ -249,14 +300,25 @@ func (c *config) interceptOperation(ctx context.Context, oc *graphql.OperationCo
 	}
 	span.SetAttributes(attrs...)
 
+	metricAttrs := c.metricAttrs(kind, name)
 	start := time.Now()
+	// As in interceptRequest. The flag is set here too, so the request layer
+	// above marks its span and leaves the metrics to this record.
+	defer func() {
+		if r := recover(); r != nil {
+			c.recordMetrics(ctx, 1, start, metricAttrs)
+			if viaRequest {
+				*flag = true
+			}
+			if own {
+				recordPanic(span)
+			}
+			panic(r)
+		}
+	}()
 	resp := next(ctx, oc)
 
-	metricAttrs := []attribute.KeyValue{AttrOperationType.String(kind)}
-	if name != "" && c.nameMetrics {
-		metricAttrs = append(metricAttrs, AttrOperationName.String(name))
-	}
-	c.recordMetrics(ctx, resp, start, metricAttrs)
+	c.recordMetrics(ctx, errorCount(resp), start, metricAttrs)
 	if viaRequest {
 		*flag = true
 	}
@@ -266,6 +328,63 @@ func (c *config) interceptOperation(ctx context.Context, oc *graphql.OperationCo
 		c.recordSpan(span, resp)
 	}
 	return resp
+}
+
+// interceptSubscription records a subscription that fails to open. Nothing
+// else would: no event follows, so the operation layer never runs for it.
+//
+// A successful open is left out of the trace. A span for it would have to be
+// in the context the events inherit, which would parent every event to a
+// span that ended before the first one arrived.
+func (c *config) interceptSubscription(ctx context.Context, oc *graphql.OperationContext, next graphql.SubscriptionHandler) (<-chan *graphql.Response, error) {
+	start := time.Now()
+	defer func() {
+		if r := recover(); r != nil {
+			c.recordFailedOpen(ctx, oc, start, 1, recordPanic)
+			panic(r)
+		}
+	}()
+	events, err := next(ctx, oc)
+	if err == nil {
+		return events, nil
+	}
+
+	// A SubscribeError carries what the client is sent. Any other error is an
+	// interceptor's own, and is one failure with that message.
+	resp := &graphql.Response{Errors: []*graphql.Error{graphql.Errorf("%v", err)}}
+	var se *graphql.SubscribeError
+	if errors.As(err, &se) && errorCount(se.Response) > 0 {
+		resp = se.Response
+	}
+	c.recordFailedOpen(ctx, oc, start, errorCount(resp), func(span trace.Span) { c.recordSpan(span, resp) })
+	return events, err
+}
+
+// recordFailedOpen is the span and the metrics of an open already known to
+// have failed. The span is backdated to when the open began, so its duration
+// is the open's, and outcome puts on it what went wrong.
+func (c *config) recordFailedOpen(ctx context.Context, oc *graphql.OperationContext, start time.Time, errs int, outcome func(trace.Span)) {
+	kind, name := string(oc.Operation.Operation), boundName(oc.Operation.Name)
+	attrs := []attribute.KeyValue{AttrOperationType.String(kind)}
+	if name != "" {
+		attrs = append(attrs, AttrOperationName.String(name))
+	}
+	_, span := c.tracer.Start(ctx, spanName(kind, name),
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithTimestamp(start),
+		trace.WithAttributes(attrs...))
+	outcome(span)
+	span.End()
+	c.recordMetrics(ctx, errs, start, c.metricAttrs(kind, name))
+}
+
+// metricAttrs are the dimensions of the request metrics for one operation.
+func (c *config) metricAttrs(kind, name string) []attribute.KeyValue {
+	attrs := []attribute.KeyValue{AttrOperationType.String(kind)}
+	if name != "" && c.nameMetrics {
+		attrs = append(attrs, AttrOperationName.String(name))
+	}
+	return attrs
 }
 
 // fieldSpanObserver emits a span per field. It keeps no state: Start returns a
@@ -296,6 +415,7 @@ func (o fieldSpanObserver) EndField(ctx context.Context, f graphql.FieldInfo, er
 	}
 	span := trace.SpanFromContext(ctx)
 	if err != nil {
+		err = o.c.recordable(err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 	}
@@ -312,19 +432,69 @@ func (c *config) recordSpan(span trace.Span, resp *graphql.Response) {
 		span.SetStatus(codes.Ok, "")
 		return
 	}
-	span.SetStatus(codes.Error, resp.Errors[0].Message)
-	for _, e := range resp.Errors {
-		span.RecordError(e)
+	for i, e := range resp.Errors {
+		err := c.recordable(e)
+		if i == 0 {
+			// The message alone, as before: Error() on a *graphql.Error
+			// leads with the path, which the span does not need twice.
+			message := e.Message
+			var code codeOnly
+			if errors.As(err, &code) {
+				message = string(code)
+			}
+			span.SetStatus(codes.Error, message)
+		}
+		span.RecordError(err)
 	}
 }
 
-func (c *config) recordMetrics(ctx context.Context, resp *graphql.Response, start time.Time, attrs []attribute.KeyValue) {
+// recordable returns err as it may be put on a span: itself, or its code
+// alone when its message quotes the client and WithDocument has not asked
+// for the client's text.
+func (c *config) recordable(err error) error {
+	var e *graphql.Error
+	if c.recordQuery || !errors.As(err, &e) || !quotesClient(e) {
+		return err
+	}
+	return codeOnly(errorCode(e))
+}
+
+// recordPanic marks a span whose request is unwinding. The executor answers a
+// recovered panic with one error, so that is the count.
+func recordPanic(span trace.Span) {
+	span.SetAttributes(AttrErrorCount.Int(1))
+	span.SetStatus(codes.Error, "panic")
+}
+
+// quotesClient reports whether e's message is about the request's own text:
+// these are the codes the engine gives an error about the document, the
+// variables or the operation name, each of which quotes what it is about,
+// and BAD_USER_INPUT is what a resolver uses to say the same of its input.
+func quotesClient(e *graphql.Error) bool {
+	switch errorCode(e) {
+	case graphql.CodeParseFailed, graphql.CodeValidationFailed, graphql.CodeBadUserInput, graphql.CodeOperationResolution:
+		return true
+	}
+	return false
+}
+
+func errorCode(e *graphql.Error) string {
+	code, _ := e.Extensions["code"].(string)
+	return code
+}
+
+// codeOnly stands on a span for an error whose message may not be recorded.
+type codeOnly string
+
+func (c codeOnly) Error() string { return string(c) }
+
+func (c *config) recordMetrics(ctx context.Context, errs int, start time.Time, attrs []attribute.KeyValue) {
 	set := metric.WithAttributes(attrs...)
 	if c.duration != nil {
 		c.duration.Record(ctx, time.Since(start).Seconds(), set)
 	}
-	if n := errorCount(resp); c.errors != nil && n > 0 {
-		c.errors.Add(ctx, int64(n), set)
+	if c.errors != nil && errs > 0 {
+		c.errors.Add(ctx, int64(errs), set)
 	}
 }
 
@@ -333,6 +503,26 @@ func errorCount(resp *graphql.Response) int {
 		return 0
 	}
 	return len(resp.Errors)
+}
+
+// maxNameLen bounds an operation name wherever it is recorded. The grammar
+// puts no limit on a name and a request body allows a megabyte of one; a
+// span's name is an index key and its attributes are stored with every span.
+const maxNameLen = 256
+
+// boundName cuts s to maxNameLen bytes of valid UTF-8. The validity matters
+// for a name that never parsed, which is raw request bytes: OTLP is protobuf,
+// and protobuf does not encode a string that is not UTF-8.
+func boundName(s string) string {
+	if len(s) <= maxNameLen && utf8.ValidString(s) {
+		return s
+	}
+	s = strings.ToValidUTF8(s[:min(len(s), maxNameLen)], "\uFFFD")
+	for len(s) > maxNameLen {
+		_, size := utf8.DecodeLastRuneInString(s)
+		s = s[:len(s)-size]
+	}
+	return s
 }
 
 // spanName follows the convention of "<type> <name>", falling back to the

@@ -33,17 +33,48 @@ func TestBatchResolverIsCalledOncePerType(t *testing.T) {
 		fed.Resolver("Product", resolveProduct),
 	)
 	resp := entities(t, e,
-		`[{"__typename":"User","id":"1"},{"__typename":"Product","sku":"abc"},{"__typename":"User","id":"404"},{"__typename":"Nope"},{"__typename":"User","id":"1"}]`,
+		`[{"__typename":"User","id":"1"},{"__typename":"Product","sku":"abc"},{"__typename":"User","id":"404"},{"__typename":"Nope"},{"__typename":"User","id":"2"}]`,
 		`... on User { id name } ... on Product { sku }`)
 	if len(resp.Errors) > 0 {
 		t.Fatalf("errors: %v", resp.Errors)
 	}
-	want := `{"_entities":[{"id":"1","name":"Ada"},{"sku":"abc"},null,null,{"id":"1","name":"Ada"}]}`
+	// The ids read differently backwards, so a batch handed over or handed
+	// back in the wrong order shows in both assertions.
+	want := `{"_entities":[{"id":"1","name":"Ada"},{"sku":"abc"},null,null,{"id":"2","name":"Grace"}]}`
 	if got := string(resp.Data); got != want {
 		t.Fatalf("data mismatch\n got: %s\nwant: %s", got, want)
 	}
-	if len(calls) != 1 || strings.Join(calls[0], ",") != "1,404,1" {
-		t.Fatalf("batch calls = %v, want one call with 1,404,1 in request order", calls)
+	if len(calls) != 1 || strings.Join(calls[0], ",") != "1,404,2" {
+		t.Fatalf("batch calls = %v, want one call with 1,404,2 in request order", calls)
+	}
+}
+
+// With two batched types failing, the error the client sees is the one for
+// the type that appears first in the request. The batches are gathered in a
+// map, and reporting in its iteration order made the same request answer
+// with either error from one run to the next.
+func TestTheFirstBatchInTheRequestIsTheOneWhoseErrorIsReported(t *testing.T) {
+	e := newSubgraph(t,
+		fed.BatchResolver("User", func(context.Context, []fed.Representation) ([]*user, error) {
+			return nil, errors.New("users are down")
+		}),
+		fed.BatchResolver("Product", func(context.Context, []fed.Representation) ([]*product, error) {
+			return nil, errors.New("products are down")
+		}),
+	)
+	// Go randomizes map iteration per range, so a regression is a coin toss
+	// on each attempt: fifty of them cannot all land the right way.
+	for range 50 {
+		resp := entities(t, e,
+			`[{"__typename":"Product","sku":"abc"},{"__typename":"User","id":"1"}]`, `... on User { id }`)
+		if len(resp.Errors) != 1 || !strings.Contains(resp.Errors[0].Message, "products are down") {
+			t.Fatalf("errors = %v, want the Product batch's, which the request names first", resp.Errors)
+		}
+		resp = entities(t, e,
+			`[{"__typename":"User","id":"1"},{"__typename":"Product","sku":"abc"}]`, `... on User { id }`)
+		if len(resp.Errors) != 1 || !strings.Contains(resp.Errors[0].Message, "users are down") {
+			t.Fatalf("errors = %v, want the User batch's, which the request names first", resp.Errors)
+		}
 	}
 }
 

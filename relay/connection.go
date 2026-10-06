@@ -45,6 +45,21 @@ type Args struct {
 	Before *string
 }
 
+// ForwardArgs are the two arguments of a connection that pages forward only,
+// first and after: the shape for a field that declares no last or before.
+// Args names all four, and a binding that names an argument the schema lacks
+// is a build error. Both are nullable, as in Args.
+type ForwardArgs struct {
+	First *int
+	After *string
+}
+
+// Args returns a as the four-argument form FromSlice takes, with last and
+// before absent.
+func (a ForwardArgs) Args() Args {
+	return Args{First: a.First, After: a.After}
+}
+
 // OffsetCursor is the cursor for the nth element of a list, base64 of
 // "arrayconnection:n" — the encoding graphql-relay-js uses.
 func OffsetCursor(offset int) string {
@@ -122,8 +137,10 @@ func FromSlice[T any](items []T, args Args) (Connection[T], error) {
 		upper = beforeOffset
 	}
 
-	// The edges slice is made, never left nil: the SDL says [Edge!]! and a nil
-	// slice would be written as null rather than an empty page.
+	// The edges slice is made, never left nil. The engine writes a nil slice
+	// as [] where the SDL declares the list non-null and as null where it is
+	// nullable, which is how the Relay specification itself declares edges,
+	// and an empty page is a list either way.
 	conn := Connection[T]{
 		Edges: make([]Edge[T], 0, end-start),
 		PageInfo: PageInfo{

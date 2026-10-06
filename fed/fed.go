@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/syssam/graphql-go/internal/bindhook"
+	"github.com/syssam/graphql-go/internal/fedlink"
 	"io/fs"
 	"reflect"
 	"slices"
@@ -122,7 +123,7 @@ func SubgraphFS(fsys fs.FS, patterns []string, entities ...Entity) (graphql.Sour
 }
 
 func subgraph(sdl string, author graphql.Source, entities []Entity) (graphql.Source, graphql.SchemaOption, error) {
-	keyed, ifaces, err := keyTypes(sdl)
+	doc, keyed, ifaces, renamed, err := keyTypes(sdl)
 	if err != nil {
 		return graphql.Source{}, nil, err
 	}
@@ -156,7 +157,7 @@ func subgraph(sdl string, author graphql.Source, entities []Entity) (graphql.Sou
 	}
 	slices.Sort(names)
 
-	src := graphql.Sources(graphql.SDL(prelude(names)), author)
+	src := graphql.Sources(graphql.SDL(prelude(names, coverageMark(doc))+renamed), author)
 	return src, bindings(sdl, names, byName), nil
 }
 
@@ -168,18 +169,23 @@ func subgraph(sdl string, author graphql.Source, entities []Entity) (graphql.Sou
 //
 // The SDL is parsed rather than loaded: @key is not declared until the
 // prelude is in front of it, and a loader would reject the document for that.
-func keyTypes(sdl string) (objects, interfaces map[string]struct{}, err error) {
-	doc, err := parser.ParseSchema(&ast.Source{Name: "subgraph.graphql", Input: sdl})
+//
+// renamed is the declarations for whatever other spellings of the federation
+// directives the SDL's @link introduces, to go in front of it with the
+// prelude.
+func keyTypes(sdl string) (doc *ast.SchemaDocument, objects, interfaces map[string]struct{}, renamed string, err error) {
+	doc, err = parser.ParseSchema(&ast.Source{Name: "subgraph.graphql", Input: sdl})
 	if err != nil {
-		return nil, nil, fmt.Errorf("fed: %w", err)
+		return nil, nil, nil, "", fmt.Errorf("fed: %w", err)
 	}
-	if err := checkKeys(doc); err != nil {
-		return nil, nil, err
+	names := fedlink.Read(doc, Directives)
+	if err := checkKeys(doc, names); err != nil {
+		return nil, nil, nil, "", err
 	}
 	objects, interfaces = map[string]struct{}{}, map[string]struct{}{}
 	collect := func(defs ast.DefinitionList) {
 		for _, def := range defs {
-			if !hasResolvableKey(def) {
+			if !fedlink.HasResolvableKey(def, names) {
 				continue
 			}
 			switch def.Kind {
@@ -192,20 +198,7 @@ func keyTypes(sdl string) (objects, interfaces map[string]struct{}, err error) {
 	}
 	collect(doc.Definitions)
 	collect(doc.Extensions)
-	return objects, interfaces, nil
-}
-
-// hasResolvableKey reports whether def carries a @key this subgraph resolves.
-// @key(resolvable: false) names the key of an entity another subgraph owns:
-// the router never asks this one for it, so such a type is not an entity
-// here, needs no resolver and stays out of _Entity.
-func hasResolvableKey(def *ast.Definition) bool {
-	for _, d := range def.Directives.ForNames("key") {
-		if arg := d.Arguments.ForName("resolvable"); arg == nil || arg.Value == nil || arg.Value.Raw != "false" {
-			return true
-		}
-	}
-	return false
+	return doc, objects, interfaces, names.Declare(Directives), nil
 }
 
 func bindings(sdl string, names []string, byName map[string]Entity) graphql.SchemaOption {

@@ -15,8 +15,8 @@ const AttrPlanCacheResult = attribute.Key("graphqlgo.plan_cache.result")
 
 // ObserveExecutor reports e's shared state as asynchronous metrics, read from
 // Executor.Stats once per collection: the plan cache's size, bytes and
-// lookups (split by hit or miss), and the resolver concurrency slots in use
-// and available. It is a separate call from New because the executor has to
+// lookups (split by hit or miss), the resolver concurrency slots in use and
+// available, and whether anything bounds the size of a request. It is a separate call from New because the executor has to
 // exist before anything can read it, the same shape as the OpenTelemetry
 // runtime instrumentation. Unregister the returned registration when e is
 // retired.
@@ -38,7 +38,7 @@ func ObserveExecutor(e *graphql.Executor, opts ...Option) (metric.Registration, 
 	}
 	bytes, err := m.Int64ObservableUpDownCounter("graphqlgo.plan_cache.bytes",
 		metric.WithUnit("By"),
-		metric.WithDescription("Query text held by the plan cache, the quantity WithPlanCacheBytes bounds."))
+		metric.WithDescription("Query text and plans held by the plan cache, the quantity WithPlanCacheBytes bounds."))
 	if err != nil {
 		return nil, err
 	}
@@ -60,6 +60,12 @@ func ObserveExecutor(e *graphql.Executor, opts ...Option) (metric.Registration, 
 	if err != nil {
 		return nil, err
 	}
+	unbounded, err := m.Int64ObservableUpDownCounter("graphqlgo.executor.requests_unbounded",
+		metric.WithUnit("{executor}"),
+		metric.WithDescription("1 while no depth, complexity or cost limit is set, so nothing bounds what one request may ask for; 0 otherwise."))
+	if err != nil {
+		return nil, err
+	}
 	base := metric.WithAttributes(c.attrs...)
 	hit := metric.WithAttributes(withAttr(c.attrs, AttrPlanCacheResult.String("hit"))...)
 	miss := metric.WithAttributes(withAttr(c.attrs, AttrPlanCacheResult.String("miss"))...)
@@ -71,8 +77,13 @@ func ObserveExecutor(e *graphql.Executor, opts ...Option) (metric.Registration, 
 		o.ObserveInt64(lookups, s.PlanCacheMisses, miss)
 		o.ObserveInt64(inUse, int64(s.ConcurrencyInUse), base)
 		o.ObserveInt64(limit, int64(s.ConcurrencyLimit), base)
+		var n int64
+		if s.RequestsUnbounded {
+			n = 1
+		}
+		o.ObserveInt64(unbounded, n, base)
 		return nil
-	}, count, bytes, lookups, inUse, limit)
+	}, count, bytes, lookups, inUse, limit, unbounded)
 }
 
 // ObserveDrain reports how many long-lived connections — WebSocket

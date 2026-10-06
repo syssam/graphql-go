@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -36,7 +37,7 @@ type Product @key(fields: "sku") @shareable {
 type Query { me: User! }
 `
 
-var users = map[string]*user{"1": {ID: "1", Name: "Ada"}}
+var users = map[string]*user{"1": {ID: "1", Name: "Ada"}, "2": {ID: "2", Name: "Grace"}}
 var products = map[string]*product{"abc": {SKU: "abc", Price: 42}}
 
 func resolveUser(_ context.Context, r fed.Representation) (*user, error) {
@@ -285,6 +286,100 @@ type Query { hello: String! }
 	}))
 	if err == nil || !strings.Contains(err.Error(), "nope") || !strings.Contains(err.Error(), "Org") {
 		t.Fatalf("err = %v, want one naming Org and nope", err)
+	}
+}
+
+// A block string is a string, and a compound key long enough to wrap is
+// where an author reaches for one.
+func TestSubgraphAcceptsABlockStringKey(t *testing.T) {
+	const sdl = `
+type Org { id: ID! }
+type User @key(fields: """
+  id
+  org { id }
+""") { id: ID! org: Org! }
+type Query { hello: String! }
+`
+	type u struct{ ID string }
+	if _, _, err := fed.Subgraph(sdl, fed.Resolver("User", func(context.Context, fed.Representation) (*u, error) {
+		return nil, nil
+	})); err != nil {
+		t.Fatalf("a block-string key was rejected: %v", err)
+	}
+}
+
+// Each of these parses as a selection and composes into nothing: the router
+// refuses the subgraph, and it does so at composition, in another process and
+// usually another pipeline. The SDL is in hand at start-up.
+func TestSubgraphRejectsWhatCompositionRefusesInAKey(t *testing.T) {
+	for _, tc := range []struct{ name, fields, want string }{
+		{"an alias", `uid: id`, "alias"},
+		{"arguments", `id(format: "hex")`, "argument"},
+		{"a directive", `id @skip(if: true)`, "@skip"},
+		{"a composite field with no selection", `org`, "org {"},
+		{"a nested alias", `org { oid: id }`, "alias"},
+		{"a nested composite field with no selection", `org { parent }`, "parent {"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sdl := `
+type Org { id: ID! parent: Org }
+type User @key(fields: ` + strconv.Quote(tc.fields) + `) { id(format: String): ID! org: Org! }
+type Query { hello: String! }
+`
+			type u struct{ ID string }
+			_, _, err := fed.Subgraph(sdl, fed.Resolver("User", func(context.Context, fed.Representation) (*u, error) {
+				return nil, nil
+			}))
+			if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "User") {
+				t.Fatalf("err = %v, want one naming User and %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// A key may select a field the type gains in an extension: the two halves are
+// one type, and a subgraph split across files declares them apart.
+func TestAKeyMaySelectAFieldDeclaredInAnExtension(t *testing.T) {
+	const sdl = `
+type User @key(fields: "id") { name: String! }
+extend type User { id: ID! }
+type Query { hello: String! }
+`
+	if _, _, err := fed.Subgraph(sdl, fed.Resolver("User", resolveUser)); err != nil {
+		t.Fatalf("a key on a field from an extension was rejected: %v", err)
+	}
+}
+
+// extend type X @key is how Federation 1 wrote an entity owned elsewhere and
+// how a split schema adds a key, so a @key carried by an extension makes the
+// type an entity like one on the definition.
+func TestAKeyOnATypeExtensionMakesAnEntity(t *testing.T) {
+	const sdl = `
+type User { id: ID! name: String! }
+extend type User @key(fields: "id")
+type Query { hello: String! }
+`
+	src, bindings, err := fed.Subgraph(sdl, fed.Resolver("User", resolveUser))
+	if err != nil {
+		t.Fatalf("Subgraph: %v", err)
+	}
+	s, err := graphql.NewSchema(src, bindings,
+		graphql.Object[user]("User",
+			graphql.Field("id", func(u *user) graphql.ID { return graphql.ID(u.ID) }),
+			graphql.Field("name", func(u *user) string { return u.Name }),
+		),
+		graphql.Query(graphql.Field("hello", func(graphql.Root) string { return "hi" })),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	resp := entities(t, graphql.NewExecutor(s), `[{"__typename":"User","id":"2"}]`, `... on User { name }`)
+	if got := string(resp.Data); got != `{"_entities":[{"name":"Grace"}]}` {
+		t.Fatalf("data = %s, errors = %v", got, resp.Errors)
+	}
+
+	if _, _, err := fed.Subgraph(sdl); err == nil || !strings.Contains(err.Error(), "User") {
+		t.Fatalf("err = %v, want User reported as a @key type with no resolver", err)
 	}
 }
 
