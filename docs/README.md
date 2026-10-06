@@ -3,7 +3,8 @@
 ## Learn it
 
 There is no tutorial here yet. The path that exists is the examples, in this
-order, and they are meant to be read as source:
+order, and they are meant to be read as source; the task pages below it each
+do one job from start to finish.
 
 | Start here | For |
 | --- | --- |
@@ -41,16 +42,25 @@ the single best page to read before writing any binding.
 | [`module-layout.md`](module-layout.md) | Why this stays one module until publication. |
 | [`workflow.md`](workflow.md) | The development loop: gates, coverage, break-it testing, benchmarking. |
 
+## Do one job
+
+Each page is the smallest complete code for one task, a test that shows it
+worked, and what goes wrong. Every Go block in them is copied from
+[`examples/howto`](../examples/howto), and a test there fails if a page shows
+code that no longer exists.
+
+| Page | Job |
+| --- | --- |
+| [`tasks/n-plus-one.md`](tasks/n-plus-one.md) | Stop an N+1 with `loader`, and see that it stopped. |
+| [`tasks/authorization.md`](tasks/authorization.md) | Guard a field and a type; refuse, null or drop. |
+| [`tasks/custom-scalar.md`](tasks/custom-scalar.md) | Add a custom scalar, by hand or from `MarshalGQL`. |
+| [`tasks/testing-a-server.md`](tasks/testing-a-server.md) | Test the schema, a query, and the server over HTTP. |
+
 ## What is missing
 
 Stated so nobody reads silence as completeness. Compared with a mature
-project's documentation site, this has a reference and no curriculum: there is
-no page that answers a *task*. The ones worth writing, in the order a user hits
-them:
+project's documentation site, this has a reference, four task pages and no
+curriculum. The next pages worth writing, in the order a user hits them:
 
-- solving N+1 with `loader` (the mechanism is in `examples/blog`, undocumented as a guide)
-- authorization strategies (in `examples/storefront`, same problem)
-- custom scalars
 - errors: what the engine produces, and what `WithErrorPresenter` is for
-- testing a server built with this
 - cursor pagination beyond the `relay` package's godoc

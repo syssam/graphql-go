@@ -9,6 +9,7 @@
 | [`relaynode`](relaynode) | The Relay contract: global ids, `Query.node` re-fetch, and cursor connections. |
 | [`echo`](echo) | Serving `blog` through Echo v5 — routing and shutdown wiring only. |
 | [`fiber`](fiber) | Serving `blog` through Fiber v3 — routing and shutdown wiring only. |
+| [`howto`](howto) | The code behind the task pages in [`docs/tasks`](../docs/tasks) -- a loader, authorization, custom scalars, testing a server -- one file and its test per page. A page's Go blocks are checked against these files by `pages_test.go`. |
 | [`backoffice`](backoffice) | A real service, the staff side of a shop: velox writes the ORM and the SDL for seven entities in three domains, gqlc binds them and generates the wiring, uber/fx assembles the services and the lifecycle behind Echo. [`GUIDE.md`](backoffice/GUIDE.md) is the developer guide. Its own module. |
 
 `storefront` is the one to read for anything about authorization, limits or

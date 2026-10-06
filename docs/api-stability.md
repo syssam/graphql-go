@@ -76,7 +76,12 @@ is documented rather than designed away.
 
 ## Still expected to change
 
-Named so that a consumer can avoid them or accept the risk knowingly.
+Named so that a consumer can avoid them or accept the risk knowingly. Each
+carries `Experimental:` in its godoc, which is where a consumer will be reading
+when it matters, and `TestTypesExpectedToChangeAreMarkedExperimental` fails if this list and the
+godoc disagree. The marker comes off a type when a second real schema has used
+it without needing a change; until then no field is added to the authorization
+types.
 
 - **`AuthShape`, `AuthSite`, `Decision`, `Outcome`, `ObjectCheck`.** The
   authorization spine is the newest surface here and the only one with a single

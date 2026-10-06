@@ -50,6 +50,7 @@ The API reference is godoc -- `go doc github.com/syssam/graphql-go`, and
 [`doc.go`](doc.go) is the overview worth reading before writing any binding.
 [`docs/README.md`](docs/README.md) maps everything else: which example teaches
 what, which document answers whether to trust this, and what is not written yet.
+[`docs/tasks`](docs/tasks) has one short page per job, each backed by tested code: [stop an N+1 with a loader](docs/tasks/n-plus-one.md), [guard a field and a type](docs/tasks/authorization.md), [add a custom scalar](docs/tasks/custom-scalar.md), [test your server](docs/tasks/testing-a-server.md).
 
 ## Quick start
 
@@ -242,7 +243,7 @@ variables, complexity, depth and cost. `SetExtension` writes response-level
 metadata (tracing ids, rate-limit windows).
 
 Executor options follow the gRPC style: `WithMaxConcurrency`, `WithPlanCache`,
-`WithPlanCacheBytes` (bound the cache by query text, 16 MiB by default),
+`WithPlanCacheBytes` (bound the cache by query text plus what its compiled plans retain, 16 MiB by default),
 `WithErrorPresenter`, `WithRecover`, typed interceptors, `WithFieldObserver` (watch every
 field, pure ones included, without the type-erased path a field interceptor forces), plus production
 limits `WithMaxResponseBytes` (null data and one `RESPONSE_TOO_LARGE` error once a
@@ -269,7 +270,8 @@ Phases 1-4 of the
 **Engine.** Schema-first with a code-first binding API: SDL is the contract and
 Go bindings are plain function values, checked against it at `NewSchema` rather
 than at request time. A document is parsed and validated once and cached in an
-LRU bounded by entry count and by query text; concurrent misses for one query
+LRU bounded by entry count and by bytes -- query text plus what its compiled
+plans retain; concurrent misses for one query
 share a single parse. Each `(operation, @skip/@include variant)` compiles to an
 immutable plan with fragments flattened, directives constant-folded, arguments
 pre-decoded and response keys pre-serialized, and abstract types expanded
@@ -332,7 +334,8 @@ Apollo Federation subgraphs, with [`examples/federation`](examples/federation)
 showing two of them and the fetch a router performs across them; and `lint/`,
 an analyzer for a bug class `-race`
 cannot find -- a check-then-act pair on `OperationContext` that silently
-degrades DataLoader batching to N+1.
+degrades DataLoader batching to N+1. It reports the pair when both halves are in
+one function; split across two helpers it passes clean.
 
 Not built: `ext/authz`, and what is left of it is smaller than a package --
 `@requiresScopes` is core, `@policy` is one `RequirementDirective` call and
