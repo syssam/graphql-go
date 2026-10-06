@@ -20,6 +20,13 @@ import (
 //	BACKOFFICE_POSTGRES=postgres://postgres:pass@localhost:5432/postgres?sslmode=disable go test ./...
 var postgresURL = os.Getenv("BACKOFFICE_POSTGRES")
 
+// requirePostgres is for a run whose whole point is the server: CI's
+// PostgreSQL job and its local mirror set BACKOFFICE_REQUIRE_POSTGRES. The
+// fallback above is silent, so with the URL unset, or set under a misspelled
+// name, every test passes on SQLite and the job is green having reached no
+// server. Any value turns it on; an empty one is the same as unset.
+var requirePostgres = os.Getenv("BACKOFFICE_REQUIRE_POSTGRES") != ""
+
 var databases sync.Map // test name -> [2]string{driver, dsn}
 
 // database returns the driver and data source of t's own database, the same
@@ -31,6 +38,9 @@ func database(t testing.TB) (driver, dsn string) {
 		return d[0], d[1]
 	}
 	if postgresURL == "" {
+		if requirePostgres {
+			t.Fatal("BACKOFFICE_REQUIRE_POSTGRES is set and BACKOFFICE_POSTGRES is empty: this test would have run on SQLite")
+		}
 		driver, dsn = "sqlite", "file:"+t.Name()+"?mode=memory&cache=shared&_pragma=foreign_keys(1)"
 	} else {
 		driver, dsn = "postgres", postgresDatabase(t)

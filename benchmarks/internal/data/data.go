@@ -13,11 +13,14 @@ type User struct {
 	Friends []*User
 }
 
+// The fixture's size: UserCount users with FriendCount friends each.
 const (
 	UserCount   = 100
 	FriendCount = 2
 )
 
+// Dataset is built from indexes alone, so every call, and so both engines,
+// get the same graph: user i befriends the FriendCount users after it.
 func Dataset() []*User {
 	users := make([]*User, UserCount)
 	for i := range users {

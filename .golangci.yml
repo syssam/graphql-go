@@ -23,7 +23,10 @@ linters:
     # The rules below are the checkable delta between this repository and the
     # Google and Uber Go style guides. Every one of them reports nothing
     # today; they are enabled so that stays true rather than remaining true
-    # by accident. Two rules from the same families are deliberately left off:
+    # by accident. Naming any rule here replaces revive's default set, so a
+    # default that is wanted has to be listed like the rest: exported was
+    # assumed to be running for as long as this list has existed and was not.
+    # Three rules from the same families are deliberately left off:
     #
     #   unused-receiver would have us rename 26 receivers to _, which
     #   contradicts receiver-naming above it -- Google asks for one receiver
@@ -34,8 +37,12 @@ linters:
     #   WithRecover(enabled bool) and WithFieldSpans(enabled bool) are options
     #   whose whole job is to carry a flag. Splitting each into two
     #   constructors to satisfy a linter would double the option surface.
+    #
+    #   error-strings is ST1005 under another name, and is off for the reason
+    #   given at ST1005 below.
     revive:
       rules:
+        - name: exported
         - name: receiver-naming
         - name: context-as-argument
         - name: context-keys-type
@@ -71,12 +78,24 @@ linters:
         linters: [revive, gocritic, perfsprint, errcheck]
       - path: (^|/)models\.go$
         linters: [revive]
-      # Tests build throwaway servers, sockets and modules, and close them in
-      # cleanup where a failure cannot be acted on. Checking those returns adds
-      # noise to fixtures without making anything safer; the assertions that
-      # matter are the explicit ones.
+      # Off in tests, each for a reason of its own.
+      #
+      # errcheck, bodyclose, noctx: tests build throwaway servers, sockets and
+      # modules, and close them in cleanup where a failure cannot be acted on.
+      # Checking those returns adds noise to fixtures without making anything
+      # safer; the assertions that matter are the explicit ones.
+      #
+      # perfsprint: it is on for the write path, and a test is not on it.
+      #
+      # errorlint: a test that compares an error with == or asserts its type
+      # is asking for that very value, and errors.Is would keep passing after
+      # the function under test began wrapping it.
+      #
+      # revive: the rules above are the style of the library's own code. A
+      # test helper takes *testing.T ahead of a context and names a local for
+      # what it holds (url, viewer), which two of them forbid.
       - path: _test\.go$
-        linters: [noctx, bodyclose, perfsprint, errcheck, unused, revive, errorlint]
+        linters: [noctx, bodyclose, perfsprint, errcheck, revive, errorlint]
       # revive's exported rule wants a doc comment on every exported symbol.
       # The examples already carry one wherever there is something to say --
       # domain.Post explains why it holds AuthorID, domain.Optional why it is
@@ -95,11 +114,6 @@ linters:
       # cancel nothing while reading as though it could.
       - path: benchmarks/buildbench/
         linters: [noctx]
-      # revive's error-strings is ST1005 under another name, disabled above for
-      # the same reason: GraphQL error messages are specified as sentences and
-      # go to clients verbatim.
-      - linters: [revive]
-        text: error-strings
 
 formatters:
   enable:

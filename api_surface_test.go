@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -72,6 +73,7 @@ func TestPublicAPISurface(t *testing.T) {
 func publicAPI(t *testing.T, root string) string {
 	t.Helper()
 	fset := token.NewFileSet()
+	src := &apiSource{root: root, module: modulePath(t, root), fset: fset, dirs: map[string][]*ast.File{}}
 	var lines []string
 
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -103,7 +105,7 @@ func publicAPI(t *testing.T, root string) string {
 		if pkg == "." {
 			pkg = "graphql"
 		}
-		lines = append(lines, declLines(fset, pkg, f)...)
+		lines = append(lines, src.declLines(pkg, filepath.Dir(path), f)...)
 		return nil
 	})
 	if err != nil {
@@ -136,7 +138,31 @@ func skipDir(root, path, name string) bool {
 	return false
 }
 
-func declLines(fset *token.FileSet, pkg string, f *ast.File) []string {
+// apiSource is what rendering a declaration needs beyond the declaration: the
+// module it is in, so that a reference into one of its own packages can be
+// followed to what it refers to.
+type apiSource struct {
+	root, module string
+	fset         *token.FileSet
+	dirs         map[string][]*ast.File
+}
+
+func modulePath(t *testing.T, root string) string {
+	t.Helper()
+	mod, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for line := range strings.Lines(string(mod)) {
+		if name, ok := strings.CutPrefix(strings.TrimSpace(line), "module "); ok {
+			return strings.TrimSpace(name)
+		}
+	}
+	t.Fatalf("no module line in %s", filepath.Join(root, "go.mod"))
+	return ""
+}
+
+func (src *apiSource) declLines(pkg, dir string, f *ast.File) []string {
 	var out []string
 	emit := func(s string) {
 		out = append(out, pkg+": "+strings.Join(strings.Fields(s), " "))
@@ -153,27 +179,174 @@ func declLines(fset *token.FileSet, pkg string, f *ast.File) []string {
 			sig := *d
 			sig.Body = nil
 			sig.Doc = nil
-			emit(renderNode(fset, &sig))
+			emit(renderNode(src.fset, &sig))
 		case *ast.GenDecl:
-			for _, spec := range d.Specs {
+			for i, spec := range d.Specs {
 				switch s := spec.(type) {
 				case *ast.TypeSpec:
 					if !s.Name.IsExported() {
 						continue
 					}
-					emit("type " + renderNode(fset, exportedOnly(s)))
+					emit("type " + renderNode(src.fset, exportedOnly(s)))
 				case *ast.ValueSpec:
-					for _, n := range s.Names {
-						if !n.IsExported() {
+					for n, name := range s.Names {
+						if !name.IsExported() {
 							continue
 						}
-						emit(d.Tok.String() + " " + n.Name)
+						// The value is appended whole: emit folds runs of
+						// white space, and inside a constant that is content.
+						out = append(out, pkg+": "+d.Tok.String()+" "+name.Name+src.valueText(dir, f, d, i, n, 0))
 					}
 				}
 			}
 		}
 	}
 	return out
+}
+
+// valueText renders what a variable or a constant is beyond its name: the
+// type it declares, and what it is set to. The name alone let the type of an
+// exported variable change, and the value of an exported constant, without a
+// line here moving.
+//
+// A constant's value is always shown; it is compiled into every caller. A
+// variable's is shown only when no type is declared, because then the
+// initializer is the only statement of the type there is. This reads source,
+// not types, so the initializer stands for the type rather than naming it,
+// and when it is a reference into this module -- which is how the transports
+// re-export a default kept in an internal package -- the reference is
+// followed, since otherwise the type could change behind an unchanged line.
+func (src *apiSource) valueText(dir string, f *ast.File, d *ast.GenDecl, spec, name, depth int) string {
+	s := d.Specs[spec].(*ast.ValueSpec)
+	typ, values := s.Type, s.Values
+	// A constant with neither repeats the last one that had them, with iota
+	// moved on: that is how `B` after `A Kind = iota` gets its type and value.
+	for i := spec; d.Tok == token.CONST && typ == nil && len(values) == 0 && i > 0; {
+		i--
+		prev := d.Specs[i].(*ast.ValueSpec)
+		typ, values = prev.Type, prev.Values
+	}
+
+	var b strings.Builder
+	if typ != nil {
+		b.WriteString(" " + oneLine(renderNode(src.fset, typ)))
+	}
+	if len(values) == 0 || (d.Tok == token.VAR && typ != nil) {
+		return b.String()
+	}
+	value := values[0]
+	if name < len(values) {
+		value = values[name]
+	}
+	b.WriteString(" = " + src.renderValue(value))
+	if usesIota(value) {
+		b.WriteString(" (iota " + strconv.Itoa(spec) + ")")
+	}
+	if depth < 4 {
+		b.WriteString(src.follow(dir, f, value, depth))
+	}
+	return b.String()
+}
+
+func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// renderValue prints a string literal exactly, quoted onto one line, so that
+// white space inside it is part of what is pinned.
+func (src *apiSource) renderValue(e ast.Expr) string {
+	if lit, ok := e.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+		if v, err := strconv.Unquote(lit.Value); err == nil {
+			return strconv.Quote(v)
+		}
+	}
+	return oneLine(renderNode(src.fset, e))
+}
+
+func usesIota(e ast.Expr) bool {
+	found := false
+	ast.Inspect(e, func(n ast.Node) bool {
+		if id, ok := n.(*ast.Ident); ok && id.Name == "iota" {
+			found = true
+		}
+		return !found
+	})
+	return found
+}
+
+// follow renders the declaration a value refers to, when the value is nothing
+// but a name declared in this module: one in the same package, or pkg.Name
+// for a package the file imports from this module.
+func (src *apiSource) follow(dir string, f *ast.File, e ast.Expr, depth int) string {
+	target, name := dir, ""
+	switch e := e.(type) {
+	case *ast.Ident:
+		name = e.Name
+	case *ast.SelectorExpr:
+		pkg, ok := e.X.(*ast.Ident)
+		if !ok {
+			return ""
+		}
+		target, name = src.importedDir(f, pkg.Name), e.Sel.Name
+	}
+	if target == "" || name == "" {
+		return ""
+	}
+	for _, file := range src.parseDir(target) {
+		for _, decl := range file.Decls {
+			d, ok := decl.(*ast.GenDecl)
+			if !ok || (d.Tok != token.VAR && d.Tok != token.CONST) {
+				continue
+			}
+			for i, spec := range d.Specs {
+				for n, id := range spec.(*ast.ValueSpec).Names {
+					if id.Name == name {
+						return " -> " + d.Tok.String() + " " + name + src.valueText(target, file, d, i, n, depth+1)
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// importedDir is the directory of the package f imports under name, when
+// that package is in this module.
+func (src *apiSource) importedDir(f *ast.File, name string) string {
+	for _, imp := range f.Imports {
+		path, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			continue
+		}
+		rel, inModule := strings.CutPrefix(path, src.module+"/")
+		if !inModule {
+			continue
+		}
+		local := path[strings.LastIndex(path, "/")+1:]
+		if imp.Name != nil {
+			local = imp.Name.Name
+		}
+		if local == name {
+			return filepath.Join(src.root, filepath.FromSlash(rel))
+		}
+	}
+	return ""
+}
+
+func (src *apiSource) parseDir(dir string) []*ast.File {
+	if files, ok := src.dirs[dir]; ok {
+		return files
+	}
+	var files []*ast.File
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		if f, err := parser.ParseFile(src.fset, filepath.Join(dir, e.Name()), nil, parser.SkipObjectResolution); err == nil {
+			files = append(files, f)
+		}
+	}
+	src.dirs[dir] = files
+	return files
 }
 
 // isAPI reports whether a declaration is reachable from outside the package.

@@ -115,12 +115,33 @@ like if the thing under test were broken:
   TestAllocationBaseline -v .` as the workflow writes it, with no `-count=1`, and on a run
   where the root package had not changed it answered in one second: `ok (cached)`. That was a
   true result and not a test that ran; it was noticed only because the same job had taken
-  seventeen seconds the run before. The mirror passes `-count=1` there now. The gate and the
-  PostgreSQL job always did.
+  seventeen seconds the run before. The mirror and the workflow both pass `-count=1` there
+  now. The gate and the PostgreSQL job always did.
 - **A break that hangs.** Removing the loader's key dedup leaves a second waiter on a key the
   queue carries once, and the test ran to the 600-second default timeout. Run a break that
   could deadlock with a short `-timeout`; the gqlwsproto and wave breaks after that were
   caught in 30.
+- **The analyzer's own gate, three ways.** CI ran `gqlvet ./...` from the root, so it reached
+  one module of five. The test named for the type name gqlvet ships with assigned that name
+  itself, so editing the default, or renaming `OperationContext`, left it green and gqlvet
+  silent on a planted pair. And nothing required gqlvet ever to report anything: silence is
+  also what a dead analyzer says. It loops over every `go.mod` now, a test runs the shipped
+  default against the real type, and CI requires exit 3 on `scripts/testdata/gqlvet`.
+- **Configuration and shell that read as on.** Listing `revive.rules` replaces revive's
+  defaults, so `exported` had never run while an exclusion and its comment described it as
+  running. `go test -run Name` matching nothing is `ok [no tests to run]`, exit 0. `for x in
+  $(cmd)` runs no times when `cmd` fails, so a package whose tests stopped compiling dropped
+  out of the fuzz job in silence. `git diff --quiet` does not see untracked files, so a
+  generated file never committed was not stale. Each is asserted now: the PASS line, a listing
+  per package that declares a target, `git status --porcelain`.
+- **CI weaker than its mirror.** The mirror proved the backoffice suite ran on PostgreSQL and
+  the workflow did not, though the mirror exists to fail when CI would. A step hardened in one
+  belongs in the other; `BACKOFFICE_REQUIRE_POSTGRES` makes the SQLite fallback a failure in
+  both.
+- **A snapshot that pinned names.** `docs/public-api.txt` held `var X` and `const Y` and no
+  more, so an exported variable's type and a constant's value could change under an unchanged
+  line. It renders the declared type and the value, following a re-export into the internal
+  package it comes from.
 
 - `TestPoolCapCoversALargeSchemasIntrospection` passed for the whole life of the 8 MiB pool
   cap and was guarding nothing, because it asserted a size **derived** from the thing it was
@@ -134,13 +155,16 @@ like if the thing under test were broken:
   It now pins the response measured on the real schema, and fails at 8 MiB naming the
   capacity reached.
 
-**`gqlvet` matches on the key, not on the receiver's text.** It compared both, so an alias, a
-field holding the context or a second `OperationFrom` hid the pair; it rendered every composite
-literal as `?`, so two different `struct{}` keys were one; and a guard that compared a function
-literal with a block walked into closures and reported them twice. Its one test also overrode
-the type name it ships with, so a rename of `OperationContext` would have left it matching
-nothing and reporting a clean tree; `TestContextRaceWithTheShippedContextType` runs against a
-stand-in at the real import path.
+**`gqlvet` matches on the key's value, not on anyone's spelling.** It compared the receiver's
+text, so an alias, a field holding the context or a second `OperationFrom` hid the pair; it
+rendered every composite literal as `?`, so two different `struct{}` keys were one; and it
+compared the key's text, so a constant, a variable holding the key and the literal were three.
+It now also follows a type alias, an embedding struct, method values and an interface variable
+assigned in the same function, and places a call inside a named closure where the closure is
+used. **It sees one function at a time**: a `Get` in one helper and the `Set` in another is the
+same race and passes clean. `lint/testdata/src/b` has a `// want` line per variant and the
+correct code beside each; `TestContextRaceOnTheRealContext` is the one that fails when the type
+is renamed.
 
 The habit that catches these is breaking the thing on purpose and requiring the test to
 fail. If it still passes, the test was agreeing with the code rather than checking it.
@@ -154,7 +178,10 @@ misspelled the same tests pass on SQLite, so the server has to have logged the t
 `CREATE DATABASE`s and no test may skip (confirmed by misspelling the variable: 44 passed, 0
 databases, reported as a failure). Versions are read from `go.mod` and the workflow. First full
 run, 2026-10-02: every job passed; five `codegen` tests skip on Linux and two others on macOS,
-so between the two every one runs.
+so between the two every one runs. The `host` job is the workflow's test job run natively on a
+fresh copy, which makes the macOS leg (and, under Git Bash, the Windows one) a command rather
+than four steps remembered; it fails on an unformatted file in under a second, which is how it
+was checked.
 
 **Running `govulncheck` in `golang:1.27` settles the version question.** The trap above is a
 locally installed binary built with the wrong Go; a container pinned to the version in
@@ -165,10 +192,12 @@ scan says so itself:
 docker run --rm -v "$PWD:/src" -w /src golang:1.27 bash -c '
   go install golang.org/x/vuln/cmd/govulncheck@latest
   govulncheck -version
-  for m in . benchmarks lint; do (cd $m && govulncheck ./...); done'
+  (cd compare && go run gen.go -n 25)
+  for m in $(find . -name go.mod -not -path "./ref/*" | sed "s|/go.mod$||"); do (cd $m && govulncheck ./...); done'
 ```
 
-Run on 2026-09-24 (scanner v1.8.0, DB 2026-09-16, Go 1.27.1): **0 affecting every module.**
+Run on 2026-09-24 over the root, `benchmarks/` and `lint/` (scanner v1.8.0, DB 2026-09-16, Go
+1.27.1): **0 affecting each.**
 Read the "modules you require" tail as well as the headline -- it found two in
 `golang.org/x/mod@v0.39.0` under `lint/` that were fixed in v0.40.0 and uncalled, so nothing
 was affected and the bump was still free. What is left is
@@ -177,16 +206,17 @@ there is no version to move to, this code does not call it, and it will keep app
 upstream ships one.
 
 **Fuzz targets are discovered, not listed.** `go test -list 'Fuzz.*'` over `go list ./...`
-finds five: `FuzzRequirementDirectiveLiteral`, `FuzzExecute` and `FuzzOperationMetrics` in the
-root, `FuzzString` and `FuzzKey` in `internal/jsonw`. A hand-maintained list is how
-`internal/jsonw` went unfuzzed. 45s each on Linux, 2026-09-24: all pass, ~10.2M executions
-total, no crashers.
+finds seven: `FuzzRequirementDirectiveLiteral`, `FuzzExecute`, `FuzzFieldsCanMerge` and
+`FuzzOperationMetrics` in the root, `FuzzObject` in `internal/jsonr`, `FuzzString` and
+`FuzzKey` in `internal/jsonw`. A hand-maintained list is how `internal/jsonw` went unfuzzed.
+The five that existed on 2026-09-24 ran 45s each on Linux: all pass, ~10.2M executions total,
+no crashers.
 
 **Lint is `golangci-lint run ./...`, and it runs in every module.** It did not always: the
 CI job had no `working-directory` and `golangci-lint` lints the directory it is run in, so
 for a long time it covered the root and reported success over a quarter of the repository --
 `benchmarks/` was carrying 18 findings under this very config and `compare/` 4. The job now
-loops over `benchmarks compare lint` the way `scripts/gate.sh` loops over every `go.mod`.
+finds every other `go.mod` the way `scripts/gate.sh` does, so a fifth module needed no edit.
 Run it the same way locally; `./...` from the root still reaches one module of five.
 `golangci-lint` refuses to run twice at once ("parallel golangci-lint is running"), so loop
 rather than launching them together.

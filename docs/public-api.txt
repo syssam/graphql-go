@@ -1,12 +1,12 @@
-codegen: const FieldMethod
-codegen: const FieldResolver
-codegen: const FieldStruct
+codegen: const FieldMethod FieldKind = iota (iota 2)
+codegen: const FieldResolver FieldKind = iota (iota 0)
+codegen: const FieldStruct FieldKind = iota (iota 1)
 codegen: func (d FieldDirective) IsZero() bool
 codegen: func (d ModelDirective) IsZero() bool
 codegen: func (d TagDirective) IsZero() bool
 codegen: func (w Wire) IsZero() bool
 codegen: func Generate(ctx context.Context, cfg Config) error
-codegen: type Config struct { Dir string SchemaGlobs []string Output string Package string GroupFunc func(typeName, sdlFile string) string GroupDir string RootFieldGroup func(RootField) string Scaffold map[string]string Models map[string]string ModelDirective ModelDirective FieldDirective FieldDirective TagDirective TagDirective FieldNames map[string]string JSONTags bool Manifest *Manifest AutoBind []string Notef func(format string, args ...any) ZeroForNullInputs bool InlineAccessors bool Inline []string Federation bool NullableInputOmittable bool StructObjectFields bool Wire Wire Check bool InputListPointers bool }
+codegen: type Config struct { Dir string SchemaGlobs []string Output string Package string GroupFunc func(typeName, sdlFile string) string GroupDir string RootFieldGroup func(RootField) string Scaffold map[string]string Models map[string]string ModelDirective ModelDirective FieldDirective FieldDirective TagDirective TagDirective FieldNames map[string]string JSONTags bool Manifest *Manifest AutoBind []string Notef func(format string, args ...any) ZeroForNullInputs bool InlineAccessors bool Inline []string Federation bool NullableInputOmittable bool StructObjectFields bool Wire Wire Check bool Verify bool InputListPointers bool }
 codegen: type FieldBinding struct { Kind FieldKind GoName string Context bool Error bool Convert bool Value bool }
 codegen: type FieldDirective struct { Name string ForceResolverArg string }
 codegen: type FieldKind int
@@ -17,10 +17,10 @@ codegen: type RootField struct { Root string Name string SDLFile string ReturnTy
 codegen: type TagDirective struct { Name string KeyArg string ValueArg string }
 codegen: type TypeBinding struct { Name string Go GoType Values map[string]string Group string Fields map[string]FieldBinding }
 codegen: type Wire struct { Deps string Pass map[string]string }
-codegen: var ErrStale
-ext/apq: const CodeNotFound
-ext/apq: const CodeNotInList
-ext/apq: const CodeNotSupported
+codegen: var ErrStale = errors.New("codegen: generated code is not current")
+ext/apq: const CodeNotFound = "PERSISTED_QUERY_NOT_FOUND"
+ext/apq: const CodeNotInList = "PERSISTED_QUERY_NOT_IN_LIST"
+ext/apq: const CodeNotSupported = "PERSISTED_QUERY_NOT_SUPPORTED"
 ext/apq: func Hash(query string) string
 ext/apq: func IsRetryHandshake(resp *graphql.Response) bool
 ext/apq: func NewCache(size int, opts ...CacheOption) Cache
@@ -29,20 +29,20 @@ ext/apq: func WithMaxBytes(n int64) CacheOption
 ext/apq: type Cache interface { Get(hash string) (query string, ok bool) Set(hash, query string) }
 ext/apq: type CacheOption func(*lru)
 ext/apq: type TrustedStore interface { Cache TrustedDocuments() }
-ext/otel: const AttrCacheHit
-ext/otel: const AttrComplexity
-ext/otel: const AttrDepth
-ext/otel: const AttrDocument
-ext/otel: const AttrErrorCount
-ext/otel: const AttrFieldObject
-ext/otel: const AttrFieldPath
-ext/otel: const AttrLoaderKeyErrors
-ext/otel: const AttrLoaderKeys
-ext/otel: const AttrOperationName
-ext/otel: const AttrOperationType
-ext/otel: const AttrPlanCacheResult
-ext/otel: const AttrPlanUncacheable
-ext/otel: const ScopeName
+ext/otel: const AttrCacheHit = attribute.Key("graphqlgo.plan.cache_hit")
+ext/otel: const AttrComplexity = attribute.Key("graphqlgo.operation.complexity")
+ext/otel: const AttrDepth = attribute.Key("graphqlgo.operation.depth")
+ext/otel: const AttrDocument = attribute.Key("graphql.document")
+ext/otel: const AttrErrorCount = attribute.Key("graphqlgo.response.error_count")
+ext/otel: const AttrFieldObject = attribute.Key("graphqlgo.field.object")
+ext/otel: const AttrFieldPath = attribute.Key("graphqlgo.field.path")
+ext/otel: const AttrLoaderKeyErrors = attribute.Key("graphqlgo.loader.key_errors")
+ext/otel: const AttrLoaderKeys = attribute.Key("graphqlgo.loader.keys")
+ext/otel: const AttrOperationName = attribute.Key("graphql.operation.name")
+ext/otel: const AttrOperationType = attribute.Key("graphql.operation.type")
+ext/otel: const AttrPlanCacheResult = attribute.Key("graphqlgo.plan_cache.result")
+ext/otel: const AttrPlanUncacheable = attribute.Key("graphqlgo.plan.uncacheable")
+ext/otel: const ScopeName = "github.com/syssam/graphql-go/ext/otel"
 ext/otel: func Batch[K comparable, V any](name string, fn loader.BatchFunc[K, V], opts ...Option) loader.BatchFunc[K, V]
 ext/otel: func MappedBatch[K comparable, V any](name string, fn loader.MappedBatchFunc[K, V], opts ...Option) loader.MappedBatchFunc[K, V]
 ext/otel: func New(opts ...Option) []graphql.ExecutorOption
@@ -56,7 +56,7 @@ ext/otel: func WithOperationNameMetrics(enabled bool) Option
 ext/otel: func WithResolverSpans(enabled bool) Option
 ext/otel: func WithTracerProvider(tp trace.TracerProvider) Option
 ext/otel: type Option func(*config)
-ext/throttle: const CodeThrottled
+ext/throttle: const CodeThrottled = "THROTTLED"
 ext/throttle: func New(cfg Config) graphql.ExecutorOption
 ext/throttle: type Config struct { MaximumAvailable int RestoreRate float64 Key func(ctx context.Context) string MaxBuckets int Now func() time.Time }
 ext/trusted: func (s *Store) Enforce() []graphql.ExecutorOption
@@ -68,7 +68,7 @@ ext/trusted: func LoadManifest(r io.Reader) (*Store, error)
 ext/trusted: func LoadManifestFile(path string) (*Store, error)
 ext/trusted: func NewStore(docs map[string]string) *Store
 ext/trusted: type Store struct { }
-fed: const Directives
+fed: const Directives = "\ndirective @key(fields: String!, resolvable: Boolean = true) repeatable on OBJECT | INTERFACE\ndirective @external on OBJECT | FIELD_DEFINITION\ndirective @requires(fields: String!) on FIELD_DEFINITION\ndirective @provides(fields: String!) on FIELD_DEFINITION\ndirective @shareable repeatable on OBJECT | FIELD_DEFINITION\ndirective @inaccessible on FIELD_DEFINITION | OBJECT | INTERFACE | UNION | ARGUMENT_DEFINITION | SCALAR | ENUM | ENUM_VALUE | INPUT_OBJECT | INPUT_FIELD_DEFINITION\ndirective @override(from: String!, label: String) on FIELD_DEFINITION\ndirective @tag(name: String!) repeatable on FIELD_DEFINITION | OBJECT | INTERFACE | UNION | ARGUMENT_DEFINITION | SCALAR | ENUM | ENUM_VALUE | INPUT_OBJECT | INPUT_FIELD_DEFINITION | SCHEMA\ndirective @interfaceObject on OBJECT\ndirective @composeDirective(name: String!) repeatable on SCHEMA\ndirective @link(url: String!, as: String, for: String, import: [String]) repeatable on SCHEMA\n"
 fed: func (r Representation) Float(key string) (float64, bool)
 fed: func (r Representation) ID(key string) (graphql.ID, bool)
 fed: func (r Representation) Int(key string) (int64, bool)
@@ -79,26 +79,27 @@ fed: func Subgraph(sdl string, entities ...Entity) (graphql.Source, graphql.Sche
 fed: func SubgraphFS(fsys fs.FS, patterns []string, entities ...Entity) (graphql.Source, graphql.SchemaOption, error)
 fed: type Entity struct { }
 fed: type Representation map[string]any
-graphql: const CodeBadUserInput
-graphql: const CodeErrorLimitExceeded
-graphql: const CodeForbidden
-graphql: const CodeInternal
-graphql: const CodeMaxDepth
-graphql: const CodeOperationResolution
-graphql: const CodeOperationTimeout
-graphql: const CodeParseFailed
-graphql: const CodeRequestCancelled
-graphql: const CodeResponseTooLarge
-graphql: const CodeTooComplex
-graphql: const CodeValidationFailed
-graphql: const ScopesAllOf
-graphql: const ScopesAnyOf
-graphql: const ScopesNested
-graphql: const SiteFilterArg
-graphql: const SiteInputWrite
-graphql: const SiteInstance
-graphql: const SiteObject
-graphql: const SiteOutput
+graphql: const CodeBadUserInput = "BAD_USER_INPUT"
+graphql: const CodeErrorLimitExceeded = "ERROR_LIMIT_EXCEEDED"
+graphql: const CodeForbidden = "FORBIDDEN"
+graphql: const CodeInternal = "INTERNAL_SERVER_ERROR"
+graphql: const CodeMaxDepth = "MAX_DEPTH_EXCEEDED"
+graphql: const CodeOperationResolution = "OPERATION_RESOLUTION_FAILURE"
+graphql: const CodeOperationTimeout = "OPERATION_TIMEOUT"
+graphql: const CodeParseFailed = "GRAPHQL_PARSE_FAILED"
+graphql: const CodeQueryOnly = "QUERY_ONLY"
+graphql: const CodeRequestCancelled = "REQUEST_CANCELLED"
+graphql: const CodeResponseTooLarge = "RESPONSE_TOO_LARGE"
+graphql: const CodeTooComplex = "COMPLEXITY_LIMIT_EXCEEDED"
+graphql: const CodeValidationFailed = "GRAPHQL_VALIDATION_FAILED"
+graphql: const ScopesAllOf ScopeShape = iota + 1 (iota 1)
+graphql: const ScopesAnyOf ScopeShape = iota + 1 (iota 2)
+graphql: const ScopesNested ScopeShape = iota + 1 (iota 0)
+graphql: const SiteFilterArg SiteKind = iota (iota 2)
+graphql: const SiteInputWrite SiteKind = iota (iota 3)
+graphql: const SiteInstance SiteKind = iota (iota 4)
+graphql: const SiteObject SiteKind = iota (iota 1)
+graphql: const SiteOutput SiteKind = iota (iota 0)
 graphql: func (d *Decision) Input(site int) []InputKey
 graphql: func (d *Decision) Outcome(site int) Outcome
 graphql: func (d *Decision) Set(site int, o Outcome) error
@@ -268,7 +269,7 @@ graphql: type Error struct { Message string Locations []Location Path Path Exten
 graphql: type ErrorPresenter func(ctx context.Context, err error) *Error
 graphql: type Executor struct { }
 graphql: type ExecutorOption func(*Executor)
-graphql: type ExecutorStats struct { PlanCacheEntries int PlanCacheBytes int64 PlanCacheHits int64 PlanCacheMisses int64 ConcurrencyInUse int ConcurrencyLimit int }
+graphql: type ExecutorStats struct { PlanCacheEntries int PlanCacheBytes int64 PlanCacheHits int64 PlanCacheMisses int64 ConcurrencyInUse int ConcurrencyLimit int RequestsUnbounded bool }
 graphql: type ExtensionsProvider interface { GraphQLExtensions() map[string]any }
 graphql: type FieldContext struct { Field *ast.FieldDefinition Object *ast.Definition Args any Parent any }
 graphql: type FieldFunc func(ctx context.Context, parent any, args any) (any, error)
@@ -296,7 +297,7 @@ graphql: type Outcome struct { }
 graphql: type Path []PathElem
 graphql: type PathElem struct { Key string Index int IsIndex bool }
 graphql: type QueryCost struct { Max int DefaultListSize int ListArguments []string FieldWeight map[string]int Report bool Connections bool Actual bool }
-graphql: type Request struct { Query string `json:"query"` OperationName string `json:"operationName,omitempty"` Variables json.RawMessage `json:"variables,omitempty"` Extensions map[string]any `json:"extensions,omitempty"` }
+graphql: type Request struct { Query string `json:"query"` OperationName string `json:"operationName,omitempty"` Variables json.RawMessage `json:"variables,omitempty"` Extensions map[string]any `json:"extensions,omitempty"` QueryOnly bool `json:"-"` }
 graphql: type RequestHandler func(ctx context.Context, req *Request) *Response
 graphql: type RequestInterceptor interface { InterceptRequest(ctx context.Context, req *Request, next RequestHandler) *Response }
 graphql: type RequestInterceptorFunc func(ctx context.Context, req *Request, next RequestHandler) *Response
@@ -329,6 +330,7 @@ loader: type BatchFunc[K comparable, V any] func(ctx context.Context, keys []K) 
 loader: type Loader[K comparable, V any] struct { }
 loader: type MappedBatchFunc[K comparable, V any] func(ctx context.Context, keys []K) (map[K]V, map[K]error, error)
 loader: type Option func(*config)
+relay: func (a ForwardArgs) Args() Args
 relay: func Bind[T any](connName, edgeName string) graphql.SchemaOption
 relay: func FromGlobalID(gid graphql.ID) (typeName, id string, err error)
 relay: func FromPage[T any](items []T, cursor func(T) string, hasNext, hasPrev bool) Connection[T]
@@ -341,10 +343,11 @@ relay: func ToGlobalID(typeName, id string) graphql.ID
 relay: type Args struct { First *int Last *int After *string Before *string }
 relay: type Connection[T any] struct { Edges []Edge[T] PageInfo PageInfo }
 relay: type Edge[T any] struct { Node T Cursor string }
+relay: type ForwardArgs struct { First *int After *string }
 relay: type NodeResolver func(ctx context.Context, typeName, id string) (any, error)
 relay: type PageInfo struct { HasNextPage bool HasPreviousPage bool StartCursor *string EndCursor *string }
-relay: var ErrInvalidGlobalID
-relay: var ErrNegativeCount
+relay: var ErrInvalidGlobalID = errors.New("relay: invalid global id")
+relay: var ErrNegativeCount = errors.New("relay: pagination count must not be negative")
 transport/drain: func (d *Drain) Active() int
 transport/drain: func (d *Drain) Closing() <-chan struct{}
 transport/drain: func (d *Drain) Enter(parent context.Context) (ctx context.Context, leave func(), ok bool)
@@ -354,19 +357,19 @@ transport/drain: type Drain struct { }
 transport/gqlecho: func New(exec *graphql.Executor, opts ...gqlhttp.Option) echo.HandlerFunc
 transport/gqlecho: func SSE(exec *graphql.Executor, opts ...gqlsse.Option) echo.HandlerFunc
 transport/gqlecho: func WS(exec *graphql.Executor, opts ...gqlws.Option) echo.HandlerFunc
-transport/gqlfiber: const MediaTypeEventStream
-transport/gqlfiber: const MediaTypeGraphQLResponse
-transport/gqlfiber: const MediaTypeJSON
-transport/gqlfiber: const StatusBadRequest
-transport/gqlfiber: const StatusForbidden
-transport/gqlfiber: const StatusGoingAway
-transport/gqlfiber: const StatusInitTimeout
-transport/gqlfiber: const StatusNormalClosure
-transport/gqlfiber: const StatusSubprotocolNotAcceptable
-transport/gqlfiber: const StatusSubscriberExists
-transport/gqlfiber: const StatusTooManyInitRequests
-transport/gqlfiber: const StatusUnauthorized
-transport/gqlfiber: const Subprotocol
+transport/gqlfiber: const MediaTypeEventStream = "text/event-stream"
+transport/gqlfiber: const MediaTypeGraphQLResponse = httpreq.MediaTypeGraphQLResponse -> const MediaTypeGraphQLResponse = "application/graphql-response+json"
+transport/gqlfiber: const MediaTypeJSON = httpreq.MediaTypeJSON -> const MediaTypeJSON = "application/json"
+transport/gqlfiber: const StatusBadRequest = gqlwsproto.StatusBadRequest -> const StatusBadRequest = 4400
+transport/gqlfiber: const StatusForbidden = gqlwsproto.StatusForbidden -> const StatusForbidden = 4403
+transport/gqlfiber: const StatusGoingAway = gqlwsproto.StatusGoingAway -> const StatusGoingAway = 1001
+transport/gqlfiber: const StatusInitTimeout = gqlwsproto.StatusInitTimeout -> const StatusInitTimeout = 4408
+transport/gqlfiber: const StatusNormalClosure = gqlwsproto.StatusNormalClosure -> const StatusNormalClosure = 1000
+transport/gqlfiber: const StatusSubprotocolNotAcceptable = gqlwsproto.StatusSubprotocolNotAcceptable -> const StatusSubprotocolNotAcceptable = 4406
+transport/gqlfiber: const StatusSubscriberExists = gqlwsproto.StatusSubscriberExists -> const StatusSubscriberExists = 4409
+transport/gqlfiber: const StatusTooManyInitRequests = gqlwsproto.StatusTooManyInitRequests -> const StatusTooManyInitRequests = 4429
+transport/gqlfiber: const StatusUnauthorized = gqlwsproto.StatusUnauthorized -> const StatusUnauthorized = 4401
+transport/gqlfiber: const Subprotocol = gqlwsproto.Subprotocol -> const Subprotocol = "graphql-transport-ws"
 transport/gqlfiber: func ConnFrom(ctx context.Context) UpgradeConn
 transport/gqlfiber: func New(exec *graphql.Executor, opts ...Option) fiber.Handler
 transport/gqlfiber: func SSE(exec *graphql.Executor, opts ...Option) fiber.Handler
@@ -392,9 +395,9 @@ transport/gqlfiber: func WithWriteTimeout(d time.Duration) Option
 transport/gqlfiber: type ConnectFunc = gqlwsproto.ConnectFunc
 transport/gqlfiber: type Option func(*config)
 transport/gqlfiber: type UpgradeConn interface { Headers(key string, defaultValue ...string) string Cookies(key string, defaultValue ...string) string Query(key string, defaultValue ...string) string Params(key string, defaultValue ...string) string Locals(key string, value ...any) any IP() string }
-transport/gqlfiber: var DefaultCSRFHeaders
-transport/gqlhttp: const MediaTypeGraphQLResponse
-transport/gqlhttp: const MediaTypeJSON
+transport/gqlfiber: var DefaultCSRFHeaders = httpreq.DefaultCSRFHeaders -> var DefaultCSRFHeaders = []string{ "GraphQL-Require-Preflight", "Apollo-Require-Preflight", "X-Requested-With", }
+transport/gqlhttp: const MediaTypeGraphQLResponse = httpreq.MediaTypeGraphQLResponse -> const MediaTypeGraphQLResponse = "application/graphql-response+json"
+transport/gqlhttp: const MediaTypeJSON = httpreq.MediaTypeJSON -> const MediaTypeJSON = "application/json"
 transport/gqlhttp: func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 transport/gqlhttp: func New(exec *graphql.Executor, opts ...Option) *Handler
 transport/gqlhttp: func WithBatching(maxEntries int) Option
@@ -404,7 +407,7 @@ transport/gqlhttp: func WithMaxBodyBytes(n int64) Option
 transport/gqlhttp: func WithPersistedQueries(cache apq.Cache) Option
 transport/gqlhttp: type Handler struct { }
 transport/gqlhttp: type Option func(*Handler)
-transport/gqlhttp: var DefaultCSRFHeaders
+transport/gqlhttp: var DefaultCSRFHeaders = httpreq.DefaultCSRFHeaders -> var DefaultCSRFHeaders = []string{ "GraphQL-Require-Preflight", "Apollo-Require-Preflight", "X-Requested-With", }
 transport/gqlmux: func New(exec *graphql.Executor, opts ...Option) http.Handler
 transport/gqlmux: func WithCSRFPrevention(enabled bool, headers ...string) Option
 transport/gqlmux: func WithDrain(d *drain.Drain) Option
@@ -416,8 +419,8 @@ transport/gqlmux: func WithSSE(opts ...gqlsse.Option) Option
 transport/gqlmux: func WithWS(opts ...gqlws.Option) Option
 transport/gqlmux: func WithWriteTimeout(d time.Duration) Option
 transport/gqlmux: type Option func(*config)
-transport/gqlsse: const MediaTypeEventStream
-transport/gqlsse: const MediaTypeGraphQLResponse
+transport/gqlsse: const MediaTypeEventStream = "text/event-stream"
+transport/gqlsse: const MediaTypeGraphQLResponse = "application/graphql-response+json"
 transport/gqlsse: func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 transport/gqlsse: func New(exec *graphql.Executor, opts ...Option) *Handler
 transport/gqlsse: func WithCSRFPrevention(enabled bool, headers ...string) Option
@@ -430,17 +433,17 @@ transport/gqlsse: func WithPersistedQueries(cache apq.Cache) Option
 transport/gqlsse: func WithWriteTimeout(d time.Duration) Option
 transport/gqlsse: type Handler struct { }
 transport/gqlsse: type Option func(*Handler)
-transport/gqlsse: var DefaultCSRFHeaders
-transport/gqlws: const StatusBadRequest
-transport/gqlws: const StatusForbidden
-transport/gqlws: const StatusGoingAway
-transport/gqlws: const StatusInitTimeout
-transport/gqlws: const StatusNormalClosure
-transport/gqlws: const StatusSubprotocolNotAcceptable
-transport/gqlws: const StatusSubscriberExists
-transport/gqlws: const StatusTooManyInitRequests
-transport/gqlws: const StatusUnauthorized
-transport/gqlws: const Subprotocol
+transport/gqlsse: var DefaultCSRFHeaders = httpreq.DefaultCSRFHeaders -> var DefaultCSRFHeaders = []string{ "GraphQL-Require-Preflight", "Apollo-Require-Preflight", "X-Requested-With", }
+transport/gqlws: const StatusBadRequest = gqlwsproto.StatusBadRequest -> const StatusBadRequest = 4400
+transport/gqlws: const StatusForbidden = gqlwsproto.StatusForbidden -> const StatusForbidden = 4403
+transport/gqlws: const StatusGoingAway = gqlwsproto.StatusGoingAway -> const StatusGoingAway = 1001
+transport/gqlws: const StatusInitTimeout = gqlwsproto.StatusInitTimeout -> const StatusInitTimeout = 4408
+transport/gqlws: const StatusNormalClosure = gqlwsproto.StatusNormalClosure -> const StatusNormalClosure = 1000
+transport/gqlws: const StatusSubprotocolNotAcceptable = gqlwsproto.StatusSubprotocolNotAcceptable -> const StatusSubprotocolNotAcceptable = 4406
+transport/gqlws: const StatusSubscriberExists = gqlwsproto.StatusSubscriberExists -> const StatusSubscriberExists = 4409
+transport/gqlws: const StatusTooManyInitRequests = gqlwsproto.StatusTooManyInitRequests -> const StatusTooManyInitRequests = 4429
+transport/gqlws: const StatusUnauthorized = gqlwsproto.StatusUnauthorized -> const StatusUnauthorized = 4401
+transport/gqlws: const Subprotocol = gqlwsproto.Subprotocol -> const Subprotocol = "graphql-transport-ws"
 transport/gqlws: func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 transport/gqlws: func New(exec *graphql.Executor, opts ...Option) *Handler
 transport/gqlws: func RequestFrom(ctx context.Context) *http.Request

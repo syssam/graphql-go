@@ -73,9 +73,12 @@ jobs:
         run: |
           (cd examples/blog && go generate ./...)
           (cd examples/backoffice && go generate .)
-          if ! git diff --quiet -- .; then
-            echo "generated code is stale; run go generate in examples/blog or examples/backoffice"
-            git diff --stat; exit 1
+          # git status, not git diff: a file the generator writes that was
+          # never committed is untracked, and git diff does not look at those.
+          changed=$(git status --porcelain -- .)
+          if [ -n "$changed" ]; then
+            echo "generated code is stale or not committed; run go generate in examples/blog or examples/backoffice"
+            echo "$changed"; git diff --stat; exit 1
           fi
 
   postgres:
@@ -99,9 +102,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # With the URL unset or its name misspelled the same suite passes on
+      # SQLite. BACKOFFICE_REQUIRE_POSTGRES makes that a failure, so this job
+      # cannot be green without having reached the server.
       - name: Test examples/backoffice on PostgreSQL
         env:
           BACKOFFICE_POSTGRES: postgres://postgres:pass@localhost:5432/postgres?sslmode=disable
+          BACKOFFICE_REQUIRE_POSTGRES: "1"
         run: go -C examples/backoffice test -race -count=1 ./...
 
   lint:
@@ -150,10 +157,33 @@ jobs:
       # The repository ships its own analyzer for a bug class -race cannot
       # find: a check-then-act pair on OperationContext that silently degrades
       # DataLoader batching to N+1.
-      - name: Run gqlvet
+      - name: Build gqlvet
+        run: cd lint && go build -o "$RUNNER_TEMP/gqlvet" ./cmd/gqlvet
+      # The analyzer's usual answer is silence, and so is the answer of one
+      # that no longer matches the context type. It has to report the code
+      # written to be reported before its silence elsewhere means anything.
+      # 3 is the exit status for findings; 1 is a package that did not load.
+      - name: gqlvet reports its control
+        shell: bash
         run: |
-          cd lint && go build -o "$RUNNER_TEMP/gqlvet" ./cmd/gqlvet
-          cd "$GITHUB_WORKSPACE" && "$RUNNER_TEMP/gqlvet" ./...
+          status=0
+          "$RUNNER_TEMP/gqlvet" ./scripts/testdata/gqlvet || status=$?
+          if [ "$status" != 3 ]; then
+            echo "gqlvet exited $status on scripts/testdata/gqlvet, which it must report (exit 3)"
+            exit 1
+          fi
+      # Every module, found the way the lint step above finds them. Run from
+      # the root it reached one of five, the same shape as the lint job once
+      # had.
+      - name: Run gqlvet on every module
+        shell: bash
+        run: |
+          mods=$(find . -name go.mod -not -path "./ref/*" | sed "s|/go.mod$||")
+          [ -n "$mods" ]
+          for mod in $mods; do
+            echo "== $mod"
+            (cd "$mod" && "$RUNNER_TEMP/gqlvet" ./...)
+          done
 
   bench:
     name: allocations (linux)
@@ -173,8 +203,20 @@ jobs:
       # Timings there are noise -- this repository has read a single sample
       # wrong by 20-77% on its own warm machine -- so they are published as an
       # artifact to look at, never failed on.
+      #
+      # -count=1 because the build cache is restored between runs and Go's
+      # cache of test results is in it: an unchanged package answers "ok
+      # (cached)" without running. And the PASS line is required, because
+      # -run matching nothing is "no tests to run" and exit 0 -- a rename
+      # would leave this job green with nothing in it.
       - name: Allocation baseline
-        run: go test -run TestAllocationBaseline -v .
+        shell: bash
+        run: |
+          go test -count=1 -run '^TestAllocationBaseline$' -v . | tee "$RUNNER_TEMP/alloc.txt"
+          if ! grep -q '^--- PASS: TestAllocationBaseline ' "$RUNNER_TEMP/alloc.txt"; then
+            echo "TestAllocationBaseline did not run and pass"
+            exit 1
+          fi
 
       - name: Benchmark timings, for the record only
         run: |
@@ -229,15 +271,36 @@ jobs:
       # package's *_test.go, which this replaced, silently left internal/jsonw
       # out: its FuzzString and FuzzKey guard the JSON string escaping, where
       # a bug is a corrupted response, and neither had ever been fuzzed here.
+      #
+      # The grep is back as a cross-check and no more: a package whose test
+      # files declare a fuzz target must list one. A loop over the output of a
+      # command that failed runs no times and exits 0, so each listing is an
+      # assignment, which stops the script when the command fails.
       - name: Fuzz targets
+        shell: bash
         env:
           # 30s per target on a push is a smoke test; the weekly run is the
           # campaign, long enough to get past the seed corpus's neighbourhood.
           FUZZTIME: ${{ github.event_name == 'schedule' && '10m' || '30s' }}
         run: |
-          for pkg in $(go list ./...); do
-            for target in $(go test -list 'Fuzz.*' "$pkg" | grep '^Fuzz'); do
+          pkgs=$(go list -f '{{.ImportPath}} {{.Dir}}' ./...)
+          ran=0
+          # On a descriptor of its own: a test binary that reads standard
+          # input would otherwise eat the rest of the list and end the loop.
+          while read -r pkg dir <&3; do
+            listed=$(go test -list 'Fuzz.*' "$pkg")
+            targets=$(printf '%s\n' "$listed" | grep '^Fuzz' || true)
+            if [ -z "$targets" ] && grep -qs '^func Fuzz' "$dir"/*_test.go; then
+              echo "$pkg declares a fuzz target and go test -list found none"
+              exit 1
+            fi
+            for target in $targets; do
               echo "== $pkg $target"
               go test -run '^$' -fuzz "^${target}$" -fuzztime "$FUZZTIME" "$pkg"
+              ran=$((ran + 1))
             done
-          done
+          done 3<<<"$pkgs"
+          if [ "$ran" = 0 ]; then
+            echo "no fuzz target was found in any package"
+            exit 1
+          fi

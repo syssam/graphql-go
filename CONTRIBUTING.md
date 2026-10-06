@@ -10,15 +10,19 @@ sh scripts/gate.sh -short   # skip the slow subprocess and load tests
 Run it before opening a pull request, and before pushing run what CI runs:
 
 ```sh
-scripts/ci-local.sh                 # every CI job, on Linux, in Docker
+scripts/ci-local.sh                 # every CI job: Linux in Docker, and this machine's leg
 scripts/ci-local.sh test postgres   # only those
-scripts/ci-local.sh flake           # not in CI: the race suite ten times, shuffled
+scripts/ci-local.sh host            # the test job natively, on a copy of the tree; no Docker
+scripts/ci-local.sh flake           # not in CI: every module's race suite ten times, shuffled
+FUZZTIME=10m scripts/ci-local.sh fuzz   # the weekly campaign instead of the push's 30 s
 ```
 
-It needs Docker and nothing else. The gate on your own machine is one leg of
-CI's matrix; this is the Linux leg, which is where the tests that need a
+The Docker jobs are CI's Linux jobs, which is where the tests that need a
 case-sensitive filesystem run, and the PostgreSQL job, which otherwise runs
-nowhere but CI. It reads its versions from `go.mod` and the workflow, so the
+nowhere but CI. The host job is the test job's steps on your own machine, on
+a fresh copy of the tree: the macOS leg on a Mac, the Windows leg under Git
+Bash on Windows. On one machine that is two of the workflow's three operating
+systems; the third, and the CodeQL workflow, run only in CI. It reads its versions from `go.mod` and the workflow, so the
 two cannot disagree; a step added to `.github/workflows/ci.yml` belongs in the
 script as well.
 
@@ -71,8 +75,10 @@ for both people and coding agents. The short version:
 - The root package depends only on `gqlparser/v2` and the standard library.
 - No reflection on the request path.
 - Request-scoped extension state goes in through `OperationContext.GetOrSet`,
-  never `Get` then `Set`. `lint/` ships an analyzer that catches the
-  difference; `-race` does not.
+  never `Get` then `Set`. `lint/` ships an analyzer that catches the pair
+  when both halves are in one function, closures included; `-race` does not.
+  A `Get` in one helper and the `Set` in another is the same race and
+  neither tool sees it.
 - Comments explain why, not what. English only.
 - Commit messages: imperative, lower-case type prefix (`feat:`, `fix:`,
   `test:`, `refactor:`, `docs:`).
@@ -86,4 +92,5 @@ result:
 cd examples/blog && go generate
 ```
 
-CI fails if the checked-in output differs from what the generator produces.
+CI fails if the checked-in output differs from what the generator produces,
+or if a file the generator writes was never committed.
