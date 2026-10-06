@@ -57,7 +57,7 @@ func TestAuthCoverageAcceptsTheProtocolFields(t *testing.T) {
 		t.Fatalf("a subgraph whose own fields are all covered was refused: %v", err)
 	}
 
-	// Marked reachable, which is what they are; what they return is not. An
+	// Exempt from coverage, which is all they are: what they return is not. An
 	// entity fetched through _entities is still its own type's fields.
 	e := graphql.NewExecutor(s, graphql.WithAuthorizer(graphql.ScopeAuthorizer(
 		func(context.Context) map[string]bool { return nil })))
@@ -73,7 +73,7 @@ func TestAuthCoverageAcceptsTheProtocolFields(t *testing.T) {
 	}
 }
 
-// The mark is on the three protocol fields and nothing else. A field the
+// The exemption is the three protocol fields and nothing else. A field the
 // author wrote and said nothing about is still refused, whichever type it is
 // on -- Query included, which is the type the protocol fields are added to.
 func TestAuthCoverageStillRefusesTheAuthorsOwnFields(t *testing.T) {
@@ -108,10 +108,9 @@ func TestAuthCoverageStillRefusesTheAuthorsOwnFields(t *testing.T) {
 	}
 }
 
-// @public is the author's directive, and the prelude can only write it where
-// the author's declaration allows. Without one there is nothing to write, and
-// the schema must still build exactly as it did: most subgraphs never ask for
-// coverage and never declare it.
+// A subgraph that declares no @public, or declares it for objects only, must
+// build exactly as it did: the prelude writes no directive of the author's
+// onto its own fields, and most subgraphs never ask for coverage at all.
 func TestSubgraphWithoutAPublicDirectiveIsUnchanged(t *testing.T) {
 	for _, c := range []struct{ name, sdl string }{
 		{"not declared", subgraphSDL},
@@ -142,8 +141,8 @@ func TestSubgraphWithoutAPublicDirectiveIsUnchanged(t *testing.T) {
 }
 
 // A requirement on the Query type reaches the protocol fields as it reaches
-// every other root field: @public answers coverage and lifts nothing. That is
-// how a subgraph keeps _entities to its router.
+// every other root field: the exemption answers coverage and lifts nothing.
+// That is how a subgraph keeps _entities to its router.
 func TestAQueryTypeRequirementStillGuardsTheProtocolFields(t *testing.T) {
 	sdl := strings.Replace(coveredSubgraphSDL, "type Query {",
 		`type Query @requiresScopes(scopes: [["router"]]) {`, 1)
@@ -156,5 +155,57 @@ func TestAQueryTypeRequirementStillGuardsTheProtocolFields(t *testing.T) {
 	resp := e.Execute(context.Background(), &graphql.Request{Query: `{ _service { sdl } }`})
 	if strings.Contains(string(resp.Data), "sdl") || len(resp.Errors) == 0 {
 		t.Fatalf("_service was served without the Query type's requirement: %s %v", resp.Data, resp.Errors)
+	}
+}
+
+// The protocol fields are exempt from coverage whatever the author's SDL
+// declares. Marked @public instead, they were covered only in a subgraph that
+// declared that directive for fields: one that guards every field with a
+// requirement, and has no use for @public, could not ask for coverage at all,
+// because the three fields it was refused for are not in its text to mark.
+func TestAuthCoverageExemptsTheProtocolFieldsWithoutAPublicDirective(t *testing.T) {
+	const sdl = `
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+
+type User @key(fields: "id") @requiresScopes(scopes: [["user:read"]]) {
+  id: ID!
+  name: String!
+}
+
+type Query {
+  me: User! @requiresScopes(scopes: [["user:read"]])
+}
+`
+	src, bindings, err := fed.Subgraph(sdl, fed.Resolver("User", resolveUser))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bind := []graphql.SchemaOption{
+		bindings,
+		graphql.RequireAuthCoverage(),
+		graphql.Object[user]("User",
+			graphql.Field("id", func(u *user) graphql.ID { return graphql.ID(u.ID) }),
+			graphql.Field("name", func(u *user) string { return u.Name }),
+		),
+		graphql.Query(graphql.Field("me", func(graphql.Root) *user { return users["1"] })),
+	}
+	if _, err := graphql.NewSchema(src, bind...); err != nil {
+		t.Fatalf("a subgraph whose own fields are all covered was refused: %v", err)
+	}
+
+	// And only those three: a field of the author's that says nothing is
+	// still refused in the same subgraph.
+	src, bindings, err = fed.Subgraph(sdl+`extend type Query { open: String! }`, fed.Resolver("User", resolveUser))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bind[0] = bindings
+	bind = append(bind, graphql.Query(graphql.Field("open", func(graphql.Root) string { return "" })))
+	_, err = graphql.NewSchema(src, bind...)
+	if err == nil || !strings.Contains(err.Error(), "Query.open declares no authorization") {
+		t.Fatalf("err = %v, want Query.open refused", err)
+	}
+	if strings.Contains(err.Error(), "_service") || strings.Contains(err.Error(), "_entities") {
+		t.Fatalf("a protocol field was refused: %v", err)
 	}
 }

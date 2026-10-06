@@ -326,7 +326,12 @@ empty *group*, and an empty list yields no group at all); and the `StringValue` 
 their lists on their own goroutines (`TestObjectAuthorizerIsCalledConcurrentlyWithinOneRequest`)
 -- so the godoc's "cache inside the implementation" needs a lock. **`SelectedField.Withheld`
 reads argument sites too**, as `enforceAuth` does. **`AuthSite.Grants` is reserved and always
-empty.** **`fed.Subgraph` marks its three injected fields `@public`** when the author's SDL
-declares that directive for `FIELD_DEFINITION` (`fed/prelude.go`), which is what lets
-`RequireAuthCoverage` and federation be used together without `@public` on the whole `Query`.
+empty.** **`fed.Subgraph` exempts its three injected fields from `RequireAuthCoverage`**
+through `internal/bindhook.CoverageExempt` (`fed/prelude.go`, `validateAuthCoverage`), which is
+what lets coverage and federation be used together: the author cannot annotate fields that are
+not in their text. The first version wrote `@public` on them, which worked only in a subgraph
+that declared that directive for `FIELD_DEFINITION`; one that guards everything with a
+requirement and has no `@public` at all was still refused
+(`TestAuthCoverageExemptsTheProtocolFieldsWithoutAPublicDirective`). The exemption is from the
+check alone: a requirement on `Query` still guards `_entities`.
 

@@ -726,7 +726,9 @@ func (b *schemaBuilder) resolveAuthRequirements(s *Schema) {
 // reads fieldDef.requires -- the same value shapeBuilder.field enforces -- so a
 // field is covered exactly when authorization actually guards it. Exemption
 // stays explicit: @public on the field or on its own object type, never
-// inherited from an interface.
+// inherited from an interface. The one other exemption is a field this
+// module added for the author, which they cannot annotate; see
+// bindhook.CoverageExempt.
 func (b *schemaBuilder) validateAuthCoverage(s *Schema) {
 	if !b.authCoverage {
 		return
@@ -749,6 +751,9 @@ func (b *schemaBuilder) validateAuthCoverage(s *Schema) {
 				continue
 			}
 			if b.authCapped[name] || b.authCapped[coordinate(name, fd.name)] {
+				continue
+			}
+			if b.coverageExempt[coordinate(name, fd.name)] {
 				continue
 			}
 			b.errorf("field %s declares no authorization; add @requiresScopes or @public", coordinate(obj.name, fd.name))

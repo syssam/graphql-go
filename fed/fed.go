@@ -123,7 +123,7 @@ func SubgraphFS(fsys fs.FS, patterns []string, entities ...Entity) (graphql.Sour
 }
 
 func subgraph(sdl string, author graphql.Source, entities []Entity) (graphql.Source, graphql.SchemaOption, error) {
-	doc, keyed, ifaces, renamed, err := keyTypes(sdl)
+	keyed, ifaces, renamed, err := keyTypes(sdl)
 	if err != nil {
 		return graphql.Source{}, nil, err
 	}
@@ -157,7 +157,7 @@ func subgraph(sdl string, author graphql.Source, entities []Entity) (graphql.Sou
 	}
 	slices.Sort(names)
 
-	src := graphql.Sources(graphql.SDL(prelude(names, coverageMark(doc))+renamed), author)
+	src := graphql.Sources(graphql.SDL(prelude(names)+renamed), author)
 	return src, bindings(sdl, names, byName), nil
 }
 
@@ -173,14 +173,14 @@ func subgraph(sdl string, author graphql.Source, entities []Entity) (graphql.Sou
 // renamed is the declarations for whatever other spellings of the federation
 // directives the SDL's @link introduces, to go in front of it with the
 // prelude.
-func keyTypes(sdl string) (doc *ast.SchemaDocument, objects, interfaces map[string]struct{}, renamed string, err error) {
-	doc, err = parser.ParseSchema(&ast.Source{Name: "subgraph.graphql", Input: sdl})
+func keyTypes(sdl string) (objects, interfaces map[string]struct{}, renamed string, err error) {
+	doc, err := parser.ParseSchema(&ast.Source{Name: "subgraph.graphql", Input: sdl})
 	if err != nil {
-		return nil, nil, nil, "", fmt.Errorf("fed: %w", err)
+		return nil, nil, "", fmt.Errorf("fed: %w", err)
 	}
 	names := fedlink.Read(doc, Directives)
 	if err := checkKeys(doc, names); err != nil {
-		return nil, nil, nil, "", err
+		return nil, nil, "", err
 	}
 	objects, interfaces = map[string]struct{}{}, map[string]struct{}{}
 	collect := func(defs ast.DefinitionList) {
@@ -198,11 +198,14 @@ func keyTypes(sdl string) (doc *ast.SchemaDocument, objects, interfaces map[stri
 	}
 	collect(doc.Definitions)
 	collect(doc.Extensions)
-	return doc, objects, interfaces, names.Declare(Directives), nil
+	return objects, interfaces, names.Declare(Directives), nil
 }
 
 func bindings(sdl string, names []string, byName map[string]Entity) graphql.SchemaOption {
 	opts := []graphql.SchemaOption{
+		// Exempt whether or not _entities is declared: a coordinate that
+		// names no field exempts nothing.
+		bindhook.CoverageExempt(protocolFields...).(graphql.SchemaOption),
 		graphql.Scalar[Representation]("_Any",
 			func(w *graphql.Writer, v Representation) error {
 				b, err := json.Marshal(map[string]any(v))

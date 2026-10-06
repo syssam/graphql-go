@@ -154,9 +154,11 @@ type schemaBuilder struct {
 	defaultsCycle bool
 	introspection bool
 	authCoverage  bool
-	authCapped    map[string]bool
-	reqDirectives []reqDirective
-	errs          []error
+	// coverageExempt is the fields internal/bindhook.CoverageExempt named.
+	coverageExempt map[string]bool
+	authCapped     map[string]bool
+	reqDirectives  []reqDirective
+	errs           []error
 	// phaseStart is where the current build phase began in errs, so endPhase
 	// sorts only what this phase added.
 	phaseStart int
@@ -469,6 +471,16 @@ func init() {
 	bindhook.ObjectBoundTo = func(what, name string, t reflect.Type) any {
 		return schemaOptionFunc(func(b *schemaBuilder) {
 			b.boundChecks = append(b.boundChecks, boundCheck{what: what, name: name, goType: t})
+		})
+	}
+	bindhook.CoverageExempt = func(coords ...string) any {
+		return schemaOptionFunc(func(b *schemaBuilder) {
+			if b.coverageExempt == nil {
+				b.coverageExempt = make(map[string]bool, len(coords))
+			}
+			for _, c := range coords {
+				b.coverageExempt[c] = true
+			}
 		})
 	}
 }

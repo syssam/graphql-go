@@ -16,3 +16,12 @@ import "reflect"
 // asking, for the error. It is set by the root package's init and is never
 // nil once that package is imported.
 var ObjectBoundTo func(what, name string, t reflect.Type) any
+
+// CoverageExempt returns a graphql.SchemaOption, as any, that leaves the
+// fields named, each as "Type.field", out of what RequireAuthCoverage
+// demands. It is for a field a package of this module adds to a schema on
+// the author's behalf: the author cannot write a requirement or @public on
+// text that is not theirs, and a coverage check that refuses it is one they
+// cannot satisfy. It exempts from the check and from nothing else -- a
+// requirement on the field's type guards it as it guards any other.
+var CoverageExempt func(coords ...string) any
