@@ -15,11 +15,16 @@ operation. A minimal SDL plus a query is ideal.
 This is a GraphQL server engine, so the interesting classes are:
 
 - **Resource exhaustion from a single request.** Depth, breadth, alias
-  multiplication, fragment expansion. `WithMaxComplexity`, `WithMaxDepth` and
-  `WithQueryCost` exist to bound these and are **off by default** — a server
-  that enables none of them can be made to do arbitrary work by an
-  unauthenticated client. That is a documented default, not a vulnerability;
-  a way around the limits when they *are* set is a vulnerability.
+  multiplication, fragment expansion, and a plan multiplied by the possible
+  types of an interface or union. `WithMaxComplexity`, `WithMaxDepth`,
+  `WithQueryCost` and `WithMaxPlanFields` exist to bound these and are **off
+  by default** — a server that enables none of them can be made to do
+  arbitrary work by an unauthenticated client. That is a documented default,
+  not a vulnerability; a way around the limits when they *are* set is a
+  vulnerability. `WithMaxPlanFields` is the one the others do not stand in
+  for: a few kilobytes of aliases on an interface with thousands of
+  implementers pass any complexity limit and compile into a plan of hundreds
+  of megabytes, on every request.
 - **Cross-request data leaking**, through the plan cache, a pooled buffer
   returned twice, or request-scoped state shared between operations. Pooled
   response buffers are the sharp edge: `Response.Release` returns one to the

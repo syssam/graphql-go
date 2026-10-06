@@ -98,6 +98,39 @@ func WithMaxDepth(n int) ExecutorOption {
 	return func(e *Executor) { e.maxDepth = n }
 }
 
+// WithMaxPlanFields rejects an operation whose plan would hold more than n
+// fields, counting a field selected on an interface or union once for each
+// concrete type it could be. Zero, the default, means unlimited.
+//
+// It bounds what WithMaxComplexity does not. Complexity counts the fields a
+// query selects, and the plan compiled from it holds each of them once for
+// every possible type of what it is selected on: 990 aliases on an interface
+// with 5 000 implementers are a complexity of 991 and a plan of 4.95 million
+// fields, which measured 4.6 s and 952 MB to compile. A plan field is roughly
+// 176 bytes, so n fields are about n × 176 bytes for one plan, 18 MB at
+// 100 000. Set n to the implementers of the widest interface a client can
+// select on times the fields a real query selects there, and not far above
+// it. There is no default because that product belongs to a schema: a number
+// that suits ten implementers refuses ordinary queries on five thousand.
+//
+// The count is taken from the document before anything is compiled, and for
+// an operation within the limit it is exactly the number of fields the plan
+// holds. One over it is refused with COMPLEXITY_LIMIT_EXCEEDED, and the
+// count stops there, so refusing costs about what n allows -- or a document's
+// worth of fields, where that is more -- however large the plan would have
+// been. The number in the error is then how far the count got; an operation
+// small enough to count in full is told its own.
+//
+// __schema and __type are counted with everything they select, unlike in
+// WithMaxDepth: what they select is in the plan. The introspection query an
+// IDE sends is 64 fields.
+//
+// This is not one of the limits ExecutorStats.RequestsUnbounded reports on.
+// It bounds what a request costs to plan, not what it asks resolvers to do.
+func WithMaxPlanFields(n int) ExecutorOption {
+	return func(e *Executor) { e.maxPlanFields = n }
+}
+
 // WithMaxResponseBytes bounds the size of each response's data: one query or
 // mutation, or one subscription event. A response over the limit has null
 // data and a single RESPONSE_TOO_LARGE error in place of any other errors,
@@ -223,6 +256,12 @@ func (e *Executor) rejectByMetrics(m planMetrics) *Error {
 			WithCode(CodeMaxDepth).
 			WithExtension("depth", m.depth).
 			WithExtension("maxDepth", e.maxDepth)
+	}
+	if e.maxPlanFields > 0 && m.fields > e.maxPlanFields {
+		return Errorf("query exceeds plan field limit: %d > %d", m.fields, e.maxPlanFields).
+			WithCode(CodeTooComplex).
+			WithExtension("planFields", m.fields).
+			WithExtension("maxPlanFields", e.maxPlanFields)
 	}
 	return nil
 }

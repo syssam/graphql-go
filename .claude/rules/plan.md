@@ -48,23 +48,60 @@ list without comparing the list's own non-null, the replacement compared it, and
 
 **Plan compile (`plan.go`).** A document is parsed and validated once and
 cached in an LRU (`docEntry`), bounded by entry count and by bytes
-(`WithPlanCacheBytes`, 16 MiB by default). The byte budget matters more than it looks: a
+(`WithPlanCacheBytes`, 64 MiB by default). The byte budget matters more than it looks: a
 parsed and validated document retained roughly 26 times its query text, measured linear from
 64 KiB to 1 MiB on an alias-heavy query (other shapes will differ), so without it 1024 distinct
 valid 1 MiB queries of that shape would hold tens of gigabytes. The
 document is cached before the depth and complexity guard runs, so that guard does not bound
-this. **A document is charged its text and each kept plan what it retains** (`plan.size`,
-summed by the compiler: 176 bytes a `planField` plus its key, each selection set once). The
-budget used to count text alone, and a plan is not a function of the text: it holds a field
-per possible type of everything selected on an interface, so 990 aliases on an interface with
-1 000 implementers -- 8.8 KB, complexity 991 -- was a 190 MB plan the cache reported as
-8.8 KB, and eight of them 1.5 GB. The estimate is within 1% of the heap on that shape
-(`TestAPlansSizeIsNearWhatItHolds`). A plan that would take its document past the whole budget
+this. **A document is charged what it holds: its text, the document parsed from it, and each
+kept plan** (`plan.size`, summed by the compiler: 176 bytes a `planField` plus its key, each
+selection set once). The budget used to count text alone, and a plan is not a function of the
+text: it holds a field per possible type of everything selected on an interface, so 990
+aliases on an interface with 1 000 implementers -- 8.8 KB, complexity 991 -- was a 190 MB plan
+the cache reported as 8.8 KB, and eight of them 1.5 GB. The estimate is within 1% of the heap
+on that shape (`TestAPlansSizeIsNearWhatItHolds`). **Then it counted text and plans and not the
+parsed document**, which is kept exactly as long and is the larger: 1 100 distinct 54 KB
+documents each running a small operation held 265 MB under 16 MiB. `documentBytes` walks the
+document once, in `planCache.put`, and adds a constant per node -- the node rounded as the
+allocator rounds it, 64 bytes for the lexer token its `Position` points into (gqlparser takes
+`&token.Pos`, which keeps the token), and its slot in the list holding it: 232 bytes a field,
+284 an argument with its value. **Comments are nodes**: gqlparser attaches them, the token
+limit counts each as one token, and `#` on a line of its own is 2 bytes of text and about 100
+held, 47 times the text of the comment-heavy shape. A list literal is 70 times its text.
+Block strings and escaped strings are copies and are charged their length. Fourteen shapes are
+held to within a third of the measured heap (`TestADocumentsChargeIsNearWhatItHolds`; measured
+0.90 to 1.06), each dominated by one kind of node so that dropping that kind's term fails its
+shape -- the first version of the test had mixed shapes, and three terms could be deleted with
+it green. The one term inside the tolerance is the position of an input object's field
+(a list element has none): 9% of the input-object shape. `TestThePlanCacheBoundsWhatLargeDocumentsHold`
+is the adversarial case against the heap. **The default moved from 16 to 64 MiB with it**: an
+ordinary 1.2 KB document is 53 KB to keep (28 parsed, 25 planned;
+`TestTheDefaultPlanCacheHoldsEveryOrdinaryDocument`), so 64 MiB is the 1 024 the entry count
+allows with a fifth to spare, where 16 MiB counted honestly is a third of them and counted the
+old way was 650 documents holding twice what it said. A plan that would take its document past the whole budget
 is not kept (`docEntry.unkept`) and is compiled per request, outside the document's lock after
-the first refusal. **That is the cost of not expanding lazily**: such a plan still takes
-1 s (1 000 types) to 4.6 s (5 000) to compile, now on every request rather than the first,
-until the budget is raised to hold it. An ordinary plan is thirty-odd times its text, so the
-default holds about 400 documents of 1.2 KB rather than the 1024 the entry count allows. **Concurrent misses for one query text share a single parse** (`Executor.document`,
+the first refusal. **That is the cost of not expanding lazily, and `WithMaxPlanFields` is the
+answer to it**: such a plan takes 1 s (1 000 types) to 4.6 s and 952 MB (5 000) to compile, on
+every request rather than the first, and the complexity limit counts 991. Lazy per-type
+expansion was investigated and rejected: authorization site numbering (`buildAuthShape`),
+`Selection.Fields`, the cost walk and schedulability all read every possible type at compile,
+so a type compiled on first use would change what each of them has already answered. The
+limit refuses instead, on the product: `metricWalker.fields` counts one per response key of
+each selection the walk visits, and the walk's memo is the compiler's, so for an operation
+that compiles the count **is** `len(fields)` summed over the plan's selection sets
+(`TestThePlanFieldCountIsThePlans` over twenty shapes, `planFieldsOf` in the oracle, and the
+fuzz target). Off by default like depth and complexity, deliberately: the largest known
+consumer has an interface with about 5 500 implementers, and a default that refused a
+legitimate query there would be worse than the finding. **Refusing costs the limit, not the
+plan**: `settled` returns true for every open selection once the count is past the limit, so
+990 aliases on 5 000 implementers at a limit of 100 000 is 103 selections, 100 981 fields
+collected and 206 000 allocations, the same on 1 000 implementers, where planning it is
+4.95 million fields and 30 million allocations (`TestRefusingAPlanCostsTheLimitNotThePlan`
+counts steps and allocations, not time). **Introspection is counted here though it is free to
+depth and complexity**, because its fields are in the plan (the GraphiQL query is 64): the
+walk goes into `__schema` and `__type` for the count alone, and `uncharged` keeps the
+complexity and depth limits from stopping it in there, which would leave the count short for
+an operation that is then accepted. It is not part of `RequestsUnbounded`. **Concurrent misses for one query text share a single parse** (`Executor.document`,
 `docCall`): a 100 KB query measured about 8 ms and 6.8 MB to parse and validate, and 64 identical
 requests on a cold cache took 19 times the wall time of one. Plan compilation already had this
 property through `docEntry.mu`; parsing did not. Only a success is cached — a failure is shared
@@ -132,7 +169,7 @@ spread are still distinct selections and still collect the fragment each
 (`TestOperationMetricsStopsCollectingOnceTheOperationIsRefused` bounds the refusal, nothing
 bounds the compile: 700 x 7 900 same-name fields is 240 ms, once per document text). Every
 walk over a plan must memoize on `*selectionSet` for the same reason, `queryCostOf` included,
-because it runs per request. Depth and complexity are computed by `operationMetrics` from the
+because it runs per request. Depth, complexity and the plan's field count are computed by `operationMetrics` from the
 document before `compilePlan`, so the limits refuse a query rather than reporting on one
 already expanded; `plan_metrics_oracle_test.go` holds the plan-tree walk it replaced, and the
 two are checked against each other by `TestOperationMetricsMatchesPlan` and fuzzed by
@@ -152,7 +189,9 @@ every request, under the document's lock. The walk still runs per request where 
 kept: `docEntry.planUncacheable()`, and variants past `maxPlanVariants`. **Once over a limit
 the walk stops** as soon as it has collected `metricExactWork` fields (`settled`): possible
 types are taken in schema order so the figure reported is stable, and a small walk is finished
-so an ordinary refusal still says by exactly how much. A subscription
+so an ordinary refusal still says by exactly how much. Complexity and depth are a selection's
+own, so being over them settles that selection; the plan field count is the walk's, so being
+over it settles all of them. A subscription
 over the limit is rejected once at `Subscribe`, before the stream opens, instead of emitting
 an error `next` on every event as it did before this guard existed. Cost depends on the
 variables, so `Subscribe` refuses it separately (`rejectIfOverCost`) after coercing them and

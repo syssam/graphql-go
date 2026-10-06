@@ -38,7 +38,7 @@ func ObserveExecutor(e *graphql.Executor, opts ...Option) (metric.Registration, 
 	}
 	bytes, err := m.Int64ObservableUpDownCounter("graphqlgo.plan_cache.bytes",
 		metric.WithUnit("By"),
-		metric.WithDescription("Query text and plans held by the plan cache, the quantity WithPlanCacheBytes bounds."))
+		metric.WithDescription("Query text, parsed documents and plans held by the plan cache, the quantity WithPlanCacheBytes bounds."))
 	if err != nil {
 		return nil, err
 	}

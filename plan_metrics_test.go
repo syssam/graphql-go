@@ -77,6 +77,9 @@ func TestOperationMetricsMatchesPlan(t *testing.T) {
 			if got.depth != want.depth {
 				t.Errorf("depth = %d, oracle says %d", got.depth, want.depth)
 			}
+			if got.fields != want.fields {
+				t.Errorf("plan fields = %d, the plan holds %d", got.fields, want.fields)
+			}
 		})
 	}
 }

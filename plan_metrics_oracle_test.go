@@ -4,12 +4,15 @@ package graphql
 // operationMetrics replaced them with an equivalent walk over the document,
 // which can run before the plan is built. They are kept as the oracle that
 // pins the replacement: TestOperationMetricsMatchesPlan compares the two. Do
-// not reintroduce them into the production path.
+// not reintroduce them into the production path. The plan field count never
+// was computed from the plan in production; planFieldsOf is its oracle here
+// because the count is defined as what the plan holds.
 
 func planMetricsOracle(p *plan) planMetrics {
 	return planMetrics{
 		complexity: complexityOf(p.sel),
 		depth:      depthOf(p.sel),
+		fields:     planFieldsOf(p.sel),
 	}
 }
 

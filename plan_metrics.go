@@ -6,6 +6,12 @@ import "github.com/vektah/gqlparser/v2/ast"
 type planMetrics struct {
 	complexity int
 	depth      int
+	// fields is how many planFields the operation's plan holds. Complexity
+	// and depth are a selection's own and add up along a path; this is a
+	// count of the plan as a whole, each selection set once however many
+	// parents share it, so limitedMetrics sets it and the walk's memo does
+	// not carry it.
+	fields int
 }
 
 // operationMetrics computes an operation's complexity and depth from the
@@ -19,15 +25,15 @@ type planMetrics struct {
 // TestOperationMetricsMatchesPlan checks that agreement directly against a
 // compiled plan.
 func operationMetrics(s *Schema, doc *ast.QueryDocument, op *ast.OperationDefinition, cond map[string]bool) planMetrics {
-	return limitedMetrics(s, doc, op, cond, 0, 0)
+	return limitedMetrics(s, doc, op, cond, 0, 0, 0)
 }
 
 // limitedMetrics is operationMetrics for a caller that only needs to know
-// whether the operation is within maxComplexity and maxDepth, zero for no
-// limit. Within them the result is exact. Past either it is exact too unless
-// the walk was a large one, and then it is past that limit and no greater
-// than the true figure: see metricWalker.settled.
-func limitedMetrics(s *Schema, doc *ast.QueryDocument, op *ast.OperationDefinition, cond map[string]bool, maxComplexity, maxDepth int) planMetrics {
+// whether the operation is within maxComplexity, maxDepth and maxFields, zero
+// for no limit. Within them the result is exact. Past any of them it is exact
+// too unless the walk was a large one, and then it is past that limit and no
+// greater than the true figure: see metricWalker.settled.
+func limitedMetrics(s *Schema, doc *ast.QueryDocument, op *ast.OperationDefinition, cond map[string]bool, maxComplexity, maxDepth, maxFields int) planMetrics {
 	root := s.rootFor(op.Operation)
 	if root == nil {
 		return planMetrics{}
@@ -41,9 +47,12 @@ func limitedMetrics(s *Schema, doc *ast.QueryDocument, op *ast.OperationDefiniti
 		memo:          make(map[selKey]planMetrics),
 		maxComplexity: maxComplexity,
 		maxDepth:      maxDepth,
+		maxFields:     maxFields,
 		exact:         metricExactWork,
 	}
-	return w.walk(root, nil, op.SelectionSet)
+	m := w.walk(root, nil, op.SelectionSet)
+	m.fields = w.fields
+	return m
 }
 
 // metricExactWork is how many fields a walk may collect and still owe an
@@ -60,13 +69,26 @@ type metricWalker struct {
 	c    *compiler
 	memo map[selKey]planMetrics
 
-	// maxComplexity and maxDepth are the executor's limits, zero for none,
-	// and exact is how many fields the walk collects before being over one
-	// of them is reason to stop: see settled.
+	// maxComplexity, maxDepth and maxFields are the executor's limits, zero
+	// for none, and exact is how many fields the walk collects before being
+	// over one of them is reason to stop: see settled.
 	maxComplexity int
 	maxDepth      int
+	maxFields     int
 	exact         int
 	collected     int
+
+	// fields counts the planFields compilePlan would build: one for each
+	// response key of each selection walked. The memo makes that each
+	// selection the compiler's own memo would compile, once, so for an
+	// operation that compiles the two numbers are the same number.
+	fields int
+
+	// uncharged is above zero inside __schema or __type. What they select is
+	// no part of the operation's complexity or depth, so being over those
+	// limits there is no reason to stop; it is part of the plan, and the walk
+	// goes through it for fields alone.
+	uncharged int
 
 	// calls counts walkConcrete invocations. It is plain bookkeeping with no
 	// effect on the result: operationMetrics never reads it, and nothing
@@ -127,8 +149,19 @@ func (w *metricWalker) walk(obj *objectType, abs *abstractType, sels ast.Selecti
 // The figure reported is then how far the walk got rather than the whole.
 // A small walk is finished anyway, so that an ordinary query over the limit
 // is still told by exactly how much.
+//
+// The plan field count is the walk's and not m's, so past its limit every
+// selection still open is settled and the walk unwinds: refusing a plan costs
+// what the limit allows, or metricExactWork if that is more, and one
+// selection's collecting past it, whatever the plan would have held.
 func (w *metricWalker) settled(m planMetrics) bool {
 	if w.collected < w.exact {
+		return false
+	}
+	if w.maxFields > 0 && w.fields > w.maxFields {
+		return true
+	}
+	if w.uncharged > 0 {
 		return false
 	}
 	return (w.maxComplexity > 0 && m.complexity > w.maxComplexity) || (w.maxDepth > 0 && m.depth > w.maxDepth)
@@ -145,6 +178,7 @@ func (w *metricWalker) walkConcrete(obj *objectType, sels ast.SelectionSet) plan
 	for _, g := range groups {
 		w.collected += len(g.fields)
 	}
+	w.fields += len(groups)
 
 	var m planMetrics
 	for _, g := range groups {
@@ -169,7 +203,7 @@ func (w *metricWalker) walkConcrete(obj *objectType, sels ast.SelectionSet) plan
 			// before any oracle value exists to compare against.
 			continue
 		}
-		if fd.leaf || isIntrospectionRoot(first.Name) {
+		if fd.leaf {
 			m.complexity = costAdd(m.complexity, 1)
 			m.depth = max(m.depth, 1)
 			continue
@@ -184,11 +218,20 @@ func (w *metricWalker) walkConcrete(obj *objectType, sels ast.SelectionSet) plan
 			}
 		}
 		named := w.c.s.ast.Types[fd.typ.Name()]
+		free := isIntrospectionRoot(first.Name)
+		if free {
+			w.uncharged++
+		}
 		var sub planMetrics
 		if named.Kind == ast.Object {
 			sub = w.walk(w.c.s.objects[named.Name], nil, merged)
 		} else {
 			sub = w.walk(nil, w.c.s.abstracts[named.Name], merged)
+		}
+		if free {
+			// One field to the limits, whatever it selects: see WithMaxDepth.
+			w.uncharged--
+			sub = planMetrics{}
 		}
 		// The walk is linear in the document, but the tree it measures can
 		// double at every level, so the sum saturates like the cost does:

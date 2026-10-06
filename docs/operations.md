@@ -7,7 +7,7 @@ been measured, the last section says so rather than leaving it to be assumed.
 
 ## Before it faces anything untrusted
 
-**Four limits are off by default.** An engine that enables none of them can be
+**Five limits are off by default.** An engine that enables none of them can be
 made to do arbitrary work by one unauthenticated request — that is a documented default, not a bug, and
 `SECURITY.md` says the same. Turning them on is the deployment's job because
 the right numbers depend on the schema.
@@ -16,18 +16,22 @@ An executor built with no depth, complexity or cost limit says so once in the
 log, at warning level, and reports it as `ExecutorStats.RequestsUnbounded` and
 the `graphqlgo.executor.requests_unbounded` metric. Neither changes what it
 serves: they are there so that the default is something a dashboard shows.
+`WithMaxPlanFields` and `WithOperationTimeout` are not part of that report:
+the first bounds what a request costs to plan and the second how long it may
+run, and neither what it may ask for.
 
 | Option | Default | Set it to |
 |---|---|---|
 | `WithMaxDepth` | off | Deeper than your deepest real query, not much more. Checked from the document before a plan is built, so a refused query costs one AST walk. |
 | `WithMaxComplexity` | off | Same. Both are structural and cheap. |
+| `WithMaxPlanFields` | off | The implementers of your widest interface or union times the fields a real query selects on it, and not far above. Complexity counts what a query selects; a plan holds each field once per possible type, so 990 aliases on an interface with 5 000 implementers are a complexity of 991 and a plan of 4.95 million fields -- 4.6 s and 952 MB to compile, on every request, because the plan cache will not keep it. A plan field is roughly 176 bytes, so `n` allows a plan of about `n` x 176 bytes: 18 MB at 100 000. The count is taken before anything is compiled and stops once it is past `n`: refusing that query at 100 000 collects 101 000 fields where planning it collects 4.95 million and then builds them. If your schema has no interface or union with more than a few dozen possible types, `WithMaxComplexity` already bounds this and you can leave it off. |
 | `WithQueryCost` | off | `Max` against measured traffic; set `Report: true` first and watch `extensions.cost` for a week before enforcing. |
 | `WithOperationTimeout` | off | It bounds work, not latency: a resolver that ignores its context still holds the response. |
 | `WithMaxResponseBytes` | **64 MiB** | On already. Lower it if your largest legitimate response is far smaller. |
 | `WithMaxTokens` | **15 000** | On already. Parsing and validation run before every limit above, on every document, valid or not; see "Document limits" below. |
 | `WithMaxNesting` | **100** | On already. Selection sets and input literals as written, not after fragments. |
 | `WithMaxErrors` | **1000** | On already. |
-| `WithPlanCacheBytes` | **16 MiB**, with `WithPlanCache` at **1024** entries | On already, and it is what stops distinct queries from retaining gigabytes. It counts a document's query text and, for each plan kept, what the plan retains: about 240 bytes for a selected field, and that again for every possible type under an interface or union, so 990 aliases on an interface with 1 000 implementers is 8.8 KB of query and a 190 MB plan. A plan that would take its document past the budget is compiled per request and not kept. An ordinary plan is thirty-odd times its text, so the default holds some 400 documents of a kilobyte each: raise it if you serve more distinct operations than that. The parsed document is not counted beyond its text and retains roughly 26x that. A document's `@skip`/`@include` variants are each a plan, and at most 64 are kept per document. |
+| `WithPlanCacheBytes` | **64 MiB** for the plan cache (the 64 MiB above is `WithMaxResponseBytes`, a different limit), with `WithPlanCache` at **1024** entries | On already, and it is what stops distinct queries from retaining gigabytes. It counts what a cached document holds: its query text, the document parsed from it, and each plan kept. The parsed document is about 230 bytes for a selected field and nearly 300 for an argument -- 25x the text of an ordinary query, 70x a list literal's -- and a plan about 240 bytes for a selected field, and that again for every possible type under an interface or union, so 990 aliases on an interface with 1 000 implementers is 8.8 KB of query and a 190 MB plan (`WithMaxPlanFields` refuses it; without that it is compiled per request and not kept, as any plan is that would take its document past the budget). An ordinary document of 1.2 KB measured 53 KB to keep, so the default holds the 1024 the entry count allows with a fifth to spare; lower it if a replica cannot give the cache 64 MiB, and expect about 19 ordinary documents per MiB. A document's `@skip`/`@include` variants are each a plan, and at most 64 are kept per document. |
 | `apq.WithMaxBytes` | **16 MiB** | On already. Any client can register any query it can hash, so an entry count alone lets 1000 entries of 1 MiB park a gigabyte. |
 | `gqlws.WithWriteTimeout` / `gqlfiber.WithWriteTimeout` | **10 s** | On already. It is what ends a WebSocket peer that stays connected but stops reading; pings do not. |
 | `gqlsse.WithWriteTimeout` | **10 s** | On already, and the same for an SSE client, on every stream the handler opens: a subscription's, and the single result of a query or mutation. A handler parked in a write sees neither the drain nor its cancelled context, so without it a stalled reader holds its stream, and a large result's buffer, past `Shutdown`. A payload is written in 32 KiB pieces with the deadline set again before each, so it bounds a reader that takes nothing, not a slow one. `gqlfiber.WithWriteTimeout` does the same for its SSE streams. |
@@ -137,7 +141,10 @@ ended for good instead of reconnecting.
   not per request. A memory-bound deployment fits fewer replicas per node
   because of it.
 - **The plan cache** is bounded by entry count and by what its documents
-  and their plans hold (`WithPlanCacheBytes`, 16 MiB).
+  hold, parsed and planned (`WithPlanCacheBytes`, 64 MiB by default: the
+  cache's budget, not `WithMaxResponseBytes`, whose default is the same
+  number). The figure is an estimate held to within a third of the heap, so
+  size the replica for the budget and a third.
 - **Per request** the engine allocates 12 to 14 objects for a small query
   (measured, `docs/performance.md`) and does not grow with schema size — that is the whole point of the compiled
   plan, and it is why request memory is not what you tune.

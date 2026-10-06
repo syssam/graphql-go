@@ -245,6 +245,7 @@ graphql: func WithMaxConcurrency(n int) ExecutorOption
 graphql: func WithMaxDepth(n int) ExecutorOption
 graphql: func WithMaxErrors(n int) ExecutorOption
 graphql: func WithMaxNesting(n int) ExecutorOption
+graphql: func WithMaxPlanFields(n int) ExecutorOption
 graphql: func WithMaxResponseBytes(n int64) ExecutorOption
 graphql: func WithMaxTokens(n int) ExecutorOption
 graphql: func WithObjectAuthBatch(n int) ExecutorOption

@@ -9,7 +9,7 @@ before a version number exists than after.
 
 ## What is covered
 
-Everything in [`public-api.txt`](public-api.txt): 462 exported declarations
+Everything in [`public-api.txt`](public-api.txt): 466 exported declarations
 across 16 importable packages, regenerated and compared by
 `TestPublicAPISurface` on every run. A change to any of them is a failing test
 and a visible diff in the commit that makes it, reported by symbol:
@@ -110,6 +110,11 @@ Ordinary Go semantics, with one clarification each way:
   `TestPublicAPISurface` makes each of those a deliberate diff.
 - **A change in behaviour with no change in signature is still a breaking
   change** where a consumer could depend on it. The defaults in
-  [`operations.md`](operations.md) — 64 MiB responses, 1000 errors, a 16 MiB
+  [`operations.md`](operations.md) — 64 MiB responses, 1000 errors, a 64 MiB
   plan cache, `GOMAXPROCS*4` resolver slots — are part of the contract, not
-  implementation detail.
+  implementation detail. The plan cache's moved from 16 MiB before any
+  release, in the change that made its budget count the parsed document as
+  well as the text and the plans: 16 MiB counted that way keeps a third of
+  the 1 024 ordinary documents the cache allows, where the old accounting
+  kept 650 and held twice what it reported, and 64 MiB is what 1 024 of them
+  hold.

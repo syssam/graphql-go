@@ -162,7 +162,7 @@ takes; see
 [`cmd/gqlc/README.md`](../cmd/gqlc/README.md).
 
 **Read [`operations.md`](operations.md) before this reaches anything
-untrusted.** Four limits are off by default, and the drain has to be shut down
+untrusted.** Five limits are off by default, and the drain has to be shut down
 alongside `srv.Shutdown`, not before or after it.
 
 ## Where errors show up, and why that is the point

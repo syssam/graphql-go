@@ -55,6 +55,7 @@ type Executor struct {
 
 	maxComplexity    int
 	maxDepth         int
+	maxPlanFields    int
 	maxResponseBytes int64
 	maxErrors        int
 
@@ -98,20 +99,27 @@ func WithPlanCache(size int) ExecutorOption {
 
 // WithPlanCacheBytes bounds what the plan cache holds, evicting the least
 // recently used documents to stay within it. Zero means no byte limit; the
-// entry count from WithPlanCache still applies. The default is 16 MiB.
+// entry count from WithPlanCache still applies. The default is 64 MiB.
 //
-// A document is counted as its query text, and each plan kept for it as an
-// estimate of the bytes the plan retains: about 240 for a selected field, and
-// that again for every possible type of a field selected on an interface or
-// union. That is thirty-odd times the text for an ordinary query, and for
-// one on an interface with many implementers it is not a function of the
-// text at all. The parsed document is not counted beyond its text; it
-// retained roughly 26 times that when measured on an alias-heavy query (other
-// shapes will differ). At the default, some 400 documents of a kilobyte each
-// are kept with their plans, so a service with more distinct operations than
-// that meets this bound before the entry count. A plan that would take its
-// document past the whole budget is compiled for each request and not kept,
-// and a query larger than the whole budget is not cached but still executes.
+// A document is counted as what it holds: its query text, an estimate of the
+// document parsed from it, and for each plan kept an estimate of what the
+// plan retains. The parsed document is about 230 bytes for a selected field
+// and nearly 300 for an argument, which is some 25 times the text of an
+// ordinary query and 70 times that of a list literal. A plan is about 240
+// bytes for a selected field, and that again for every possible type of a
+// field selected on an interface or union, so for one on an interface with
+// many implementers it is not a function of the text at all: WithMaxPlanFields
+// bounds that. Each estimate is held to within a third of the heap it was
+// measured to stand for.
+//
+// The default is what the default entry count holds. An ordinary document of
+// 1.2 KB measured 53 KB to keep -- its text, 28 KB parsed and a plan of
+// 25 KB -- and 64 MiB is the 1 024 of them WithPlanCache allows, with a fifth
+// to spare. It was 16 MiB while the parsed document went uncounted, which
+// kept 650 of them and held twice what it reported. A plan that would take
+// its document past the whole budget is compiled for each request and not
+// kept, and a document larger than the whole budget is not cached but still
+// executes.
 func WithPlanCacheBytes(n int64) ExecutorOption {
 	return func(e *Executor) { e.cacheBytes = n }
 }
@@ -179,7 +187,7 @@ func NewExecutor(s *Schema, opts ...ExecutorOption) *Executor {
 		presenter:      DefaultErrorPresenter,
 		recover:        true,
 		cacheSize:      1024,
-		cacheBytes:     16 << 20,
+		cacheBytes:     64 << 20,
 
 		maxResponseBytes: 64 << 20,
 		maxErrors:        1000,

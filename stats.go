@@ -10,18 +10,18 @@ import (
 // and safe from any goroutine.
 type ExecutorStats struct {
 	// PlanCacheEntries and PlanCacheBytes are the documents the plan cache
-	// holds and what they are charged, their query text and what their plans
-	// retain: the quantity WithPlanCacheBytes bounds.
+	// holds and what they are charged, their query text, their parsed form
+	// and what their plans retain: the quantity WithPlanCacheBytes bounds.
 	PlanCacheEntries int
 	PlanCacheBytes   int64
 
 	// PlanCacheHits and PlanCacheMisses count operations that were planned: a
 	// hit found its compiled plan cached, a miss compiled one. A request
-	// rejected by parsing, validation or a depth or complexity limit is
-	// neither, and so is OperationKind, which transports call before Execute;
-	// one refused by the query cost limit has already been planned and counts.
-	// A document with too many conditional variables to cache its plans
-	// (OperationStats.PlanUncacheable) is a miss on every request. A
+	// rejected by parsing, validation or a depth, complexity or plan field
+	// limit is neither, and so is OperationKind, which transports call before
+	// Execute; one refused by the query cost limit has already been planned
+	// and counts. A document with too many conditional variables to cache its
+	// plans (OperationStats.PlanUncacheable) is a miss on every request. A
 	// subscription counts once, when it opens: its events reuse that plan.
 	// Per operation this is the judgement OperationStats.CacheHit reports,
 	// though CacheHit is repeated on every subscription event.

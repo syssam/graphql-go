@@ -105,7 +105,7 @@ func variantSizes(t *testing.T, query string, n, variants int) (doc int64, plans
 		}
 		plans = append(plans, p.size)
 	}
-	return int64(len(query)), plans
+	return documentBytes(entry), plans
 }
 
 // The byte budget is what bounds retained memory, and a plan is the larger
@@ -148,7 +148,7 @@ func TestPlanVariantsAreChargedToTheByteBudget(t *testing.T) {
 		t.Fatalf("cache counts %d bytes with nothing in it", got)
 	}
 	noErrors(t, run(t, e, other, ""))
-	if got, held := e.cache.bytes(), cachedBytes(e.cache); got != held || got <= int64(len(other)) {
+	if got, held := e.cache.bytes(), cachedBytes(e.cache); got != held || got <= documentBytes(e.cache.get(other)) {
 		t.Fatalf("cache counts %d bytes for one %d-byte query and its plan, and holds %d", got, len(other), held)
 	}
 }
@@ -344,9 +344,12 @@ func TestAPlanTheBudgetRefusedIsCompiledUnderTheLockOnlyOnce(t *testing.T) {
 		t.Fatalf("NewSchema: %v", err)
 	}
 	const query = `{ a take(v: 5) }`
+	parsed, errs := NewExecutor(s).document(query)
+	if errs != nil {
+		t.Fatalf("document: %v", errs[0])
+	}
 	// Room for the document and nothing of its plan.
-	e := NewExecutor(s, WithPlanCacheBytes(int64(len(query))+1))
-	var errs []*Error
+	e := NewExecutor(s, WithPlanCacheBytes(documentBytes(parsed)+1))
 	if entry, errs = e.document(query); errs != nil {
 		t.Fatalf("document: %v", errs[0])
 	}

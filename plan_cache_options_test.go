@@ -61,12 +61,14 @@ func TestPlanCacheCountsHitsAndMisses(t *testing.T) {
 	}
 }
 
-// WithPlanCacheBytes bounds the query text held, evicting to stay within it.
-// A document larger than the whole budget is never stored, because evicting to
-// make room for it would discard documents that do fit.
+// WithPlanCacheBytes bounds what the cached documents hold, evicting to stay
+// within it. A document larger than the whole budget is never stored, because
+// evicting to make room for it would discard documents that do fit.
 func TestPlanCacheBytesEvictsAndRefusesAnOversizedDocument(t *testing.T) {
-	// Room for a couple of small documents, not for many.
-	e := planCacheExec(t, WithPlanCache(64), WithPlanCacheBytes(120))
+	// Room for a couple of small documents and their plans, not for three:
+	// each is about a kilobyte parsed and half that again planned.
+	const budget = 4 << 10
+	e := planCacheExec(t, WithPlanCache(64), WithPlanCacheBytes(budget))
 	for _, q := range []string{
 		`{ me { id } }`,
 		`{ me { name } }`,
@@ -79,11 +81,14 @@ func TestPlanCacheBytesEvictsAndRefusesAnOversizedDocument(t *testing.T) {
 		}
 	}
 	st := e.Stats()
-	if st.PlanCacheBytes > 120 {
-		t.Errorf("PlanCacheBytes = %d, over the 120-byte budget", st.PlanCacheBytes)
+	if st.PlanCacheBytes > budget {
+		t.Errorf("PlanCacheBytes = %d, over the %d-byte budget", st.PlanCacheBytes, budget)
 	}
 	if st.PlanCacheEntries == 0 {
 		t.Error("the byte budget evicted everything; it should hold what fits")
+	}
+	if st.PlanCacheEntries >= 3 {
+		t.Errorf("all %d documents are cached; the budget evicted nothing", st.PlanCacheEntries)
 	}
 
 	// A document past the whole budget on its own is refused rather than
@@ -98,7 +103,7 @@ func TestPlanCacheBytesEvictsAndRefusesAnOversizedDocument(t *testing.T) {
 		t.Errorf("a document too large to cache evicted %d that fit",
 			before.PlanCacheEntries-after.PlanCacheEntries)
 	}
-	if after.PlanCacheBytes > 120 {
+	if after.PlanCacheBytes > budget {
 		t.Errorf("PlanCacheBytes = %d after the oversized document", after.PlanCacheBytes)
 	}
 }

@@ -243,7 +243,7 @@ variables, complexity, depth and cost. `SetExtension` writes response-level
 metadata (tracing ids, rate-limit windows).
 
 Executor options follow the gRPC style: `WithMaxConcurrency`, `WithPlanCache`,
-`WithPlanCacheBytes` (bound the cache by query text plus what its compiled plans retain, 16 MiB by default),
+`WithPlanCacheBytes` (bound the cache by what its documents hold -- query text, parsed form and compiled plans -- 64 MiB by default),
 `WithErrorPresenter`, `WithRecover`, typed interceptors, `WithFieldObserver` (watch every
 field, pure ones included, without the type-erased path a field interceptor forces), plus production
 limits `WithMaxResponseBytes` (null data and one `RESPONSE_TOO_LARGE` error once a
@@ -270,8 +270,8 @@ Phases 1-4 of the
 **Engine.** Schema-first with a code-first binding API: SDL is the contract and
 Go bindings are plain function values, checked against it at `NewSchema` rather
 than at request time. A document is parsed and validated once and cached in an
-LRU bounded by entry count and by bytes -- query text plus what its compiled
-plans retain; concurrent misses for one query
+LRU bounded by entry count and by bytes -- query text, the parsed document and
+what its compiled plans retain; concurrent misses for one query
 share a single parse. Each `(operation, @skip/@include variant)` compiles to an
 immutable plan with fragments flattened, directives constant-folded, arguments
 pre-decoded and response keys pre-serialized, and abstract types expanded
@@ -349,14 +349,14 @@ Nothing is tagged yet. [`docs/api-stability.md`](docs/api-stability.md) records
 what the promise will cover, which parts are still expected to move, and the
 one coupling that decides this library's major version for it: `gqlparser/v2`'s
 AST is part of the public API, so a gqlparser v3 means a major release here.
-`TestPublicAPISurface` pins all 462 exported declarations against
+`TestPublicAPISurface` pins every exported declaration against
 [`docs/public-api.txt`](docs/public-api.txt), so an API change is a failing
 test rather than a code review someone has to catch.
 
 ## Running it in production
 
 [`docs/operations.md`](docs/operations.md) is the deployment page: which limits
-to turn on before the engine faces anything untrusted (four are off by
+to turn on before the engine faces anything untrusted (five are off by
 default), how to shut down streams the HTTP server cannot, what sizes a
 replica, which metric to alarm on, and the limits to design around -- including
 the ones this engine will not do, and the figures nobody has measured yet.

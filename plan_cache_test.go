@@ -8,17 +8,18 @@ import (
 	"testing"
 )
 
-// cachedBytes sums what the cache actually holds -- each document's query text
-// and what each plan kept for it retains -- independently of the cache's own
-// counter, so a test can tell a counter that drifted from one that is right.
-// A bound alone cannot: a counter that undercounts stays within budget.
+// cachedBytes sums what the cache actually holds -- each document's text and
+// parsed form, and what each plan kept for it retains -- independently of the
+// cache's own counter, so a test can tell a counter that drifted from one
+// that is right. A bound alone cannot: a counter that undercounts stays
+// within budget.
 func cachedBytes(c *planCache) int64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var n int64
 	for el := c.lru.Front(); el != nil; el = el.Next() {
 		entry := el.Value.(*cacheItem).entry
-		n += int64(len(entry.query))
+		n += documentBytes(entry)
 		entry.mu.Lock()
 		for _, p := range entry.plans {
 			n += p.size
@@ -167,10 +168,11 @@ func TestExecutorPlanCacheOptionOrder(t *testing.T) {
 	}
 }
 
-// TestExecutorPlanCacheDefaultBytes pins the default budget. It is set well
-// above what the default entry count holds for ordinary queries, so ordinary
-// traffic is bounded by the count and only pathologically large queries reach
-// the byte budget.
+// TestExecutorPlanCacheDefaultBytes pins the default budget. It is what the
+// default entry count holds of ordinary queries
+// (TestTheDefaultPlanCacheHoldsEveryOrdinaryDocument), so ordinary traffic is
+// bounded by the count and only large documents and wide plans reach the byte
+// budget.
 func TestExecutorPlanCacheDefaultBytes(t *testing.T) {
 	_, base := newFixtureExecutor(t)
 	schema := base.Schema()
@@ -178,25 +180,24 @@ func TestExecutorPlanCacheDefaultBytes(t *testing.T) {
 	if e.cache.size != 1024 {
 		t.Errorf("default size = %d, want 1024", e.cache.size)
 	}
-	if e.cache.maxBytes != 16<<20 {
-		t.Errorf("default maxBytes = %d, want 16 MiB", e.cache.maxBytes)
+	if e.cache.maxBytes != 64<<20 {
+		t.Errorf("default maxBytes = %d, want 64 MiB", e.cache.maxBytes)
 	}
 }
 
 // TestPlanCacheBoundsLargeDistinctQueries is the attack the budget exists for:
 // many distinct, valid, large queries. Each validates, so each reaches put, and
-// a parsed document retained roughly 26 times its query text when measured on
-// an alias-heavy query like this one — so without a
-// budget this retains without bound until the entry count saves it, far too
-// late. Asserted on the cache's own byte count rather than the heap, which is
-// too noisy to bound reliably in a test.
+// a parsed document retains some 26 times its query text on an alias-heavy
+// query like this one — so without a budget this retains without bound until
+// the entry count saves it, far too late. Asserted here on the cache's own
+// byte count; TestThePlanCacheBoundsWhatLargeDocumentsHold asks the heap.
 func TestPlanCacheBoundsLargeDistinctQueries(t *testing.T) {
 	_, base := newFixtureExecutor(t)
 	schema := base.Schema()
-	const budget = 64 << 10
+	const budget = 1 << 20
 	e := NewExecutor(schema, WithPlanCacheBytes(budget))
 
-	sent := 0
+	var sent int64
 	for i := range 40 {
 		var q strings.Builder
 		fmt.Fprintf(&q, "{ first%d: users { id } ", i)
@@ -204,16 +205,20 @@ func TestPlanCacheBoundsLargeDistinctQueries(t *testing.T) {
 			fmt.Fprintf(&q, "a%d_%d: users { id name } ", i, j)
 		}
 		q.WriteString("}")
-		sent += q.Len()
 		if resp := e.Execute(t.Context(), &Request{Query: q.String()}); len(resp.Errors) != 0 {
 			t.Fatalf("query %d: %v", i, resp.Errors[0])
 		}
+		entry := e.cache.get(q.String())
+		if entry == nil {
+			t.Fatalf("query %d: the document is not cached", i)
+		}
+		sent += documentBytes(entry)
 	}
 
 	// Without all three, a cache that stored nothing -- or never updated its
 	// byte count -- would satisfy "at most the budget" trivially.
 	if sent <= budget {
-		t.Fatalf("sent %d bytes, which never exceeds the budget of %d; the test applies no pressure", sent, budget)
+		t.Fatalf("sent documents holding %d bytes, which never exceeds the budget of %d; the test applies no pressure", sent, budget)
 	}
 	got := e.cache.bytes()
 	if got == 0 {

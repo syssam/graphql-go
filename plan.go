@@ -35,10 +35,10 @@ type docEntry struct {
 
 	mu    sync.Mutex
 	plans map[planKey]*plan
-	// refused holds the metrics of the variants a depth or complexity limit
-	// refused, which is the whole answer for them: kept, a repeat of a refused
-	// request costs a map lookup rather than the walk that measured it. It
-	// counts toward maxPlanVariants with plans.
+	// refused holds the metrics of the variants a depth, complexity or plan
+	// field limit refused, which is the whole answer for them: kept, a repeat
+	// of a refused request costs a map lookup rather than the walk that
+	// measured it. It counts toward maxPlanVariants with plans.
 	refused map[planKey]planMetrics
 	// unkept holds the variants the cache's byte budget had no room for. A
 	// plan it refused once it refuses again, since what the document is
@@ -1077,7 +1077,7 @@ func (d *docEntry) planFor(s *Schema, e *Executor, op *ast.OperationDefinition, 
 // callers (exec.go, subscription.go) pass the receiver Executor, and every
 // direct plan_test.go caller of compilePlan supplies a real *Executor too.
 func (d *docEntry) compile(s *Schema, e *Executor, op *ast.OperationDefinition, cond map[string]bool, key planKey, store bool) (*plan, bool, []*Error) {
-	m := limitedMetrics(s, d.doc, op, cond, e.maxComplexity, e.maxDepth)
+	m := limitedMetrics(s, d.doc, op, cond, e.maxComplexity, e.maxDepth, e.maxPlanFields)
 	if err := e.rejectByMetrics(m); err != nil {
 		if store {
 			if d.refused == nil {
@@ -1127,9 +1127,163 @@ type planCache struct {
 type cacheItem struct {
 	hash  uint64
 	entry *docEntry
-	// bytes is what this item is charged against the budget: the query text
-	// for the document, and for each plan kept what the plan retains.
+	// bytes is what this item is charged against the budget: the document's
+	// text and what parsing it built, and for each plan kept what the plan
+	// retains.
 	bytes int64
+}
+
+// What one node of a parsed document costs to hold: the node, the lexer
+// token its Position points into -- gqlparser takes the address of a token's
+// position, which keeps the whole token -- and the node's slot in the list
+// it sits in, with the room append left behind it. Names are substrings of
+// the query text and cost nothing more.
+const (
+	astPositionBytes = 64
+	// A selection sits in a slice of interfaces, every other node in a slice
+	// of pointers.
+	astSelectionSlotBytes = 24
+	astSlotBytes          = 12
+)
+
+var (
+	astFieldBytes          = allocBytes[ast.Field]() + astPositionBytes + astSelectionSlotBytes
+	astSpreadBytes         = allocBytes[ast.FragmentSpread]() + astPositionBytes + astSelectionSlotBytes
+	astInlineFragmentBytes = allocBytes[ast.InlineFragment]() + astPositionBytes + astSelectionSlotBytes
+	astArgumentBytes       = allocBytes[ast.Argument]() + astPositionBytes + astSlotBytes
+	astValueBytes          = allocBytes[ast.Value]() + astPositionBytes
+	astChildValueBytes     = allocBytes[ast.ChildValue]() + astSlotBytes
+	astDirectiveBytes      = allocBytes[ast.Directive]() + astPositionBytes + astSlotBytes
+	astVariableBytes       = allocBytes[ast.VariableDefinition]() + astPositionBytes + astSlotBytes
+	astTypeBytes           = allocBytes[ast.Type]() + astPositionBytes
+	astOperationBytes      = allocBytes[ast.OperationDefinition]() + astPositionBytes + astSlotBytes
+	astFragmentBytes       = allocBytes[ast.FragmentDefinition]() + astPositionBytes + astSlotBytes
+	astCommentBytes        = allocBytes[ast.Comment]() + astPositionBytes + astSlotBytes
+	astCommentGroupBytes   = allocBytes[ast.CommentGroup]()
+
+	// documentBaseBytes is what a cached document holds whatever it says: the
+	// document node and its source, the entry and its place in the cache.
+	documentBaseBytes = allocBytes[ast.QueryDocument]() + allocBytes[ast.Source]() + astPositionBytes +
+		allocBytes[docEntry]() + allocBytes[cacheItem]() + allocBytes[list.Element]()
+)
+
+// allocBytes is the size of a T as the allocator rounds it.
+func allocBytes[T any]() int64 {
+	return (int64(reflect.TypeFor[T]().Size()) + 15) &^ 15
+}
+
+// documentBytes estimates what entry retains before any plan is compiled for
+// it: its query text and the document parsed from it. The parsed document is
+// the larger by far -- some 230 bytes for a field written in ten -- and it is
+// kept for as long as the text is, so a budget that counted the text alone
+// held 265 MB of documents under a limit of 16 MiB. It is a walk of the
+// document, made once when the document is cached.
+func documentBytes(entry *docEntry) int64 {
+	n := int64(len(entry.query))
+	if entry.doc == nil {
+		return n
+	}
+	m := astMeasure{bytes: documentBaseBytes}
+	m.comment(entry.doc.Comment)
+	for _, op := range entry.doc.Operations {
+		m.bytes += astOperationBytes
+		m.comment(op.Comment)
+		m.variables(op.VariableDefinitions)
+		m.directives(op.Directives)
+		m.selections(op.SelectionSet)
+	}
+	for _, f := range entry.doc.Fragments {
+		m.bytes += astFragmentBytes
+		m.comment(f.Comment)
+		m.variables(f.VariableDefinition)
+		m.directives(f.Directives)
+		m.selections(f.SelectionSet)
+	}
+	return n + m.bytes
+}
+
+type astMeasure struct{ bytes int64 }
+
+func (m *astMeasure) selections(set ast.SelectionSet) {
+	for _, sel := range set {
+		switch sel := sel.(type) {
+		case *ast.Field:
+			m.bytes += astFieldBytes
+			m.comment(sel.Comment)
+			m.arguments(sel.Arguments)
+			m.directives(sel.Directives)
+			m.selections(sel.SelectionSet)
+		case *ast.FragmentSpread:
+			m.bytes += astSpreadBytes
+			m.comment(sel.Comment)
+			m.directives(sel.Directives)
+		case *ast.InlineFragment:
+			m.bytes += astInlineFragmentBytes
+			m.comment(sel.Comment)
+			m.directives(sel.Directives)
+			m.selections(sel.SelectionSet)
+		}
+	}
+}
+
+func (m *astMeasure) variables(defs ast.VariableDefinitionList) {
+	for _, v := range defs {
+		m.bytes += astVariableBytes
+		m.comment(v.Comment)
+		for t := v.Type; t != nil; t = t.Elem {
+			m.bytes += astTypeBytes
+		}
+		m.value(v.DefaultValue)
+		m.directives(v.Directives)
+	}
+}
+
+func (m *astMeasure) directives(ds ast.DirectiveList) {
+	for _, d := range ds {
+		m.bytes += astDirectiveBytes
+		m.arguments(d.Arguments)
+	}
+}
+
+func (m *astMeasure) arguments(args ast.ArgumentList) {
+	for _, a := range args {
+		m.bytes += astArgumentBytes
+		m.comment(a.Comment)
+		m.value(a.Value)
+	}
+}
+
+func (m *astMeasure) value(v *ast.Value) {
+	if v == nil {
+		return
+	}
+	m.bytes += astValueBytes
+	m.comment(v.Comment)
+	// A string the lexer had to unescape, and every block string, is a copy
+	// rather than a piece of the query text.
+	if v.Kind == ast.StringValue || v.Kind == ast.BlockValue {
+		m.bytes += int64(len(v.Raw))
+	}
+	for _, c := range v.Children {
+		m.bytes += astChildValueBytes
+		// An input object's field has a position of its own and a list's
+		// element only its value's.
+		if c.Position != nil {
+			m.bytes += astPositionBytes
+		}
+		m.comment(c.Comment)
+		m.value(c.Value)
+	}
+}
+
+// comment counts the comments the parser attached to a node. They are tokens
+// to the token limit and nodes here, each larger than the two bytes it can be
+// written in.
+func (m *astMeasure) comment(g *ast.CommentGroup) {
+	if g == nil {
+		return
+	}
+	m.bytes += astCommentGroupBytes + astCommentBytes*int64(len(g.List))
 }
 
 func newPlanCache(size int, maxBytes int64) *planCache {
@@ -1169,9 +1323,9 @@ func (c *planCache) put(entry *docEntry) {
 	if c == nil || c.size <= 0 {
 		return
 	}
-	n := int64(len(entry.query))
-	// A query larger than the whole budget can never fit, and evicting to make
-	// room for it would only discard documents that do.
+	n := documentBytes(entry)
+	// A document larger than the whole budget can never fit, and evicting to
+	// make room for it would only discard documents that do.
 	if c.maxBytes > 0 && n > c.maxBytes {
 		return
 	}
@@ -1198,10 +1352,10 @@ func (c *planCache) put(entry *docEntry) {
 }
 
 // charge accounts for a plan of n bytes kept by entry and reports whether it
-// may be kept. The document itself is counted as its query text, which is
-// what there is to count before it is parsed, and is a small part of what
-// the document goes on to hold: a plan's size depends on the schema as much
-// as on the text, so it is counted when it exists, as what it is. Other
+// may be kept. put counted the document as its text and what parsing it
+// built, which is all there was to count then: a plan's size depends on the
+// schema as much as on the text, so it is counted when it exists, as what it
+// is. Other
 // documents are evicted to make room, least recently used first; the plan is
 // refused only when this document's own charge would pass the whole budget,
 // and then it is compiled for each request that needs it.
