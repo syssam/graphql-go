@@ -17,7 +17,7 @@ missing is what only time, releases and users produce:
 | No release | graphql-go has no tag; consumers pin commits. velox is v0.3.0, pre-1.0, with breaking changes allowed without a deprecation cycle. | Tag graphql-go; ship velox v1.0 with the COMPATIBILITY.md guarantees in force. |
 | No production hours | `docs/operations.md`: "This engine has not served a real request outside a benchmark." | Run one non-critical internal service behind the company's existing gateway, shadowing a known-good one, and compare. |
 | One maintainer | Both repositories. | A second owner for each, and a security contact that is not the author. |
-| No external security review | Authorization, input coercion, validation and the transports are reviewed and fuzzed in-repo only; an in-repo adversarial pass found the three issues below. | An independent review of `authz*`, `coerce.go` and `transport/`. |
+| No external security review | Authorization, input coercion, validation and the transports are reviewed and fuzzed in-repo only; an in-repo adversarial pass found the three issues below. | An independent review of `authz*`, `coerce.go` and `transport/`; [`external-review.md`](external-review.md) is its scope, with what the in-repo passes already found. |
 
 A large company adopts a dependency like this by vendoring it, running it
 behind its own gateway, and owning a fork until upstream has the track record.

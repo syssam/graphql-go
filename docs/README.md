@@ -27,6 +27,7 @@ the single best page to read before writing any binding.
 | [`benchmarks.md`](benchmarks.md) | The comparison with gqlgen, including per-transport costs and what was retracted. |
 | [`performance.md`](performance.md) | Latency percentiles, subscriptions at scale, schema build cost, and a "what is not measured" section that is the point of the document. |
 | [`api-stability.md`](api-stability.md) | What is covered by the compatibility promise, and why a gqlparser v3 forces a major version here. |
+| [`external-review.md`](external-review.md) | The scope to hand an outside security reviewer: where to look, what in-repo review already found, what nobody has examined. |
 
 ## Run it
 
