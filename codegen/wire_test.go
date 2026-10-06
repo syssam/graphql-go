@@ -3,9 +3,11 @@ package codegen
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -885,6 +887,88 @@ func TestWireReadsAnExistingConstructorExactly(t *testing.T) {
 	}
 }
 
+// A group's methods may need nothing from the dependencies, or several of its
+// fields. One field per group, or the whole value, left the first a compile
+// error and gave the second every service the struct holds, so a change to
+// any of them rebuilt the group. A constructor's parameters say what it
+// needs, by name.
+func TestWireGivesEachParameterTheFieldItIsNamedAfter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping go vet subprocess")
+	}
+	both := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
+	handler := func(imports, params string) string {
+		return "package user\n\n" + imports + "\n// Handler is hand-written.\ntype Handler struct{}\n\n// NewHandler is hand-written.\nfunc NewHandler(" + params + ") *Handler { return &Handler{} }\n"
+	}
+	services := "import (\n\t\"hello/internal/svc/post\"\n\tusersvc \"hello/internal/svc/user\"\n)\n"
+	for name, c := range map[string]struct{ file, want string }{
+		"nothing": {handler("", ""), "user.Bindings(user.NewHandler())"},
+		"several fields, in the constructor's order": {
+			handler(services, "post post.Service, user *usersvc.Service"), "user.Bindings(user.NewHandler(d.Post, d.User))",
+		},
+		"the whole value beside a field": {
+			handler("import (\n\t\"hello/internal/deps\"\n\t\"hello/internal/svc/post\"\n)\n", "all deps.Deps, post post.Service"),
+			"user.Bindings(user.NewHandler(d, d.Post))",
+		},
+		// The author named the one service the group calls, and it is not
+		// the group's own.
+		"one parameter named after another group's field": {
+			handler(services[:len("import (\n\t\"hello/internal/svc/post\"\n")]+")\n", "post post.Service"), "user.Bindings(user.NewHandler(d.Post))",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir, generate := wireFieldModule(t, both, wireFieldDeps)
+			writeFiles(t, dir, map[string]string{"graph/user/handler.go": c.file})
+			if err := generate(); err != nil {
+				t.Fatal(err)
+			}
+			wire := readFile(t, filepath.Join(dir, "graph", "wire.go"))
+			for _, want := range []string{c.want, "post.Bindings(post.NewHandler(d.Post))"} {
+				if !strings.Contains(norm(wire), norm(want)) {
+					t.Errorf("wire.go lacks %q\n%s", want, wire)
+				}
+			}
+			goBuild(t, dir)
+		})
+	}
+}
+
+// A parameter Wire cannot match to one field is refused when wire.go is
+// generated, naming the parameter, rather than written into a file that does
+// not compile and may not be edited.
+func TestWireRefusesAParameterItCannotMatch(t *testing.T) {
+	both := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
+	handler := func(params string) string {
+		return "package user\n\nimport (\n\t\"hello/internal/svc/post\"\n\tusersvc \"hello/internal/svc/user\"\n)\n\n// Handler is hand-written.\ntype Handler struct{}\n\n// NewHandler is hand-written.\nfunc NewHandler(" + params + ") *Handler { return &Handler{} }\n"
+	}
+	for name, c := range map[string]struct{ deps, params, want string }{
+		"a name no field has":  {wireFieldDeps, "post post.Service, author *usersvc.Service", "parameter author of NewHandler names no field of Deps"},
+		"no name":              {wireFieldDeps, "post.Service, *usersvc.Service", "parameter 1 of NewHandler has no name"},
+		"a blank name":         {wireFieldDeps, "_ post.Service, user *usersvc.Service", "parameter 1 of NewHandler has no name"},
+		"a variadic parameter": {wireFieldDeps, "post post.Service, user ...*usersvc.Service", "parameter user of NewHandler is variadic"},
+		"two fields one name": {
+			"package deps\n\nimport \"hello/internal/svc/post\"\n\n// Deps is the dependencies.\ntype Deps struct {\n\tPost      post.Service\n\tUserPost  post.Service\n\tUser_Post post.Service\n}\n",
+			"post post.Service, userPost post.Service", "parameter userPost of NewHandler could be either of two fields",
+		},
+		"a field promoted from what the struct embeds": {
+			"package deps\n\nimport \"hello/internal/svc/post\"\n\n// More is embedded.\ntype More struct{ User int }\n\n// Deps is the dependencies.\ntype Deps struct {\n\tMore\n\tPost post.Service\n}\n",
+			"post post.Service, user *usersvc.Service", "fields promoted from what it embeds are not read",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir, generate := wireFieldModule(t, both, c.deps)
+			writeFiles(t, dir, map[string]string{"graph/user/handler.go": handler(c.params)})
+			err := generate()
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("err = %v, want one mentioning %q", err, c.want)
+			}
+			if !strings.Contains(err.Error(), "graph/user.Handler") {
+				t.Errorf("the error does not name the target: %v", err)
+			}
+		})
+	}
+}
+
 // What Wire cannot make compile is refused when it is generated.
 func TestWireRefusesWhatWouldNotCompile(t *testing.T) {
 	both := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
@@ -1738,5 +1822,152 @@ func TestWirePassOffersNoBlankField(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "it has Open, store") {
 		t.Fatalf("err = %v, want the two fields that can be named and not the blank one", err)
+	}
+}
+
+// A constructor gqlc scaffolds is one that exists from the next run on, and
+// is read like any other. Its parameter is called dep, so with a field of
+// that name in the dependencies the rule that a parameter's name says which
+// field took every scaffolded constructor for one asking for Dep: the first
+// run wired d.User and the second d.Dep, from the same input, and where the
+// two fields have one type the result compiled.
+func TestWireReadsAConstructorItScaffoldedAsItWroteIt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping go vet subprocess")
+	}
+	const deps = `// Package deps is what every resolver is built from.
+package deps
+
+import (
+	"hello/internal/svc/post"
+	usersvc "hello/internal/svc/user"
+)
+
+// Deps is the application's shared dependencies.
+type Deps struct {
+	Dep   *usersvc.Service
+	User  *usersvc.Service
+	Other *usersvc.Service
+	Post  post.Service
+}
+`
+	scaffold := map[string]string{"user": "graph/user.Handler", "post": "internal/resolver.Posts"}
+	dir, generate := wireFieldModule(t, scaffold, deps)
+	if err := generate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := Generate(context.Background(), Config{
+		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph",
+		Scaffold: scaffold, Wire: Wire{Deps: "hello/internal/deps.Deps"}, Check: true,
+	}); err != nil {
+		t.Errorf("a check straight after the generate that scaffolded the constructors: %v", err)
+	}
+	first := snapshot(t, dir)
+	if err := generate(); err != nil {
+		t.Fatal(err)
+	}
+	second := snapshot(t, dir)
+	for _, rel := range slices.Sorted(maps.Keys(second)) {
+		if first[rel] != second[rel] {
+			t.Errorf("%s changed on a second generate from the same input:\n%s", rel, second[rel])
+		}
+	}
+	wire := norm(second["graph/wire.go"])
+	for _, want := range []string{"user.Bindings(user.NewHandler(d.User))", "post.Bindings(resolver.NewPosts(d.Post))"} {
+		if !strings.Contains(wire, norm(want)) {
+			t.Errorf("wire.go lacks %q\n%s", want, second["graph/wire.go"])
+		}
+	}
+	// A constructor someone wrote still says which field by its parameter's
+	// name; only the scaffold's own name is set aside.
+	writeFiles(t, dir, map[string]string{
+		"graph/user/user.resolvers.go": strings.Replace(second["graph/user/user.resolvers.go"],
+			"func NewHandler(dep *usersvc.Service) *Handler { return &Handler{dep: dep} }",
+			"func NewHandler(other *usersvc.Service) *Handler { return &Handler{dep: other} }", 1),
+	})
+	if err := generate(); err != nil {
+		t.Fatal(err)
+	}
+	if wire := readFile(t, filepath.Join(dir, "graph", "wire.go")); !strings.Contains(norm(wire), "user.Bindings(user.NewHandler(d.Other))") {
+		t.Errorf("a hand-written parameter named after the Other field was not given it:\n%s", wire)
+	}
+	goBuild(t, dir)
+}
+
+// A package's name is read from its files, and this run writes files. Wire
+// reads every import beside a constructor before the output exists, when a
+// group package that is not there yet can only be guessed at -- and graph/v2
+// is guessed to be graph, as a module's major version would be. By the time
+// stubs are appended the package is on disk and says v2, which is the name the
+// author's file knows it under: an answer kept from the first ask wrote stubs
+// against a package called graph.
+func TestScaffoldReadsAPackageNameAgainOnceItIsWritten(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping go vet subprocess")
+	}
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{
+		"schema/user.graphql":   "type User { id: ID! }\ntype Query { user(id: ID!): User }\n",
+		"schema/v2.graphql":     "type Widget { id: ID! }\nextend type Query { widget(id: ID!): Widget }\n",
+		"internal/deps/deps.go": "// Package deps is what every resolver is built from.\npackage deps\n\n// Deps is the application's shared dependencies.\ntype Deps struct{}\n",
+		"impl/v2.resolvers.go": `// Package impl implements the resolvers.
+package impl
+
+import (
+	"hello/graph/v2"
+	"hello/internal/deps"
+)
+
+// Widgets implements the v2 group's Resolver.
+type Widgets struct{}
+
+var _ v2.Resolver = (*Widgets)(nil)
+
+// NewWidgets builds it.
+func NewWidgets(deps.Deps) *Widgets { return &Widgets{} }
+`,
+	})
+	writeTempModule(t, dir)
+	if err := Generate(context.Background(), Config{
+		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph",
+		Scaffold: map[string]string{"user": "impl.Users", "v2": "impl.Widgets"},
+		Wire:     Wire{Deps: "hello/internal/deps.Deps"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stubs := readFile(t, filepath.Join(dir, "impl", "v2.resolvers.go"))
+	if !strings.Contains(stubs, "args v2.WidgetArgs") {
+		t.Errorf("the stub does not name the group's package as the file imports it:\n%s", stubs)
+	}
+	goBuild(t, dir)
+}
+
+// An import with no name is known by its package clause, which is every file
+// of that package listed and read, and Wire asks for every such import of
+// every file beside a constructor: with a Handler per group, one service
+// package was read once for each of them. Counted, not timed.
+func TestWireReadsAPackagesNameOnce(t *testing.T) {
+	scaffold := map[string]string{"user": "impl.Users", "post": "impl.Posts"}
+	dir, _ := wireModule(t, scaffold)
+	ctor := func(typ string) string {
+		return "package impl\n\nimport \"hello/internal/deps\"\n\ntype " + typ + " struct{}\n\nfunc New" + typ + "(d deps.Deps) *" + typ + " { return &" + typ + "{} }\n"
+	}
+	writeFiles(t, dir, map[string]string{"impl/users.go": ctor("Users"), "impl/posts.go": ctor("Posts")})
+	b, err := newBuilder(dir, Config{
+		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph",
+		Scaffold: scaffold, Wire: Wire{Deps: "hello/internal/deps.Deps"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := b.emit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wire := norm(string(out["wire.go"])); !strings.Contains(wire, "impl.NewUsers(d)") || !strings.Contains(wire, "impl.NewPosts(d)") {
+		t.Fatalf("neither constructor was read as taking the dependencies:\n%s", out["wire.go"])
+	}
+	if b.pkgNameReads != 1 {
+		t.Errorf("the dependencies package was read %d times for the two files that import it, want once", b.pkgNameReads)
 	}
 }

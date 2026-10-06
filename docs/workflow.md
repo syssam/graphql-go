@@ -11,10 +11,10 @@ generate from it, implement the interface it gives you, wire it to a transport.
 | `grpc.NewServer()`, `RegisterXxxServer` | `graph.NewSchema(r)`, `gqlhttp.New(exec)` |
 | re-run `protoc` after editing the proto | re-run `go generate` after editing the SDL |
 
-One difference worth knowing before you start: **`gqlc` never loads Go
-packages.** It reads SDL and writes Go, and that is all. (`AutoBind`, below,
-is the one thing that loads anything, it loads export data rather than a
-module, and it is not reachable from the CLI at all.) A 200-entity schema
+One difference worth knowing before you start: **`gqlc` loads no Go packages
+unless you ask it to.** It reads SDL and writes Go, and that is all.
+(`autoBind`, below, is the one key that loads anything, and it loads export
+data for the packages it names rather than a module.) A 200-entity schema
 generates in under a second using 44 MB; gqlgen needs 31 s and 4.6 GB for the
 same schema because it type-checks its own output. The cost of that choice is
 that `gqlc` cannot guess at your Go types — you tell it, in `models:`, or you
@@ -65,7 +65,7 @@ configuration.
 
 ```yaml
 schema:
-  - schema.graphql          # globs are allowed: schema/**/*.graphql
+  - schema.graphql          # globs are allowed: schema/**/*.graphql, at any depth
 output: graph               # directory to write into
 package: example.com/app/graph
 nullableInputOmittable: true
@@ -98,7 +98,14 @@ Four things appear, all marked `DO NOT EDIT`:
 | `graph/schema/*.graphql` | a copy of your SDL for the `//go:embed` |
 
 Edit `schema.graphql` at the project root, never the copy under `graph/schema/`
-— the next `go generate` overwrites it.
+— the next `go generate` overwrites it. A source may have any extension --
+gqlgen's `schema.graphqls` is copied as `schema.graphql` -- and `**` in a glob
+is any number of directories, skipping those whose name starts with a dot and
+`graph/schema/` itself. A glob that matches nothing is an error. `graph/schema/`
+is gqlc's own: `schema.go` lists the copies it wrote, a listed copy whose
+source is gone is deleted, and an SDL file there that is not on the list fails
+the generate by name, since gqlc will neither delete a file it did not write
+nor leave one embedded that no source accounts for.
 
 ## 3. Implement the Resolver
 
@@ -146,10 +153,12 @@ mux.Handle("/graphql", gqlmux.New(exec, gqlmux.WithDrain(d)))
 Once the schema has several groups, each registers its own bindings over its
 own Resolver, and `wire: { deps: ... }` in `gqlc.yaml` has gqlc write the list:
 `graph.NewSchema(graph.Wire(deps)...)`. A group left out is then a compile
-error rather than something a container reports at start-up. Each group is
-given the field of `deps` named after it, which keeps its package from
-importing every other group's dependencies, and `wire: { pass: ... }` says
-otherwise where that is not what a constructor takes; see
+error rather than something a container reports at start-up. Each group's
+constructor is given the fields of `deps` its parameters are named after --
+none, one or several -- or else the field named after the group, which keeps
+its package from importing every other group's dependencies, and
+`wire: { pass: ... }` says otherwise where that is not what a constructor
+takes; see
 [`cmd/gqlc/README.md`](../cmd/gqlc/README.md).
 
 **Read [`operations.md`](operations.md) before this reaches anything
@@ -213,18 +222,17 @@ readable in one file.
 
 ## Two richer binding modes, and where they are not
 
-`gqlc.yaml` takes seven keys: `schema`, `output`, `package`,
-`nullableInputOmittable`, `zeroForNullInputs`, `models` and the two directive
-blocks (`modelDirective`, `fieldDirective`). The two modes below are **not** YAML
-keys and cannot be reached from the CLI at all. They are fields on
-`codegen.Config`, for a program that calls `codegen.Generate` itself -- which
-is what an ORM or an in-house generator does, and the reason they exist.
+`gqlc -h` lists every `gqlc.yaml` key in a line, and
+[`cmd/gqlc/README.md`](../cmd/gqlc/README.md) describes each. Of the two modes
+below, the second is one of those keys, `autoBind`, and the first is a field
+on `codegen.Config` only, for a program that calls `codegen.Generate` itself --
+which is what an ORM or an in-house generator does, and the reason it exists.
 
 - **`Config.Manifest`** binds types and fields outright instead of inferring
   them. It still loads no Go type information, so a method binding declares its
   own shape. A type in the manifest gets no inference at all: an unlisted field
-  is a resolver.
-- **`Config.AutoBind`** discovers the same bindings from named packages,
+  is a resolver. It is not a YAML key and cannot be reached from the CLI.
+- **`autoBind`** (`Config.AutoBind`) discovers the same bindings from named packages,
   loading only their export data rather than a whole module. Matching is json
   tag, then case-insensitive name, then a method whose shape the generator can
   call; anything else falls through to `Resolver`, because a resolver method can

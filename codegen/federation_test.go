@@ -55,3 +55,38 @@ func TestFederationGeneratesASubgraph(t *testing.T) {
 		t.Fatalf("ValidateSchema on the generated subgraph: %v\n%s", err, out)
 	}
 }
+
+// Federation 2 lets a subgraph write a directive bare, under its link's
+// namespace, or under a name its import gives it, and fed.Subgraph reads all
+// three. gqlc loaded the SDL with the bare declarations alone and looked for
+// a bare @key, so a schema the runtime serves did not generate, and a renamed
+// key was an entity to one and not the other. A key another subgraph resolves
+// is no entity here to either.
+func TestFederationReadsEverySpellingTheRuntimeDoes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping go test subprocess")
+	}
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{
+		"schema/schema.graphql": "extend schema @link(url: \"https://specs.apollo.dev/federation/v2.3\", import: [{name: \"@key\", as: \"@entity\"}, \"@shareable\"])\ntype Query { ping: Boolean }\n",
+		"schema/user.graphql":   "type User @entity(fields: \"id\") { id: ID! name: String! }\nextend type Query { me: User }\n",
+		"schema/post.graphql":   "type Post @federation__key(fields: \"id\") @shareable { id: ID! title: String! }\nextend type Query { post(id: ID!): Post }\n",
+		"schema/ref.graphql":    "type Ref @federation__key(fields: \"id\", resolvable: false) { id: ID! }\nextend type Query { ref: Ref }\n",
+	})
+	if err := Generate(context.Background(), Config{
+		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"},
+		Output: "graph", Package: "hello/graph", Federation: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	src := readFile(t, filepath.Join(dir, "graph", "schema.go"))
+	for _, want := range []string{`fed.Resolver("Post", none)`, `fed.Resolver("User", none)`} {
+		if !strings.Contains(src, want) {
+			t.Errorf("schema.go lacks %q:\n%s", want, src)
+		}
+	}
+	if strings.Contains(src, `fed.Resolver("Ref"`) {
+		t.Errorf("Ref's key is resolved elsewhere, and schema.go gives it a resolver:\n%s", src)
+	}
+	validateGenerated(t, dir, "hello/graph")
+}

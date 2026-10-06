@@ -113,9 +113,95 @@ func TestInputListPointersOnNullableElementsWithOmittable(t *testing.T) {
 	if strings.Contains(models, "*graphql.Omittable") || strings.Contains(models, "[]graphql.Omittable") {
 		t.Errorf("list elements must not be Omittable:\n%s", models)
 	}
-	if !strings.Contains(models, "Sparse graphql.Omittable[*[]*Line]") && !strings.Contains(models, "Sparse []*Line") {
-		t.Errorf("Sparse should be a list of *Line:\n%s", models)
+	if !strings.Contains(models, "Sparse graphql.Omittable[[]*Line]") {
+		t.Errorf("Sparse should be an Omittable list of *Line:\n%s", models)
 	}
+}
+
+const sparseListSDL = `
+input Author { name: String }
+input Filter { tags: [String] ids: [ID!] authors: [Author] grid: [[Int]] must: [String!]! title: String }
+type Query { posts(filter: Filter, tags: [String]): [String!]! }
+`
+
+// Omittable says whether a field was sent, and an element of a list is always
+// sent: the engine binds E or *E there and nothing else. Wrapping the element
+// compiled, and NewSchema then refused every input holding a list of nullable
+// elements, which only building the schema shows.
+func TestOmittableIsNeverAListElement(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping go test subprocess")
+	}
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{"schema.graphql": sparseListSDL})
+	// The same either way: a nullable element is already a pointer, which is
+	// all InputListPointers asks of an input object's.
+	// The list itself is a field like any other: left out, sent as null and
+	// sent empty are three requests, and a bare slice has two values for
+	// them. gqlgen wrapped it, and a schema moved from it restored 699 such
+	// fields with a regular expression over the generated models.
+	want := []string{
+		"Tags graphql.Omittable[[]*string]", "Ids graphql.Omittable[[]graphql.ID]", "Authors graphql.Omittable[[]*Author]",
+		"Grid graphql.Omittable[[][]*int]", "Must []string", "Title graphql.Omittable[*string]",
+	}
+	for name, pointers := range map[string]bool{"values": false, "pointers": true} {
+		if err := Generate(context.Background(), Config{
+			Dir: dir, SchemaGlobs: []string{"schema.graphql"},
+			Output: name + "/graph", Package: "hello/" + name + "/graph",
+			NullableInputOmittable: true, InputListPointers: pointers,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		models := norm(readFile(t, filepath.Join(dir, name, "graph", "model", "models.go")))
+		if strings.Contains(models, "[]graphql.Omittable") {
+			t.Errorf("%s: a list element is Omittable:\n%s", name, models)
+		}
+		for _, w := range want {
+			if !strings.Contains(models, w) {
+				t.Errorf("%s: model missing %q:\n%s", name, w, models)
+			}
+		}
+	}
+	validateGenerated(t, dir, "hello/values/graph", "hello/pointers/graph")
+}
+
+// A scalar mapped to a Go type that is nil by itself is wrapped as it is.
+// Pointed at first, a nullable JSON object was Omittable[*map[string]any]: a
+// pointer to a map, which a caller fills by taking the address of a variable
+// it had no other use for. The same schema restored that shape, too, with a
+// string replacement over the generated models.
+func TestOmittableDoesNotPointAtWhatIsAlreadyNilable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping go vet subprocess")
+	}
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{"schema.graphql": `
+scalar Bag
+scalar Loose
+scalar Blob
+scalar Stamp
+input Filter { bag: Bag loose: Loose blob: Blob stamp: Stamp need: Bag! }
+type Query { posts(filter: Filter): [String!]! }
+`})
+	if err := Generate(context.Background(), Config{
+		Dir: dir, SchemaGlobs: []string{"schema.graphql"}, Output: "graph", Package: "hello/graph",
+		NullableInputOmittable: true,
+		Models:                 map[string]string{"Bag": "map[string]any", "Loose": "any", "Blob": "[]byte", "Stamp": "time.Time"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	models := norm(readFile(t, filepath.Join(dir, "graph", "model", "models.go")))
+	for _, w := range []string{
+		"Bag graphql.Omittable[map[string]any]", "Loose graphql.Omittable[any]", "Blob graphql.Omittable[[]byte]",
+		// Not nil by itself, so still pointed at, and a required one is bare.
+		"Stamp graphql.Omittable[*time.Time]", "Need map[string]any",
+	} {
+		if !strings.Contains(models, w) {
+			t.Errorf("model missing %q:\n%s", w, models)
+		}
+	}
+	writeTempModule(t, dir)
+	goBuild(t, dir)
 }
 
 func TestInputListsAreValuesByDefault(t *testing.T) {

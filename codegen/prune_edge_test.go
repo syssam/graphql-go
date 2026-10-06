@@ -241,12 +241,26 @@ func TestPruneFindsSchemaCopiesWhateverTheCase(t *testing.T) {
 		t.Skip("case-sensitive filesystem: Schema and schema are two directories")
 	}
 	writeUnder(t, dir, "sdl/query.graphql", "type Query { ping: Boolean }\n")
-	writeUnder(t, dir, "graph/Schema/old.graphql", "type Old { id: ID! }\n")
-	if err := Generate(context.Background(), Config{
-		Dir: dir, SchemaGlobs: []string{"sdl/*.graphql"}, Output: "graph", Package: "hello/graph",
-	}); err != nil {
+	writeUnder(t, dir, "sdl/old.graphql", emptySDL)
+	if err := os.MkdirAll(filepath.Join(dir, "graph", "Schema"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	gen := func() {
+		t.Helper()
+		if err := Generate(context.Background(), Config{
+			Dir: dir, SchemaGlobs: []string{"sdl/*.graphql"}, Output: "graph", Package: "hello/graph",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gen()
+	if _, err := os.Stat(filepath.Join(dir, "graph", "Schema", "old.graphql")); err != nil {
+		t.Fatalf("the first run should copy old.graphql into the existing Schema/: %v", err)
+	}
+	if err := os.Remove(filepath.Join(dir, "sdl", "old.graphql")); err != nil {
+		t.Fatal(err)
+	}
+	gen()
 	if _, err := os.Stat(filepath.Join(dir, "graph", "schema", "old.graphql")); !os.IsNotExist(err) {
 		t.Errorf("a stale copy in Schema/ is still embedded (stat err %v)", err)
 	}
@@ -275,11 +289,17 @@ func TestRemoveStaleReturnsWhatItCannotDelete(t *testing.T) {
 func TestPruneFailsOnAnSDLCopyItCannotDelete(t *testing.T) {
 	dir := t.TempDir()
 	writeUnder(t, dir, "sdl/query.graphql", "type Query { ping: Boolean }\n")
+	writeUnder(t, dir, "sdl/legacy.graphql", emptySDL)
 	gen := func() error {
 		return Generate(context.Background(), Config{Dir: dir, SchemaGlobs: []string{"sdl/*.graphql"}, Output: "graph", Package: "hello/graph"})
 	}
 	if err := gen(); err != nil {
 		t.Fatal(err)
+	}
+	for _, rel := range []string{"sdl/legacy.graphql", "graph/schema/legacy.graphql"} {
+		if err := os.Remove(filepath.Join(dir, filepath.FromSlash(rel))); err != nil {
+			t.Fatal(err)
+		}
 	}
 	writeUnder(t, dir, "graph/schema/legacy.graphql/keep.txt", "x")
 	if err := gen(); err == nil || !strings.Contains(err.Error(), "still embedded") {

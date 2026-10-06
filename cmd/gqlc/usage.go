@@ -22,6 +22,7 @@ Usage:
   gqlc [-config gqlc.yaml]             generate from a configuration file
   gqlc -schema FILES -out DIR          generate with no configuration file
   gqlc -check [-config gqlc.yaml]      write nothing; fail naming what is stale
+  gqlc -verify [-config gqlc.yaml]     generate, then go build what was written
   gqlc -version                        print which gqlc this is
 
 Flags:

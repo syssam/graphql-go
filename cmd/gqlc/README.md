@@ -1,8 +1,9 @@
 # gqlc
 
-`gqlc` generates `graphql` bindings from SDL. It does not load Go packages:
-models are emitted from the schema, and fields that are not struct data
-become methods on a `Resolver` interface.
+`gqlc` generates `graphql` bindings from SDL. It loads no Go packages unless
+`autoBind` names some, and then only their export data: models are emitted
+from the schema, and fields that are not struct data become methods on a
+`Resolver` interface.
 
 ```yaml
 # gqlc.yaml
@@ -23,12 +24,47 @@ go tool gqlc -config gqlc.yaml        # or go run github.com/syssam/graphql-go/c
 `go.mod` (`go get -tool github.com/syssam/graphql-go/cmd/gqlc`), which pins
 gqlc to the graphql-go version the project builds against.
 
+`schema` takes files and globs. `**` as a path element is any number of
+directories, so `schema/**/*.graphql` is every SDL file under `schema/`; it
+does not descend into a directory whose name starts with a dot, or into the
+output's own `schema/`. A glob that matches nothing is an error. A source may
+have any extension: each is copied into `<output>/schema/` under its own name
+with `.graphql`, which is what the generated package embeds, so gqlgen's
+`user.graphqls` is `user.graphql` there. Two sources whose copies would share
+a name -- compared without letter case, since the filesystem the output lands
+on may compare them so -- are refused with both named.
+
+A `models` entry is a Go type: a predeclared one (`int`, `map[string]any`), or
+`import/path.Type` behind any `*` and `[]`, the type being what follows the
+last dot (`gopkg.in/guregu/null.v4.String`). A map or a generic over another
+package's type cannot be written in one entry; declare a named type for it and
+map that.
+
+A group is a Go package named after its SDL file, so a name Go or the
+generated code already uses gets a `grp` suffix: a keyword, a predeclared type
+or constant, or `append` (`error.graphql` is the `errorgrp` group), `main`, `init`, `model`,
+`internal`, the output package's own name, and the few names the generated
+files declare beside their imports (`r`, `v`, `a`, `ctx`, `sdl`, `opts`,
+`all`, `err`, and with `federation`, `fed`, `src`, `subgraph`, `entities`,
+`none`). `groups.rename` gives such a file a name of your choosing.
+
 | | |
 |---|---|
 | `gqlc -h` | what gqlc does, every flag, and every `gqlc.yaml` key in a line |
 | `gqlc -check` | generate in memory, write nothing, and fail naming each file a generate would create, rewrite or delete |
+| `gqlc -verify` | generate, then `go build` everything under `output` and fail with what the compiler says |
 | `gqlc -version` | the graphql-go version gqlc was built from, and the Go that built it |
 | `gqlc -schema FILES -out DIR` | generate with no `gqlc.yaml`; the package is read from the nearest `go.mod` |
+
+`-verify` is for the generate that exits 0 over code that does not compile: a
+type `models` binds by name is not read unless `autoBind` is set, so a field
+is written from the SDL's name and the struct may spell it another way, and a
+hand-written implementation beside the generated code may no longer fit its
+interface. With `-verify` that generate is the one that fails. It is the only
+time gqlc compiles Go, so it is off unless asked for: with nothing changed it
+costs what the build cache costs -- about four seconds at 560 packages -- and
+it builds everything under `output` on every run, so a failure is not
+reported once and passed the next time. The files are written either way.
 
 `-check` is the step that keeps generated code honest in CI and in a
 pre-commit hook, without running the generator over the tree and asking
@@ -135,6 +171,13 @@ groups:
 rootFields: returnType       # Query.products goes to the group of Product
 ```
 
+With `autoBind` set, an object type that `models` or the model directive binds to a struct in
+any other package is read too -- a service's own result type, say -- so `url` finds a field
+called `URL` by its json tag or by name, a method answers a field, and a field the struct does
+not have becomes a Resolver method rather than a guess that does not compile. A struct that
+holds types gqlc generates builds only after the first generate; that run says it could not be
+read, and the next one reads it.
+
 An ORM that keys rows by `int` should also map `ID: int` under `models`: the engine writes an
 int ID as a string, so ids bind straight to the entities' own `ID` fields and arguments arrive
 as the int the ORM takes, where `graphql.ID` would need a resolver per type and a parse per
@@ -191,7 +234,10 @@ Each missing method becomes a stub with the interface's exact signature and a
 `internal/catalog/product.resolvers.go`; a new file opens with the type, if it
 does not exist yet, and `var _ productgql.Resolver = (*ProductResolver)(nil)`.
 A method that exists is never touched, whichever file declares it, and a run
-with nothing new changes nothing. A method whose field the SDL dropped still
+with nothing new changes nothing. New stubs use the names the file already
+imports their packages under, and take the next free name where the file has
+given theirs to another package; the file is run through gofmt when stubs are
+added. A method whose field the SDL dropped still
 compiles, so gqlc names it instead (`gqlc: scaffold product: ... has methods
 the product Resolver does not: ProductWeight`); only exported methods are
 named, and nothing is deleted. The implementation's package is parsed, not
@@ -212,9 +258,16 @@ scaffold:
 
 A package gqlc no longer writes --
 a group moved by `groupDir`, or one whose models all became bindings -- is
-deleted on the next run, along with any directory that leaves empty; only
-files carrying gqlc's `Code generated` header are ever removed, and never in
-a directory the go command ignores (`testdata`, `vendor`, or a name starting
+deleted on the next run, along with any directory that leaves empty. Only
+files gqlc wrote are ever removed: a Go file is known by its `Code generated`
+header, and a copy in `<output>/schema/`, which has no header, by the list of
+copies the last run left in `schema.go`. An SDL file in that directory that is
+not on the list is not deleted and not left either, since the package embeds
+the directory whole: the generate fails naming it, for you to add to `schema`,
+move or delete. (Output from before `schema.go` carried the list says nothing
+about its copies, so a copy whose source you remove in the same step as
+upgrading gqlc is refused once, and deleting it by hand settles it.) No Go
+file is removed in a directory the go command ignores (`testdata`, `vendor`, or a name starting
 with `.` or `_`), in another module (a directory with its own `go.mod`), or in
 another gqlc run's output nested inside this one. Whether a file is one this
 run wrote is asked of the filesystem: on Windows or macOS a directory whose
@@ -230,6 +283,15 @@ one entity is one package -- what `examples/backoffice` does:
 ```yaml
 scaffold:
   product: graph/product.Handler   # beside graph/product/generated.go
+```
+
+Where every group follows one layout, `"*"` says it once, with `{group}` where
+the group's name goes, and a new SDL file needs no entry:
+
+```yaml
+scaffold:
+  "*": graph/{group}.Handler       # every group with a Resolver
+  report: graph/reporting.Handler  # a group named here keeps its own line
 ```
 
 The stubs there name the group's own types unqualified (`args ProductsArgs`)
@@ -296,9 +358,27 @@ cores):
 A constructor that already exists decides for itself. One that takes `Deps`
 is passed `d` (or `&d`, for `*Deps`), whatever fields `Deps` has: that is how
 a group needing more than its own field asks for everything, and it is why
-adding a field to `Deps` never breaks a constructor you wrote. One that takes
-anything else is passed the field named after its group. `Deps` there means
-the configured type, by its package: a service's own `user.Deps` is not it.
+adding a field to `Deps` never breaks a constructor you wrote. Otherwise its
+parameters are matched to fields of `Deps` by name, case and punctuation
+aside, so a group says what it needs in the one place it is written:
+
+```go
+func NewHandler() *Handler                                       // NewHandler()
+func NewHandler(priceList pricelist.Service) *Handler            // NewHandler(d.PriceList)
+func NewHandler(product product.Service, stock stock.Service) *Handler
+                                                   // NewHandler(d.Product, d.Stock)
+```
+
+A group that needs nothing imports nothing, and one that calls three services
+imports those three. A parameter of type `Deps` is given the whole value,
+beside the others. Of several parameters, one with no name, a name no field
+has, a name two fields fold to, or `...` is refused when `wire.go` is
+generated. A single parameter whose name is no field's is passed the field
+named after its group, and so is one called `dep`: that is what gqlc calls
+the parameter of every constructor it scaffolds, whichever field it takes, so
+it names none -- a field of yours called `Dep` is asked for with `pass`.
+`Deps` there means the configured type, by its package: a service's own
+`user.Deps` is not it.
 
 A group with no field named after it is given the whole value; so is a type
 that implements several groups, which is constructed once and shared. A field

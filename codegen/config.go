@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -20,11 +22,19 @@ import (
 
 // Config drives Generate. A Manifest is not required: SDL types without a
 // Models or Manifest entry get a generated model in Output/model.
+//
+// Experimental: a generator's configuration grows with the generator, and a
+// field's meaning or default may change before v1; see docs/api-stability.md.
 type Config struct {
 	// Dir is the working directory for SchemaGlobs and Output. Empty means
 	// the process working directory.
 	Dir string
-	// SchemaGlobs lists SDL files relative to Dir.
+	// SchemaGlobs lists SDL files relative to Dir, as paths or globs. A path
+	// element of ** is any number of directories, skipping those whose name
+	// starts with a dot and Output's own schema directory; a glob that
+	// matches nothing is an error. A source may have any extension: each is
+	// copied into Output/schema under its own name with .graphql, and two
+	// whose copies would share a name, letter case aside, are refused.
 	SchemaGlobs []string
 	// Output is the directory for generated Go, relative to Dir.
 	Output string
@@ -78,6 +88,15 @@ type Config struct {
 	//
 	//	Scaffold: map[string]string{"product": "internal/catalog.ProductResolver"}
 	//
+	// The key "*" stands for every group with a Resolver that no other key
+	// names, and its value says where the group's name goes with {group}:
+	//
+	//	Scaffold: map[string]string{"*": "graph/{group}.Handler"}
+	//
+	// so a schema that keeps one implementation per group in one layout
+	// lists none of them, and a new SDL file needs no entry. A key that names
+	// a group still wins for that group.
+	//
 	// Missing methods are appended to dir/<group>.resolvers.go, created with the
 	// type and a var _ Resolver assertion if the type does not exist yet. Methods
 	// that exist are never touched, wherever they are declared; the package is
@@ -92,7 +111,10 @@ type Config struct {
 	Scaffold map[string]string
 	// Models maps a GraphQL named type to a Go type expression
 	// (for example Time → time.Time). Unmapped custom scalars become
-	// named string types in the model package.
+	// named string types in the model package. An entry is a predeclared
+	// type, or import/path.Type behind any * and [], the type being what
+	// follows the last dot; a map or generic over another package's type is
+	// refused, and a named type declared for it can be mapped instead.
 	Models map[string]string
 	// ModelDirective names an SDL directive that already carries a type's Go
 	// binding, and the argument holding it. Empty means none.
@@ -233,9 +255,11 @@ type Config struct {
 	// stays argument-free: it supplies a placeholder resolver for every @key
 	// type, since building never calls one.
 	Federation bool
-	// NullableInputOmittable uses graphql.Omittable[*T] for nullable
+	// NullableInputOmittable uses graphql.Omittable for nullable
 	// input-object fields so PATCH-style inputs distinguish absent from
-	// null. Field arguments stay pointers.
+	// null: Omittable[*T] for a value, Omittable[[]T] for a list. Field
+	// arguments stay pointers, and so do the elements of a list, which are
+	// never absent.
 	NullableInputOmittable bool
 	// StructObjectFields makes a field of object, interface or union type that
 	// takes no arguments a struct field, read from the model like a scalar, on
@@ -295,6 +319,23 @@ type Config struct {
 	// Resolver line, a missing implementation wherever it is used. A file
 	// that differs only in line endings is unchanged, here as for a generate.
 	Check bool
+	// Verify builds every package under Output with the go command once the
+	// generate has written it, and fails with what the compiler said.
+	//
+	// A generate can exit 0 over code that does not compile: a type the
+	// config binds by name is not read unless AutoBind is set, so a field is
+	// written from the SDL's name and the struct may spell it another way,
+	// and a hand-written implementation in the same package may no longer fit
+	// the interface. Each is the compiler's to report, at the next build;
+	// with Verify the generate that caused it is the one that fails.
+	//
+	// It is the one place gqlc compiles Go, which is why it is off by
+	// default: an unchanged tree costs what the build cache costs, a few
+	// seconds at several hundred packages, and a first generate costs a full
+	// build. Everything under Output is built on every run, changed or not,
+	// so a failure is not reported once and passed the next time. The files
+	// are written either way. Check ignores it, having written nothing.
+	Verify bool
 	// InputListPointers spells a list of input objects []*T instead of []T, as
 	// gqlgen did. Callers written against that shape test elements for nil and
 	// dereference them; a value slice breaks every one. Scalar and enum lists are
@@ -348,6 +389,16 @@ func Generate(ctx context.Context, cfg Config) error {
 	if err := b.checkInline(); err != nil {
 		return err
 	}
+	if err := b.expandScaffold(b.uniqueGroups()); err != nil {
+		return err
+	}
+	// What the last generate left for this one. Read for what it says and
+	// nothing else: whether the file is gqlc's to replace is asked below, of
+	// every file.
+	var recorded []string
+	if last, err := os.ReadFile(filepath.Join(outDir, "schema.go")); err == nil {
+		recorded, b.scalarsNamedBefore = recordedIn(last)
+	}
 	files, err := b.emit()
 	if err != nil {
 		return err
@@ -366,16 +417,23 @@ func Generate(ctx context.Context, cfg Config) error {
 	boundedEach(len(rels), func(i int) {
 		olds[i], errs[i] = readExisting(filepath.Join(outDir, rels[i]))
 	})
-	if err := errors.Join(append(errs, authoredSchemaFiles(outDir, b.sourceNames(), files))...); err != nil {
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+	if err := foreignSchemaFiles(outDir, files, recorded); err != nil {
+		return err
+	}
+	// And what scaffolding would refuse, which came last, after the writes:
+	// a misspelt scaffold key left a tree half this run's, and a check, which
+	// stops here, called it current.
+	if err := b.checkScaffold(b.uniqueGroups()); err != nil {
+		return err
+	}
+	if err := b.checkScaffoldTargets(outDir, files); err != nil {
 		return err
 	}
 	if cfg.Check {
-		// What scaffolding would refuse, too: a check that returned before
-		// it called a broken scaffold configuration current.
-		if err := b.checkScaffold(b.uniqueGroups()); err != nil {
-			return err
-		}
-		return b.check(outDir, rels, olds, files)
+		return b.check(outDir, rels, olds, files, recorded)
 	}
 	boundedEach(len(rels), func(i int) {
 		errs[i] = writeGo(filepath.Join(outDir, rels[i]), olds[i], files[rels[i]])
@@ -383,10 +441,42 @@ func Generate(ctx context.Context, cfg Config) error {
 	if err := errors.Join(errs...); err != nil {
 		return err
 	}
-	if err := pruneGenerated(outDir, files, b.notef); err != nil {
+	if err := pruneGenerated(outDir, files, recorded, b.notef); err != nil {
 		return err
 	}
-	return b.scaffold(b.uniqueGroups())
+	if err := b.scaffold(b.uniqueGroups()); err != nil {
+		return err
+	}
+	if cfg.Verify {
+		return verifyBuild(ctx, dir, outDir)
+	}
+	return nil
+}
+
+// verifyBuild is Config.Verify: go build over every package under outDir,
+// from dir, which is where the module is.
+func verifyBuild(ctx context.Context, dir, outDir string) error {
+	rel, err := filepath.Rel(dir, outDir)
+	if err != nil {
+		return fmt.Errorf("codegen: verify: %w", err)
+	}
+	cmd := exec.CommandContext(ctx, "go", "build", "./"+filepath.ToSlash(rel)+"/...")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	if _, ran := errors.AsType[*exec.ExitError](err); !ran {
+		return fmt.Errorf("codegen: verify: go build: %w", err)
+	}
+	// The first errors are the ones to read; a missing method is reported
+	// again at every place the type is used.
+	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	const shown = 20
+	if len(lines) > shown {
+		lines = append(lines[:shown], fmt.Sprintf("... and %d more lines", len(lines)-shown))
+	}
+	return fmt.Errorf("codegen: verify: the output is written and does not build:\n%s", strings.Join(lines, "\n"))
 }
 
 // checkGoConfig refuses the two settings that are written into generated code
@@ -403,17 +493,12 @@ func checkGoConfig(cfg Config) error {
 	}
 	var errs []error
 	for _, gql := range slices.Sorted(maps.Keys(cfg.Models)) {
-		expr := cfg.Models[gql]
-		path, ref := splitModelExpr(expr)
-		if _, err := parser.ParseExpr(ref); err != nil || strings.ContainsAny(path, " \t\"`") {
-			errs = append(errs, fmt.Errorf("codegen: Models[%q] = %q is not a Go type, written as import/path.Type", gql, expr))
+		if expr := cfg.Models[gql]; !modelExprOK(expr) {
+			errs = append(errs, fmt.Errorf("codegen: Models[%q] = %q is not a Go type, written as import/path.Type; a type built over another package's, such as a map or a generic, needs a named type of its own to map", gql, expr))
 		}
 	}
 	if !cfg.Wire.IsZero() {
-		path, ref := splitModelExpr(cfg.Wire.Deps)
-		expr, err := parser.ParseExpr(ref)
-		_, selector := expr.(*goast.SelectorExpr)
-		if err != nil || !selector || path == "" || strings.ContainsAny(path, " \t\"`") {
+		if path, _ := splitModelExpr(cfg.Wire.Deps); path == "" || strings.TrimLeft(cfg.Wire.Deps, "*[]") != cfg.Wire.Deps || !modelExprOK(cfg.Wire.Deps) {
 			errs = append(errs, fmt.Errorf("codegen: Wire.Deps = %q is not a Go type written as import/path.Type", cfg.Wire.Deps))
 		}
 	} else if len(cfg.Wire.Pass) > 0 {
@@ -476,9 +561,13 @@ func (d FieldDirective) IsZero() bool { return d.Name == "" || d.ForceResolverAr
 type Wire struct {
 	// Deps is the Go type Wire takes, written as import/path.Type: the
 	// application's shared dependencies -- a database client, configuration,
-	// services. A constructor is given the field named after its group, or
-	// the whole value where there is none. Its package must not import the
-	// generated one, which imports it.
+	// services. A constructor that exists is given what its parameters are
+	// named after: none is called with nothing, and each parameter is given
+	// the field it is named after, or the whole value for one of this type.
+	// A single parameter named after no field, and a constructor gqlc
+	// scaffolds, are given the field named after the group, or the whole
+	// value where there is none. Its package must not import the generated
+	// one, which imports it.
 	Deps string
 	// Pass says outright what a group's constructor is given, by scaffold
 	// key, as the expression wire.go writes: "d" for the whole value, "&d"
@@ -707,19 +796,24 @@ const generatedHeader = generatedMarker + "\n"
 
 const generatedMarker = "// Code generated by gqlc. DO NOT EDIT."
 
+const byteOrderMark = "\ufeff"
+
 // pruneGenerated deletes what gqlc owns under outDir and this run did not
 // write, then any directory that deleting it left empty. It owns two kinds of
 // file. Go files carrying generatedHeader: a group whose types all moved to
 // Go bindings of their own stopped getting a models.go, and the old one
 // stayed, compiling, so nothing said it was dead. And the SDL copies in
 // outDir/schema, which the root package embeds by glob: a copy whose source
-// was deleted or renamed stayed embedded and its types kept answering.
+// was deleted or renamed stayed embedded and its types kept answering. A copy
+// carries no header, so which files there are gqlc's is what the last run's
+// schema.go lists, given here as recorded.
 //
 // Files without the header -- hand-written ones, scaffolded resolvers,
-// another generator's output -- are never touched. Neither is a directory the
-// go command itself ignores (testdata, vendor, and names starting with "." or
-// "_"), where a golden copy of gqlc output is a fixture, not a stale file; nor
-// another gqlc run's output nested in this one's.
+// another generator's output -- are never touched, and neither is an SDL file
+// the list does not name: Generate has refused that one by now. Neither is a
+// directory the go command itself ignores (testdata, vendor, and names
+// starting with "." or "_"), where a golden copy of gqlc output is a fixture,
+// not a stale file; nor another gqlc run's output nested in this one's.
 //
 // A Go file it cannot delete -- held open by an editor, read-only -- is named
 // through notef and left: it is dead code that still compiles, and failing the
@@ -727,8 +821,8 @@ const generatedMarker = "// Code generated by gqlc. DO NOT EDIT."
 // copy it cannot delete fails the generate: the root embeds every copy, so the
 // types it holds would go on being served, and a library caller with no Notef
 // would never hear of it.
-func pruneGenerated(outDir string, written map[string][]byte, notef func(string, ...any)) error {
-	root, ours, stale, err := pruneList(outDir, written)
+func pruneGenerated(outDir string, written map[string][]byte, recorded []string, notef func(string, ...any)) error {
+	root, ours, stale, err := pruneList(outDir, written, recorded)
 	if err != nil {
 		return err
 	}
@@ -745,11 +839,11 @@ func pruneGenerated(outDir string, written map[string][]byte, notef func(string,
 // pruneList is what pruneGenerated deletes, without deleting it: the
 // generated Go files under root that this run did not write, and the stale
 // SDL copies. root is Output's real path, which the first are relative to.
-func pruneList(outDir string, written map[string][]byte) (root string, ours, stale []string, err error) {
+func pruneList(outDir string, written map[string][]byte, recorded []string) (root string, ours, stale []string, err error) {
 	keys := writtenKeys(outDir, written)
 	// The SDL copies by glob, which follows a linked Output or schema/ the way
 	// the embed reading them does; a walk does not.
-	if stale, err = staleSchemaCopies(outDir, keys); err != nil {
+	if stale, _, err = schemaLeftovers(outDir, keys, recorded); err != nil {
 		return "", nil, nil, err
 	}
 	// Walked from Output's real path, for the same reason: WalkDir does not
@@ -768,7 +862,7 @@ func pruneList(outDir string, written map[string][]byte) (root string, ours, sta
 
 // check is Config.Check: what a generate would create, rewrite and delete,
 // named relative to Config.Dir, in that order and sorted within each.
-func (b *builder) check(outDir string, rels []string, olds [][]byte, files map[string][]byte) error {
+func (b *builder) check(outDir string, rels []string, olds [][]byte, files map[string][]byte, recorded []string) error {
 	base, _ := filepath.Abs(b.dir)
 	// name puts p, a path on disk, relative to Config.Dir. Both are made
 	// absolute first, since either may be given relative to the working
@@ -791,9 +885,8 @@ func (b *builder) check(outDir string, rels []string, olds [][]byte, files map[s
 			return r
 		}
 		realBase, err1 := filepath.EvalSymlinks(base)
-		realDir, err2 := filepath.EvalSymlinks(filepath.Dir(abs))
-		if err1 == nil && err2 == nil {
-			if r, ok := under(realBase, filepath.Join(realDir, filepath.Base(abs))); ok {
+		if err1 == nil {
+			if r, ok := under(realBase, realPath(abs)); ok {
 				return r
 			}
 		}
@@ -809,7 +902,7 @@ func (b *builder) check(outDir string, rels []string, olds [][]byte, files map[s
 			}
 		}
 	}
-	root, ours, stale, err := pruneList(outDir, files)
+	root, ours, stale, err := pruneList(outDir, files, recorded)
 	if err != nil {
 		return err
 	}
@@ -822,7 +915,7 @@ func (b *builder) check(outDir string, rels []string, olds [][]byte, files map[s
 		}
 		gone = append(gone, name(p))
 	}
-	// staleSchemaCopies globs under outDir, so these are paths under it
+	// schemaLeftovers globs under outDir, so these are paths under it
 	// already.
 	for _, p := range stale {
 		gone = append(gone, name(p))
@@ -837,63 +930,112 @@ func (b *builder) check(outDir string, rels []string, olds [][]byte, files map[s
 	return fmt.Errorf("%w; a generate would\n%s", ErrStale, strings.Join(lines, "\n"))
 }
 
-// authoredSchemaFiles refuses a generate that would delete an SDL file its
-// author wrote. gqlc owns outDir/schema and prunes what it did not write
-// there, which is right while that directory holds only copies. When the
-// sources themselves are read from it, a file the globs do not name is not a
-// stale copy but the author's own, and it carries no header to say so. It
-// cannot be left either -- the root package embeds the directory by glob, so
-// its types would be served -- which leaves saying so.
-func authoredSchemaFiles(outDir string, sources []string, written map[string][]byte) error {
-	schemaDir := filepath.Join(outDir, "schema")
-	inPlace := false
-	for _, src := range sources {
-		if sameDir(filepath.Dir(filepath.FromSlash(src)), schemaDir) {
-			inPlace = true
-			break
+// realPath is p with links resolved, as far up as p exists: a file a
+// generate would create is in a directory that may not exist yet, and its
+// nearest existing ancestor decides where it is.
+func realPath(p string) string {
+	rest := ""
+	for dir := p; ; dir = filepath.Dir(dir) {
+		if real, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(real, rest)
 		}
+		if filepath.Dir(dir) == dir {
+			return p
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
 	}
-	if !inPlace {
-		return nil
-	}
-	stale, err := staleSchemaCopies(outDir, writtenKeys(outDir, written))
+}
+
+// foreignSchemaFiles refuses a generate that finds, in outDir/schema, an SDL
+// file gqlc did not write. That directory is gqlc's: the root package embeds
+// it by glob, and a copy whose source is gone has to go too. But a copy
+// carries no header to know it by, and going by where a file is deleted one
+// its author had put there -- SDL kept from before gqlc, a draft beside
+// sources that are themselves read from that directory. It cannot be left
+// either, since what is in the directory is in the schema, which leaves
+// saying so and touching nothing.
+func foreignSchemaFiles(outDir string, written map[string][]byte, recorded []string) error {
+	_, foreign, err := schemaLeftovers(outDir, writtenKeys(outDir, written), recorded)
 	if err != nil {
 		return err
 	}
 	var errs []error
-	for _, path := range stale {
-		errs = append(errs, fmt.Errorf("codegen: %s is not one of the schema sources, but it is in the directory they are read from, which the generated package embeds whole; add it to the schema globs, or move or delete it", filepath.ToSlash(path)))
+	for _, path := range foreign {
+		errs = append(errs, fmt.Errorf("codegen: %s is not a copy gqlc made: no schema source produces it and the last generate did not write it. It is in the directory the generated package embeds whole, so it can be neither left nor deleted unasked; add it to the schema globs, or move or delete it", filepath.ToSlash(path)))
 	}
 	return errors.Join(errs...)
 }
 
-// sameDir reports whether two directory paths name one directory, through
-// links and case-folding filesystems as well as by spelling.
-func sameDir(a, b string) bool {
-	if filepath.Clean(a) == filepath.Clean(b) {
-		return true
-	}
-	ai, err := os.Stat(a)
+// schemaLeftovers is the SDL files in outDir/schema this run did not write:
+// stale, the ones the last run did, which are gqlc's to delete, and foreign,
+// the rest. recorded is the last run's copies by name.
+func schemaLeftovers(outDir string, keys writtenSet, recorded []string) (stale, foreign []string, err error) {
+	dir := filepath.Join(outDir, "schema")
+	matches, err := filepath.Glob(filepath.Join(dir, "*.graphql"))
 	if err != nil {
-		return false
+		return nil, nil, err
 	}
-	bi, err := os.Stat(b)
-	return err == nil && os.SameFile(ai, bi)
-}
-
-// staleSchemaCopies is the SDL copies in outDir/schema this run did not write.
-func staleSchemaCopies(outDir string, keys writtenSet) ([]string, error) {
-	matches, err := filepath.Glob(filepath.Join(outDir, "schema", "*.graphql"))
-	if err != nil {
-		return nil, err
-	}
-	var stale []string
 	for _, path := range matches {
-		if !keys.has(filepath.Join("schema", filepath.Base(path))) {
+		base := filepath.Base(path)
+		if keys.has(filepath.Join("schema", base)) {
+			continue
+		}
+		// By name, or by a name the filesystem says is this file: a copy
+		// written into an existing one of another letter case keeps the
+		// spelling it had, where case is ignored.
+		ours := slices.ContainsFunc(recorded, func(name string) bool {
+			return name == base || (strings.EqualFold(name, base) && samePath(filepath.Join(dir, name), path))
+		})
+		if ours {
 			stale = append(stale, path)
+		} else {
+			foreign = append(foreign, path)
 		}
 	}
-	return stale, nil
+	return stale, foreign, nil
+}
+
+// copiesListed opens the part of the sdl variable's comment that lists the
+// copies, and scalarsListed the line of it that names the custom scalars.
+// emitEmbed writes both and recordedIn finds the comment by the variable, so
+// only the indentation of a line says it is a copy's name.
+const (
+	copiesListed  = "sdl is the schema, embedded from the copies gqlc made of its sources:"
+	scalarsListed = "Custom scalars gqlc has said need a binding at NewSchema:"
+)
+
+// recordedIn is what a generate left in the schema.go it wrote for the next
+// one: the copies it wrote into schema/, by name, and the custom scalars it
+// named. Both are nil for output from before they were kept, for a file that
+// does not parse and for one that is not there -- where no file is known to
+// be gqlc's, and every scalar is new.
+func recordedIn(schemaGo []byte) (copies, scalars []string) {
+	if len(schemaGo) == 0 {
+		return nil, nil
+	}
+	f, err := parser.ParseFile(token.NewFileSet(), "schema.go", schemaGo, parser.ParseComments|parser.SkipObjectResolution)
+	if err != nil {
+		return nil, nil
+	}
+	for _, d := range f.Decls {
+		gd, ok := d.(*goast.GenDecl)
+		if !ok || gd.Tok != token.VAR || gd.Doc == nil || len(gd.Specs) != 1 {
+			continue
+		}
+		if vs, ok := gd.Specs[0].(*goast.ValueSpec); !ok || len(vs.Names) != 1 || vs.Names[0].Name != "sdl" {
+			continue
+		}
+		for line := range strings.SplitSeq(gd.Doc.Text(), "\n") {
+			// An indented line of the comment is a copy; the prose is not.
+			if name, listed := strings.CutPrefix(line, "\t"); listed && name != "" {
+				copies = append(copies, name)
+			} else if names, listed := strings.CutPrefix(line, scalarsListed); listed {
+				scalars = strings.Fields(names)
+			}
+		}
+		return copies, scalars
+	}
+	return nil, nil
 }
 
 // removeFailure is a stale path removeStale could not delete, and why.
@@ -914,8 +1056,13 @@ func removeStale(root string, stale []string) []removeFailure {
 			}
 			continue
 		}
-		// os.Remove refuses a directory that is not empty, which is the check.
-		for dir := filepath.Dir(path); dir != root && os.Remove(dir) == nil; dir = filepath.Dir(dir) {
+		// os.Remove refuses a directory that is not empty, which is the check;
+		// but it removes a link to one whatever is behind it, and the link is
+		// the author's.
+		for dir := filepath.Dir(path); dir != root; dir = filepath.Dir(dir) {
+			if info, err := os.Lstat(dir); err != nil || info.Mode()&fs.ModeSymlink != 0 || os.Remove(dir) != nil {
+				break
+			}
 		}
 	}
 	return failed
@@ -1064,7 +1211,8 @@ func hasGeneratedHeader(path string) (bool, error) {
 		return false, err
 	}
 	defer func() { _ = f.Close() }() // read-only: a close error loses nothing
-	buf := make([]byte, len(generatedMarker)+1)
+	// Room for a byte-order mark before it, which isGeneratedSource allows.
+	buf := make([]byte, len(byteOrderMark)+len(generatedMarker)+1)
 	n, err := io.ReadFull(f, buf)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 		return false, err
@@ -1077,6 +1225,10 @@ func hasGeneratedHeader(path string) (bool, error) {
 // core.autocrlf turns it into \r\n, and a file that stopped matching there
 // would silently never be pruned.
 func isGeneratedSource(src []byte) bool {
+	// An editor may put a byte-order mark before the header. The file is
+	// still gqlc's, to rewrite or to prune; refusing it as somebody else's
+	// blocked every generate after.
+	src = bytes.TrimPrefix(src, []byte(byteOrderMark))
 	if len(src) <= len(generatedMarker) || string(src[:len(generatedMarker)]) != generatedMarker {
 		return false
 	}

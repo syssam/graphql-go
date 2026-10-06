@@ -107,15 +107,32 @@ func autoBind(dir string, patterns []string, schema *ast.Schema, b *builder) (*M
 		man.ExtraEnums = altEnumBindings(schema, alt, constIndex(withAlt), b.notef)
 	}
 	objects := objectNames(schema)
+	var unread []string
 	for _, name := range objects {
 		named, ok := found[name]
 		if !ok {
-			continue
+			// Not found by name, and bound by name all the same: the config
+			// says which Go type, so its fields are read as a discovered
+			// type's are. Left to the emitter they are derived from the SDL,
+			// url as Url against a field called URL.
+			if named = namedByExpr(idx, b.cfg.Models[name]); named == nil {
+				if path, _ := splitModelExpr(b.cfg.Models[name]); path != "" {
+					unread = append(unread, name)
+				}
+				continue
+			}
 		}
 		man.Types = append(man.Types, TypeBinding{
 			Name: name,
 			Go:   GoType{PkgPath: named.Obj().Pkg().Path(), Name: named.Obj().Name()},
 		})
+	}
+
+	if len(unread) > 0 {
+		// Said, because the next generate may answer differently: a struct
+		// that holds this run's generated types builds only after it.
+		b.notef("%d object(s) are bound to a Go type that could not be read, so their fields are written from the SDL's names rather than checked against the struct: %s. The package does not build yet or is not in this module; generate again once it builds.",
+			len(unread), summarize(unread, 8))
 	}
 
 	// A declared binding still wins -- this only fills in what discovery
@@ -298,8 +315,9 @@ func enumBindings(schema *ast.Schema, models map[string]string, found map[string
 	return out
 }
 
-// modelPkgs loads the packages the model map names for an enum or an input
-// object and that the auto-bind patterns did not already reach.
+// modelPkgs loads the packages the model map names for an enum, an input
+// object, a scalar or an object and that the auto-bind patterns did not
+// already reach.
 //
 // An ORM declares an enum's Go type beside the entity that uses it, so a
 // schema with five hundred entities names five hundred packages -- and the
@@ -319,6 +337,11 @@ func enumBindings(schema *ast.Schema, models map[string]string, found map[string
 // but a filter struct is where an ORM's second Go type for an enum is found
 // (altEnumTypes), and a declared input type this pass never loaded has no
 // fields to look at.
+//
+// Objects are here for the second reason too. An object bound to a struct in
+// a package no pattern names -- a service's own result type -- had its fields
+// written from the SDL's names, and a field the struct spells differently, or
+// does not have, was a compile error in generated code.
 func modelPkgs(dir string, schema *ast.Schema, models map[string]string, loaded []*packages.Package, loads *int) []*packages.Package {
 	have := map[string]bool{}
 	for _, p := range loaded {
@@ -326,7 +349,7 @@ func modelPkgs(dir string, schema *ast.Schema, models map[string]string, loaded 
 	}
 	var want []string
 	seen := map[string]bool{}
-	for _, name := range slices.Concat(enumNames(schema), inputNames(schema), scalarNames(schema)) {
+	for _, name := range slices.Concat(enumNames(schema), inputNames(schema), scalarNames(schema), objectNames(schema)) {
 		path, _ := splitModelExpr(models[name])
 		if path == "" || have[path] || seen[path] {
 			continue
@@ -955,10 +978,27 @@ func basicClassOf(expr string) (types.BasicInfo, bool) {
 // strings. A mapped package is spelled with the qualifier modelExprImports gave
 // it, which need not be its name; any other by its name, unless that name is a
 // mapped package's qualifier, when two different types would read alike.
+//
+// One of the generator's own model packages is spelled as modelName spells
+// it, which is its name only until a mapped package shares that name. A
+// struct written by hand holds the generated types -- an enum, another
+// object's model -- and read by package name a field of one did not match the
+// type the schema wanted, so it fell to a Resolver the struct already answered.
 func (b *builder) goQualifier(p *types.Package) string {
 	imports := b.modelExprImports()
 	if q, ok := b.exprQualifiers[p.Path()]; ok {
 		return q
+	}
+	if p.Path() == b.modelImp || strings.HasPrefix(p.Path(), b.modelImp+"/") {
+		// Whether models are split by group is decided after discovery, and
+		// until then modelName puts every one of them in "model". Spelled
+		// the same way here, the two sides compare by the type's name, which
+		// a schema has once.
+		pkg := "model"
+		if b.modelSplit {
+			pkg = p.Path()[strings.LastIndex(p.Path(), "/")+1:]
+		}
+		return b.modelQualifier(pkg)
 	}
 	if path, taken := imports[p.Name()]; taken && path != p.Path() {
 		return p.Path()

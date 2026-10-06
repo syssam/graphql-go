@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -346,4 +347,162 @@ type Reading struct {
 	if b, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("generated code does not compile: %v\n%s", err, b)
 	}
+}
+
+// A type the config binds by name is read wherever it lives. AutoBind names
+// the packages to discover types in; a Models entry or a model directive has
+// already said which type, and its package was loaded only for an enum or an
+// input. So an object bound to a service's own struct had its fields guessed
+// from the SDL: url became v.Url against a field called URL, which is a
+// compile error in generated code, and a field the struct does not have was
+// one too where it should have been a Resolver method.
+func TestAutoBindReadsADeclaredObjectTypeOutsideItsPatterns(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping package load")
+	}
+	const sdl = `
+type McpServer {
+  slug: String!
+  url: String!
+  hasToken: Boolean!
+  tools: Int!
+  missing: String!
+}
+type Product { id: ID! title: String! }
+type Query { server: McpServer product: Product }
+`
+	dir := writeEntModule(t, sdl, entSource)
+	writeFiles(t, dir, map[string]string{
+		"svc/svc.go": "package svc\n\ntype Server struct {\n\tSlug     string `json:\"slug\"`\n\tURL      string `json:\"url\"`\n\tHasToken bool\n}\n\nfunc (s *Server) Tools() int { return 3 }\n\n" +
+			// Found by name in ./ent too; the declared one is the one read.
+			"type Product struct {\n\tID    string\n\tLabel string `json:\"title\"`\n}\n",
+	})
+	src := autoGenerate(t, dir, Config{Models: map[string]string{
+		"McpServer": "hello/svc.Server",
+		"Product":   "hello/svc.Product",
+	}})
+	for _, want := range []string{
+		`graphql.Object[svc.Server]("McpServer"`,
+		`graphql.Field("slug", func(v *svc.Server) string { return v.Slug })`,
+		`graphql.Field("url", func(v *svc.Server) string { return v.URL })`,
+		`graphql.Field("hasToken", func(v *svc.Server) bool { return v.HasToken })`,
+		`graphql.Field("tools", func(v *svc.Server) int { return v.Tools() })`,
+		`McpServerMissing(`,
+		`graphql.Field("title", func(v *svc.Product) string { return v.Label })`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("generated.go missing:\n  %s\ngot:\n%s", want, src)
+		}
+	}
+	for _, guess := range []string{"v.Url", "v.Missing", "v.Title"} {
+		if strings.Contains(src, guess) {
+			t.Errorf("generated.go guesses %s, which the declared type does not have", guess)
+		}
+	}
+	goBuild(t, dir)
+}
+
+// A struct written by hand holds the types this generator writes: an enum's
+// model, another object's. Its package compiles only once those exist, so the
+// first generate cannot read it, and says so; the second can. A field of a
+// generated type then has to be recognised as answering the schema's, under
+// whatever name the generated file imports that model package by. Read by
+// package name alone, a field the struct already had became a Resolver method.
+func TestAutoBindReadsAHandWrittenStructHoldingGeneratedTypes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping package load")
+	}
+	const sdl = `
+scalar Stamp
+enum Colour { RED GREEN }
+type Swatch { name: String! colour: Colour! shades: [Shade!]! made: Stamp }
+type Shade { level: Int! }
+type Product { id: ID! title: String! }
+type Query { swatch: Swatch product: Product }
+`
+	dir := writeEntModule(t, sdl, entSource)
+	writeFiles(t, dir, map[string]string{
+		"svc/svc.go": "package svc\n\nimport \"hello/graph/model\"\n\ntype Swatch struct {\n\tName   string\n\tColour model.Colour\n\tShades []*model.Shade\n}\n",
+		// A mapped package called model too, so the generated one is
+		// imported as modelmodel and is not what its package clause says.
+		"ext/model/model.go": "package model\n\ntype Stamp string\n",
+	})
+	var notes []string
+	cfg := Config{
+		Models: map[string]string{"Swatch": "hello/svc.Swatch", "Stamp": "hello/ext/model.Stamp"},
+		Notef: func(format string, args ...any) {
+			if note := fmt.Sprintf(format, args...); strings.Contains(note, "could not be read") {
+				notes = append(notes, note)
+			}
+		},
+	}
+	autoGenerate(t, dir, cfg)
+	if len(notes) != 1 || !strings.Contains(notes[0], "Swatch") {
+		t.Errorf("notes = %q, want the first generate to say Swatch's type could not be read", notes)
+	}
+	notes = nil
+	second := autoGenerate(t, dir, cfg)
+	if len(notes) != 0 {
+		t.Errorf("notes = %q, want none once svc builds", notes)
+	}
+	third := autoGenerate(t, dir, cfg)
+	for _, want := range []string{
+		`graphql.Field("name", func(v *svc.Swatch) string { return v.Name })`,
+		`graphql.Field("colour", func(v *svc.Swatch) modelmodel.Colour { return v.Colour })`,
+		`func(v *svc.Swatch) []*modelmodel.Shade { return v.Shades }`,
+	} {
+		if !strings.Contains(second, want) {
+			t.Errorf("generated.go missing:\n  %s\ngot:\n%s", want, second)
+		}
+	}
+	if strings.Contains(second, "SwatchColour(") || strings.Contains(second, "SwatchShades(") {
+		t.Errorf("a field the struct holds became a Resolver method:\n%s", second)
+	}
+	if second != third {
+		t.Errorf("two generates over one tree disagree:\n--- second\n%s\n--- third\n%s", second, third)
+	}
+	goBuild(t, dir)
+}
+
+// With more than one group the generated models are a package per group, and
+// that is decided after discovery has compared every field. A hand-written
+// struct holding another group's enum was measured against a type spelled
+// model.Colour while its own field said paint.Colour, so on a real schema four
+// fields the structs held fell to Resolver methods nobody had written.
+func TestAutoBindRecognisesAnotherGroupsModelInAHandWrittenStruct(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping package load")
+	}
+	dir := t.TempDir()
+	writeTempModule(t, dir)
+	writeFiles(t, dir, map[string]string{
+		"schema/paint.graphql":  "enum Colour { RED GREEN }\ntype Shade { level: Int! }\nextend type Query { shade: Shade }\n",
+		"schema/swatch.graphql": "type Swatch { name: String! colour: Colour! shades: [Shade!]! }\nextend type Query { swatch: Swatch }\n",
+		"schema/schema.graphql": "type Query { ping: Boolean }\n",
+		"ent/ent.go":            "package ent\n",
+		"svc/svc.go":            "package svc\n\nimport \"hello/graph/model/paint\"\n\ntype Swatch struct {\n\tName   string\n\tColour paint.Colour\n\tShades []*paint.Shade\n}\n",
+	})
+	cfg := Config{
+		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph",
+		AutoBind: []string{"./ent"}, Models: map[string]string{"Swatch": "hello/svc.Swatch"},
+	}
+	// Once to write the models svc is built from, once to read svc.
+	for range 2 {
+		if err := Generate(context.Background(), cfg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	src := readFile(t, filepath.Join(dir, "graph", "swatch", "generated.go"))
+	for _, want := range []string{
+		`graphql.Field("colour", func(v *svc.Swatch) paint.Colour { return v.Colour })`,
+		`func(v *svc.Swatch) []*paint.Shade { return v.Shades }`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("swatch/generated.go missing:\n  %s\ngot:\n%s", want, src)
+		}
+	}
+	if strings.Contains(src, "SwatchColour(") || strings.Contains(src, "SwatchShades(") {
+		t.Errorf("a field the struct holds became a Resolver method:\n%s", src)
+	}
+	goBuild(t, dir)
 }

@@ -19,10 +19,11 @@ import (
 // pass to NewSchema. Nothing lists the groups by hand and nothing is resolved
 // when the process starts: each line calls the constructor beside a group's
 // implementation, and a group whose constructor is missing, or takes
-// something else, does not compile. A group is given the field of d named
-// after it, where there is one, so its package imports that and no more;
-// an entry in the configuration's wire.pass decides instead, for every
-// group its type implements.
+// something else, does not compile. A constructor is given what its
+// parameters are named after -- a field of d each, or nothing -- and
+// otherwise the field named after its group, where there is one, so its
+// package imports that and no more; an entry in the configuration's
+// wire.pass decides instead, for every group its type implements.
 func Wire(d service.Services) []graphql.SchemaOption {
 	return []graphql.SchemaOption{
 		category.Bindings(category.NewHandler(d.Category)),

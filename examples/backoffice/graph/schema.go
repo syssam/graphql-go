@@ -19,6 +19,35 @@ import (
 	"github.com/syssam/graphql-go/fed"
 )
 
+// sdl is the schema, embedded from the copies gqlc made of its sources:
+//
+//	authz.graphql
+//	category.graphql
+//	customer.graphql
+//	order.graphql
+//	orderitem.graphql
+//	product.graphql
+//	schema.graphql
+//	stock.graphql
+//	velox_category.graphql
+//	velox_customer.graphql
+//	velox_order.graphql
+//	velox_orderitem.graphql
+//	velox_product.graphql
+//	velox_stock.graphql
+//	velox_warehouse.graphql
+//	warehouse.graphql
+//
+// The next generate goes by this list. A copy on it that no source produces
+// any more is deleted; a file in schema/ that is not on it is not gqlc's, and
+// is refused instead of being deleted or left embedded.
+//
+// Custom scalars gqlc has said need a binding at NewSchema: Time
+//
+// The next generate goes by that too, and names only a scalar that is not
+// there: one is bound once, and being told so on every run buried the one
+// that was new.
+//
 //go:embed schema/*.graphql
 var sdl embed.FS
 

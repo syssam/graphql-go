@@ -139,6 +139,9 @@ func TestPathQualifierIsAnUnusedIdentifier(t *testing.T) {
 		{"example.com/x/graphql", "xgraphql"}, // the engine's own name is reserved
 		{"c/client/todo", "todo2"},            // base and parent+base both taken
 		{"example.com/123", "pkg"},            // no identifier at all
+		{"example.com/app/error", "apperror"}, // every Resolver method returns the other one
+		{"example.com/app/v", "appv"},         // what a binding calls its parent value
+		{"example.com/app/func", "appfunc"},   // a keyword names nothing
 	} {
 		if got := pathQualifier(c.path, taken); got != c.want {
 			t.Errorf("pathQualifier(%q) = %q, want %q", c.path, got, c.want)

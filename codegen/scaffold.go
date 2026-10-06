@@ -2,12 +2,14 @@ package codegen
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	goast "go/ast"
 	"go/build/constraint"
 	"go/format"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -30,32 +32,75 @@ import (
 // the compiler's to report, through the var _ Resolver assertion; one whose
 // field is gone still compiles, so reportStale names it.
 
-// scaffold writes stubs for every group Config.Scaffold names. Groups the
-// schema does not have, or that have no Resolver, are errors: a typo there
-// would otherwise scaffold nothing and say nothing.
-// checkScaffold refuses what scaffold would refuse before writing anything:
-// a key that is no group with a Resolver, and a target that is not dir.Type.
-// It is the part a check can run, since nothing in it writes.
+// scaffoldEvery is the Scaffold key that stands for every group no other key
+// names, and scaffoldGroupName is where its value has the group's name.
+const (
+	scaffoldEvery     = "*"
+	scaffoldGroupName = "{group}"
+)
+
+// expandScaffold replaces the "*" entry with one for each group that has a
+// Resolver and no entry of its own, so everything after it reads a plain map.
+// It runs before anything is emitted, because Wire reads the same map.
+//
+// Without {group} the pattern names one type for every group. That is one
+// implementation asked to be all of them, which a single group allows and
+// several do not: each group's stubs go to <group>.resolvers.go beside the
+// type, and Wire calls one constructor per group.
+func (b *builder) expandScaffold(groups []string) error {
+	pattern, ok := b.cfg.Scaffold[scaffoldEvery]
+	if !ok {
+		return nil
+	}
+	keys := b.scaffoldKeys(groups)
+	if len(groups) > 1 && !strings.Contains(pattern, scaffoldGroupName) {
+		return fmt.Errorf("codegen: scaffold: %q is %q, which names one type for every group; write %s where the group's name goes, as in \"graph/%s.Handler\"",
+			scaffoldEvery, pattern, scaffoldGroupName, scaffoldGroupName)
+	}
+	// A new map: the one in Config is the caller's.
+	out := make(map[string]string, len(b.cfg.Scaffold)+len(keys))
+	for name, target := range b.cfg.Scaffold {
+		if name != scaffoldEvery {
+			out[name] = target
+		}
+	}
+	for name, group := range keys {
+		if _, listed := out[name]; listed || !b.hasResolver(group) {
+			continue
+		}
+		out[name] = strings.ReplaceAll(pattern, scaffoldGroupName, name)
+	}
+	b.cfg.Scaffold = out
+	return nil
+}
+
+// scaffoldKeys is the group each Scaffold key stands for. A key is its
+// group's name, except where there is one group or none: the output is then a
+// single package, the key is that package's name, and the group is "", which
+// is what the only group is called wherever a group is asked about.
+func (b *builder) scaffoldKeys(groups []string) map[string]string {
+	if len(groups) <= 1 {
+		return map[string]string{b.pkgName: ""}
+	}
+	keys := make(map[string]string, len(groups))
+	for _, g := range groups {
+		keys[g] = g
+	}
+	return keys
+}
+
+// checkScaffold refuses a key that is no group with a Resolver -- a typo
+// there would otherwise scaffold nothing and say nothing -- and a target
+// that is not dir.Type. Generate calls it before writing anything.
 func (b *builder) checkScaffold(groups []string) error {
 	if len(b.cfg.Scaffold) == 0 {
 		return nil
 	}
-	flat := len(groups) <= 1
-	known := map[string]bool{}
-	for _, g := range groups {
-		known[g] = true
-	}
-	if flat {
-		known = map[string]bool{b.pkgName: true}
-	}
+	keys := b.scaffoldKeys(groups)
 	for _, name := range slices.Sorted(maps.Keys(b.cfg.Scaffold)) {
-		group := name
-		if flat {
-			group = ""
-		}
-		if !known[name] || !b.hasResolver(group) {
+		if group, known := keys[name]; !known || !b.hasResolver(group) {
 			return fmt.Errorf("codegen: scaffold: %q is not a group with a Resolver (groups: %s)",
-				name, strings.Join(slices.Sorted(maps.Keys(known)), ", "))
+				name, strings.Join(slices.Sorted(maps.Keys(keys)), ", "))
 		}
 		if _, _, err := b.splitTarget(b.cfg.Scaffold[name]); err != nil {
 			return fmt.Errorf("codegen: scaffold %s: %w", name, err)
@@ -64,6 +109,236 @@ func (b *builder) checkScaffold(groups []string) error {
 	return nil
 }
 
+// checkScaffoldTargets refuses, before anything is written, what scaffolding
+// would refuse about each target's package once the generated code is in
+// place: a directory that is not one, a file of the author's that does not
+// parse, a target type the generated code declares (the gqlgen habit of
+// naming the implementation Resolver), and a name of the author's that the
+// generated code declares too. What the generated code declares is read from
+// files, this run's output, since a gqlc file on disk that is not in it is
+// about to be pruned.
+func (b *builder) checkScaffoldTargets(outDir string, files map[string][]byte) error {
+	if len(b.cfg.Scaffold) == 0 {
+		return nil
+	}
+	output := b.outputPackages(outDir, files)
+	seen := map[string]bool{}
+	for _, name := range slices.Sorted(maps.Keys(b.cfg.Scaffold)) {
+		target := b.cfg.Scaffold[name]
+		dir, typ, err := b.splitTarget(target)
+		if err != nil {
+			return fmt.Errorf("codegen: scaffold %s: %w", name, err)
+		}
+		entries, err := os.ReadDir(dir)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			entries = nil
+		case err != nil:
+			return fmt.Errorf("codegen: scaffold %s: %w", name, err)
+		}
+		generated, ours := output.in(dir)
+		if generated[typ] {
+			return fmt.Errorf("codegen: scaffold %s: target %q: %s is declared by the generated code in that package; name the implementation something else", name, target, typ)
+		}
+		if seen[strings.ToLower(dir)] {
+			continue
+		}
+		seen[strings.ToLower(dir)] = true
+		for _, e := range entries {
+			n := e.Name()
+			if e.IsDir() || !strings.HasSuffix(n, ".go") || strings.HasSuffix(n, "_test.go") {
+				continue
+			}
+			path := filepath.Join(dir, n)
+			src, err := os.ReadFile(path)
+			if err != nil {
+				return fmt.Errorf("codegen: scaffold %s: %w", name, err)
+			}
+			// gqlc's own, and one it is about to write whatever it holds now:
+			// an empty file an interrupted generate left is not the author's.
+			if excludedEverywhere(src) || isGeneratedSource(src) || ours[strings.ToLower(n)] {
+				continue
+			}
+			f, err := b.parseTarget(path, src)
+			if err != nil {
+				return fmt.Errorf("codegen: scaffold %s: %w", name, err)
+			}
+			// Kept for indexPackage, which reads this file again once the
+			// output is written.
+			if b.checked == nil {
+				b.checked = map[string]*targetFile{}
+			}
+			b.checked[path] = f
+			for _, declared := range f.top {
+				if generated[declared] {
+					return fmt.Errorf("codegen: scaffold %s: %s declares %s, which the code gqlc generates into that package declares too; rename yours",
+						name, path, declared)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// outputPackages is this run's Go output by the directory each file is
+// written into, so that a scaffold target can be asked what the generated
+// code declares beside it.
+//
+// A target names its directory in the author's spelling, which need not be
+// the one the output is written under: another letter case where the
+// filesystem ignores it, or a path through a link. So directories are matched
+// as the filesystem resolves them -- but each is resolved once. Asking, for
+// every target, whether every output file's directory was the target's cost
+// targets times files in stats, and tripled a regenerate that had nothing to
+// do at 300 groups.
+type outputPackages struct {
+	b      *builder
+	files  map[string][]byte
+	byReal map[string][]*outputPackage
+}
+
+// outputPackage is one output directory: the generated Go files in it, and,
+// once asked for, the names they declare.
+type outputPackage struct {
+	dir       string
+	rels      []string
+	generated map[string]bool
+	ours      map[string]bool
+}
+
+func (b *builder) outputPackages(outDir string, files map[string][]byte) *outputPackages {
+	byDir := map[string]*outputPackage{}
+	for _, rel := range slices.Sorted(maps.Keys(files)) {
+		if !strings.HasSuffix(rel, ".go") {
+			continue
+		}
+		dir := filepath.Dir(filepath.Join(outDir, filepath.FromSlash(rel)))
+		if byDir[dir] == nil {
+			byDir[dir] = &outputPackage{dir: dir}
+		}
+		byDir[dir].rels = append(byDir[dir].rels, rel)
+	}
+	o := &outputPackages{b: b, files: files, byReal: map[string][]*outputPackage{}}
+	for _, dir := range slices.Sorted(maps.Keys(byDir)) {
+		key := o.key(dir)
+		o.byReal[key] = append(o.byReal[key], byDir[dir])
+	}
+	return o
+}
+
+// key is what two spellings of one directory share: its path with links
+// resolved, lower-cased. Sharing it is not yet being one directory, which
+// samePath then says.
+func (o *outputPackages) key(dir string) string {
+	o.b.scaffoldProbes++
+	return strings.ToLower(realPath(dir))
+}
+
+// in is every name the generated code declares in dir, and the base name of
+// each generated file there, lower-cased.
+func (o *outputPackages) in(dir string) (generated, ours map[string]bool) {
+	generated, ours = map[string]bool{}, map[string]bool{}
+	for _, p := range o.byReal[o.key(dir)] {
+		if filepath.Clean(p.dir) != filepath.Clean(dir) {
+			o.b.scaffoldProbes++
+			if !samePath(p.dir, dir) {
+				continue
+			}
+		}
+		if p.generated == nil {
+			p.generated, p.ours = map[string]bool{}, map[string]bool{}
+			fset := token.NewFileSet()
+			for _, rel := range p.rels {
+				p.ours[strings.ToLower(filepath.Base(rel))] = true
+				if f, err := parser.ParseFile(fset, rel, o.files[rel], parser.SkipObjectResolution); err == nil {
+					maps.Copy(p.generated, topLevelNames(f))
+				}
+			}
+		}
+		maps.Copy(generated, p.generated)
+		maps.Copy(ours, p.ours)
+	}
+	return generated, ours
+}
+
+// topLevelNames is every name a file declares at package level, methods
+// aside.
+func topLevelNames(f *goast.File) map[string]bool {
+	names := map[string]bool{}
+	for _, d := range f.Decls {
+		switch d := d.(type) {
+		case *goast.FuncDecl:
+			if d.Recv == nil && d.Name.Name != "init" {
+				names[d.Name.Name] = true
+			}
+		case *goast.GenDecl:
+			for _, spec := range d.Specs {
+				switch s := spec.(type) {
+				case *goast.TypeSpec:
+					names[s.Name.Name] = true
+				case *goast.ValueSpec:
+					for _, id := range s.Names {
+						if id.Name != "_" {
+							names[id.Name] = true
+						}
+					}
+				}
+			}
+		}
+	}
+	return names
+}
+
+// targetFile is what scaffolding reads of one Go file in a target's package:
+// its declarations by name, which is all either reader wants of it.
+type targetFile struct {
+	// src is the source this was parsed from. See builder.checked.
+	src []byte
+	pkg string
+	// top is topLevelNames, sorted.
+	top []string
+	// methods is each method as receiver type and name. funcs, types and
+	// values are every other declaration at package level, init and the blank
+	// identifier among them.
+	methods              [][2]string
+	funcs, types, values []string
+}
+
+// parseTarget parses one file of a target's package.
+func (b *builder) parseTarget(path string, src []byte) (*targetFile, error) {
+	b.scaffoldParses++
+	parsed, err := parser.ParseFile(token.NewFileSet(), path, src, parser.SkipObjectResolution)
+	if err != nil {
+		return nil, err
+	}
+	f := &targetFile{src: src, pkg: parsed.Name.Name, top: slices.Sorted(maps.Keys(topLevelNames(parsed)))}
+	for _, d := range parsed.Decls {
+		switch d := d.(type) {
+		case *goast.FuncDecl:
+			if d.Recv != nil && len(d.Recv.List) == 1 {
+				f.methods = append(f.methods, [2]string{receiverName(d.Recv.List[0].Type), d.Name.Name})
+			} else {
+				f.funcs = append(f.funcs, d.Name.Name)
+			}
+		case *goast.GenDecl:
+			for _, s := range d.Specs {
+				switch s := s.(type) {
+				case *goast.TypeSpec:
+					f.types = append(f.types, s.Name.Name)
+				case *goast.ValueSpec:
+					for _, id := range s.Names {
+						f.values = append(f.values, id.Name)
+					}
+				}
+			}
+		}
+	}
+	return f, nil
+}
+
+// scaffold writes stubs for every group Config.Scaffold names. Its refusals
+// have been made by then, before anything was written; checkScaffold is
+// asked again because scaffold is also reached on its own.
 func (b *builder) scaffold(groups []string) error {
 	if len(b.cfg.Scaffold) == 0 {
 		return nil
@@ -71,18 +346,14 @@ func (b *builder) scaffold(groups []string) error {
 	if err := b.checkScaffold(groups); err != nil {
 		return err
 	}
-	flat := len(groups) <= 1
-	groupOf := func(name string) string {
-		if flat {
-			return ""
-		}
-		return name
-	}
+	// The output is on disk by now and stubs are about to be: see packageName.
+	b.scaffolding = true
+	keys := b.scaffoldKeys(groups)
 	names := slices.Sorted(maps.Keys(b.cfg.Scaffold))
 	pkgs := &pkgCache{byFold: map[string][]*pkgIndex{}}
 	methods := make(map[string][]string, len(names))
 	for _, name := range names {
-		ms, err := b.scaffoldGroup(pkgs, name, groupOf(name), b.cfg.Scaffold[name])
+		ms, err := b.scaffoldGroup(pkgs, name, keys[name], b.cfg.Scaffold[name])
 		if err != nil {
 			return fmt.Errorf("codegen: scaffold %s: %w", name, err)
 		}
@@ -301,7 +572,7 @@ func (b *builder) scaffoldGroup(pkgs *pkgCache, name, group, target string) ([]s
 			if err != nil {
 				return nil, fmt.Errorf("wire: %s.%s: %w", depsType, field.name, err)
 			}
-			param, paramType, what = "dep", placed, "the "+field.name+" field of the application's dependencies"
+			param, paramType, what = scaffoldParam, placed, "the "+field.name+" field of the application's dependencies"
 		case implImport != depsPath:
 			paramType = qualify(depsPath, depsQual) + "." + depsType
 		}
@@ -369,7 +640,7 @@ func (b *builder) scaffoldGroup(pkgs *pkgCache, name, group, target string) ([]s
 		// would: the standard library, then everything else.
 		out, err = format.Source([]byte("package " + pkg + "\n\n" + importDecl(imports) + body))
 	} else {
-		out, err = addImports(src, imports)
+		out, err = addImports(src, len(old), imports, b.packageName, idx.names)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", file, err)
@@ -505,7 +776,7 @@ func (p *pkgIndex) add(pkg, typ string, sigs []resolverSig) {
 	}
 }
 
-// indexPackage parses dir's non-test files once. A directory that does not
+// indexPackage reads dir's non-test files once. A directory that does not
 // exist yet is an empty package.
 func (b *builder) indexPackage(dir string) (*pkgIndex, error) {
 	idx := &pkgIndex{dir: dir, methods: map[string]map[string]bool{}, declared: map[string]bool{}, generated: map[string]bool{}, funcs: map[string]bool{}, wanted: map[string]bool{}, names: map[string]bool{}, inTests: map[string]string{}}
@@ -516,7 +787,6 @@ func (b *builder) indexPackage(dir string) (*pkgIndex, error) {
 	if err != nil {
 		return nil, err
 	}
-	fset := token.NewFileSet()
 	// authored is each top-level name a file gqlc did not write declares, and
 	// where: in a group's own package the author's code and generated.go share
 	// one namespace, and a helper named like something gqlc later emits is a
@@ -547,13 +817,17 @@ func (b *builder) indexPackage(dir string) (*pkgIndex, error) {
 		if excludedEverywhere(src) {
 			continue
 		}
-		b.scaffoldParses++
-		f, err := parser.ParseFile(fset, path, src, parser.SkipObjectResolution)
-		if err != nil {
-			return nil, err
+		// Taken from the check where it parsed these bytes, and taken away:
+		// from here the index is what the run asks about this file.
+		f := b.checked[path]
+		delete(b.checked, path)
+		if f == nil || !bytes.Equal(f.src, src) {
+			if f, err = b.parseTarget(path, src); err != nil {
+				return nil, err
+			}
 		}
 		gen := isGeneratedSource(src)
-		idx.pkg = f.Name.Name
+		idx.pkg = f.pkg
 		top := func(name string) {
 			idx.names[name] = true
 			switch {
@@ -564,32 +838,23 @@ func (b *builder) indexPackage(dir string) (*pkgIndex, error) {
 				authored[name] = n
 			}
 		}
-		for _, d := range f.Decls {
-			switch d := d.(type) {
-			case *goast.FuncDecl:
-				if d.Recv != nil && len(d.Recv.List) == 1 {
-					recv := receiverName(d.Recv.List[0].Type)
-					if idx.methods[recv] == nil {
-						idx.methods[recv] = map[string]bool{}
-					}
-					idx.methods[recv][d.Name.Name] = true
-				} else {
-					idx.funcs[d.Name.Name] = true
-					top(d.Name.Name)
-				}
-			case *goast.GenDecl:
-				for _, s := range d.Specs {
-					switch s := s.(type) {
-					case *goast.TypeSpec:
-						idx.declared[s.Name.Name] = true
-						top(s.Name.Name)
-					case *goast.ValueSpec:
-						for _, id := range s.Names {
-							top(id.Name)
-						}
-					}
-				}
+		for _, m := range f.methods {
+			recv, name := m[0], m[1]
+			if idx.methods[recv] == nil {
+				idx.methods[recv] = map[string]bool{}
 			}
+			idx.methods[recv][name] = true
+		}
+		for _, name := range f.funcs {
+			idx.funcs[name] = true
+			top(name)
+		}
+		for _, name := range f.types {
+			idx.declared[name] = true
+			top(name)
+		}
+		for _, name := range f.values {
+			top(name)
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(authored)) {
@@ -719,16 +984,77 @@ func (b *builder) stubImports(body string) ([]importSpec, error) {
 	return out, nil
 }
 
-// addImports adds each import src does not already have by path, and
-// formats the result.
-func addImports(src []byte, imports []importSpec) ([]byte, error) {
+// addImports gives src, a resolvers file with stubs appended from offset
+// added on, the imports those stubs need, and formats the result.
+//
+// The stubs name each package as the generator does, and the file is its
+// author's: it may import one of them under another name, or use one of those
+// names for another package. Adding the generator's import regardless
+// imported a path twice, and declared a name twice wherever the file's alias
+// repeated the package's own name, or its user was a service package and the
+// generator's the user group's models. So the file's name for a package is
+// kept and the stubs are rewritten to it, and a name the file has taken gives
+// way to the next free one. local is the name an import with none is known
+// by, and declared the names the package declares, which no import may have.
+func addImports(src []byte, added int, imports []importSpec, local func(importPath string) string, declared map[string]bool) ([]byte, error) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "", src, parser.ParseComments)
 	if err != nil {
 		return nil, err
 	}
+	have, taken := map[string]string{}, map[string]bool{}
+	for _, spec := range f.Imports {
+		importPath, _ := strconv.Unquote(spec.Path.Value)
+		var name string
+		if spec.Name != nil {
+			name = spec.Name.Name
+		} else {
+			name = local(importPath)
+		}
+		// A dot or blank import gives the stubs no name to use.
+		if name == "." || name == "_" {
+			continue
+		}
+		taken[name] = true
+		if _, dup := have[importPath]; !dup {
+			have[importPath] = name
+		}
+	}
+	rename := map[string]string{}
 	for _, im := range imports {
+		written := im.name
+		if written == "" {
+			written = local(im.path)
+		}
+		if name, ok := have[im.path]; ok {
+			if name != written {
+				rename[written] = name
+			}
+			continue
+		}
+		name := written
+		for n := 2; taken[name] || declared[name]; n++ {
+			name = fmt.Sprintf("%s%d", written, n)
+		}
+		taken[name], have[im.path] = true, name
+		if name != written {
+			rename[written] = name
+			astutil.AddNamedImport(fset, f, name, im.path)
+			continue
+		}
 		astutil.AddNamedImport(fset, f, im.name, im.path)
+	}
+	if len(rename) > 0 {
+		goast.Inspect(f, func(n goast.Node) bool {
+			sel, ok := n.(*goast.SelectorExpr)
+			if !ok || fset.Position(sel.Pos()).Offset < added {
+				return true
+			}
+			if x, ok := sel.X.(*goast.Ident); ok && rename[x.Name] != "" {
+				x.Name = rename[x.Name]
+			}
+			return true
+		})
 	}
 	var buf bytes.Buffer
 	if err := format.Node(&buf, fset, f); err != nil {

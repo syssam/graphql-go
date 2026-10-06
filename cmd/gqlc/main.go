@@ -142,6 +142,9 @@ type fileConfig struct {
 	//
 	//	scaffold:
 	//	  product: internal/catalog.ProductResolver
+	//
+	// The key "*" stands for every group no other key names, with {group}
+	// where the name goes: "*": graph/{group}.Handler.
 	Scaffold map[string]string `yaml:"scaffold"`
 	// groupDir puts each group's package under output/<groupDir>/<group>
 	// rather than output/<group>; see codegen.Config.GroupDir.
@@ -241,7 +244,7 @@ type options struct {
 	config, out, pkg             string
 	schema, models               repeatable
 	nullableOmittable, zeroNulls bool
-	check, version               bool
+	check, version, verify       bool
 }
 
 // newFlags is the command's flag set, apart so that a test can list every
@@ -253,6 +256,7 @@ func newFlags(stderr io.Writer) (*flag.FlagSet, *options) {
 	fs.Usage = func() { usage(fs, stderr) }
 	fs.StringVar(&o.config, "config", "gqlc.yaml", "path to gqlc.yaml")
 	fs.BoolVar(&o.check, "check", false, "write nothing; fail naming each file a generate would change")
+	fs.BoolVar(&o.verify, "verify", false, "go build the output once written; fail with what the compiler says")
 	fs.BoolVar(&o.version, "version", false, "print the graphql-go version gqlc was built from")
 	fs.Var(&o.schema, "schema", "SDL file or glob, repeated or comma-separated; the flag form")
 	fs.StringVar(&o.out, "out", "", "output directory for generated Go")
@@ -303,7 +307,7 @@ func runTo(args []string, stdout, stderr io.Writer) error {
 		if explicitConfig {
 			return errors.New("gqlc: -config and -schema are two ways to say the same thing; pass one")
 		}
-		return runFlags(o.schema, o.out, o.pkg, o.models, o.nullableOmittable, o.zeroNulls, o.check, notef)
+		return runFlags(o.schema, o.out, o.pkg, o.models, o.nullableOmittable, o.zeroNulls, o.check, o.verify, notef)
 	}
 
 	configPath := o.config
@@ -352,6 +356,7 @@ func runTo(args []string, stdout, stderr io.Writer) error {
 		Wire:                   codegen.Wire{Deps: fc.Wire.Deps, Pass: fc.Wire.Pass},
 		FieldNames:             fc.FieldNames,
 		Check:                  o.check,
+		Verify:                 o.verify,
 		Notef:                  notef,
 	}
 	return codegen.Generate(context.Background(), cfg)
@@ -359,7 +364,7 @@ func runTo(args []string, stdout, stderr io.Writer) error {
 
 // runFlags is the config-file-free path. Dir stays the process working
 // directory, so -schema and -out are read the way a shell would read them.
-func runFlags(schema repeatable, out, pkg string, models repeatable, nullableOmittable, zeroForNull, check bool, notef func(string, ...any)) error {
+func runFlags(schema repeatable, out, pkg string, models repeatable, nullableOmittable, zeroForNull, check, verify bool, notef func(string, ...any)) error {
 	if out == "" {
 		return errors.New("gqlc: -out is required with -schema")
 	}
@@ -380,6 +385,7 @@ func runFlags(schema repeatable, out, pkg string, models repeatable, nullableOmi
 		NullableInputOmittable: nullableOmittable,
 		ZeroForNullInputs:      zeroForNull,
 		Check:                  check,
+		Verify:                 verify,
 		Notef:                  notef,
 	})
 }

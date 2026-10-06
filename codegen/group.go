@@ -201,6 +201,65 @@ func fileStem(path string) string {
 	return strings.TrimSuffix(base, filepath.Ext(base))
 }
 
+// A group's name is a package's, and its model package's, and each is in
+// scope under that name in every generated file that imports it. So it cannot
+// be anything those files already mean something else by.
+var (
+	// What the go command gives a meaning of its own: a directory of models,
+	// one nothing outside may import, a program, and a function no import can
+	// be called.
+	groupDirNames = map[string]bool{"model": true, "internal": true, "main": true, "init": true}
+	// What generated code imports under.
+	importedNames = map[string]bool{"graphql": true, "context": true, "embed": true}
+	// What a group's own file declares: the Resolver its bindings call, and
+	// the parent value, arguments and context of each field.
+	bindingNames = map[string]bool{"r": true, "v": true, "a": true, "ctx": true}
+	// What the root package declares beside its group imports: the embedded
+	// SDL, NewSchema's parameter and the two locals it and ValidateSchema use.
+	rootNames = map[string]bool{"sdl": true, "opts": true, "all": true, "err": true}
+	// What only a federated root imports or declares. Renamed everywhere, a
+	// schema with a fed.graphql and no federation lost a package it had.
+	federatedNames = map[string]bool{"fed": true, "src": true, "subgraph": true, "entities": true, "none": true}
+)
+
+// predeclaredNames is what generated code writes from the universe: every
+// predeclared type, since a Models entry or a scalar may name any of them, the
+// constants, and the one built-in function the emitters call. Every Resolver
+// method returns an error, so error.graphql made `error` a package in each
+// file that said so.
+//
+// It is listed, not asked of go/types. Asked, a group called delete, copy,
+// min or print -- none of which generated code writes, all of which compiled
+// -- was renamed, and a gqlc built by a newer Go renamed whatever that Go had
+// added, so two machines disagreed about where a package lives.
+// TestPredeclaredNamesCoverWhatGeneratedCodeWrites holds the list to the
+// universe's types and constants and to the built-ins real output calls.
+var predeclaredNames = map[string]bool{
+	"any": true, "bool": true, "byte": true, "comparable": true,
+	"complex64": true, "complex128": true, "error": true,
+	"float32": true, "float64": true,
+	"int": true, "int8": true, "int16": true, "int32": true, "int64": true,
+	"rune": true, "string": true,
+	"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true, "uintptr": true,
+	"true": true, "false": true, "iota": true, "nil": true,
+	"append": true,
+}
+
+// predeclared reports whether name already means something in every
+// generated file: a keyword, which func.graphql asked a package to be called,
+// or one of predeclaredNames.
+func predeclared(name string) bool {
+	return token.IsKeyword(name) || predeclaredNames[name]
+}
+
+// reservedGroup reports whether a group cannot be called name. The lists are
+// what the emitters declare today; TestEveryNameGeneratedCodeDeclaresIsReserved
+// reads the generated code and fails on a name that is missing from them.
+func reservedGroup(name string, federation bool) bool {
+	return predeclared(name) || groupDirNames[name] || importedNames[name] ||
+		bindingNames[name] || rootNames[name] || (federation && federatedNames[name])
+}
+
 func sanitizeGroup(name, pkgName string, federation bool) string {
 	var b strings.Builder
 	for _, r := range strings.ToLower(name) {
@@ -216,26 +275,11 @@ func sanitizeGroup(name, pkgName string, federation bool) string {
 			s = "g" + s
 		}
 	}
-	switch s {
-	case "schema":
+	switch {
+	case s == "schema":
 		s = "types"
-	case "model", "internal",
-		// A program, not an importable package.
-		"main",
-		// Names the generated code already imports under: a group package
-		// called one of them redeclares it in every file that imports both.
-		"graphql", "context", "embed",
-		// Names the root package declares beside its group imports: the
-		// embedded SDL, and the parameter NewSchema and ValidateSchema take.
-		"sdl", "opts":
+	case s == pkgName || reservedGroup(s, federation):
 		s += "grp"
-	default:
-		// func.graphql would otherwise ask for `package func`. fed is the
-		// federation package, which the root imports only when the schema
-		// is a subgraph; without that a fed.graphql keeps its package.
-		if s == pkgName || token.IsKeyword(s) || (federation && s == "fed") {
-			s += "grp"
-		}
 	}
 	return s
 }

@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -176,7 +177,30 @@ func sourceFiles(dir string) map[string][]byte {
 // its directory's, and guessing the directory's resolved a type to the wrong
 // package when two imports had each other's. It falls back to the guess for
 // a package this run cannot read.
+//
+// Each ask reads every source file of the package, and Wire asks once for
+// every import of every file beside a constructor, so the answer is kept --
+// while nothing has been written. Scaffolding starts after the output is on
+// disk and adds files as it goes, and a package this run creates answers
+// differently before and after: graph/v2 is guessed to be graph until its
+// first file says v2. From there each ask reads again.
 func (b *builder) packageName(importPath string) string {
+	if b.scaffolding {
+		return b.readPackageName(importPath)
+	}
+	name, ok := b.pkgNames[importPath]
+	if !ok {
+		name = b.readPackageName(importPath)
+		if b.pkgNames == nil {
+			b.pkgNames = map[string]string{}
+		}
+		b.pkgNames[importPath] = name
+	}
+	return name
+}
+
+func (b *builder) readPackageName(importPath string) string {
+	b.pkgNameReads++
 	if dir := b.dirOf(importPath); dir != "" {
 		// A directory can hold a file of package main under a build tag -- a
 		// generator kept beside what it generates -- so main is the answer
@@ -543,10 +567,12 @@ func (b *builder) targetKey(target string) string {
 //
 // Wire.Pass says, where it has an entry, and is believed over everything
 // below. Otherwise what an existing constructor takes decides: one that takes
-// the dependencies type is passed it, and any other is passed the group's
-// field if there is one, whether or not gqlc could have written that field's
-// type itself, since nothing is being written. For a constructor still to be
-// scaffolded the struct decides, as the scaffold will.
+// the dependencies type is passed it; one parameter named after a field is
+// passed that field; any other single parameter is passed the group's field
+// if there is one, whether or not gqlc could have written that field's type
+// itself, since nothing is being written; and none, or several, are decided
+// by wireArgs. For a constructor still to be scaffolded the struct decides,
+// as the scaffold will.
 func (b *builder) wireCall(name, target, dir, typ, implImport string) (string, error) {
 	depsPath, depsQual, depsType := b.wireDeps()
 	ctor := constructorName(typ)
@@ -582,14 +608,106 @@ func (b *builder) wireCall(name, target, dir, typ, implImport string) (string, e
 		}
 		return "d", nil
 	}
-	whole, pointer := existing.takes(depsPath, depsType, implImport, b.wire.ctors[dir])
-	if f := b.wire.fields[foldName(name)]; !whole && f != nil && !f.twice && !b.wireShared(target) {
+	if len(existing.params) != 1 {
+		return b.wireArgs(target, ctor, existing, dir, depsPath, depsType, implImport)
+	}
+	whole, pointer := existing.takesType(existing.params[0].typ, depsPath, depsType, implImport, b.wire.ctors[dir])
+	switch {
+	case whole && pointer:
+		return "&d", nil
+	case whole:
+		return "d", nil
+	}
+	// The parameter's name, where it names a field, is the author saying which
+	// one: a group whose one service is called something else than the group
+	// had no other way to say so but an entry in wire.pass. Not scaffoldParam,
+	// which is nobody saying anything: it is what gqlc calls the parameter of
+	// every constructor it writes, whichever field that takes.
+	if p := existing.params[0]; p.name != scaffoldParam {
+		if f := b.paramField(p); f != nil {
+			return "d." + f.name, nil
+		}
+	}
+	if f := b.wire.fields[foldName(name)]; f != nil && !f.twice && !b.wireShared(target) {
 		return "d." + f.name, nil
 	}
-	if whole && pointer {
-		return "&d", nil
-	}
 	return "d", nil
+}
+
+// scaffoldParam is what a constructor gqlc scaffolds calls the field it is
+// given. A scaffolded constructor is read back on every later run as one that
+// exists, so the name must not be taken for a field's: with a Dep field in the
+// dependencies, the run after the one that wrote NewHandler(dep *user.Service)
+// passed it d.Dep. The scaffold writes this name and wireCall sets it aside,
+// from one constant, so the two cannot come apart.
+const scaffoldParam = "dep"
+
+// ctorParam is one parameter of a hand-written constructor: its name, empty
+// where it has none, and its type as written.
+type ctorParam struct{ name, typ string }
+
+// paramField is the field of the dependencies a parameter is named after, or
+// nil when its name is no field's, or is two fields' once case and
+// punctuation are set aside.
+func (b *builder) paramField(p ctorParam) *depsField {
+	if p.name == "" || p.name == "_" {
+		return nil
+	}
+	if f := b.wire.fields[foldName(p.name)]; f != nil && !f.twice {
+		return f
+	}
+	return nil
+}
+
+// wireArgs is what wire.go passes a constructor that does not take exactly
+// one thing.
+//
+// One that takes nothing is called with nothing: a group whose methods need
+// no dependencies has no reason to import them, and passing it the whole
+// value was a compile error. One that takes several is given, for each
+// parameter, the field of the dependencies named after it, so a group that
+// calls three services imports those three and not every one the struct
+// holds; a parameter of the dependencies type itself is given the whole
+// value. Nothing else can be meant, so anything else is refused here rather
+// than written into a file nobody may edit: a parameter with no name, a name
+// no field has or two fields fold to, and a variadic parameter.
+func (b *builder) wireArgs(target, ctor string, c *constructor, dir, depsPath, depsType, implImport string) (string, error) {
+	args := make([]string, 0, len(c.params))
+	for i, p := range c.params {
+		which := p.name
+		if which == "" || which == "_" {
+			which = strconv.Itoa(i + 1)
+		}
+		if strings.HasPrefix(p.typ, "...") {
+			return "", fmt.Errorf("codegen: wire: %s: parameter %s of %s is variadic, and Wire gives each parameter one field of %s", target, which, ctor, depsType)
+		}
+		whole, pointer := c.takesType(p.typ, depsPath, depsType, implImport, b.wire.ctors[dir])
+		switch {
+		case whole && pointer:
+			args = append(args, "&d")
+			continue
+		case whole:
+			args = append(args, "d")
+			continue
+		}
+		if p.name == "" || p.name == "_" {
+			return "", fmt.Errorf("codegen: wire: %s: parameter %s of %s has no name, and Wire gives a parameter the field of %s it is named after", target, which, ctor, depsType)
+		}
+		f := b.wire.fields[foldName(p.name)]
+		switch {
+		case f != nil && f.twice:
+			return "", fmt.Errorf("codegen: wire: %s: parameter %s of %s could be either of two fields of %s whose names differ only in case or punctuation; rename one", target, p.name, ctor, depsType)
+		case f != nil:
+			args = append(args, "d."+f.name)
+		case !b.wire.structRead:
+			return "", fmt.Errorf("codegen: wire: %s: parameter %s of %s is matched to a field of %s by name, and gqlc cannot read %s to find it", target, p.name, ctor, depsType, b.cfg.Wire.Deps)
+		case b.wire.embeds:
+			return "", fmt.Errorf("codegen: wire: %s: parameter %s of %s names no field %s declares, and fields promoted from what it embeds are not read; declare the field in %s itself", target, p.name, ctor, depsType, depsType)
+		default:
+			return "", fmt.Errorf("codegen: wire: %s: parameter %s of %s names no field of %s; name it after the field it takes", target, p.name, ctor, depsType)
+		}
+	}
+	return strings.Join(args, ", "), nil
 }
 
 // wireShared reports whether target implements more than one group.
@@ -663,11 +781,15 @@ func (b *builder) wireAnyField() bool {
 	return *b.wire.anyField
 }
 
-// constructor is a hand-written NewX: the type of its one parameter as
-// written, and what the file declaring it imports. param is empty when it
-// does not take exactly one thing. An alias the package declares is kept in
-// the same shape, param being what it is an alias for.
+// constructor is a hand-written NewX: its parameters as written, and what
+// the file declaring it imports. An alias the package declares is kept in the
+// same shape, since what it stands for is read through its own file's imports
+// as a parameter's type is.
 type constructor struct {
+	// params is every parameter in order, however many there are; an alias
+	// has none.
+	params []ctorParam
+	// param is what an alias stands for, as written; a function has none.
 	param string
 	// unknown is a constructor that is there and whose parameter is not
 	// written where it is declared: var NewHandler = build. Nothing is
@@ -682,18 +804,18 @@ type constructor struct {
 	dots    []string
 }
 
-// takes reports whether the constructor's parameter is the dependencies type
-// itself, and whether it is a pointer to it. aliases are the package's own,
-// by name.
+// takesType reports whether typ, the type of one of the constructor's
+// parameters as its file writes it, is the dependencies type itself, and
+// whether it is a pointer to it. aliases are the package's own, by name.
 //
 // It is read from syntax, so it is read carefully: getting it wrong passes a
 // constructor that wants everything a single field, in a file marked DO NOT
 // EDIT. A service that calls its own dependencies Deps is told apart by its
 // package; the application's reached through a dot-import, or through an
 // alias the package declares for it, is recognised.
-func (c *constructor) takes(depsPath, depsType, self string, aliases map[string]*constructor) (whole, pointer bool) {
-	param := strings.TrimPrefix(c.param, "*")
-	return c.names(param, depsPath, depsType, self, aliases, 0), param != c.param
+func (c *constructor) takesType(typ, depsPath, depsType, self string, aliases map[string]*constructor) (whole, pointer bool) {
+	param := strings.TrimPrefix(typ, "*")
+	return c.names(param, depsPath, depsType, self, aliases, 0), param != typ
 }
 
 func (c *constructor) names(expr, depsPath, depsType, self string, aliases map[string]*constructor, depth int) bool {
@@ -770,8 +892,14 @@ func (b *builder) existingConstructor(dir, ctor string) *constructor {
 					return
 				}
 				c := inFile()
-				if ps := ft.Params.List; len(ps) == 1 && len(ps[0].Names) <= 1 {
-					c.param = types.ExprString(ps[0].Type)
+				for _, field := range ft.Params.List {
+					typ := types.ExprString(field.Type)
+					if len(field.Names) == 0 {
+						c.params = append(c.params, ctorParam{typ: typ})
+					}
+					for _, id := range field.Names {
+						c.params = append(c.params, ctorParam{name: id.Name, typ: typ})
+					}
 				}
 				found[name] = c
 			}
@@ -1057,10 +1185,11 @@ func (b *builder) emitWire(groups []string) (string, error) {
 // pass to NewSchema. Nothing lists the groups by hand and nothing is resolved
 // when the process starts: each line calls the constructor beside a group's
 // implementation, and a group whose constructor is missing, or takes
-// something else, does not compile. A group is given the field of d named
-// after it, where there is one, so its package imports that and no more;
-// an entry in the configuration's wire.pass decides instead, for every
-// group its type implements.
+// something else, does not compile. A constructor is given what its
+// parameters are named after -- a field of d each, or nothing -- and
+// otherwise the field named after its group, where there is one, so its
+// package imports that and no more; an entry in the configuration's
+// wire.pass decides instead, for every group its type implements.
 func Wire(d %s) []graphql.SchemaOption {
 `, depsRef)
 	for _, constructor := range sharedOrder {

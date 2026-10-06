@@ -150,3 +150,63 @@ func scaffoldNotes(t *testing.T, dir string, scaffold map[string]string) []strin
 	}
 	return notes
 }
+
+// New stubs are appended to a file whose imports are the author's by then,
+// and they name packages the way the generator does, which need not be the
+// way that file does. A package the file already imports under a name of its
+// own was imported a second time, and under an alias that says only what the
+// package is called anyway that is a redeclaration; a name the file gives to
+// another package -- a user service beside the user group's models -- was
+// declared twice the same way. The stubs take the file's names instead.
+func TestScaffoldStubsUseTheImportsTheFileAlreadyHas(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping go vet subprocess")
+	}
+	for name, c := range map[string]struct {
+		imports string
+		model   string
+		group   string
+	}{
+		"names of the author's own": {
+			"\tpm \"hello/graph/model/post\"\n\tgql \"hello/graph/post\"\n\t\"hello/internal/svc/user\"\n", "pm", "gql",
+		},
+		"an alias that repeats the package's name": {
+			"\tpost \"hello/graph/model/post\"\n\tpostgql \"hello/graph/post\"\n\t\"hello/internal/svc/user\"\n", "post", "postgql",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir, generate := scaffoldModule(t, map[string]string{"user": "internal/res.UserResolver", "post": "internal/res.PostResolver"})
+			if err := generate(); err != nil {
+				t.Fatal(err)
+			}
+			// As its author left it: Post implemented over a user service,
+			// the other two methods still to come.
+			writeFiles(t, dir, map[string]string{
+				"internal/svc/user/user.go": "// Package user is the user service.\npackage user\n\n// Service is the user service.\ntype Service struct{}\n",
+				"internal/res/post.resolvers.go": "package res\n\nimport (\n\t\"context\"\n\n" + c.imports + ")\n\n" +
+					"// PostResolver implements the post group's Resolver.\ntype PostResolver struct{ users *user.Service }\n\n" +
+					"var _ " + c.group + ".Resolver = (*PostResolver)(nil)\n\n" +
+					"// Post resolves Query.post.\nfunc (r *PostResolver) Post(ctx context.Context, args " + c.group + ".PostArgs) (*" + c.model + ".Post, error) {\n\treturn nil, nil\n}\n",
+			})
+			if err := generate(); err != nil {
+				t.Fatal(err)
+			}
+			src := readFile(t, filepath.Join(dir, "internal", "res", "post.resolvers.go"))
+			for _, path := range []string{`"hello/graph/model/post"`, `"hello/graph/post"`, `"hello/graph/model/user"`, `"hello/internal/svc/user"`} {
+				if n := strings.Count(src, path); n != 1 {
+					t.Errorf("%s is imported %d times, want once:\n%s", path, n, src)
+				}
+			}
+			for _, want := range []string{
+				"func (r *PostResolver) PostAuthor(ctx context.Context, obj *" + c.model + ".Post) (*user2.User, error)",
+				"func (r *PostResolver) Publish(ctx context.Context, args " + c.group + ".PublishArgs) (*" + c.model + ".Post, error)",
+				"users *user.Service",
+			} {
+				if !strings.Contains(src, want) {
+					t.Errorf("post.resolvers.go lacks %q:\n%s", want, src)
+				}
+			}
+			goBuild(t, dir)
+		})
+	}
+}

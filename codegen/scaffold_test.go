@@ -281,3 +281,74 @@ func TestGeneratedGroupIsDocumented(t *testing.T) {
 		}
 	}
 }
+
+// One entry for every group: "*" is a pattern, with {group} where the name
+// goes. A schema of five hundred groups listed five hundred lines that all
+// said graph/<group>.Handler, and a new SDL file failed the generate until a
+// line was added for it. A group with no Resolver takes nothing from the
+// pattern, and one listed by name keeps what its own line says.
+func TestScaffoldPatternCoversEveryGroupWithAResolver(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping go vet subprocess")
+	}
+	dir, generate := scaffoldModule(t, map[string]string{
+		"*":    "impl/{group}.Handler",
+		"post": "impl.PostResolver",
+	})
+	writeFiles(t, dir, map[string]string{"schema/leaf.graphql": "type Leaf { id: ID! }\n"})
+	if err := generate(); err != nil {
+		t.Fatal(err)
+	}
+	user := readFile(t, filepath.Join(dir, "impl", "user", "user.resolvers.go"))
+	for _, want := range []string{"type Handler struct{}", "var _ usergql.Resolver = (*Handler)(nil)", "func (r *Handler) Users(ctx context.Context)"} {
+		if !strings.Contains(user, want) {
+			t.Errorf("impl/user/user.resolvers.go lacks %q\n%s", want, user)
+		}
+	}
+	if post := readFile(t, filepath.Join(dir, "impl", "post.resolvers.go")); !strings.Contains(post, "type PostResolver struct{}") {
+		t.Errorf("post's own entry did not win over the pattern:\n%s", post)
+	}
+	for _, gone := range []string{"impl/post/post.resolvers.go", "impl/leaf"} {
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(gone))); err == nil {
+			t.Errorf("%s was written; the pattern is for a group with a Resolver that no entry names", gone)
+		}
+	}
+	goBuild(t, dir)
+
+	// A second run adds nothing.
+	before := readFile(t, filepath.Join(dir, "impl", "user", "user.resolvers.go"))
+	if err := generate(); err != nil {
+		t.Fatal(err)
+	}
+	if after := readFile(t, filepath.Join(dir, "impl", "user", "user.resolvers.go")); after != before {
+		t.Errorf("a second generate rewrote the stubs:\n%s", after)
+	}
+}
+
+// Without {group} the pattern names one type for every group, which is one
+// Handler asked to be every group's: said, with what to write instead.
+func TestScaffoldPatternNeedsTheGroupInIt(t *testing.T) {
+	_, generate := scaffoldModule(t, map[string]string{"*": "impl.Handler"})
+	err := generate()
+	if err == nil || !strings.Contains(err.Error(), "{group}") {
+		t.Fatalf("err = %v, want one saying the pattern needs {group}", err)
+	}
+}
+
+// With one group the pattern stands for the output package's entry.
+func TestScaffoldPatternFlat(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "schema.graphql"), []byte("type Query { hello: String! }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Generate(context.Background(), Config{
+		Dir: dir, SchemaGlobs: []string{"schema.graphql"},
+		Output: "graph", Package: "hello/graph",
+		Scaffold: map[string]string{"*": "server.Resolver"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, filepath.Join(dir, "server", "graph.resolvers.go")); !strings.Contains(got, "var _ graphgql.Resolver = (*Resolver)(nil)") {
+		t.Errorf("the pattern did not scaffold the one group:\n%s", got)
+	}
+}

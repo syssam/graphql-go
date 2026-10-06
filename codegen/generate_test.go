@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"context"
+	"fmt"
 	"go/parser"
 	"go/token"
 	"os"
@@ -685,10 +686,166 @@ func TestSplitModelExpr(t *testing.T) {
 		{"*example.com/x/shop.Product", "example.com/x/shop", "*shop.Product"},
 		{"string", "", "string"},
 		{"[]byte", "", "[]byte"},
+		{"map[string]any", "", "map[string]any"},
+		// The type is after the last dot: an element of the path may have one.
+		{"gopkg.in/yaml.v3.Node", "gopkg.in/yaml.v3", "yamlv3.Node"},
+		{"[]*gopkg.in/guregu/null.v4.String", "gopkg.in/guregu/null.v4", "[]*nullv4.String"},
+		{"example.com/x/v2.Deps", "example.com/x/v2", "v2.Deps"},
 	} {
 		path, ref := splitModelExpr(tc.expr)
 		if path != tc.path || ref != tc.ref {
 			t.Errorf("splitModelExpr(%q) = (%q, %q), want (%q, %q)", tc.expr, path, ref, tc.path, tc.ref)
 		}
+	}
+}
+
+// validateGenerated vets every package in the module at dir and runs
+// ValidateSchema for each generated root, given by import path. Compiling is
+// half of it: bindings are valid Go whether or not they match the SDL, and
+// only building the schema compares the two.
+func validateGenerated(t *testing.T, dir string, roots ...string) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil {
+		writeTempModule(t, dir)
+	}
+	var src strings.Builder
+	src.WriteString("package validate\n\nimport (\n\t\"testing\"\n\n")
+	for i, root := range roots {
+		fmt.Fprintf(&src, "\troot%d %q\n", i, root)
+	}
+	src.WriteString(")\n\nfunc TestValidateSchema(t *testing.T) {\n")
+	for i, root := range roots {
+		fmt.Fprintf(&src, "\tif err := root%d.ValidateSchema(); err != nil {\n\t\tt.Errorf(%q, err)\n\t}\n", i, root+": %v")
+	}
+	src.WriteString("}\n")
+	writeFiles(t, dir, map[string]string{"validate/validate_test.go": src.String()})
+	for _, args := range [][]string{{"mod", "tidy"}, {"vet", "./..."}, {"test", "-count=1", "./validate"}} {
+		cmd := exec.Command("go", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("go %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+}
+
+// A directory ** walks into is a name, not a pattern. Joined back onto the
+// rest of the glob unescaped, routes/[id] was read as a character class that
+// its own name does not match, so its files were left out without a word, and
+// a[b failed the generate as a syntax error in a pattern nobody wrote.
+func TestSchemaGlobDoubleStarWalksDirectoriesNamedLikePatterns(t *testing.T) {
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{
+		"web/query.graphql":            "type Query { ping: Boolean }\n",
+		"web/routes/[id]/page.graphql": "type Page { id: ID! }\n",
+		"web/a[b/half.graphql":         "type Half { id: ID! }\n",
+	})
+	want := []string{"web/a[b/half.graphql", "web/query.graphql", "web/routes/[id]/page.graphql"}
+	if filepath.Separator != '\\' {
+		writeFiles(t, dir, map[string]string{`web/c\d/back.graphql`: "type Back { id: ID! }\n"})
+		want = []string{"web/a[b/half.graphql", `web/c\d/back.graphql`, "web/query.graphql", "web/routes/[id]/page.graphql"}
+	}
+	got, err := sourceFilesMatching(filepath.Join(dir, "web", "**", "*.graphql"), filepath.Join(dir, "graph", "schema"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, m := range got {
+		rel, _ := filepath.Rel(dir, m)
+		got[i] = filepath.ToSlash(rel)
+	}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("matched %v, want %v", got, want)
+	}
+}
+
+// A path element of ** is any number of directories, none included.
+// filepath.Glob reads it as *, exactly one: schema/**/*.graphql, which the
+// workflow guide gives as the way to name a tree of SDL, generated from the
+// files one level down and silently left out the rest.
+func TestSchemaGlobDoubleStarMatchesAnyDepth(t *testing.T) {
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{
+		"schema/query.graphql":        "type Query { ping: Boolean }\n",
+		"schema/user/user.graphql":    "type User { id: ID! }\nextend type Query { user: User }\n",
+		"schema/user/x/y/tag.graphql": "type Tag { id: ID! }\nextend type Query { tag: Tag }\n",
+		"schema/user/notes.md":        "not SDL\n",
+		"schema/.cache/old.graphql":   "type Query { stale: Boolean }\n",
+	})
+	if err := Generate(context.Background(), Config{
+		// The second glob names a file the first already has: one source.
+		Dir: dir, SchemaGlobs: []string{"schema/**/*.graphql", "schema/user/user.graphql"}, Output: "graph", Package: "hello/graph",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	copies, err := filepath.Glob(filepath.Join(dir, "graph", "schema", "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, c := range copies {
+		copies[i] = filepath.Base(c)
+	}
+	if got, want := strings.Join(copies, " "), "query.graphql tag.graphql user.graphql"; got != want {
+		t.Errorf("copied %s, want %s", got, want)
+	}
+
+	for name, c := range map[string]struct {
+		pattern string
+		want    []string
+	}{
+		"in the middle": {"schema/**/*.graphql", []string{"schema/query.graphql", "schema/user/user.graphql", "schema/user/x/y/tag.graphql"}},
+		// Not graph/schema/tag.graphql, the copy the generate above made.
+		"at the start":      {"**/tag.graphql", []string{"schema/user/x/y/tag.graphql"}},
+		"the copies named":  {"graph/schema/**/tag.graphql", []string{"graph/schema/tag.graphql"}},
+		"at the end":        {"schema/user/**", []string{"schema/user/notes.md", "schema/user/user.graphql", "schema/user/x/y/tag.graphql"}},
+		"twice":             {"schema/**/x/**/*.graphql", []string{"schema/user/x/y/tag.graphql"}},
+		"not a whole name":  {"schema/**.graphql", []string{"schema/query.graphql"}},
+		"a directory":       {"schema/*", []string{"schema/query.graphql"}},
+		"a named dot-name":  {"schema/.cache/**/*.graphql", []string{"schema/.cache/old.graphql"}},
+		"nothing beneath":   {"schema/**/*.gql", nil},
+		"no such directory": {"nowhere/**/*.graphql", nil},
+	} {
+		got, err := sourceFilesMatching(filepath.Join(dir, filepath.FromSlash(c.pattern)), filepath.Join(dir, "graph", "schema"))
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		for i, m := range got {
+			rel, _ := filepath.Rel(dir, m)
+			got[i] = filepath.ToSlash(rel)
+		}
+		if strings.Join(got, " ") != strings.Join(c.want, " ") {
+			t.Errorf("%s: %s matched %v, want %v", name, c.pattern, got, c.want)
+		}
+	}
+
+	// A pattern that names nothing is a mistake, with ** as without.
+	err = Generate(context.Background(), Config{
+		Dir: dir, SchemaGlobs: []string{"schema/**/*.gql"}, Output: "other", Package: "hello/other",
+	})
+	if err == nil || !strings.Contains(err.Error(), `"schema/**/*.gql" matched no files`) {
+		t.Errorf("err = %v, want the glob named as matching nothing", err)
+	}
+	if _, serr := os.Stat(filepath.Join(dir, "other")); serr == nil {
+		t.Error("output was written for a glob that matched nothing")
+	}
+}
+
+// **/*.graphql from the project's root also matches the copies gqlc itself
+// writes, once it has written them: the first generate worked and the second
+// read every type twice.
+func TestSchemaGlobDoubleStarLeavesGqlcsOwnCopiesAlone(t *testing.T) {
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{
+		"api/query.graphql":     "type Query { ping: Boolean }\n",
+		"api/user/user.graphql": "type User { id: ID! }\nextend type Query { user: User }\n",
+	})
+	cfg := Config{Dir: dir, SchemaGlobs: []string{"**/*.graphql"}, Output: "graph", Package: "hello/graph"}
+	for run := 1; run <= 2; run++ {
+		if err := Generate(context.Background(), cfg); err != nil {
+			t.Fatalf("generate %d: %v", run, err)
+		}
+	}
+	cfg.Check = true
+	if err := Generate(context.Background(), cfg); err != nil {
+		t.Errorf("a check after two generates: %v", err)
 	}
 }

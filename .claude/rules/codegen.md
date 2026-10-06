@@ -34,6 +34,43 @@ that exists, silently. The resolver count did not improve either — AutoBind al
 those as methods, which is the right binding — so the change only demoted a correct method
 call to a wrong field read. The reasoning is on `discoverFields`.
 
+**An object bound by name is read wherever its struct lives, once `AutoBind` is on**
+(`modelPkgs`, the object loop in `autoBind`). `AutoBind` names the packages to discover types
+in; a `Models` entry or the model directive has already said which type, and its package was
+loaded only for an enum or an input. An object bound to a service's own struct therefore had
+its fields written from the SDL's names: `url` became `v.Url` against a field `URL`, a compile
+error in generated code on the real consumer. Such a type is now a `TypeBinding` like a
+discovered one, so the same matching applies. **`goQualifier` has to spell a generated model
+package as `modelName` does at that moment**: models are split per group only after discovery,
+so until then both sides say `model.X`; compared by package name, four fields on the real
+schema whose structs hold another group's enum fell to Resolver methods nobody had written
+(`TestAutoBindRecognisesAnotherGroupsModelInAHandWrittenStruct`). A struct holding generated
+types builds only after the first generate, so that run cannot read it and says so
+(`could not be read`); its output may differ from the next run's, which is the one case where
+two generates disagree. On the real schema the change is one line, `v.Url` to `v.URL`.
+
+**`Scaffold["*"]` is a pattern for every group with a Resolver that no other key names**
+(`expandScaffold`), with `{group}` where the name goes. It is expanded into a plain map before
+anything is emitted, because Wire reads the same map. The real consumer listed 560 lines that
+all said `graph/<group>.Handler`, and a new SDL file failed the generate until a line was
+added; with the one pattern its output is byte-identical.
+
+**A custom scalar is named when it is new, not on every generate** (`reportUnboundScalars`).
+gqlc cannot see `NewSchema`, so a scalar bound long ago reads the same as an unbound one, and
+the real consumer got the same seven names on every run. What has been named is one line of
+the comment on `sdl` in the generated `schema.go`, beside the list of copies and read back by
+the same function (`recordedIn`); the next generate leaves those out. It is a prose line, not
+an indented one, so a reader of the copies list never takes a scalar for a file.
+A check records nothing, so it names a new one each time
+(`TestAScalarIsNamedOnceAndANewOneAlone`).
+
+**`Config.Verify` (`gqlc -verify`) is the one place gqlc compiles Go**, and is off by default
+for that reason. It runs `go build ./<output>/...` after the writes and fails with the first
+twenty lines the compiler printed. It builds everything on every run, not what changed: built
+only when changed, a failure was reported once and passed on the next run, which is the shape
+`verification.md` exists to catch (`TestVerifyFailsAGenerateWhoseOutputDoesNotBuild`). Warm, the
+real consumer's 560 packages build in about four seconds.
+
 `Config.AutoBind` discovers bindings from named packages instead of being told them, and
 produces a `Manifest` — so discovery is the only new behaviour and everything downstream is
 the manifest path. **Only export data is loaded** (`NeedName | NeedTypes | NeedImports |
@@ -281,6 +318,14 @@ was declared elsewhere and no stub took args -- `TestScaffoldKeepsWhatExists` bu
 Four breaks (ignore existing methods, overwrite instead of append, not called, no group check)
 each fail a `TestScaffold*` test.
 
+**Stubs appended to an existing file take that file's import names** (`addImports`): a path
+it already imports under another name is not imported again, and a name it gives another
+package -- a `user` service beside the user group's models -- gives way to `user2`
+(`TestScaffoldStubsUseTheImportsTheFileAlreadyHas`, compiled). **`checkScaffoldTargets`
+matches targets to output directories through one index** (`outputPackages`): asking per
+target whether each output file's directory was the target's tripled a no-op regenerate at 300
+groups, and `TestScaffoldTargetsAreMatchedToOutputInOnePass` counts the probes.
+
 **Scaffold reads each target directory once per run** (`indexPackage`, kept in a map for the
 run). It used to parse the whole target package once per group, which cost nothing while each
 package held ten resolvers and was quadratic once one package held them all: a 300-entity
@@ -291,18 +336,51 @@ because two groups can share one type and the second must see the type the first
 `TestScaffoldTwoGroupsIntoOneType` fails with `Resolver redeclared` without it.
 
 **gqlc refuses three things it used to do silently** (`filesafety_test.go`). Two sources with
-one base name: the SDL copies are embedded by glob from one directory and keyed by base name,
-so a `schema.graphql` per feature folder left one copy for both, the output compiled, and the
+one copy name: the SDL copies are embedded by glob from one directory and keyed by name, so a
+`schema.graphql` per feature folder left one copy for both, the output compiled, and the
 schema failed at start-up on the dropped file's types. A Go file at a path it generates that
 does not carry its header: prune always read the header before deleting, writing went straight
 over the file (`readExisting`, checked for every file before any is written). And an SDL file
-in `Output/schema` that the globs do not name *when the sources are read from that directory*:
-there it is the author's, not a stale copy, and prune deleted it (`authoredSchemaFiles`); it is
-refused rather than kept because the root embeds the directory whole.
+in `Output/schema` that gqlc did not write, wherever the sources are read from
+(`foreignSchemaFiles`); it is refused rather than kept because the root embeds the directory
+whole.
+
+**A copy is `<stem>.graphql`, and which copies are gqlc's is written down.** A source kept its
+own extension, and the root embeds `schema/*.graphql`: gqlgen's `.graphqls` did not compile
+(`no matching files found`), and mixed with `.graphql` it compiled with those files' types
+missing (`copyName`, `TestSchemaSourcesOfAnyExtensionAreEmbedded`, which builds the schema for
+all three mixes). Copy names are compared without letter case on every platform: on macOS
+`a/User.graphql` and `b/user.graphql` were one file written twice at once, holding parts of
+both. A copy carries no header, so prune went by location and deleted a hand-written
+`graph/schema/legacy.graphql` whenever the sources were elsewhere. `schema.go` now lists the
+copies in the comment on `sdl` (`emitEmbed`), the next run reads it back (`recordedCopies`),
+and `schemaLeftovers` splits what a run did not write into *stale* (listed: deleted) and
+*foreign* (not listed: an error naming it, before anything is written, from a check too).
+Output with no list -- from before this -- has nothing known to be gqlc's, so a copy whose
+source went away across the upgrade is refused once. **A test that plants a stale copy by
+hand is planting a foreign file**: use `emptySDL`, a source that declares nothing, generate,
+and remove it.
+
+**`**` in a schema glob is `sourceFilesMatching`, not `filepath.Glob`**, which reads `**` as
+`*` -- one level, silently, for the pattern the workflow guide itself gives. It skips dot
+directories and `Output/schema` (or `**/*.graphql` from the root reads gqlc's own copies as
+second sources on the second run), drops directories a pattern matches, and a file two globs
+name is one source.
 
 **More that compiled wrong or not at all, each refused or fixed at generate time**
 (`review_edges_test.go`, `structfields_test.go`): a group named after a Go keyword, `main`, or a
-name the generated code imports under (`graphql`, `context`, `embed`) gets a `grp` suffix; an
+name the generated code imports under (`graphql`, `context`, `embed`) gets a `grp` suffix -- and
+so does one named after anything predeclared or anything the generated code declares where a
+group's packages are in scope (`reservedGroup`): `error.graphql` made `error` a package in
+every file whose Resolver returns one, and `r`/`v` are the bindings' own parameters, which
+`usedQualifiers` also read as uses of a package. Both sets are listed, not asked of `go/types`:
+asked, `delete.graphql` and `min.graphql` were renamed though nothing generated writes those
+names, and a gqlc built by a newer Go renamed more. Predeclared types and constants are all
+reserved, built-in functions only where an emitter calls one (`append`).
+`TestEveryNameGeneratedCodeDeclaresIsReserved` parses real output and fails on a declared name
+or a called built-in the lists lack, and `TestPredeclaredNamesCoverWhatGeneratedCodeWrites`
+holds them to the universe; mapped-package qualifiers go through the
+same sets (`reservedQualifier`). An
 enum constant with the name of a type in the same model package is an error naming both; a
 `TagDirective` for `json` replaces the `JSONTags` tag instead of following it, since reflect
 answers a repeated key with the first; a control character in a tag key or value, and a
@@ -313,7 +391,20 @@ exits 0 while a stray positional argument is an error. A scalar or enum nested i
 lists, or an input object in more than one, is refused with its coordinate: the engine has no
 binding for the position, so the output compiled and `NewSchema` then failed. A `Package` that
 does not end in a Go package name and a `Models` entry that is not a type expression are refused
-by name instead of as a formatter error over a file that was never written. AutoBind does not
+by name instead of as a formatter error over a file that was never written. An entry is split
+at its *last* dot (`splitModelExpr`): at the first after the last slash,
+`gopkg.in/guregu/null.v4.String` was that formatter error, and `map[string]encoding/json.RawMessage`
+was accepted and imported `"map[string]encoding/json"` (`modelExprOK`). **A list element is
+never `Omittable`** (`goType`): with `NullableInputOmittable`, `tags: [String]` was
+`[]graphql.Omittable[*string]`, which compiled and which `NewSchema` refused
+(`TestOmittableIsNeverAListElement` builds the schema with `InputListPointers` on and off). **The
+list itself is wrapped, and a type that is nil by itself is not pointed at**: a nullable list is
+`Omittable[[]T]`, and a scalar mapped to `map[string]any`, `any` or a slice is
+`Omittable[map[string]any]`, not `Omittable[*map[string]any]`. gqlc left the first a bare slice,
+which cannot tell a list left out from one sent as null, and pointed at the second; the real
+consumer restored both over 699 fields with a regular expression run on the generated models
+after every generate, which also meant `-check` could never pass there. Plain gqlc output now
+matches its post-processed models byte for byte. AutoBind does not
 offer a field tagged `json:"-"` -- ent writes that on every `Sensitive()` column, and it was
 bound by its Go name -- and matches a json tag in key order, where ranging the map picked a
 different one of two fields sharing a tag from one generate to the next.
@@ -395,7 +486,7 @@ and not only for a green suite.
 took any parameter whose type *ended* in the dependencies type's name for the whole value, and
 a service that calls its own dependencies `Deps` is an ordinary thing: gqlc scaffolded
 `NewHandler(dep user2.Deps)`, wired `d.User`, and on the next run -- same input -- read its own
-constructor as taking everything and wired `d`. Now `constructor.takes` resolves the qualifier
+constructor as taking everything and wired `d`. Now `constructor.takesType` resolves the qualifier
 through the declaring file's imports. With it:
 
 - An existing constructor that does not take the dependencies type is passed the group's
@@ -485,6 +576,25 @@ seventeen breaks -- those and the new rules -- each fail one. **"Ten breaks, eac
 test" was true and was not the claim it read as**: it said the ten rules tried were guarded,
 not that every rule was.
 
+**A constructor's parameters are matched to fields by name** (`wireArgs`, `paramField`). The
+one-thing rule fit a project with a service per group and nothing else: on nextapp (558 groups)
+182 groups needed nothing, which `NewHandler(d)` made a compile error, and 28 needed two to 229
+services, which the whole value gave every service the struct holds -- the rebuild cost in the
+table above -- so it wired them with a script of its own. Now none is `NewHandler()`, several
+are `NewHandler(d.A, d.B)` by each parameter's `foldName`, and a parameter of the `Deps` type
+is `d`/`&d` beside them; no name, `_`, a name no field has or two fields fold to, `...`, and a
+name that may be a promoted field are refused before `wire.go` is written, naming target,
+parameter and constructor (`TestWireRefusesAParameterItCannotMatch`). **A single parameter's
+name now wins over the group's field** -- the one change to a constructor that compiled before:
+`NewHandler(post post.Service)` in the user group was `d.User` and is `d.Post`. A name says
+which field more surely than the group does, and before this a group whose one service was not
+named after it had only `wire.pass` to say so. **Except `dep`** (`scaffoldParam`), which is
+what gqlc's own scaffolded constructors call theirs and so says nothing: read as a name, a
+`Dep` field in the dependencies made the run after the scaffold wire every such constructor
+to `d.Dep` -- same input, different `wire.go`, and it compiled where the types matched
+(`TestWireReadsAConstructorItScaffoldedAsItWroteIt` generates twice and checks in between). A name that is no field's falls back exactly as
+before (`TestWireReadsAnExistingConstructorExactly`, `TestWirePassesWhatAnExistingConstructorTakes`).
+
 **The fix for `var NewHandler = build` broke "a group not listed is decided as before", and a
 sixth review found it by diffing eighteen modules against the parent commit's gqlc.** Recorded
 as a constructor that exists with an empty parameter, it sent an unlisted group down the
@@ -563,7 +673,10 @@ deletion report is named under `Output` as written, not as `EvalSymlinks` found 
 puts `TMPDIR` under `/var`, a link to `/private/var`. A file that differs only in CRLF line
 endings is `sameContent` for a generate and a check alike: comparing bytes rewrote, and
 reported stale, every generated file in a Windows checkout with `core.autocrlf`. A check that
-passes prints nothing, notes included, so that it can stand in a hook. Its mutation run left
+passes prints nothing, notes included, so that it can stand in a hook. A stale file behind a
+byte-order mark is found by prune and by a check too: `hasGeneratedHeader` read exactly the
+header's length, so the mark `isGeneratedSource` allows pushed the header out of what was read
+(`TestAStaleGeneratedFileBehindAByteOrderMarkIsPruned`). Its mutation run left
 nineteen of thirty-five alive; each real one has a test now, among them an exact report whose
 three deletions are found in an order that is not the report's -- with two, reversing them
 happened to sort them. `gqlc -h` lists every

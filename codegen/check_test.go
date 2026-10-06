@@ -10,6 +10,11 @@ import (
 	"testing"
 )
 
+// emptySDL is a schema source that declares nothing: it is copied and listed
+// like any other and puts nothing in a package, so removing it leaves exactly
+// one stale file, its copy, which gqlc wrote and so may delete.
+const emptySDL = "# Nothing is declared here.\n"
+
 // snapshot is every file under dir, by path relative to it, with its content.
 func snapshot(t *testing.T, dir string) map[string]string {
 	t.Helper()
@@ -93,20 +98,24 @@ func TestCheckReportsWhatAGenerateWouldChange(t *testing.T) {
 	if strings.Contains(err.Error(), "post") {
 		t.Errorf("a change to the user group reported the post group's files:\n%v", err)
 	}
+	// A source that declares nothing has a copy and no package, so removing
+	// it leaves a stale copy and nothing else.
+	writeFiles(t, dir, map[string]string{"schema/old.graphql": emptySDL})
 	if err := Generate(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
 
-	// A generated file someone edited, and one this run no longer writes.
+	// A generated file someone edited, one this run no longer writes, and
+	// the copy of a source that is gone.
 	gen := filepath.Join(dir, "graph", "post", "generated.go")
 	if err := os.WriteFile(gen, []byte(readFile(t, gen)+"\n// edited by hand\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	leftover := filepath.Join(dir, "graph", "old", "generated.go")
-	writeFiles(t, dir, map[string]string{
-		"graph/old/generated.go":   generatedHeader + "\n\npackage old\n",
-		"graph/schema/old.graphql": "type Old { id: ID! }\n",
-	})
+	writeFiles(t, dir, map[string]string{"graph/old/generated.go": generatedHeader + "\n\npackage old\n"})
+	if err := os.Remove(filepath.Join(dir, "schema", "old.graphql")); err != nil {
+		t.Fatal(err)
+	}
 	_, err = check(t)
 	stale(t, err, "rewrite graph/post/generated.go", "delete graph/old/generated.go", "delete graph/schema/old.graphql")
 	if _, serr := os.Stat(leftover); serr != nil {
@@ -160,16 +169,20 @@ func TestCheckReportIsExact(t *testing.T) {
 		Dir: filepath.Base(dir), SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph",
 		Scaffold: scaffold,
 	}
+	writeFiles(t, dir, map[string]string{"schema/old.graphql": emptySDL})
 	if err := Generate(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
 	// Three to delete, found in an order that is not the report's: two
-	// leftovers by the walk, and the SDL copy after them by the glob.
+	// leftovers by the walk, and after them, by the glob, the copy of a
+	// source that is gone.
 	writeFiles(t, dir, map[string]string{
-		"graph/aaa/generated.go":   generatedHeader + "\n\npackage aaa\n",
-		"graph/zzz/generated.go":   generatedHeader + "\n\npackage zzz\n",
-		"graph/schema/old.graphql": "type Old { id: ID! }\n",
+		"graph/aaa/generated.go": generatedHeader + "\n\npackage aaa\n",
+		"graph/zzz/generated.go": generatedHeader + "\n\npackage zzz\n",
 	})
+	if err := os.Remove(filepath.Join(dir, "schema", "old.graphql")); err != nil {
+		t.Fatal(err)
+	}
 	gen := filepath.Join(dir, "graph", "post", "generated.go")
 	if err := os.WriteFile(gen, []byte(readFile(t, gen)+"\n// edited\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -182,6 +195,7 @@ func TestCheckReportIsExact(t *testing.T) {
 	const want = "codegen: generated code is not current; a generate would\n" +
 		"  create graph/user/generated.go\n" +
 		"  rewrite graph/post/generated.go\n" +
+		"  rewrite graph/schema.go\n" +
 		"  delete graph/aaa/generated.go\n" +
 		"  delete graph/schema/old.graphql\n" +
 		"  delete graph/zzz/generated.go"
@@ -286,5 +300,247 @@ func TestCheckFindsLeftoversThroughALinkedOutput(t *testing.T) {
 	cfg.Check = true
 	if err := Generate(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "delete graph/old/generated.go") {
 		t.Fatalf("err = %v, want the leftover found through the link and named under it", err)
+	}
+}
+
+// An eighth review, of Config.Check as committed, by running a check and a
+// generate side by side.
+
+// Every refusal scaffolding makes is made before anything is written, by a
+// generate as by a check. They used to come last, after the generated files
+// were written and the old ones pruned, so a misspelt scaffold key left a
+// tree half this run's; and a check, which stopped before scaffolding,
+// called the same setup current.
+func TestScaffoldRefusalsComeBeforeAnythingIsWritten(t *testing.T) {
+	both := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
+	for name, c := range map[string]struct {
+		scaffold map[string]string
+		files    map[string]string
+		want     string
+	}{
+		"a key that is no group": {map[string]string{"user": "graph/user.Handler", "peple": "internal/people.R"}, nil, "peple"},
+		// tag.graphql declares a type and no field a Resolver answers.
+		"a group with no Resolver": {map[string]string{"user": "graph/user.Handler", "tag": "graph/tag.Handler"},
+			map[string]string{"schema/tag.graphql": "type Tag { id: ID! }\n"}, `"tag" is not a group with a Resolver`},
+		// The gqlgen habit: the implementation named after the interface
+		// generated.go declares beside it.
+		"a type the generated code declares": {map[string]string{"user": "graph/user.Resolver", "post": "graph/post.Handler"}, nil, "Resolver is declared by the generated code"},
+		"a target directory that is a file":  {map[string]string{"user": "internal/user.H", "post": "graph/post.Handler"}, map[string]string{"internal/user": "a file\n"}, "internal/user"},
+		"a target package that does not parse": {both,
+			map[string]string{"graph/user/handler.go": "package user\n\nfunc (\n"}, "handler.go"},
+		"a name of the author's that generated code declares": {both,
+			map[string]string{"graph/user/mine.go": "package user\n\n// Bindings is the author's.\nfunc Bindings() {}\n"}, "declares Bindings"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir, _ := wireFieldModule(t, both, wireFieldDeps)
+			writeFiles(t, dir, c.files)
+			cfg := Config{Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph", Scaffold: c.scaffold}
+			before := snapshot(t, dir)
+			err := Generate(context.Background(), cfg)
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("a generate says %v, want a refusal mentioning %q", err, c.want)
+			}
+			if after := snapshot(t, dir); len(after) != len(before) {
+				t.Errorf("a refused generate wrote or deleted files: %d before, %d after", len(before), len(after))
+			}
+			cfg.Check = true
+			if err := Generate(context.Background(), cfg); err == nil || errors.Is(err, ErrStale) || !strings.Contains(err.Error(), c.want) {
+				t.Errorf("a check says %v, where a generate refuses with %q", err, c.want)
+			}
+		})
+	}
+}
+
+// An SDL copy is written as the source is, line endings and all, so it is
+// the one generated file whose endings gqlc does not choose: a CRLF source
+// beside an LF copy, and the reverse, are the same content.
+func TestSchemaCopiesAreComparedWhateverTheirLineEndings(t *testing.T) {
+	scaffold := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
+	dir, generate := wireFieldModule(t, scaffold, wireFieldDeps)
+	src := filepath.Join(dir, "schema", "user.graphql")
+	if err := os.WriteFile(src, []byte(strings.ReplaceAll(readFile(t, src), "\n", "\r\n")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := generate(); err != nil {
+		t.Fatal(err)
+	}
+	// The copy as a checkout with eol=lf leaves it.
+	copyPath := filepath.Join(dir, "graph", "schema", "user.graphql")
+	if err := os.WriteFile(copyPath, []byte(strings.ReplaceAll(readFile(t, copyPath), "\r\n", "\n")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := Generate(context.Background(), Config{
+		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph",
+		Scaffold: scaffold, Wire: Wire{Deps: "hello/internal/deps.Deps"}, Check: true,
+	})
+	if err != nil {
+		t.Errorf("an LF copy of a CRLF source was reported: %v", err)
+	}
+}
+
+// What is a change and what is not, at the edges of sameContent.
+func TestSameContent(t *testing.T) {
+	for name, c := range map[string]struct {
+		disk, generated string
+		same            bool
+	}{
+		"equal":                         {"a\nb\n", "a\nb\n", true},
+		"CRLF on disk":                  {"a\r\nb\r\n", "a\nb\n", true},
+		"CRLF generated, LF on disk":    {"a\nb\n", "a\r\nb\r\n", true},
+		"mixed on disk":                 {"a\r\nb\n", "a\nb\n", true},
+		"a lone carriage return":        {"a\rb\n", "a\nb\n", false},
+		"CRLF and a real change":        {"a\r\nc\r\n", "a\nb\n", false},
+		"empty on disk":                 {"", "a\n", false},
+		"a byte-order mark on disk":     {"\ufeffa\n", "a\n", false},
+		"line endings and nothing else": {"\r\n", "\n", true},
+	} {
+		if got := sameContent([]byte(c.disk), []byte(c.generated)); got != c.same {
+			t.Errorf("%s: sameContent = %v, want %v", name, got, c.same)
+		}
+	}
+}
+
+// Report names, where they are not plainly under Config.Dir: a new directory
+// under an Output spelled through its real path while Config.Dir is spelled
+// through a link, and an Output outside Config.Dir.
+func TestCheckNamesPathsTheSameWayEverywhere(t *testing.T) {
+	scaffold := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
+	dir, _ := wireFieldModule(t, scaffold, wireFieldDeps)
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("a new directory under an Output spelled another way", func(t *testing.T) {
+		if real == dir {
+			t.Skip("the temporary directory is not reached through a link here")
+		}
+		err := Generate(context.Background(), Config{
+			Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: filepath.Join(real, "graph"), Package: "hello/graph",
+			Scaffold: scaffold, Check: true,
+		})
+		for _, line := range strings.Split(err.Error(), "\n")[1:] {
+			if f := strings.Fields(line); len(f) == 2 && !strings.HasPrefix(f[1], "graph/") {
+				t.Errorf("named %q, not relative to Config.Dir:\n%v", f[1], err)
+			}
+		}
+	})
+	t.Run("an Output outside Config.Dir", func(t *testing.T) {
+		out := filepath.Join(t.TempDir(), "elsewhere")
+		err := Generate(context.Background(), Config{
+			Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: out, Package: "hello/graph",
+			Scaffold: scaffold, Check: true,
+		})
+		for _, line := range strings.Split(err.Error(), "\n")[1:] {
+			if f := strings.Fields(line); len(f) == 2 && !filepath.IsAbs(filepath.FromSlash(f[1])) {
+				t.Errorf("named %q, where outside Config.Dir a path is absolute:\n%v", f[1], err)
+			}
+		}
+	})
+}
+
+// Files a run left wrong in ways that are not an edit: empty, as an
+// interrupted write leaves one, and carrying a byte-order mark, as some
+// editors add one. Both are gqlc's to rewrite, and a check says so.
+func TestCheckReportsAnEmptyOrMarkedGeneratedFile(t *testing.T) {
+	scaffold := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
+	dir, generate := wireFieldModule(t, scaffold, wireFieldDeps)
+	if err := generate(); err != nil {
+		t.Fatal(err)
+	}
+	user := filepath.Join(dir, "graph", "user", "generated.go")
+	post := filepath.Join(dir, "graph", "post", "generated.go")
+	if err := os.WriteFile(user, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(post, []byte("\ufeff"+readFile(t, post)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := Generate(context.Background(), Config{
+		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph",
+		Scaffold: scaffold, Check: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "rewrite graph/user/generated.go") || !strings.Contains(err.Error(), "rewrite graph/post/generated.go") {
+		t.Fatalf("err = %v, want both reported as rewrites", err)
+	}
+	if err := generate(); err != nil {
+		t.Fatalf("a generate refused a file of its own with a byte-order mark: %v", err)
+	}
+	if strings.HasPrefix(readFile(t, post), "\ufeff") {
+		t.Error("the byte-order mark is still there")
+	}
+}
+
+// A byte-order mark does not make a file somebody else's when gqlc stops
+// writing it, either. The header was looked for in exactly as many bytes as
+// it is long, so behind a mark it was never found: the file was left, still
+// compiling, and a check called the tree current.
+func TestAStaleGeneratedFileBehindAByteOrderMarkIsPruned(t *testing.T) {
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{
+		"sdl/query.graphql":  "type Query { ping: Boolean }\n",
+		"sdl/legacy.graphql": "input LegacyOrder { by: String }\nextend type Query { legacy(order: LegacyOrder): Boolean }\n",
+	})
+	cfg := Config{Dir: dir, SchemaGlobs: []string{"sdl/*.graphql"}, Output: "graph", Package: "hello/graph"}
+	if err := Generate(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	stale := []string{"graph/legacy/generated.go", "graph/model/legacy/models.go"}
+	for _, rel := range stale {
+		p := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.WriteFile(p, []byte("\ufeff"+readFile(t, p)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Remove(filepath.Join(dir, "sdl", "legacy.graphql")); err != nil {
+		t.Fatal(err)
+	}
+	check := cfg
+	check.Check = true
+	err := Generate(context.Background(), check)
+	for _, rel := range stale {
+		if err == nil || !strings.Contains(err.Error(), "delete "+rel) {
+			t.Errorf("a check does not say %s would be deleted: %v", rel, err)
+		}
+	}
+	if err := Generate(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range stale {
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel))); !os.IsNotExist(err) {
+			t.Errorf("%s outlived its SDL behind a byte-order mark (stat err %v)", rel, err)
+		}
+	}
+}
+
+// Pruning removes a directory it emptied, and a link to one is not that
+// directory: os.Remove deletes the link whatever is behind it, and with
+// schema/ linked elsewhere, a stale copy took the author's link with it.
+func TestPruneLeavesALinkedDirectory(t *testing.T) {
+	scaffold := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
+	dir, generate := wireFieldModule(t, scaffold, wireFieldDeps)
+	for _, d := range []string{"elsewhere/schema", "graph"} {
+		if err := os.MkdirAll(filepath.Join(dir, filepath.FromSlash(d)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(dir, "elsewhere", "schema"), filepath.Join(dir, "graph", "schema")); err != nil {
+		t.Skipf("cannot create a symlink here: %v", err)
+	}
+	writeFiles(t, dir, map[string]string{"schema/old.graphql": emptySDL})
+	if err := generate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, "schema", "old.graphql")); err != nil {
+		t.Fatal(err)
+	}
+	if err := generate(); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(filepath.Join(dir, "graph", "schema"))
+	if err != nil || info.Mode()&fs.ModeSymlink == 0 {
+		t.Errorf("the link was removed or replaced: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "elsewhere", "schema", "old.graphql")); err == nil {
+		t.Error("the stale copy was not pruned")
 	}
 }

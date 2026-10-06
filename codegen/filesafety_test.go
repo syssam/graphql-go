@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -190,5 +191,190 @@ func TestGenerateOverwritesAnEmptyGoFile(t *testing.T) {
 	}
 	if src, _ := os.ReadFile(filepath.Join(dir, "graph", "generated.go")); !isGeneratedSource(src) {
 		t.Fatal("the empty file was not replaced by generated output")
+	}
+}
+
+// A source is copied under its own stem and .graphql, whatever it is called:
+// the root package embeds schema/*.graphql, and gqlgen's schema.graphqls, kept
+// under that name, was a copy nothing embedded. With every source named so
+// the package did not compile; with some, it compiled and the schema was
+// missing their types.
+func TestSchemaSourcesOfAnyExtensionAreEmbedded(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping go test subprocess")
+	}
+	dir := t.TempDir()
+	const query, user, post = "type Query { ping: Boolean }\n",
+		"type User { id: ID! name: String! }\nextend type Query { user(id: ID!): User }\n",
+		"type Post { id: ID! title: String! }\nextend type Query { post(id: ID!): Post }\n"
+	writeFiles(t, dir, map[string]string{
+		"gqlgen/query.graphqls": query, "gqlgen/user.graphqls": user, "gqlgen/post.graphqls": post,
+		"mixed/query.graphql": query, "mixed/user.graphqls": user, "mixed/post.gql": post,
+		"plain/query.graphql": query, "plain/user.graphql": user, "plain/post.graphql": post,
+	})
+	var roots []string
+	for _, name := range []string{"gqlgen", "mixed", "plain"} {
+		cfg := Config{Dir: dir, SchemaGlobs: []string{name + "/*"}, Output: name + "/graph", Package: "hello/" + name + "/graph"}
+		if err := Generate(context.Background(), cfg); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		for _, stem := range []string{"query", "user", "post"} {
+			if _, err := os.Stat(filepath.Join(dir, name, "graph", "schema", stem+".graphql")); err != nil {
+				t.Errorf("%s: the copy of %s is not where the root package embeds it from: %v", name, stem, err)
+			}
+		}
+		cfg.Check = true
+		if err := Generate(context.Background(), cfg); err != nil {
+			t.Errorf("%s: a check straight after a generate: %v", name, err)
+		}
+		roots = append(roots, "hello/"+name+"/graph")
+	}
+	validateGenerated(t, dir, roots...)
+}
+
+// Two sources whose copies would have one name are refused, and a name is
+// compared without letter case and without its extension: on a filesystem
+// that ignores case User.graphql and user.graphql are one file, which two
+// writes at once left holding parts of both.
+func TestGenerateRefusesSourcesWhoseCopiesCollide(t *testing.T) {
+	for name, files := range map[string][2]string{
+		"letter case": {"a/User.graphql", "b/user.graphql"},
+		"extension":   {"a/user.graphqls", "b/user.graphql"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFiles(t, dir, map[string]string{
+				files[0]: "type User { id: ID! }\ntype Query { me: User }\n",
+				files[1]: "type Post { id: ID! }\nextend type Query { post: Post }\n",
+			})
+			err := Generate(context.Background(), Config{
+				Dir: dir, SchemaGlobs: []string{"a/*", "b/*"}, Output: "graph", Package: "hello/graph",
+			})
+			if err == nil {
+				t.Fatal("generated from two sources with one copy between them")
+			}
+			for _, want := range files {
+				if !strings.Contains(filepath.ToSlash(err.Error()), want) {
+					t.Errorf("the error does not name %s: %v", want, err)
+				}
+			}
+			if _, serr := os.Stat(filepath.Join(dir, "graph")); serr == nil {
+				t.Error("output was written before the collision was reported")
+			}
+		})
+	}
+}
+
+// gqlc deletes a copy only when it wrote it, which the list in schema.go
+// says: a file in Output/schema that is neither a source's copy nor on that
+// list is somebody's SDL, and it was deleted because nothing told the two
+// apart. It cannot be left either, since the root embeds the directory, so it
+// is named and the generate refused, by a check as well.
+func TestGenerateNeverDeletesAnSDLFileItDidNotWrite(t *testing.T) {
+	const legacy = "# kept by hand\ntype Legacy { id: ID! }\n"
+	refused := func(t *testing.T, cfg Config, dir string) {
+		t.Helper()
+		before := snapshot(t, dir)
+		for _, check := range []bool{false, true} {
+			cfg.Check = check
+			err := Generate(context.Background(), cfg)
+			if err == nil || errors.Is(err, ErrStale) || !strings.Contains(filepath.ToSlash(err.Error()), "graph/schema/legacy.graphql") {
+				t.Errorf("check=%v: err = %v, want a refusal naming graph/schema/legacy.graphql", check, err)
+			}
+		}
+		after := snapshot(t, dir)
+		if after["graph/schema/legacy.graphql"] != legacy {
+			t.Errorf("legacy.graphql is gone or changed: %q", after["graph/schema/legacy.graphql"])
+		}
+		if len(after) != len(before) {
+			t.Errorf("a refused generate wrote or deleted files: %d before, %d after", len(before), len(after))
+		}
+	}
+	t.Run("before the first generate", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFiles(t, dir, map[string]string{"api/query.graphql": "type Query { ok: Boolean! }\n", "graph/schema/legacy.graphql": legacy})
+		refused(t, Config{Dir: dir, SchemaGlobs: []string{"api/*.graphql"}, Output: "graph", Package: "hello/graph"}, dir)
+	})
+	t.Run("beside copies gqlc wrote", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFiles(t, dir, map[string]string{"api/query.graphql": "type Query { ok: Boolean! }\n", "api/b.graphql": "type B { id: ID! }\n"})
+		cfg := Config{Dir: dir, SchemaGlobs: []string{"api/*.graphql"}, Output: "graph", Package: "hello/graph"}
+		if err := Generate(context.Background(), cfg); err != nil {
+			t.Fatal(err)
+		}
+		writeFiles(t, dir, map[string]string{"graph/schema/legacy.graphql": legacy})
+		if err := os.Remove(filepath.Join(dir, "api", "b.graphql")); err != nil {
+			t.Fatal(err)
+		}
+		refused(t, cfg, dir)
+		// With it out of the way, the copy gqlc did write goes as before.
+		if err := os.Remove(filepath.Join(dir, "graph", "schema", "legacy.graphql")); err != nil {
+			t.Fatal(err)
+		}
+		if err := Generate(context.Background(), cfg); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "graph", "schema", "b.graphql")); !os.IsNotExist(err) {
+			t.Errorf("the copy of a deleted source, which gqlc wrote, is still embedded (stat err %v)", err)
+		}
+	})
+	// Output from before schema.go carried the list says nothing about what
+	// gqlc wrote, so nothing there is known to be its own.
+	t.Run("output with no list", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFiles(t, dir, map[string]string{"api/query.graphql": "type Query { ok: Boolean! }\n", "api/legacy.graphql": legacy})
+		cfg := Config{Dir: dir, SchemaGlobs: []string{"api/*.graphql"}, Output: "graph", Package: "hello/graph"}
+		if err := Generate(context.Background(), cfg); err != nil {
+			t.Fatal(err)
+		}
+		schema := filepath.Join(dir, "graph", "schema.go")
+		src := readFile(t, schema)
+		start, end := strings.Index(src, "// sdl is"), strings.Index(src, "//go:embed")
+		if start < 0 || end < start {
+			t.Fatalf("schema.go carries no list of the copies:\n%s", src)
+		}
+		if err := os.WriteFile(schema, []byte(src[:start]+src[end:]), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(filepath.Join(dir, "api", "legacy.graphql")); err != nil {
+			t.Fatal(err)
+		}
+		refused(t, cfg, dir)
+	})
+}
+
+// The list of copies is written by one function and read back by another,
+// through gofmt and whatever a checkout does to line endings in between.
+func TestRecordedCopiesReadsBackWhatWasWritten(t *testing.T) {
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{
+		"api/query.graphql":      "type Query { ok: Boolean! }\n",
+		"api/user.graphqls":      "type User { id: ID! }\n",
+		"api/order item.graphql": "type OrderItem { id: ID! }\n",
+	})
+	if err := Generate(context.Background(), Config{Dir: dir, SchemaGlobs: []string{"api/*"}, Output: "graph", Package: "hello/graph"}); err != nil {
+		t.Fatal(err)
+	}
+	src := readFile(t, filepath.Join(dir, "graph", "schema.go"))
+	const want = "order item.graphql query.graphql user.graphql"
+	for name, schemaGo := range map[string]string{
+		"as written":               src,
+		"with CRLF":                strings.ReplaceAll(src, "\n", "\r\n"),
+		"behind a byte-order mark": "\ufeff" + src,
+	} {
+		copies, _ := recordedIn([]byte(schemaGo))
+		if got := strings.Join(copies, " "); got != want {
+			t.Errorf("%s: read back %q, want %q", name, got, want)
+		}
+	}
+	for name, schemaGo := range map[string]string{
+		"no file":                    "",
+		"does not parse":             "package graph\n\nfunc (\n",
+		"no list":                    "package graph\n\nimport \"embed\"\n\n//go:embed schema/*.graphql\nvar sdl embed.FS\n",
+		"another variable's comment": "package graph\n\n// other lists:\n//\n//\tx.graphql\nvar other int\n",
+	} {
+		if got, _ := recordedIn([]byte(schemaGo)); got != nil {
+			t.Errorf("%s: read back %q from a file that lists nothing", name, got)
+		}
 	}
 }

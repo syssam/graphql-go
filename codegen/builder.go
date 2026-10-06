@@ -4,7 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"github.com/syssam/graphql-go/fed"
+	"github.com/syssam/graphql-go/internal/fedlink"
+	goast "go/ast"
+	"go/parser"
 	"go/token"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -16,11 +20,20 @@ import (
 
 	"github.com/vektah/gqlparser/v2"
 	"github.com/vektah/gqlparser/v2/ast"
+	sdlparser "github.com/vektah/gqlparser/v2/parser"
 )
 
 type builder struct {
-	cfg Config
-	dir string
+	// scalarsNamedBefore is the custom scalars the last generate named, read
+	// from its schema.go, and unboundScalars the ones this schema has: see
+	// reportUnboundScalars.
+	scalarsNamedBefore []string
+	unboundScalars     []string
+
+	// fedNames is how a federated schema spells the federation directives.
+	fedNames fedlink.Spellings
+	cfg      Config
+	dir      string
 
 	// wire is what Config.Wire needs of the dependencies struct and the
 	// scaffold targets, read once. See wireFields and wireArg.
@@ -97,9 +110,26 @@ type builder struct {
 	// exprQualifiers is its inverse, import path to qualifier, filled with it.
 	exprQualifiers map[string]string
 	exprScans      int
+	// checked is each file checkScaffoldTargets parsed, by path, for
+	// indexPackage to take: the author's files are read before anything is
+	// written and again to scaffold, and parsed once. It is taken only where
+	// the file still holds the bytes parsed. In between, the run writes its
+	// output, prunes, and scaffolds into the same directories, which a second
+	// path may reach, so only the bytes say a parse is of the file as it is.
+	checked map[string]*targetFile
 	// scaffoldParses counts the files scaffold parses, which must be each
 	// file once per run however many groups share a package.
 	scaffoldParses int
+	// pkgNames memoizes packageName until scaffolding is set, which scaffold
+	// does: from there the run has written packages and goes on writing them.
+	// pkgNameReads counts the asks that went to the files.
+	pkgNames     map[string]string
+	scaffolding  bool
+	pkgNameReads int
+	// scaffoldProbes counts how often checkScaffoldTargets asks the
+	// filesystem where a directory is, which must grow with the directories
+	// and not with targets times output files.
+	scaffoldProbes int
 
 	// loads counts calls to packages.Load. "It reads no Go type information
 	// without AutoBind" is a promise the documentation makes and only the
@@ -211,20 +241,26 @@ func (b *builder) markerMethods(name string) []string {
 
 func newBuilder(dir string, cfg Config) (*builder, error) {
 	var srcs []*ast.Source
+	// A file two globs both name is one source: schema/**/*.graphql beside a
+	// file under schema/ named outright would otherwise define its types twice.
+	loaded := map[string]bool{}
 	for _, glob := range cfg.SchemaGlobs {
 		pattern := glob
 		if !filepath.IsAbs(pattern) {
 			pattern = filepath.Join(dir, glob)
 		}
-		matches, err := filepath.Glob(pattern)
+		matches, err := sourceFilesMatching(pattern, filepath.Join(outputDir(dir, cfg.Output), "schema"))
 		if err != nil {
 			return nil, fmt.Errorf("codegen: glob %q: %w", glob, err)
 		}
 		if len(matches) == 0 {
 			return nil, fmt.Errorf("codegen: glob %q matched no files", glob)
 		}
-		slices.Sort(matches)
 		for _, path := range matches {
+			if loaded[path] {
+				continue
+			}
+			loaded[path] = true
 			raw, err := os.ReadFile(path)
 			if err != nil {
 				return nil, err
@@ -233,10 +269,19 @@ func newBuilder(dir string, cfg Config) (*builder, error) {
 		}
 	}
 	load := srcs
+	var fedNames fedlink.Spellings
 	if cfg.Federation {
+		// The directives as this schema spells them, which is how
+		// fed.Subgraph reads it: under a link's namespace or an import's own
+		// name as well as bare. A schema that does not parse says so below.
+		directives := fed.Directives
+		if doc, err := sdlparser.ParseSchemas(srcs...); err == nil {
+			fedNames = fedlink.Read(doc, fed.Directives)
+			directives += fedNames.Declare(fed.Directives)
+		}
 		// BuiltIn: the directives are the protocol's, not the author's, and
 		// nothing is generated for them.
-		load = append([]*ast.Source{{Name: "federation.graphql", Input: fed.Directives, BuiltIn: true}}, srcs...)
+		load = append([]*ast.Source{{Name: "federation.graphql", Input: directives, BuiltIn: true}}, srcs...)
 	}
 	sch, err := gqlparser.LoadSchema(load...)
 	if err != nil {
@@ -250,6 +295,7 @@ func newBuilder(dir string, cfg Config) (*builder, error) {
 		cfg:      cfg,
 		dir:      dir,
 		schema:   sch,
+		fedNames: fedNames,
 		sources:  srcs,
 		pkgName:  pkgName,
 		modelImp: cfg.Package + "/model",
@@ -305,6 +351,113 @@ func newBuilder(dir string, cfg Config) (*builder, error) {
 		return nil, fmt.Errorf("codegen: %w", err)
 	}
 	return b, nil
+}
+
+// sourceFilesMatching is the files a schema glob names, sorted. It is
+// filepath.Glob with two differences. A path element that is exactly ** stands
+// for any number of directories, none included, so schema/**/*.graphql is
+// every SDL file under schema/ at any depth: filepath.Glob reads ** as *, one
+// level and no other, which left out the files beside the pattern and the
+// ones two levels down, silently. And a directory a pattern matches is not a
+// source, where reading it as one failed the generate.
+//
+// ** does not descend into a directory whose name starts with a dot, as a
+// shell's does not: **/*.graphql from a project's root would otherwise read
+// .git and every editor's cache. Nor into copies, the directory gqlc writes
+// its copies of the sources to, which the same pattern would otherwise find
+// on the second run and read as a second source of every type. A pattern
+// that names either directory outright still reads it.
+func sourceFilesMatching(pattern, copies string) ([]string, error) {
+	seen := map[string]bool{}
+	if err := matchSources(filepath.Clean(pattern), copies, seen); err != nil {
+		return nil, err
+	}
+	return slices.Sorted(maps.Keys(seen)), nil
+}
+
+func matchSources(pattern, copies string, into map[string]bool) error {
+	elems := strings.Split(filepath.ToSlash(pattern), "/")
+	star := slices.Index(elems, "**")
+	if star < 0 {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			return err
+		}
+		for _, m := range matches {
+			if fi, err := os.Stat(m); err == nil && !fi.IsDir() {
+				into[m] = true
+			}
+		}
+		return nil
+	}
+	base := filepath.FromSlash(strings.Join(elems[:star], "/"))
+	switch {
+	case star == 0:
+		base = "."
+	case base == "":
+		base = string(filepath.Separator)
+	}
+	rest := filepath.FromSlash(strings.Join(elems[star+1:], "/"))
+	if rest == "" {
+		// Nothing after it: every file beneath.
+		rest = "*"
+	}
+	roots, err := filepath.Glob(base)
+	if err != nil {
+		return err
+	}
+	for _, root := range roots {
+		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if !d.IsDir() {
+				return nil
+			}
+			if path != root && (strings.HasPrefix(d.Name(), ".") || (strings.EqualFold(d.Name(), filepath.Base(copies)) && samePath(path, copies))) {
+				return filepath.SkipDir
+			}
+			return matchSources(filepath.Join(globLiteral(path), rest), copies, into)
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// globLiteral is path as a pattern that matches only itself. The directories
+// ** walks into are names on disk and may hold a pattern's characters:
+// routes/[id] read as a pattern is a character class its own name does not
+// match. Each is written as a class of one, which means the same on every
+// platform; a backslash escape does not, being the separator on Windows. A
+// backslash in a name, where it is not the separator, is doubled.
+func globLiteral(path string) string {
+	if !strings.ContainsAny(path, `*?[\`) {
+		return path
+	}
+	var b strings.Builder
+	for _, r := range path {
+		switch {
+		case r == '*' || r == '?' || r == '[':
+			b.WriteByte('[')
+			b.WriteRune(r)
+			b.WriteByte(']')
+		case r == '\\' && filepath.Separator != '\\':
+			b.WriteString(`\\`)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// copyName is the name a schema source is copied into Output/schema under:
+// its own, with the extension the generated root embeds. A source may be
+// called anything -- gqlgen's are .graphqls -- and a copy that kept another
+// extension was one the embed never saw.
+func copyName(source string) string {
+	return fileStem(filepath.FromSlash(source)) + ".graphql"
 }
 
 // checkListDepth refuses a position whose list nesting the engine has no
@@ -487,6 +640,9 @@ func (b *builder) extraQualifier(path string) string {
 		}
 	}
 	taken := func(q string) bool {
+		if reservedQualifier(q) {
+			return true
+		}
 		if p, ok := b.modelExprImports()[q]; ok && p != path {
 			return true
 		}
@@ -771,16 +927,25 @@ func (b *builder) modelQualifier(pkg string) string {
 
 func (b *builder) goType(t *ast.Type, selfPkg string, omitNull bool) string {
 	if t.Elem != nil {
-		inner := b.goType(t.Elem, selfPkg, omitNull)
+		// An element is never Omittable, whatever the field is: Omittable says
+		// whether a field was sent, an element of a list always is, and the
+		// engine binds E or *E there and nothing else. Passing omitNull down
+		// compiled and left NewSchema refusing every input with a list of
+		// nullable elements.
+		inner := b.goType(t.Elem, selfPkg, false)
 		if b.cfg.InputListPointers && t.Elem.Elem == nil {
 			if def := b.schema.Types[t.Elem.NamedType]; def != nil && def.Kind == ast.InputObject {
-				// An element is *T whether or not it may be null; a nullable
-				// element is never wrapped in Omittable, only a whole field is.
-				inner = b.goType(t.Elem, selfPkg, false)
+				// An element is *T whether or not it may be null.
 				if !strings.HasPrefix(inner, "*") {
 					inner = "*" + inner
 				}
 			}
+		}
+		// The list itself is a field, and a nullable one is wrapped as any
+		// other is: nil stands for both a list left out and one sent as null,
+		// which a PATCH-style input has to tell apart.
+		if omitNull && !t.NonNull {
+			return "graphql.Omittable[[]" + inner + "]"
 		}
 		return "[]" + inner
 	}
@@ -799,6 +964,13 @@ func (b *builder) goType(t *ast.Type, selfPkg string, omitNull bool) string {
 	}
 	if !t.NonNull {
 		if omitNull {
+			// A Go type that is nil by itself needs no pointer to be null:
+			// a scalar mapped to map[string]any or to any was wrapped as
+			// Omittable[*map[string]any], a pointer to a map, which no caller
+			// wants to take the address of a literal to fill.
+			if base == "any" || strings.HasPrefix(base, "map[") || strings.HasPrefix(base, "[]") {
+				return "graphql.Omittable[" + base + "]"
+			}
 			return "graphql.Omittable[*" + strings.TrimPrefix(base, "*") + "]"
 		}
 		if !strings.HasPrefix(base, "*") && base != "any" {
@@ -849,20 +1021,82 @@ func (b *builder) modelRef(typeName, ident string) string {
 //
 //	"time.Time"                  -> "time",        "time.Time"
 //	"example.com/x/shop.Product" -> "example.com/x/shop", "shop.Product"
+//	"gopkg.in/yaml.v3.Node"      -> "gopkg.in/yaml.v3",   "yamlv3.Node"
 //	"string"                     -> "",            "string"
 //
 // Without this the whole import path was written inline, which is not valid
 // Go, so any model outside a package the generator already imports failed.
+//
+// The type is what follows the last dot. Cutting at the first one after the
+// last slash took yaml.v3 apart, and a path element may carry a dot. The
+// reference's qualifier is the path's last element where that is an
+// identifier, which is all it was before, and an identifier made from it
+// where it is not.
 func splitModelExpr(expr string) (importPath, ref string) {
 	bare := strings.TrimLeft(expr, "*[]")
 	prefix := expr[:len(expr)-len(bare)]
-	slash := strings.LastIndex(bare, "/")
-	dot := strings.Index(bare[slash+1:], ".")
-	if dot < 0 {
+	dot := strings.LastIndex(bare, ".")
+	if dot < 0 || dot < strings.LastIndex(bare, "/") {
 		return "", expr
 	}
-	pkgEnd := slash + 1 + dot
-	return bare[:pkgEnd], prefix + bare[slash+1:]
+	importPath = bare[:dot]
+	qualifier := importPath[strings.LastIndex(importPath, "/")+1:]
+	if !token.IsIdentifier(qualifier) {
+		qualifier = identFrom(qualifier)
+	}
+	return importPath, prefix + qualifier + bare[dot:]
+}
+
+// modelExprOK reports whether a Config.Models entry can be written into
+// generated code: a Go type naming nothing outside the universe, or
+// import/path.Type behind any run of * and [], where Type may be a generic
+// instantiated over predeclared types. Anything else that names a package --
+// a map or a generic over another package's type -- has more than one import
+// in it, which an entry has no way to spell; a named type declared for it can
+// be mapped instead.
+func modelExprOK(expr string) bool {
+	importPath, ref := splitModelExpr(expr)
+	if importPath == "" {
+		// A slash is in no Go type, so this is a path with no type after it.
+		_, err := parser.ParseExpr(ref)
+		return err == nil && !strings.Contains(expr, "/")
+	}
+	if !importPathOK(importPath) {
+		return false
+	}
+	// The type is after the last dot, so type arguments here hold no dot and
+	// name no second package.
+	name := ref[strings.LastIndex(ref, ".")+1:]
+	if token.IsIdentifier(name) {
+		return true
+	}
+	open := strings.IndexByte(name, '[')
+	if open <= 0 || !token.IsIdentifier(name[:open]) {
+		return false
+	}
+	inst, err := parser.ParseExpr(name)
+	if err != nil {
+		return false
+	}
+	switch inst.(type) {
+	case *goast.IndexExpr, *goast.IndexListExpr:
+		return true
+	}
+	return false
+}
+
+// importPathOK reports whether p can be written as an import path: elements
+// between slashes, each of the characters the Go specification allows one.
+func importPathOK(p string) bool {
+	for elem := range strings.SplitSeq(p, "/") {
+		if elem == "" {
+			return false
+		}
+	}
+	return !strings.ContainsFunc(p, func(r rune) bool {
+		return r == utf8.RuneError || !unicode.IsGraphic(r) || unicode.IsSpace(r) ||
+			strings.ContainsRune("!\"#$%&'()*,:;<=>?[\\]^`{|}", r)
+	})
 }
 
 // modelExprImports maps the package qualifier used in generated code to the
@@ -896,12 +1130,16 @@ func (b *builder) modelExprImports() map[string]string {
 	return out
 }
 
-// reservedQualifiers are the names every generated file may already import
-// under, so no mapped package may take one.
-var reservedQualifiers = map[string]bool{"graphql": true, "context": true}
+// reservedQualifier reports whether no mapped package may be imported under
+// q: a name every generated file may already import under, one a group's file
+// declares for itself, or one that is Go's own. A package whose path ends in
+// /error, or in /v, was imported as that.
+func reservedQualifier(q string) bool {
+	return q == "graphql" || q == "context" || bindingNames[q] || predeclared(q)
+}
 
-// pathQualifier picks an identifier for an import path that taken and
-// reservedQualifiers do not already hold: the last path element, then the
+// pathQualifier picks an identifier for an import path that taken does not
+// already hold and reservedQualifier allows: the last path element, then the
 // last two joined, then a numeric suffix. A major-version element (v2) is
 // skipped, because it names no package.
 func pathQualifier(path string, taken map[string]string) string {
@@ -912,7 +1150,7 @@ func pathQualifier(path string, taken map[string]string) string {
 	base := identFrom(elems[len(elems)-1])
 	free := func(q string) bool {
 		_, used := taken[q]
-		return q != "" && !used && !reservedQualifiers[q]
+		return q != "" && !used && !reservedQualifier(q)
 	}
 	if free(base) {
 		return base
@@ -961,8 +1199,7 @@ func (b *builder) exprRef(expr string) string {
 	}
 	b.modelExprImports()
 	bare := strings.TrimLeft(ref, "*[]")
-	_, typ, _ := strings.Cut(bare, ".")
-	return ref[:len(ref)-len(bare)] + b.exprQualifiers[path] + "." + typ
+	return ref[:len(ref)-len(bare)] + b.exprQualifiers[path] + bare[strings.LastIndex(bare, "."):]
 }
 
 // mapped reports whether a type is supplied by the caller through

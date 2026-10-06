@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"github.com/syssam/graphql-go/internal/fedlink"
 	goast "go/ast"
 	"go/format"
 	"go/parser"
@@ -22,18 +23,21 @@ import (
 func (b *builder) emit() (map[string][]byte, error) {
 	b.reportUnboundScalars()
 	files := map[string][]byte{}
-	// The copies are embedded by glob from one directory, so they are keyed by
-	// base name, and two sources sharing one would leave a single copy for
-	// both: the output compiled and the schema failed at start-up on the types
-	// of whichever file was dropped.
+	// The copies are embedded by glob from one directory, so each is keyed by
+	// its name there, and two sources sharing one would leave a single copy
+	// for both: the output compiled and the schema failed at start-up on the
+	// types of whichever file was dropped. A name is compared without letter
+	// case, because the filesystem the output lands on may compare it so:
+	// there User.graphql and user.graphql were one file, written twice at
+	// once, holding parts of both.
 	first := map[string]string{}
 	for _, src := range b.sources {
-		base := filepath.Base(src.Name)
-		if prev, dup := first[base]; dup {
-			return nil, fmt.Errorf("codegen: schema sources %s and %s are both named %s, and the generated package embeds one copy per file name; rename one of them", prev, src.Name, base)
+		name := copyName(src.Name)
+		if prev, dup := first[strings.ToLower(name)]; dup {
+			return nil, fmt.Errorf("codegen: schema sources %s and %s would both be copied to schema/%s -- a copy is named after its source, without its extension, and without regard to letter case -- and the generated package embeds one copy per name; rename one of them", prev, src.Name, name)
 		}
-		first[base] = src.Name
-		files[filepath.ToSlash(filepath.Join("schema", base))] = []byte(src.Input)
+		first[strings.ToLower(name)] = src.Name
+		files["schema/"+name] = []byte(src.Input)
 	}
 	groups := b.uniqueGroups()
 	// Before anything is written: a name collision here would otherwise arrive
@@ -93,15 +97,6 @@ func (b *builder) emit() (map[string][]byte, error) {
 	return files, nil
 }
 
-// sourceNames is the path of every schema source, as loaded.
-func (b *builder) sourceNames() []string {
-	names := make([]string, len(b.sources))
-	for i, src := range b.sources {
-		names[i] = src.Name
-	}
-	return names
-}
-
 // groupRel is a group package's directory relative to Output, and
 // groupImport its import path. Every place that names a group package goes
 // through them, so a file and the imports of it cannot disagree.
@@ -128,14 +123,21 @@ func putGo(files map[string][]byte, rel, src string) error {
 
 // sameContent reports whether old, a file on disk, says what src does. Line
 // endings are not what it says: a checkout with core.autocrlf -- the Windows
-// default -- turns every LF gqlc writes into CRLF, and comparing bytes
-// rewrote every generated file on every run and reported every one stale on
-// every check. gqlc writes LF, so only that difference is forgiven.
+// default -- turns every LF into CRLF, and comparing bytes rewrote every
+// generated file on every run and reported every one stale on every check.
+// Both sides are normalised, because gqlc does not choose every file's
+// endings: an SDL copy is written as its source is, so a CRLF source beside
+// an LF checkout of the copy differed the other way round. A lone carriage
+// return is not a line ending and still counts.
 func sameContent(old, src []byte) bool {
 	if bytes.Equal(old, src) {
 		return true
 	}
-	return bytes.Contains(old, []byte("\r\n")) && bytes.Equal(bytes.ReplaceAll(old, []byte("\r\n"), []byte("\n")), src)
+	crlf := []byte("\r\n")
+	if !bytes.Contains(old, crlf) && !bytes.Contains(src, crlf) {
+		return false
+	}
+	return bytes.Equal(bytes.ReplaceAll(old, crlf, []byte("\n")), bytes.ReplaceAll(src, crlf, []byte("\n")))
 }
 
 // writeGo writes src to path unless old, what the file held before this run,
@@ -821,9 +823,7 @@ func (b *builder) emitSchema() string {
 	"github.com/syssam/graphql-go"
 )
 
-//go:embed schema/*.graphql
-var sdl embed.FS
-
+` + b.emitEmbed() + `
 func NewSchema(r Resolver, opts ...graphql.SchemaOption) (*graphql.Schema, error) {
 	all := append([]graphql.SchemaOption{Bindings(r)}, opts...)
 	return graphql.NewSchema(graphql.SDLFS(sdl, "schema/*.graphql"), all...)
@@ -854,9 +854,7 @@ func (b *builder) emitSchemaFederated() string {
 	"github.com/syssam/graphql-go/fed"
 )
 
-//go:embed schema/*.graphql
-var sdl embed.FS
-
+` + b.emitEmbed() + `
 // NewSchema builds the subgraph: entities resolves each @key type the router
 // reaches through _entities, and _service returns the embedded SDL.
 func NewSchema(r Resolver, entities []fed.Entity, opts ...graphql.SchemaOption) (*graphql.Schema, error) {
@@ -878,6 +876,44 @@ func ValidateSchema(opts ...graphql.SchemaOption) error {
 }
 `)
 	w.WriteString(b.emitPlaceholderEntities())
+	return w.String()
+}
+
+// emitEmbed renders the embedded SDL: the variable, and above it the name of
+// every copy this run writes into schema/, and the custom scalars it named.
+// Neither is for the reader of schema.go so much as for the next run, which
+// reads them back (recordedIn): the first to know which files in that
+// directory are gqlc's own, the second to name only a scalar that is new.
+func (b *builder) emitEmbed() string {
+	var w strings.Builder
+	w.WriteString("// " + copiesListed + "\n//\n")
+	names := make([]string, len(b.sources))
+	for i, src := range b.sources {
+		names[i] = copyName(src.Name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		w.WriteString("//\t" + name + "\n")
+	}
+	w.WriteString(`//
+// The next generate goes by this list. A copy on it that no source produces
+// any more is deleted; a file in schema/ that is not on it is not gqlc's, and
+// is refused instead of being deleted or left embedded.
+`)
+	if len(b.unboundScalars) > 0 {
+		// One line, which no reader of the list above takes for a copy.
+		w.WriteString("//\n// " + scalarsListed + " " + strings.Join(b.unboundScalars, " ") + `
+//
+// The next generate goes by that too, and names only a scalar that is not
+// there: one is bound once, and being told so on every run buried the one
+// that was new.
+`)
+	}
+	w.WriteString(`//
+//go:embed schema/*.graphql
+var sdl embed.FS
+
+`)
 	return w.String()
 }
 
@@ -908,7 +944,7 @@ func (b *builder) emitSchemaGrouped(groups []string) string {
 		w.WriteString("\t\"" + b.groupImport(g) + "\"\n")
 	}
 	w.WriteString(")\n\n")
-	w.WriteString("//go:embed schema/*.graphql\nvar sdl embed.FS\n\n")
+	w.WriteString(b.emitEmbed())
 	w.WriteString(groupedNewSchemaDoc)
 	if b.cfg.Federation {
 		w.WriteString(federatedNewSchemaDoc)
@@ -962,11 +998,12 @@ const federatedNewSchemaDoc = `//
 // embedded SDL.
 `
 
-// keyedTypes returns the object types carrying @key, sorted.
+// keyedTypes returns the object types that are entities of this subgraph,
+// sorted: the ones fed.Subgraph asks a resolver for, by the same reading.
 func (b *builder) keyedTypes() []string {
 	var names []string
 	for name, def := range b.schema.Types {
-		if def.Kind == ast.Object && !def.BuiltIn && def.Directives.ForName("key") != nil {
+		if def.Kind == ast.Object && !def.BuiltIn && fedlink.HasResolvableKey(def, b.fedNames) {
 			names = append(names, name)
 		}
 	}
@@ -1061,6 +1098,13 @@ func usedQualifiers(src string) func(string) bool {
 // Time was mapped to time.Time and still had no binding. The generator knows
 // the whole list while it is generating, so it says so then rather than letting
 // NewSchema say it later, once per use.
+//
+// Each is named when it is new and not again. Nothing here can see NewSchema,
+// so a scalar bound long ago reads the same as one that is not, and naming
+// all of them on every generate was seven lines of one real schema's output
+// that had been true once: the scalar added that day was the eighth name in a
+// list nobody read. What has been named is written into schema.go, in the
+// comment on sdl, and the last generate's list is what this one leaves out.
 func (b *builder) reportUnboundScalars() {
 	names := b.typeNames(ast.Scalar)
 	if len(names) == 0 {
@@ -1070,6 +1114,10 @@ func (b *builder) reportUnboundScalars() {
 	custom := ""
 	for _, name := range names {
 		if b.marshalers[name] {
+			continue
+		}
+		b.unboundScalars = append(b.unboundScalars, name)
+		if slices.Contains(b.scalarsNamedBefore, name) {
 			continue
 		}
 		goType := "model." + name
