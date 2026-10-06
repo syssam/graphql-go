@@ -2,6 +2,7 @@ package loader_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -80,5 +81,53 @@ func TestOnlyAScopedLoadIsCachedOutsideExecute(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Errorf("scoped: batch ran %d times, want 2 (one per scope)", calls)
+	}
+}
+
+// A batch whose waiters do not share one cancellation runs under a context
+// made for it, and that context ends when the batch returns. Nothing else ends
+// it while the waiters' own contexts live, so a batch function that hands it
+// to a goroutine or a pooled connection would otherwise hold both for as long
+// as the request, or the stream, lasts.
+func TestABatchContextEndsWithItsBatch(t *testing.T) {
+	var seen context.Context
+	ld := loader.New(func(ctx context.Context, keys []int) (map[int]int, error) {
+		seen = ctx
+		out := make(map[int]int, len(keys))
+		for _, k := range keys {
+			out[k] = k
+		}
+		return out, nil
+	})
+	// Each resolver loads under a context of its own that outlives the request,
+	// so only the batch ending can end the batch's context.
+	var mu sync.Mutex
+	var cancels []context.CancelFunc
+	defer func() {
+		for _, cancel := range cancels {
+			cancel()
+		}
+	}()
+	own := func(key int) func(context.Context, graphql.Root) (int, error) {
+		return func(ctx context.Context, _ graphql.Root) (int, error) {
+			ctx, cancel := context.WithCancel(ctx)
+			mu.Lock()
+			cancels = append(cancels, cancel)
+			mu.Unlock()
+			return ld.Load(ctx, key)
+		}
+	}
+	s, err := graphql.NewSchema(graphql.SDL(`type Query { a: Int! b: Int! }`),
+		graphql.Query(graphql.Resolve("a", own(1)), graphql.Resolve("b", own(2))),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectData(t, run(t, graphql.NewExecutor(s), `{ a b }`, ""), `{"a":1,"b":2}`)
+	if seen == nil {
+		t.Fatal("the batch function did not run")
+	}
+	if seen.Err() == nil {
+		t.Fatal("the batch's context is still live after the batch returned")
 	}
 }

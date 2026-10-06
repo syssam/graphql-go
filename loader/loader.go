@@ -7,6 +7,31 @@
 // the same wave flush together. Outside an Execute call a Loader still
 // works, falling back to its own scheduler; wrap the context with WithScope
 // to give such calls a cache of their own.
+//
+// # When a batch runs
+//
+// A wave is dispatched when nothing in the operation is left running: every
+// resolver has returned, is waiting in a Load, or is waiting for fields of its
+// own. Every Loader with keys queued then runs, each on a goroutine of its own
+// so two loaders cost the slower of their round trips and not the sum, and the
+// results of all of them are handed back together. The resolvers that were
+// waiting go on as one wave, so whatever they load next is one batch per
+// Loader again, however deep the chain.
+//
+// That rule has two costs, and both are deliberate: dispatching any earlier
+// would mean dispatching while a key could still be queued.
+//
+// A batch waits for the slowest resolver in the operation, including one that
+// has nothing to do with it. Beside a field that takes 300ms to call another
+// service, a loader's first query starts at 300ms.
+//
+// A resolver blocked on anything but a Load is running as far as the executor
+// can tell. If what it waits for is held by a resolver that is itself inside
+// Load -- a mutex kept across the call, a singleflight group, a semaphore of
+// size one -- the wave is never idle, nothing is dispatched, and the request
+// hangs until its context ends, which without WithOperationTimeout or a
+// deadline of the caller's is never. Do not hold a lock across Load or
+// LoadMany.
 package loader
 
 import (
@@ -27,8 +52,10 @@ import (
 // those Loads receive the zero value and a nil error (not found). A non-nil
 // error fails every waiter in that batch and is not cached.
 //
-// Keys are unique. The function is called from a single goroutine per batch.
-// A panic is recovered, logged, and fails every waiter in the batch with an
+// Keys are unique. The function is called from a single goroutine per batch,
+// and the chunks WithMaxBatchSize splits a flush into are called one after the
+// other; batches of different Loaders in one wave run at the same time. A
+// panic is recovered, logged, and fails every waiter in the batch with an
 // INTERNAL_SERVER_ERROR that does not carry the panic value.
 //
 // ctx carries the values of a Load waiting on the batch, so a tracing span or
@@ -55,7 +82,8 @@ type MappedBatchFunc[K comparable, V any] func(ctx context.Context, keys []K) (m
 // Concurrent Resolve fields that call Load in the same execution wave are
 // flushed together when every in-flight resolver is parked — the GraphQL
 // equivalent of DataLoader.dispatch at the end of a tick. Sequential Load
-// calls in one resolver do not coalesce; use LoadMany for that.
+// calls in one resolver do not coalesce; use LoadMany for that. The package
+// documentation says when a wave is dispatched and what that costs.
 type Loader[K comparable, V any] struct {
 	batch    BatchFunc[K, V]
 	mapped   MappedBatchFunc[K, V]
@@ -131,6 +159,12 @@ func NewMapped[K comparable, V any](batch MappedBatchFunc[K, V], opts ...Option)
 
 // Load returns the value for key, batching with other Loads in the same
 // request wave when possible.
+//
+// It returns once the wave has been dispatched, which is when no resolver in
+// the operation is still running, so it waits for the slowest of them. Never
+// call it holding a lock, or anything else a sibling resolver may block on:
+// that resolver counts as running, the wave is never dispatched, and both wait
+// until the request's context ends.
 func (l *Loader[K, V]) Load(ctx context.Context, key K) (V, error) {
 	var zero V
 	out, err := l.scope(ctx).load(ctx, []K{key})
@@ -161,7 +195,13 @@ func (l *Loader[K, V]) Clear(ctx context.Context, key K) {
 
 func (l *Loader[K, V]) scope(ctx context.Context) *requestScope[K, V] {
 	oc := graphql.OperationFrom(ctx)
-	if oc == nil {
+	// An operation with no coordinator is not being executed: it is the
+	// context a subscription's interceptors and source run under, which lives
+	// as long as the stream does. A cache scoped to it would answer every
+	// event from what the first one loaded, so it is treated as no request at
+	// all.
+	w := oc.Waves()
+	if w == nil {
 		sc, _ := ctx.Value(scopeKey{}).(*scopeSet)
 		if sc == nil {
 			return &l.orphan
@@ -179,18 +219,106 @@ func (l *Loader[K, V]) scope(ctx context.Context) *requestScope[K, V] {
 	if v, ok := oc.Get(l); ok {
 		return v.(*requestScope[K, V])
 	}
+	d := dispatcherFor(oc, w)
 	s := &requestScope[K, V]{}
-	w := oc.Waves()
 	s.init(l, w, l.cache)
+	// Published and enrolled under the dispatcher's lock. A sibling can find
+	// the scope the moment it is published and park on it, and the dispatch
+	// that answers takes the same lock first, so it cannot run before the
+	// scope is one it knows to ask.
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	// Scopes are only ever added, and under this lock, so none yet is the
+	// first Load of the operation.
+	if len(d.scopes) == 0 {
+		w.OnReady(d.flush)
+	}
 	// GetOrSet, not Set: sibling resolvers reach their first Load together
 	// and would otherwise each install a scope, splitting the pending queue
-	// and the cache so batching degrades to N+1. Only the winner registers
-	// a flush callback.
+	// and the cache so batching degrades to N+1.
 	if actual, loaded := oc.GetOrSet(l, s); loaded {
 		return actual.(*requestScope[K, V])
 	}
-	w.OnReady(s.flush)
+	d.scopes = append(d.scopes, s)
 	return s
+}
+
+type dispatcherKey struct{}
+
+// dispatcher runs one operation's waves for every Loader used in it. It is
+// one callback on the coordinator rather than one per Loader because a wave is
+// one thing: every batch in it is run, and only then is any result delivered.
+// Per Loader, each delivered as its own batch function returned, so the
+// resolvers of the first went on, queued their next keys and were dispatched
+// for before the second Loader's resolvers had been woken.
+type dispatcher struct {
+	waves *graphql.WaveCoordinator
+
+	mu     sync.Mutex
+	scopes []batchSource
+}
+
+// batchSource is a requestScope with its key and value types erased.
+type batchSource interface {
+	take() (pendingBatch, bool)
+}
+
+// pendingBatch is the keys one scope had queued when a wave was dispatched.
+type pendingBatch interface {
+	// run calls the batch function and keeps what it returned.
+	run()
+	// resume reports every Load waiting on the batch as running again.
+	resume(w *graphql.WaveCoordinator)
+	// deliver hands each waiter its result.
+	deliver()
+}
+
+func dispatcherFor(oc *graphql.OperationContext, w *graphql.WaveCoordinator) *dispatcher {
+	if v, ok := oc.Get(dispatcherKey{}); ok {
+		return v.(*dispatcher)
+	}
+	actual, _ := oc.GetOrSet(dispatcherKey{}, &dispatcher{waves: w})
+	return actual.(*dispatcher)
+}
+
+// flush dispatches one wave. It takes what is queued once and does not look
+// again: a key queued after that belongs to the wave its Load parks into, and
+// taking it here would dispatch it ahead of its siblings.
+func (d *dispatcher) flush() {
+	d.mu.Lock()
+	scopes := d.scopes
+	d.mu.Unlock()
+
+	var buf [4]pendingBatch
+	batches := buf[:0]
+	for _, s := range scopes {
+		if b, ok := s.take(); ok {
+			batches = append(batches, b)
+		}
+	}
+	switch len(batches) {
+	case 0:
+		return
+	case 1:
+		batches[0].run()
+	default:
+		var wg sync.WaitGroup
+		for _, b := range batches[1:] {
+			wg.Go(b.run)
+		}
+		batches[0].run()
+		wg.Wait()
+	}
+	// Every waiter is reported running before any is woken. A woken waiter
+	// that still counted as parked left the operation looking idle until it
+	// was scheduled, and the first of its siblings to reach its next Load
+	// dispatched that Load alone.
+	for _, b := range batches {
+		b.resume(d.waves)
+	}
+	for _, b := range batches {
+		b.deliver()
+	}
 }
 
 type result[V any] struct {
@@ -201,7 +329,24 @@ type result[V any] struct {
 type waiter[V any] struct {
 	ctx context.Context
 	ch  chan result[V]
+	// park is the state of the Load this waiter belongs to, shared by every
+	// waiter of one LoadMany. It is nil where there is no coordinator.
+	park *atomic.Int32
 }
+
+// A Load that waits on a coordinator is queued, then parked, then resumed.
+// Park and Unpark must pair exactly, and two goroutines can each be the one
+// to report the Load running again: the dispatch that is about to wake it, and
+// the Load itself when its context ends first. Whoever moves the state to
+// resumed is the one that calls Unpark. A dispatch can also take a Load's keys
+// before the Load has parked, when the count was brought to idle by goroutines
+// the executor does not know about; that Load is resumed from queued and never
+// parks at all.
+const (
+	loadQueued int32 = iota
+	loadParked
+	loadResumed
+)
 
 type requestScope[K comparable, V any] struct {
 	loader    *Loader[K, V]
@@ -248,9 +393,9 @@ func (s *requestScope[K, V]) load(ctx context.Context, keys []K) ([]V, error) {
 	out := make([]V, len(keys))
 	var wait []*waiter[V]
 	var waitAt []int
+	var park *atomic.Int32
 
 	s.mu.Lock()
-	queued := false
 	for i, key := range keys {
 		if s.cached != nil {
 			if _, ok := s.cached[key]; ok {
@@ -258,10 +403,12 @@ func (s *requestScope[K, V]) load(ctx context.Context, keys []K) ([]V, error) {
 				continue
 			}
 		}
-		w := &waiter[V]{ctx: ctx, ch: make(chan result[V], 1)}
+		if park == nil && s.waves != nil {
+			park = new(atomic.Int32)
+		}
+		w := &waiter[V]{ctx: ctx, ch: make(chan result[V], 1), park: park}
 		if _, seen := s.waiters[key]; !seen {
 			s.pending = append(s.pending, key)
-			queued = true
 		}
 		s.waiters[key] = append(s.waiters[key], w)
 		wait = append(wait, w)
@@ -272,13 +419,16 @@ func (s *requestScope[K, V]) load(ctx context.Context, keys []K) ([]V, error) {
 	if len(wait) == 0 {
 		return out, nil
 	}
-	if queued || s.waves == nil {
-		s.notify()
-	}
-
-	if s.waves != nil {
+	switch {
+	case s.waves == nil:
+		s.schedule()
+	case park.CompareAndSwap(loadQueued, loadParked):
 		s.waves.Park()
-		defer s.waves.Unpark()
+		defer func() {
+			if park.CompareAndSwap(loadParked, loadResumed) {
+				s.waves.Unpark()
+			}
+		}()
 	}
 
 	for j, w := range wait {
@@ -293,13 +443,6 @@ func (s *requestScope[K, V]) load(ctx context.Context, keys []K) ([]V, error) {
 		}
 	}
 	return out, nil
-}
-
-func (s *requestScope[K, V]) notify() {
-	if s.waves != nil {
-		return
-	}
-	s.schedule()
 }
 
 func (s *requestScope[K, V]) schedule() {
@@ -319,31 +462,53 @@ func (s *requestScope[K, V]) schedule() {
 	}()
 }
 
+// flush is the scheduler's dispatch, for a scope with no coordinator.
 func (s *requestScope[K, V]) flush() {
-	for {
-		s.mu.Lock()
-		if len(s.pending) == 0 {
-			s.mu.Unlock()
-			return
-		}
-		n := len(s.pending)
-		if lim := s.loader.maxBatch; lim > 0 && n > lim {
-			n = lim
-		}
-		keys := append([]K(nil), s.pending[:n]...)
-		s.pending = s.pending[n:]
-		waiters := make(map[K][]*waiter[V], len(keys))
-		for _, k := range keys {
-			waiters[k] = s.waiters[k]
-			delete(s.waiters, k)
-		}
-		s.mu.Unlock()
+	if b, ok := s.take(); ok {
+		b.run()
+		b.deliver()
+	}
+}
 
-		ctx, release := batchContext(keys, waiters)
+// take removes everything queued, or reports that nothing is.
+func (s *requestScope[K, V]) take() (pendingBatch, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.pending) == 0 {
+		return nil, false
+	}
+	// Every queued key has waiters and every key with waiters is queued, so
+	// both are handed over whole.
+	b := &batch[K, V]{scope: s, keys: s.pending, waiters: s.waiters}
+	s.pending = nil
+	s.waiters = make(map[K][]*waiter[V])
+	return b, true
+}
+
+// batch is the keys taken from one scope and, once run, a result for each.
+type batch[K comparable, V any] struct {
+	scope   *requestScope[K, V]
+	keys    []K
+	waiters map[K][]*waiter[V]
+	results []result[V]
+}
+
+func (b *batch[K, V]) run() {
+	s := b.scope
+	b.results = make([]result[V], len(b.keys))
+	for start := 0; start < len(b.keys); {
+		end := len(b.keys)
+		if lim := s.loader.maxBatch; lim > 0 && end-start > lim {
+			end = start + lim
+		}
+		// Capped, so a batch function that appends to its keys cannot write
+		// over the next chunk's.
+		keys := b.keys[start:end:end]
+		ctx, release := batchContext(keys, b.waiters)
 		got, keyErrs, err := s.invoke(ctx, keys)
 		release()
-		for _, k := range keys {
-			var r result[V]
+		for i, k := range keys {
+			r := &b.results[start+i]
 			switch {
 			case err != nil:
 				r.err = err
@@ -360,9 +525,34 @@ func (s *requestScope[K, V]) flush() {
 					}
 				}
 			}
-			for _, w := range waiters[k] {
-				w.ch <- r
+		}
+		start = end
+	}
+}
+
+func (b *batch[K, V]) resume(w *graphql.WaveCoordinator) {
+	for _, ws := range b.waiters {
+		for _, wt := range ws {
+			for {
+				if wt.park.CompareAndSwap(loadParked, loadResumed) {
+					w.Unpark()
+					break
+				}
+				// Not parked: either it has yet to, and now will not, or it
+				// was already resumed -- by its own context ending, or as
+				// another waiter of the same LoadMany.
+				if wt.park.CompareAndSwap(loadQueued, loadResumed) || wt.park.Load() == loadResumed {
+					break
+				}
 			}
+		}
+	}
+}
+
+func (b *batch[K, V]) deliver() {
+	for i, k := range b.keys {
+		for _, w := range b.waiters[k] {
+			w.ch <- b.results[i]
 		}
 	}
 }
