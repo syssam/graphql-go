@@ -42,6 +42,8 @@ func New(exec *graphql.Executor, opts ...Option) fiber.Handler {
 // because the response is already written -- handing Fiber an error would let
 // the application's error handler replace a GraphQL envelope with its own.
 func (h *handler) serve(c fiber.Ctx) error {
+	// As in gqlhttp: the answer depends on Accept, so a cache must key on it.
+	c.Vary("Accept")
 	mediaType, ok := httpreq.Negotiate(c.Get("Accept"))
 	if !ok {
 		h.writeError(c, mediaType, http.StatusNotAcceptable, "Accept header does not allow %s or %s.", MediaTypeGraphQLResponse, MediaTypeJSON)
@@ -57,7 +59,8 @@ func (h *handler) serve(c fiber.Ctx) error {
 
 	src := newSource(c)
 
-	if h.csrf && httpreq.Forgeable(src, h.csrfHeaders) {
+	var ct httpreq.ContentType
+	if h.csrf && httpreq.Forgeable(src, &ct, h.csrfHeaders) {
 		h.writeError(c, mediaType, http.StatusForbidden,
 			"This request could be forged cross-site. Send a non-simple Content-Type or one of the headers %s.", strings.Join(h.csrfHeaders, ", "))
 		return nil
@@ -83,9 +86,13 @@ func (h *handler) serve(c fiber.Ctx) error {
 			h.writeError(c, mediaType, http.StatusBadRequest, "%v", httpreq.ErrMissingQueryParam)
 			return nil
 		}
+		// Two checks, as in gqlhttp: this one on the text as received, before
+		// any interceptor runs, and QueryOnly, which ParseGET set, for the
+		// executor to refuse the operation an interceptor may have put in its
+		// place.
 		kind, kerr := h.exec.OperationKind(req.Query, req.OperationName)
 		if kerr == nil && kind != ast.Query {
-			h.writeError(c, mediaType, http.StatusMethodNotAllowed, "%s operations (mutations are not allowed over GET); use POST.", strings.ToLower(string(kind)))
+			h.refuseOverGET(c, mediaType, kind)
 			return nil
 		}
 		reqs = []*graphql.Request{req}
@@ -95,7 +102,7 @@ func (h *handler) serve(c fiber.Ctx) error {
 	case http.MethodPost:
 		var status int
 		var err error
-		reqs, batch, status, err = h.parsePOST(src)
+		reqs, batch, status, err = h.parsePOST(src, &ct)
 		if err != nil {
 			h.writeError(c, mediaType, status, "%v", err)
 			return nil
@@ -107,6 +114,10 @@ func (h *handler) serve(c fiber.Ctx) error {
 
 	if !batch {
 		resp, malformed := h.execute(ctx, reqs[0], resolved)
+		if reqs[0].QueryOnly && httpreq.QueryOnlyRefused(resp) {
+			h.refuseOverGET(c, mediaType, ast.Mutation)
+			return nil
+		}
 		status := http.StatusOK
 		switch {
 		case malformed:
@@ -134,6 +145,11 @@ func (h *handler) serve(c fiber.Ctx) error {
 		})
 	})
 	return nil
+}
+
+// refuseOverGET answers a GET that named anything but a query.
+func (h *handler) refuseOverGET(c fiber.Ctx, mediaType string, kind ast.Operation) {
+	h.writeError(c, mediaType, http.StatusMethodNotAllowed, "%v", httpreq.NotQueryOverGET(kind))
 }
 
 // execute resolves a persisted query, if enabled, and runs the request. The
@@ -178,8 +194,8 @@ func (h *handler) writeGraphQLError(c fiber.Ctx, mediaType string, resp *graphql
 
 // parsePOST reads and decodes the body. The returned status applies when err
 // is non-nil.
-func (h *handler) parsePOST(src httpreq.Source) (reqs []*graphql.Request, batch bool, status int, err error) {
-	if err := httpreq.RequireJSONBody(src); err != nil {
+func (h *handler) parsePOST(src httpreq.Source, ct *httpreq.ContentType) (reqs []*graphql.Request, batch bool, status int, err error) {
+	if err := httpreq.RequireJSONBody(src, ct); err != nil {
 		return nil, false, http.StatusUnsupportedMediaType, err
 	}
 

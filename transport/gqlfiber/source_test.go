@@ -2,6 +2,7 @@ package gqlfiber
 
 import (
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -83,4 +84,37 @@ func TestSourceBodyTooLarge(t *testing.T) {
 			t.Fatalf("Body() error = %v, want ErrBodyTooLarge", err)
 		}
 	})
+}
+
+// fasthttp keeps one Content-Type, the last, so the parsed header cannot say
+// that two arrived; Repeated reads the request as sent.
+func TestSourceReportsARepeatedHeader(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		header map[string][]string
+		want   bool
+	}{
+		{"sent once", map[string][]string{"Content-Type": {"application/json"}}, false},
+		{"sent twice", map[string][]string{"Content-Type": {"text/plain", "application/json"}}, true},
+		{"another header sent twice", map[string][]string{"Content-Type": {"application/json"}, "Accept": {"a/b", "c/d"}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app := fiber.New()
+			var got, called bool
+			app.Post("/graphql", func(c fiber.Ctx) error {
+				got, called = newSource(c).Repeated("Content-Type"), true
+				return nil
+			})
+			req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{}`))
+			for name, values := range tc.header {
+				req.Header[name] = values
+			}
+			if _, err := app.Test(req); err != nil {
+				t.Fatalf("app.Test: %v", err)
+			}
+			if !called || got != tc.want {
+				t.Errorf("Repeated = %v (handler ran: %v), want %v", got, called, tc.want)
+			}
+		})
+	}
 }

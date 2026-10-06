@@ -39,6 +39,9 @@ func Serve(ctx context.Context, sock Socket, cfg Config) {
 		streams:     streams,
 		stopStreams: stopStreams,
 	}
+	if cfg.MaxSubs > 0 {
+		c.slots = make(chan struct{}, cfg.MaxSubs)
+	}
 	var aged <-chan time.Time
 	if cfg.MaxConnectionAge > 0 {
 		t := time.NewTimer(jitter.Spread(cfg.MaxConnectionAge))
@@ -184,6 +187,11 @@ type conn struct {
 	// queries and mutations do not derive from it, so they run to the end.
 	streams     context.Context
 	stopStreams context.CancelFunc
+
+	// slots holds one token per operation running, MaxSubs of them; nil
+	// without that limit. subs cannot count this: a complete gives an id back
+	// at once, while the operation it named runs until its resolvers return.
+	slots chan struct{}
 
 	wg sync.WaitGroup
 }
@@ -405,6 +413,14 @@ func (c *conn) subscribe(msg InMessage) bool {
 		c.close(StatusBadRequest, "Invalid subscribe payload")
 		return false
 	}
+	// Before anything is resolved or answered for the id: a persisted-query
+	// miss is sent as next and complete, and under a live id those would tell
+	// the client its running subscription had ended. Only this loop registers
+	// an id, so one that is free here is still free when it is registered.
+	if c.holds(msg.ID) {
+		c.close(StatusSubscriberExists, fmt.Sprintf("Subscriber for %s already exists", msg.ID))
+		return false
+	}
 	req := &graphql.Request{
 		Query:         payload.Query,
 		OperationName: payload.OperationName,
@@ -437,12 +453,6 @@ func (c *conn) subscribe(msg InMessage) bool {
 		cancel()
 		return c.writeError(msg.ID, graphql.Errorf("%s", reason)) == nil
 	}
-	if _, exists := c.subs[msg.ID]; exists {
-		c.mu.Unlock()
-		cancel()
-		c.close(StatusSubscriberExists, fmt.Sprintf("Subscriber for %s already exists", msg.ID))
-		return false
-	}
 	// Over the cap the connection survives: one client asking for too much at
 	// once is a fault of that operation, not of the connection.
 	if c.cfg.MaxSubs > 0 && len(c.subs) >= c.cfg.MaxSubs {
@@ -473,9 +483,53 @@ func (c *conn) subscribe(msg InMessage) bool {
 	go func() {
 		defer c.wg.Done()
 		defer cancel()
+		// Not acquired means ctx ended first: the client completed the
+		// operation, which retired it, or the connection is going.
+		if !c.acquire(ctx) {
+			return
+		}
+		defer c.release()
 		c.run(ctx, op, msg.ID, req)
 	}()
 	return true
+}
+
+// holds reports whether id names an operation the client has not completed.
+func (c *conn) holds(id string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.subs[id]
+	return ok
+}
+
+// acquire takes a slot for an operation about to run, waiting for one when
+// MaxSubs operations already hold theirs, and reports false if ctx ended
+// first. An operation waits here only behind ones the client has completed
+// and that have not stopped yet: at most MaxSubs ids are registered, so every
+// other slot belongs to an id already given back. Waiting rather than refusing
+// is what keeps "complete, then subscribe again under the same id" working at
+// the cap, where the first operation's goroutine may not have left yet.
+func (c *conn) acquire(ctx context.Context) bool {
+	if c.slots == nil {
+		return true
+	}
+	select {
+	case c.slots <- struct{}{}:
+		return true
+	default:
+	}
+	select {
+	case c.slots <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (c *conn) release() {
+	if c.slots != nil {
+		<-c.slots
+	}
 }
 
 // run executes one operation and streams its results.
@@ -503,7 +557,11 @@ func (c *conn) run(ctx context.Context, op *operation, id string, req *graphql.R
 			c.finishWithErrors(op, id, se.Response.Errors)
 			return
 		}
-		c.finishWithErrors(op, id, []*graphql.Error{graphql.Errorf("%v", err)})
+		// Subscribe returns nothing but a *SubscribeError, whose errors have
+		// been through the executor's presenter. Anything else has not, so its
+		// text is logged and not sent.
+		c.cfg.Logger.Warn("gqlwsproto: opening subscription", "id", id, "error", err)
+		c.finishWithErrors(op, id, []*graphql.Error{internalError()})
 		return
 	}
 
@@ -596,6 +654,7 @@ func (c *conn) finish(op *operation, id string, msg OutMessage) {
 func (c *conn) finishWithErrors(op *operation, id string, errs []*graphql.Error) {
 	payload, err := json.Marshal(errs)
 	if err != nil {
+		c.cfg.Logger.Warn("gqlwsproto: serializing errors", "id", id, "error", err)
 		payload = []byte(`[{"message":"Internal server error."}]`)
 	}
 	c.finish(op, id, OutMessage{ID: id, Type: TypeError, Payload: payload})
@@ -609,15 +668,36 @@ func (c *conn) writeError(id string, e *graphql.Error) error {
 	return c.write(c.life, OutMessage{ID: id, Type: TypeError, Payload: payload})
 }
 
+// fallbackPayload is what a next carries when the response it was for will
+// not serialize: the envelope the HTTP and SSE handlers send for the same
+// failure (httpreq.FallbackBody, repeated here because this package depends on
+// nothing but the root one; TestTheFallbacksAreTheHTTPHandlers holds the two
+// equal).
+const fallbackPayload = `{"errors":[{"message":"internal system error"}]}`
+
+// internalError is the error sent for a failure whose own text is not for a
+// client: httpreq.InternalError's, repeated for the same reason and held equal
+// by the same test.
+func internalError() *graphql.Error {
+	return graphql.Errorf("internal system error").WithCode(graphql.CodeInternal)
+}
+
 // writeNext frames one result. It deliberately writes under the connection
 // context rather than the operation's: coder/websocket tears down the whole
 // connection when a write context is cancelled mid-frame, so passing the
 // operation context here would let one client unsubscribing at the wrong
 // moment drop every other subscription sharing the connection.
+//
+// A response that will not serialize -- an extension value encoding/json
+// refuses -- is sent as fallbackPayload, so the only error returned is a
+// failed write. Returning the serialization error instead read as one: the
+// operation was retired without a next, an error or a complete, and a query's
+// client waited for an answer that was never coming.
 func (c *conn) writeNext(id string, resp *graphql.Response) error {
 	payload, err := resp.MarshalJSON()
 	if err != nil {
-		return err
+		c.cfg.Logger.Warn("gqlwsproto: serializing response", "id", id, "error", err)
+		payload = []byte(fallbackPayload)
 	}
 	return c.write(c.life, OutMessage{ID: id, Type: TypeNext, Payload: payload})
 }

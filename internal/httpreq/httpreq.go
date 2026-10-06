@@ -14,6 +14,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"reflect"
 	"strings"
 
 	"github.com/syssam/graphql-go"
@@ -89,6 +90,27 @@ func ErrorStatus(resp *graphql.Response) int {
 		}
 	}
 	return http.StatusBadRequest
+}
+
+// QueryOnlyRefused reports whether resp is the executor refusing to run a
+// mutation for a request marked QueryOnly, which ParseGET does to every GET.
+//
+// The transports refuse a GET mutation themselves, before anything runs, by
+// looking at the query text they received. That text is not always what runs:
+// a RequestInterceptor may replace it, as a persisted-query lookup does, and
+// the swapped-in mutation used to execute. The executor now refuses it where
+// the final operation is known, and this is how a transport tells that
+// refusal from a request error, to answer it with the same 405.
+func QueryOnlyRefused(resp *graphql.Response) bool {
+	if resp == nil || resp.Data != nil {
+		return false
+	}
+	for _, e := range resp.Errors {
+		if e.Extensions["code"] == graphql.CodeQueryOnly {
+			return true
+		}
+	}
+	return false
 }
 
 // WriteBatch writes n responses as one JSON array, calling entry for each. An
@@ -174,20 +196,48 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// ContentType is a request's Content-Type as Forgeable and RequireJSONBody
+// read it, parsed once for both. A POST is asked both questions, and each
+// used to parse the header and ask the Source whether it was repeated, which
+// on Fiber is a scan of every raw header line. The zero value is ready to use
+// and reads nothing until a rule asks: a GET carrying a preflight header never
+// does.
+type ContentType struct {
+	read  bool
+	media string
+}
+
+// of returns the media type of src's request, or "" when it has none a rule
+// can go by: no header, one that does not parse, or one sent twice.
+//
+// A Content-Type sent twice counts as none. net/http reads the first value
+// and fasthttp the last, so "text/plain" beside "application/json" passed on
+// whichever handler happened to read the JSON one. No browser sends two, but a
+// rule with two answers is not the one rule this package exists to be.
+func (c *ContentType) of(src Source) string {
+	if c.read {
+		return c.media
+	}
+	c.read = true
+	if src.Repeated("Content-Type") {
+		return ""
+	}
+	if media, _, err := mime.ParseMediaType(src.Header("Content-Type")); err == nil {
+		c.media = media
+	}
+	return c.media
+}
+
 // Forgeable reports whether a browser could have sent the request
 // cross-origin without a preflight: no Content-Type or one of the CORS
 // "simple" types, and none of the preflight-forcing headers.
-func Forgeable(src Source, headers []string) bool {
+func Forgeable(src Source, ct *ContentType, headers []string) bool {
 	for _, name := range headers {
 		if src.Header(name) != "" {
 			return false
 		}
 	}
-	ct, _, err := mime.ParseMediaType(src.Header("Content-Type"))
-	if err != nil {
-		return true
-	}
-	switch ct {
+	switch ct.of(src) {
 	case "", "text/plain", "application/x-www-form-urlencoded", "multipart/form-data":
 		return true
 	}
@@ -199,8 +249,17 @@ func Forgeable(src Source, headers []string) bool {
 // queryOptional lets a request arrive without query text, which is only valid
 // when something downstream can supply it -- automatic persisted queries send
 // a hash alone. The caller must then check for itself that a query was found.
+//
+// The request is marked QueryOnly. A transport refuses a GET mutation on the
+// text it received, and that is not always the text that runs: the mark has
+// the executor refuse an operation a RequestInterceptor put in its place. It
+// is set here so that no handler reading a GET can leave it off.
 func ParseGET(src Source, queryOptional bool) (*graphql.Request, error) {
-	req := &graphql.Request{Query: src.QueryParam("query"), OperationName: src.QueryParam("operationName")}
+	req := &graphql.Request{
+		Query:         src.QueryParam("query"),
+		OperationName: src.QueryParam("operationName"),
+		QueryOnly:     true,
+	}
 	if req.Query == "" && !queryOptional {
 		return nil, ErrMissingQueryParam
 	}
@@ -212,16 +271,20 @@ func ParseGET(src Source, queryOptional bool) (*graphql.Request, error) {
 	}
 	if e := src.QueryParam("extensions"); e != "" {
 		if err := json.Unmarshal([]byte(e), &req.Extensions); err != nil {
+			var mismatch *json.UnmarshalTypeError
+			if errors.As(err, &mismatch) {
+				return nil, errors.New(`"extensions" must be a JSON object`)
+			}
 			return nil, fmt.Errorf(`"extensions" must be a JSON object: %w`, err)
 		}
 	}
 	return req, nil
 }
 
-// RequireJSONBody rejects a POST whose Content-Type is not JSON.
-func RequireJSONBody(src Source) error {
-	ct, _, err := mime.ParseMediaType(src.Header("Content-Type"))
-	if err != nil || ct != MediaTypeJSON {
+// RequireJSONBody rejects a POST whose Content-Type is not JSON, or is given
+// twice: see ContentType for why a repeated header has no value to read.
+func RequireJSONBody(src Source, ct *ContentType) error {
+	if ct.of(src) != MediaTypeJSON {
 		return fmt.Errorf("Content-Type must be %s.", MediaTypeJSON)
 	}
 	return nil
@@ -257,7 +320,7 @@ func Decode(body []byte, queryOptional bool) (*graphql.Request, error) {
 	}
 	var req graphql.Request
 	if err := json.Unmarshal(body, &req); err != nil {
-		return nil, fmt.Errorf("invalid JSON body: %w", err)
+		return nil, bodyError(err)
 	}
 	if req.Query == "" && !queryOptional {
 		return nil, ErrMissingQuery
@@ -266,6 +329,31 @@ func Decode(body []byte, queryOptional bool) (*graphql.Request, error) {
 		return nil, errors.New(`"variables" must be a JSON object or null.`)
 	}
 	return &req, nil
+}
+
+// bodyError words a body that would not decode. A member of the wrong type is
+// named as the request names it: encoding/json describes the Go struct, field
+// and type it was decoding into, which tells a client about the server and not
+// about its request. A syntax error already speaks only of the body.
+func bodyError(err error) error {
+	var mismatch *json.UnmarshalTypeError
+	if !errors.As(err, &mismatch) || mismatch.Field == "" {
+		return fmt.Errorf("invalid JSON body: %w", err)
+	}
+	want := "a string"
+	if mismatch.Type != nil && mismatch.Type.Kind() == reflect.Map {
+		want = "an object"
+	}
+	got := mismatch.Value
+	switch got {
+	case "bool":
+		got = "a boolean"
+	case "array", "object":
+		got = "an " + got
+	default:
+		got = "a " + got
+	}
+	return fmt.Errorf("invalid JSON body: %q must be %s, not %s.", mismatch.Field, want, got)
 }
 
 // TrimJSONSpace drops the leading whitespace RFC 8259 allows before a value:

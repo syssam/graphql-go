@@ -663,3 +663,14 @@ func TestWSCloseSerializesAgainstWrites(t *testing.T) {
 		t.Fatalf("%d subscription(s) still registered after the connection closed", src.live.Load())
 	}
 }
+
+// The same answer as gqlws gives: zero is no limit, not the default and not a
+// refusal of everything.
+func TestWSReadLimitZeroIsNoLimit(t *testing.T) {
+	c := dialWS(t, newTestExecutor(t), WithReadLimit(0))
+	c.send(wsFrame{Type: "connection_init", Payload: json.RawMessage(
+		`{"pad":"` + strings.Repeat("x", 2<<20) + `"}`)})
+	if got := c.recv(); got.Type != "connection_ack" {
+		t.Fatalf("a 2 MiB connection_init was answered %+v, want connection_ack", got)
+	}
+}

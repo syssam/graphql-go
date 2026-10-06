@@ -159,10 +159,15 @@ func WithPingInterval(d time.Duration) Option { return func(c *config) { c.pingI
 // WithMaxSubscriptions caps the operations one WebSocket connection may run
 // at once. Beyond the cap a subscribe is answered with an error message and
 // the connection stays open. The default is 100; zero means unlimited.
+//
+// An operation the client has completed keeps its place until it has stopped,
+// which is when its resolvers return. One subscribed meanwhile is accepted and
+// waits for that place, so completing and resubscribing cannot run more than
+// the cap at a time.
 func WithMaxSubscriptions(n int) Option { return func(c *config) { c.maxSubs = n } }
 
 // WithReadLimit caps the size of a single WebSocket client message. The
-// default is 1 MiB.
+// default is 1 MiB; zero or less means no limit, as it does on gqlws.
 func WithReadLimit(n int64) Option { return func(c *config) { c.readLimit = n } }
 
 // WithWriteTimeout bounds how long one WebSocket write may take before the
@@ -181,7 +186,10 @@ func WithReadLimit(n int64) Option { return func(c *config) { c.readLimit = n } 
 //
 // On an SSE stream it bounds each write the same way, for the same peer: one
 // that stops reading parks the stream in a write where it sees neither a
-// drain nor its context.
+// drain nor its context. That is every stream SSE opens, a query's or a
+// mutation's single result included, and a large payload is written in pieces
+// with the deadline set again before each, so a slow reader of a large
+// response is not cut off for being slow.
 func WithWriteTimeout(d time.Duration) Option { return func(c *config) { c.writeTimeout = d } }
 
 // WithOriginPatterns authorizes cross-origin WebSocket connections from hosts

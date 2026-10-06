@@ -12,6 +12,11 @@ made to do arbitrary work by one unauthenticated request — that is a documente
 `SECURITY.md` says the same. Turning them on is the deployment's job because
 the right numbers depend on the schema.
 
+An executor built with no depth, complexity or cost limit says so once in the
+log, at warning level, and reports it as `ExecutorStats.RequestsUnbounded` and
+the `graphqlgo.executor.requests_unbounded` metric. Neither changes what it
+serves: they are there so that the default is something a dashboard shows.
+
 | Option | Default | Set it to |
 |---|---|---|
 | `WithMaxDepth` | off | Deeper than your deepest real query, not much more. Checked from the document before a plan is built, so a refused query costs one AST walk. |
@@ -22,10 +27,22 @@ the right numbers depend on the schema.
 | `WithMaxTokens` | **15 000** | On already. Parsing and validation run before every limit above, on every document, valid or not; see "Document limits" below. |
 | `WithMaxNesting` | **100** | On already. Selection sets and input literals as written, not after fragments. |
 | `WithMaxErrors` | **1000** | On already. |
-| `WithPlanCacheBytes` | **16 MiB**, with `WithPlanCache` at **1024** entries | On already, and it is what stops distinct large queries from retaining gigabytes: a parsed document retains roughly 26x its query text. A document's `@skip`/`@include` variants count too: each plan kept after its first is charged the query text again, and at most 64 are kept per document. |
+| `WithPlanCacheBytes` | **16 MiB**, with `WithPlanCache` at **1024** entries | On already, and it is what stops distinct queries from retaining gigabytes. It counts a document's query text and, for each plan kept, what the plan retains: about 240 bytes for a selected field, and that again for every possible type under an interface or union, so 990 aliases on an interface with 1 000 implementers is 8.8 KB of query and a 190 MB plan. A plan that would take its document past the budget is compiled per request and not kept. An ordinary plan is thirty-odd times its text, so the default holds some 400 documents of a kilobyte each: raise it if you serve more distinct operations than that. The parsed document is not counted beyond its text and retains roughly 26x that. A document's `@skip`/`@include` variants are each a plan, and at most 64 are kept per document. |
 | `apq.WithMaxBytes` | **16 MiB** | On already. Any client can register any query it can hash, so an entry count alone lets 1000 entries of 1 MiB park a gigabyte. |
 | `gqlws.WithWriteTimeout` / `gqlfiber.WithWriteTimeout` | **10 s** | On already. It is what ends a WebSocket peer that stays connected but stops reading; pings do not. |
-| `gqlsse.WithWriteTimeout` | **10 s** | On already, and the same for an SSE subscriber: a handler parked in a write sees neither the drain nor its cancelled context, so without it a stalled reader holds its stream past `Shutdown`. `gqlfiber.WithWriteTimeout` does the same for its SSE streams. |
+| `gqlsse.WithWriteTimeout` | **10 s** | On already, and the same for an SSE client, on every stream the handler opens: a subscription's, and the single result of a query or mutation. A handler parked in a write sees neither the drain nor its cancelled context, so without it a stalled reader holds its stream, and a large result's buffer, past `Shutdown`. A payload is written in 32 KiB pieces with the deadline set again before each, so it bounds a reader that takes nothing, not a slow one. `gqlfiber.WithWriteTimeout` does the same for its SSE streams. |
+
+**The plain HTTP handlers have no write deadline of their own.** `gqlhttp`
+(and `gqlecho.New`, `gqlmux`'s JSON branch) writes a response through
+`net/http`, and a client that asks for a large one and reads none of it holds
+the handler and the response buffer until `http.Server.WriteTimeout` says
+otherwise -- which is nothing unless you set it; `gqlfiber.New` is in the same
+position under `fiber.Config.WriteTimeout`. Setting `http.Server.WriteTimeout`
+does not cost you subscriptions: a `gqlsse` stream replaces the server's
+deadline with its own before each write and takes it off after
+(`TestTheServersWriteTimeoutAndAStream`), unless `gqlsse.WithWriteTimeout(0)`
+turned that off, in which case the server's deadline ends every stream when it
+passes.
 
 ### Document limits
 
@@ -119,8 +136,8 @@ ended for good instead of reconnecting.
   generation time. This is the design's standing cost and it is per process,
   not per request. A memory-bound deployment fits fewer replicas per node
   because of it.
-- **The plan cache** is bounded by entry count and by query text
-  (`WithPlanCacheBytes`, 16 MiB).
+- **The plan cache** is bounded by entry count and by what its documents
+  and their plans hold (`WithPlanCacheBytes`, 16 MiB).
 - **Per request** the engine allocates 12 to 14 objects for a small query
   (measured, `docs/performance.md`) and does not grow with schema size — that is the whole point of the compiled
   plan, and it is why request memory is not what you tune.
@@ -162,6 +179,7 @@ regD, err := otel.ObserveDrain(d)              // long-lived connections
 | `graphqlgo.plan_cache.lookups` split by `graphqlgo.plan_cache.result` | the miss ratio climbs — the cache is too small, or clients send text that varies per request. |
 | `graphqlgo.plan_cache.bytes` / `.count` | at the ceiling continuously. |
 | `graphqlgo.executor.concurrency.in_use` vs `.limit` | pinned at the limit — resolvers are the bottleneck, not the engine. |
+| `graphqlgo.executor.requests_unbounded` | **it is 1 on anything a client you do not control can reach.** No depth, complexity or cost limit is set, which is the default; the executor also says so once in the log when it is built. |
 | `graphqlgo.transport.active_connections` | grows without bound, or does not fall during a drain. |
 | `graphql.server.active_requests` | queries and mutations only; subscriptions never appear here. |
 

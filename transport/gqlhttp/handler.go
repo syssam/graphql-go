@@ -92,6 +92,10 @@ func New(exec *graphql.Executor, opts ...Option) *Handler {
 
 // ServeHTTP implements http.Handler.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Every answer here is chosen by Accept: the media type, and with it the
+	// status of a request error. A cache keyed on the URL alone would hand one
+	// client the answer negotiated for another.
+	w.Header().Add("Vary", "Accept")
 	mediaType, ok := httpreq.Negotiate(r.Header.Get("Accept"))
 	if !ok {
 		h.writeError(w, mediaType, http.StatusNotAcceptable, "Accept header does not allow %s or %s.", MediaTypeGraphQLResponse, MediaTypeJSON)
@@ -106,7 +110,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	src := httpreq.FromRequest(w, r)
 
-	if h.csrf && httpreq.Forgeable(src, h.csrfHeaders) {
+	var ct httpreq.ContentType
+	if h.csrf && httpreq.Forgeable(src, &ct, h.csrfHeaders) {
 		h.writeError(w, mediaType, http.StatusForbidden,
 			"This request could be forged cross-site. Send a non-simple Content-Type or one of the headers %s.", strings.Join(h.csrfHeaders, ", "))
 		return
@@ -132,9 +137,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.writeError(w, mediaType, http.StatusBadRequest, "%v", httpreq.ErrMissingQueryParam)
 			return
 		}
+		// Refused here, before any interceptor runs, on the text as received.
+		// QueryOnly, which ParseGET set, has the executor refuse again on the
+		// operation it is about to run, which is a different one when a
+		// RequestInterceptor replaced the text. Neither check covers for the
+		// other: without this one a plain GET mutation reaches every request
+		// interceptor first, and without that one a swapped-in mutation
+		// executes.
 		kind, kerr := h.exec.OperationKind(req.Query, req.OperationName)
 		if kerr == nil && kind != ast.Query {
-			h.writeError(w, mediaType, http.StatusMethodNotAllowed, "%s operations (mutations are not allowed over GET); use POST.", strings.ToLower(string(kind)))
+			h.refuseOverGET(w, mediaType, kind)
 			return
 		}
 		reqs = []*graphql.Request{req}
@@ -144,7 +156,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		var status int
 		var err error
-		reqs, batch, status, err = h.parsePOST(src)
+		reqs, batch, status, err = h.parsePOST(src, &ct)
 		if err != nil {
 			h.writeError(w, mediaType, status, "%v", err)
 			return
@@ -154,6 +166,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if !batch {
 		resp, malformed := h.execute(ctx, reqs[0], resolved)
+		if reqs[0].QueryOnly && httpreq.QueryOnlyRefused(resp) {
+			h.refuseOverGET(w, mediaType, ast.Mutation)
+			return
+		}
 		status := http.StatusOK
 		switch {
 		case malformed:
@@ -180,6 +196,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.logger.Warn("gqlhttp: serializing batch entry", "entry", i, "error", err)
 		})
 	})
+}
+
+// refuseOverGET answers a GET that named anything but a query.
+func (h *Handler) refuseOverGET(w http.ResponseWriter, mediaType string, kind ast.Operation) {
+	h.writeError(w, mediaType, http.StatusMethodNotAllowed, "%v", httpreq.NotQueryOverGET(kind))
 }
 
 // execute resolves a persisted query, if enabled, and runs the request. The
@@ -224,8 +245,8 @@ func (h *Handler) writeGraphQLError(w http.ResponseWriter, mediaType string, res
 
 // parsePOST reads and decodes the body. The returned status applies when err
 // is non-nil.
-func (h *Handler) parsePOST(src httpreq.Source) (reqs []*graphql.Request, batch bool, status int, err error) {
-	if err := httpreq.RequireJSONBody(src); err != nil {
+func (h *Handler) parsePOST(src httpreq.Source, ct *httpreq.ContentType) (reqs []*graphql.Request, batch bool, status int, err error) {
+	if err := httpreq.RequireJSONBody(src, ct); err != nil {
 		return nil, false, http.StatusUnsupportedMediaType, err
 	}
 

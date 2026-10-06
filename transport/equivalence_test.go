@@ -26,6 +26,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -606,4 +607,227 @@ func TestEquivalence(t *testing.T) {
 			map[string]string{"Accept": "application/json", "GraphQL-Require-Preflight": "1"}, "",
 			http.StatusOK, `{"data":{"hello":"world"}}`)
 	})
+
+	// The SSE family answers a request it refuses before the stream as
+	// application/graphql-response+json, the media type under which the row
+	// above is 400 -- and answered a safelist refusal 200, the one request
+	// error on SSE that was not 400. The retry handshake stays 200 there as
+	// everywhere: it is the half of the protocol the client has to read.
+	t.Run("the SSE family answers a persisted-query refusal like any request error", func(t *testing.T) {
+		preflight := map[string]string{"GraphQL-Require-Preflight": "1"}
+		ext := url.QueryEscape(`{"persistedQuery":{"version":1,"sha256Hash":"` +
+			apq.Hash(`{ hello }`) + `"}}`)
+
+		store := trusted.NewStore(map[string]string{})
+		safelist := newEquivServers(t,
+			[]gqlhttp.Option{gqlhttp.WithPersistedQueries(store)},
+			[]gqlsse.Option{gqlsse.WithPersistedQueries(store)},
+			[]gqlfiber.Option{gqlfiber.WithPersistedQueries(store)},
+		)
+		assertEqualAcross(t, safelist, sseFamily, http.MethodGet,
+			"/graphql?query="+url.QueryEscape(`{ hello }`)+"&extensions="+ext, preflight, "",
+			http.StatusBadRequest,
+			`{"errors":[{"message":"PersistedQueryNotInList","extensions":{"code":"PERSISTED_QUERY_NOT_IN_LIST"}}]}`)
+
+		cache := newEquivServers(t,
+			[]gqlhttp.Option{gqlhttp.WithPersistedQueries(apq.NewCache(10))},
+			[]gqlsse.Option{gqlsse.WithPersistedQueries(apq.NewCache(10))},
+			[]gqlfiber.Option{gqlfiber.WithPersistedQueries(apq.NewCache(10))},
+		)
+		assertEqualAcross(t, cache, sseFamily, http.MethodGet, "/graphql?extensions="+ext, preflight, "",
+			http.StatusOK,
+			`{"errors":[{"message":"PersistedQueryNotFound","extensions":{"code":"PERSISTED_QUERY_NOT_FOUND"}}]}`)
+		// A hash that does not match its text is a refusal too, not a retry.
+		assertEqualAcross(t, cache, sseFamily, http.MethodGet,
+			"/graphql?query="+url.QueryEscape(`{ hello }`)+"&extensions="+
+				url.QueryEscape(`{"persistedQuery":{"version":1,"sha256Hash":"00"}}`), preflight, "",
+			http.StatusBadRequest, `{"errors":[{"message":"provided sha does not match query"}]}`)
+	})
+
+	// net/http reads the first of two Content-Type headers and fasthttp keeps
+	// the last, so "text/plain" beside "application/json" was forgeable on
+	// three handlers and a JSON request on the other three, whichever order it
+	// came in. A repeated header has no value, on any of them.
+	t.Run("a repeated Content-Type", func(t *testing.T) {
+		servers := newEquivServers(t, nil, nil, nil)
+		send := func(t *testing.T, base string, preflight bool, types ...string) (int, string) {
+			t.Helper()
+			req, err := http.NewRequest(http.MethodPost, base+"/graphql", strings.NewReader(`{"query":"mutation { bump }"}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header["Content-Type"] = types
+			if preflight {
+				req.Header.Set("GraphQL-Require-Preflight", "1")
+			}
+			resp, err := equivClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			b, _ := io.ReadAll(resp.Body)
+			return resp.StatusCode, strings.TrimSpace(string(b))
+		}
+		const forged = `{"errors":[{"message":"This request could be forged cross-site. ` +
+			`Send a non-simple Content-Type or one of the headers GraphQL-Require-Preflight, Apollo-Require-Preflight, X-Requested-With."}]}`
+		const notJSON = `{"errors":[{"message":"Content-Type must be application/json."}]}`
+		for _, tc := range []struct {
+			name      string
+			preflight bool
+			types     []string
+			status    int
+			body      string
+		}{
+			{"simple type first", false, []string{"text/plain", "application/json"}, http.StatusForbidden, forged},
+			{"simple type last", false, []string{"application/json", "text/plain"}, http.StatusForbidden, forged},
+			{"JSON twice", false, []string{"application/json", "application/json"}, http.StatusForbidden, forged},
+			{"behind a preflight header", true, []string{"application/json", "text/plain"}, http.StatusUnsupportedMediaType, notJSON},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				for _, name := range transportNames {
+					status, body := send(t, servers[name], tc.preflight, tc.types...)
+					if status != tc.status || body != tc.body {
+						t.Errorf("%s: %d %s, want %d %s", name, status, body, tc.status, tc.body)
+					}
+				}
+			})
+		}
+	})
+
+	// A member of the wrong JSON type is refused in the request's terms.
+	// encoding/json's own wording names the Go struct, field and type the
+	// server was decoding into.
+	t.Run("a member of the wrong type is not described as a Go type", func(t *testing.T) {
+		servers := newEquivServers(t, nil, nil, nil)
+		json := map[string]string{"Content-Type": "application/json"}
+		assertAllEqual(t, servers, http.MethodPost, "/graphql", json, `{"query":5}`, http.StatusBadRequest,
+			`{"errors":[{"message":"invalid JSON body: \"query\" must be a string, not a number."}]}`)
+		assertAllEqual(t, servers, http.MethodPost, "/graphql", json, `{"query":"{ hello }","extensions":[1]}`, http.StatusBadRequest,
+			`{"errors":[{"message":"invalid JSON body: \"extensions\" must be an object, not an array."}]}`)
+		assertAllEqual(t, servers, http.MethodGet, "/graphql?query=%7Bhello%7D&extensions=%5B1%5D",
+			map[string]string{"GraphQL-Require-Preflight": "1"}, "", http.StatusBadRequest,
+			`{"errors":[{"message":"\"extensions\" must be a JSON object"}]}`)
+	})
+
+	// Every one of these handlers picks its answer by Accept -- the media type
+	// and the status of a request error, a stream or a 406 -- so a cache has to
+	// be told to key on it.
+	t.Run("every answer varies by Accept", func(t *testing.T) {
+		servers := newEquivServers(t, nil, nil, nil)
+		for _, tc := range []struct {
+			name, method, target, accept, body string
+		}{
+			{"a result", http.MethodGet, "/graphql?query=%7Bhello%7D", "", ""},
+			{"a request error", http.MethodGet, "/graphql?query=%7Bnope%7D", "", ""},
+			{"an unacceptable Accept", http.MethodPost, "/graphql", "application/xml", `{"query":"{ hello }"}`},
+			{"a refused method", http.MethodPut, "/graphql", "", `{"query":"{ hello }"}`},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				for _, name := range transportNames {
+					var body io.Reader
+					if tc.body != "" {
+						body = strings.NewReader(tc.body)
+					}
+					req, err := http.NewRequest(tc.method, servers[name]+tc.target, body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					req.Header.Set("GraphQL-Require-Preflight", "1")
+					req.Header.Set("Content-Type", "application/json")
+					if tc.accept != "" {
+						req.Header.Set("Accept", tc.accept)
+					}
+					resp, err := equivClient.Do(req)
+					if err != nil {
+						t.Fatal(err)
+					}
+					_, _ = io.Copy(io.Discard, resp.Body)
+					_ = resp.Body.Close()
+					if got := resp.Header.Values("Vary"); len(got) != 1 || got[0] != "Accept" {
+						t.Errorf("%s: Vary = %q, want Accept (status %d)", name, got, resp.StatusCode)
+					}
+				}
+			})
+		}
+	})
+
+	// The rule that a GET runs no mutation is held twice, on purpose, and each
+	// half has a row that only it can pass.
+	//
+	// The transport refuses on the text it received, before anything runs.
+	// Without that, the request below still ends in 405 -- the executor
+	// refuses it -- but only after every request interceptor has seen it.
+	t.Run("a mutation over GET is refused before any interceptor runs", func(t *testing.T) {
+		var seen atomic.Int64
+		servers := newEquivServersWithExecutor(t, func(t *testing.T) *graphql.Executor {
+			return newInterceptedExecutor(t, new(atomic.Int64), func(*graphql.Request) { seen.Add(1) })
+		})
+		headers := map[string]string{"GraphQL-Require-Preflight": "1"}
+		const path = "/graphql?query=mutation%7Bbump%7D"
+		assertEqualAcross(t, servers, httpFamily, http.MethodGet, path, headers, "", http.StatusMethodNotAllowed, mutationOverGETHTTP)
+		assertEqualAcross(t, servers, sseFamily, http.MethodGet, path, headers, "", http.StatusMethodNotAllowed, mutationOverGETSSE)
+		if n := seen.Load(); n != 0 {
+			t.Errorf("request interceptors ran %d time(s) for a GET the transport should have refused first", n)
+		}
+	})
+
+	// The executor refuses on the operation it is about to run. A request
+	// interceptor may replace the query text -- its own doc comment offers it
+	// for persisted-query lookups -- so the text the transport checked above
+	// is a query, and what would run is the mutation stored under the id.
+	// Every handler executed it.
+	t.Run("a mutation an interceptor swaps in over GET does not run", func(t *testing.T) {
+		var bumps atomic.Int64
+		servers := newEquivServersWithExecutor(t, func(t *testing.T) *graphql.Executor {
+			return newInterceptedExecutor(t, &bumps, func(req *graphql.Request) {
+				if req.Extensions["docId"] == "m1" {
+					req.Query = `mutation { bump }`
+				}
+			})
+		})
+		headers := map[string]string{"GraphQL-Require-Preflight": "1"}
+		swapped := "/graphql?query=" + url.QueryEscape(`{ hello }`) + "&extensions=" + url.QueryEscape(`{"docId":"m1"}`)
+		assertEqualAcross(t, servers, httpFamily, http.MethodGet, swapped, headers, "", http.StatusMethodNotAllowed, mutationOverGETHTTP)
+		assertEqualAcross(t, servers, sseFamily, http.MethodGet, swapped, headers, "", http.StatusMethodNotAllowed, mutationOverGETSSE)
+		if n := bumps.Load(); n != 0 {
+			t.Errorf("the mutation ran %d time(s) over GET", n)
+		}
+
+		// The same swap over POST is an ordinary mutation, and a GET the
+		// interceptor leaves alone is an ordinary query.
+		json := map[string]string{"Content-Type": "application/json"}
+		assertEqualAcross(t, servers, httpFamily, http.MethodPost, "/graphql", json,
+			`{"query":"{ hello }","extensions":{"docId":"m1"}}`, http.StatusOK, `{"data":{"bump":"bumped"}}`)
+		assertEqualAcross(t, servers, httpFamily, http.MethodGet, "/graphql?query="+url.QueryEscape(`{ hello }`), headers, "",
+			http.StatusOK, `{"data":{"hello":"world"}}`)
+		assertEqualAcross(t, servers, sseFamily, http.MethodGet, "/graphql?query="+url.QueryEscape(`{ hello }`), headers, "",
+			http.StatusOK, "event: next\ndata: {\"data\":{\"hello\":\"world\"}}\n\nevent: complete\ndata:")
+	})
+}
+
+const (
+	mutationOverGETHTTP = `{"errors":[{"message":"mutation operations (mutations are not allowed over GET); use POST."}]}`
+	mutationOverGETSSE  = `{"errors":[{"message":"Mutations are not allowed over GET; use POST."}]}`
+)
+
+// newInterceptedExecutor is the equivalence schema behind a request
+// interceptor that is shown every request before it runs, and may rewrite it.
+// bumps counts runs of the mutation.
+func newInterceptedExecutor(t *testing.T, bumps *atomic.Int64, see func(*graphql.Request)) *graphql.Executor {
+	t.Helper()
+	s, err := graphql.NewSchema(graphql.SDL("type Query { hello: String! }\ntype Mutation { bump: String! }"),
+		graphql.Query(graphql.Field("hello", func(graphql.Root) string { return "world" })),
+		graphql.Mutation(graphql.Field("bump", func(graphql.Root) string {
+			bumps.Add(1)
+			return "bumped"
+		})),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	return graphql.NewExecutor(s, graphql.WithRequestInterceptor(graphql.RequestInterceptorFunc(
+		func(ctx context.Context, req *graphql.Request, next graphql.RequestHandler) *graphql.Response {
+			see(req)
+			return next(ctx, req)
+		})))
 }

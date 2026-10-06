@@ -1,6 +1,8 @@
 package gqlfiber
 
 import (
+	"bytes"
+
 	"github.com/gofiber/fiber/v3"
 
 	"github.com/syssam/graphql-go/internal/httpreq"
@@ -15,6 +17,31 @@ func newSource(c fiber.Ctx) httpreq.Source { return source{c: c} }
 
 func (s source) Method() string            { return s.c.Method() }
 func (s source) Header(name string) string { return s.c.Get(name) }
+
+// Repeated counts the header in the request as it arrived. fasthttp keeps one
+// Content-Type, the last, so nothing it parsed can say there were two.
+func (s source) Repeated(name string) bool {
+	raw := s.c.Request().Header.RawHeaders()
+	want := []byte(name)
+	seen := false
+	for len(raw) > 0 {
+		line := raw
+		if i := bytes.IndexByte(raw, '\n'); i >= 0 {
+			line, raw = raw[:i], raw[i+1:]
+		} else {
+			raw = nil
+		}
+		colon := bytes.IndexByte(line, ':')
+		if colon < 0 || !bytes.EqualFold(bytes.TrimSpace(line[:colon]), want) {
+			continue
+		}
+		if seen {
+			return true
+		}
+		seen = true
+	}
+	return false
+}
 
 // QueryParam copies, and parses as net/http does. The query string lives in
 // the pooled fasthttp buffer, which another connection overwrites once the

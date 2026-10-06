@@ -1,7 +1,9 @@
 package gqlwsproto
 
 import (
+	"context"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	graphql "github.com/syssam/graphql-go"
@@ -113,4 +115,56 @@ func newPersistedExecutor(t *testing.T) *graphql.Executor {
 		t.Fatal(err)
 	}
 	return graphql.NewExecutor(s)
+}
+
+// An id in use is refused before anything is resolved for it. Resolution ran
+// first, so a miss sent under a live subscription's id was answered next and
+// complete -- telling the client that subscription had ended while the server
+// went on sending its events.
+func TestAPersistedSubscribeUnderALiveIDIsADuplicate(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ticks := make(chan int)
+		s, err := graphql.NewSchema(graphql.SDL(`
+			type Query { ping: String! }
+			type Subscription { tick: Int! }
+		`),
+			graphql.Query(graphql.Field("ping", func(graphql.Root) string { return "pong" })),
+			graphql.Subscription(graphql.Subscribe("tick", func(context.Context) (<-chan int, error) {
+				return ticks, nil
+			})),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resolved := 0
+		sock := newFakeSocket()
+		sock.in <- []byte(initMsg)
+		sock.in <- []byte(subscribeSub)
+		done := serveWith(sock, Config{
+			Exec: graphql.NewExecutor(s), InitTimeout: time.Minute, MaxSubs: 10,
+			ResolvePersisted: func(r *graphql.Request) *graphql.Response {
+				if r.Query != "" {
+					return nil
+				}
+				resolved++
+				return &graphql.Response{Errors: []*graphql.Error{graphql.Errorf("PersistedQueryNotFound")}}
+			},
+		})
+		synctest.Wait()
+
+		sock.in <- []byte(`{"id":"1","type":"subscribe","payload":{"extensions":{"persistedQuery":{"version":1,"sha256Hash":"deadbeef"}}}}`)
+		synctest.Wait()
+
+		if code := sock.closeCode(); code != StatusSubscriberExists {
+			t.Errorf("close code = %d, want %d", code, StatusSubscriberExists)
+		}
+		if resolved != 0 {
+			t.Errorf("the duplicate was resolved %d time(s) before it was refused", resolved)
+		}
+		if got := sock.frames(); len(got) != 1 {
+			t.Errorf("frames = %q, want only the ack: nothing may be sent under the live id", got)
+		}
+		_ = sock.Close(StatusNormalClosure, "done")
+		<-done
+	})
 }

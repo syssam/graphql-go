@@ -20,10 +20,25 @@ rejects as forgeable or oversized is rejected by all of them;
 `transport/equivalence_test.go` proves this by driving real requests through all six
 HTTP-carrying handlers — both SSE handlers included, since `gqlfiber`'s is hand-written —
 rather than by inspecting the code. The one documented exception: "mutations are not allowed
-over GET" is composed independently per transport, not through `httpreq`, and the SSE family
-(`gqlsse`, `gqlecho.SSE`, `gqlfiber.SSE`) and the plain-HTTP family use different wording for
-it, as they do for the unacceptable-`Accept` message — a real split along transport kind, not
+over GET" has two wordings, both in `httpreq` (`ErrMutationOverGET`, `NotQueryOverGET`): the SSE
+family (`gqlsse`, `gqlecho.SSE`, `gqlfiber.SSE`) and the plain-HTTP family word it differently,
+as they do the unacceptable-`Accept` message — a real split along transport kind, not
 drift to fix. A row that splits still asserts every handler on both sides of it.
+**"No mutation over GET" is held twice, and each half has its own row in `TestEquivalence`.**
+The transport refuses on the text it received, before anything runs. That text is not always
+what runs: a `RequestInterceptor` may replace `req.Query` (its doc offers it for persisted-query
+lookups), and a stored mutation reached through `?query={hello}&extensions={"docId":...}`
+executed on all six handlers. So every GET is also marked `Request.QueryOnly`, by
+`httpreq.ParseGET`, and the executor
+refuses a non-query in `execute`, after the request interceptors, with an unpresented error
+coded `QUERY_ONLY` that `httpreq.QueryOnlyRefused` finds and the transport answers with the
+same 405. The code is `graphql.CodeQueryOnly`
+(`TestQueryOnlyRefusedRecognisesTheExecutorsRefusal` runs the executor rather than build the refusal by hand).
+Removing the transport half leaves the status at 405 and lets every request interceptor see the
+GET first ("refused before any interceptor runs" counts them); removing the executor half runs
+the mutation. An interceptor that hands `next` a `Request` of its own need not copy the field: `Execute`
+carries it in the context it gives the chain.
+
 **`httpreq.Decode` skips leading JSON whitespace itself**: `gqlhttp` and `gqlfiber` trimmed
 before calling it (they look for a batch `[` first) and the SSE handlers did not, so
 `" {...}"` was 200 over HTTP and 400 over SSE (`TestEquivalence/leading whitespace`).
@@ -60,7 +75,11 @@ keeps a failure *after* bytes went out -- a client disconnecting mid-write -- fr
 partly-written response. It is safe because `Response.WriteTo` composes the whole envelope
 before writing any of it. Both SSE handlers do the same through `writePayload`, for a
 pre-stream request error (their `writeResponse`) and for a `next` event, which used to go
-out as `data: ` with nothing after it and end the stream without `complete`.
+out as `data: ` with nothing after it and end the stream without `complete`. **WebSocket was
+the handler left out**: `gqlwsproto.writeNext` returned the serialization error, its callers
+read it as a failed write and retired the operation, and the client got no `next`, no `error`,
+no `complete` and the server no log line. It sends the fallback as the `next` now, so a query
+still completes and a subscription goes on to its next event (`serialize_test.go`).
 
 Losing the envelope is the reference behaviour, not a shortcoming: graphql-js, run for
 comparison, is `JSON.stringify` semantics -- a function or `undefined` is silently dropped, a
@@ -79,6 +98,12 @@ shape automatic persisted queries are built on. `WithCSRFPrevention`'s variadic 
 *replace* the list rather than extend it, so narrowing it is deliberate.
 `TestEquivalence/every default CSRF header is accepted` drives every name in the list through
 every handler, so adding one without wiring it fails rather than being assumed.
+**`Forgeable` has a table of its own** (`internal/httpreq/forgeable_test.go`): a POST of any
+simple type is refused again by `RequireJSONBody`, so dropping `multipart/form-data` from the
+rule changed no handler's answer and no test noticed. **A `Content-Type` sent twice is forgeable,
+and never JSON**: net/http reads the first and fasthttp keeps the last, so `text/plain` beside
+`application/json` ran a mutation on three handlers and was refused by the other three.
+`Source.Repeated` asks the request as it arrived; on Fiber that is a scan of the raw headers.
 
 **The APQ path nothing drove was a miss over GET.** Every APQ test registered the query first,
 so `writeGraphQLError` -- the only caller of which is the persisted-query miss on the GET
@@ -103,7 +128,10 @@ sends `Accept: application/graphql-response+json`, and `*/*` and a missing `Acce
 same branch here, so the 400 was what real clients got on every cold cache -- the exact failure
 the `application/json` case was written to avoid. `CodeNotInList` is excluded: a safelist
 refusal is a rejection, and retrying with the text is what it forbids. Both codes and the
-safelist case are asserted across the HTTP family.
+safelist case are asserted across the HTTP family. The SSE family follows the same split: it
+answers before the stream as `application/graphql-response+json`, so a refusal is 400 like
+every other request error there (it was 200, whatever `apq.Resolve` returned) and the retry
+handshake stays 200.
 
 An unknown *hash* against a `TrustedStore` still answers `PersistedQueryNotFound`, not
 `PersistedQueryNotInList`, so a safelist now invites a retry it will then refuse. One wasted
@@ -135,6 +163,9 @@ handler warns at construction rather than reinterpreting the option's meaning. I
 layer (`gofiber/contrib/v3/websocket`, over `fasthttp/websocket`) has no origin-check hook of
 its own, so `transport/gqlfiber/ws.go` hand-rolls one mirroring `coder/websocket`'s semantics
 branch for branch — keep it a mirror; divergence there is a security divergence.
+`transport/origin_test.go` asks every row of one table of both drivers; before it only the copy
+had a test, and `gqlws` with the check off by default passed its own suite, `gqlmux`'s and
+`gqlecho`'s.
 
 **Long-lived connections are drained by `transport/drain`, not by the servers.** `net/http`'s
 `Shutdown` says so in as many words ("does not attempt to close nor wait for hijacked
@@ -213,6 +244,17 @@ could not reach it and `MaxSubs` did not count it (40 live on a cap of 2). `forg
 `finish` now compare the operation, and `runOnce` sends nothing once its context is cancelled
 (`reuse_test.go`, under `synctest`).
 
+**`MaxSubs` is a count of ids and a count of running operations, and they are different
+counts.** `len(c.subs)` bounds what a client holds; a `complete` gives the id back at once,
+while the operation it named runs until its resolvers return, so alternating subscribe and
+complete ran ten of ten at a time on a cap of 2. Each operation now takes one of `MaxSubs` slots
+(`conn.slots`) before it runs and gives it back when its goroutine leaves. A subscribe that
+finds every slot held by operations already completed is **accepted and waits** rather than
+refused: refusing would break "complete, then subscribe again under the same id" whenever the
+first goroutine had not left yet (`slots_test.go`). **A duplicate id is refused before the
+persisted-query hook runs**: a miss is answered `next` and `complete`, which under a live id
+told the client its subscription had ended while the server kept sending its events.
+
 **A response with errors and no data is 400 unless it is the server's failure**
 (`httpreq.ErrorStatus`, at every status decision in all six handlers). A panic or an unreachable
 policy backend leaves no data either, carries `INTERNAL_SERVER_ERROR`, and is 500: answered 400 it
@@ -225,8 +267,19 @@ that ends the response failed (`deadline_test.go`, both protocols). On Fiber the
 the connection and fasthttp does not reset it between responses, so a stream's connection is
 closed after it (`SetConnectionClose`) and its tail is bounded by one last deadline.
 
-**`gqlsse` sets a write deadline before every write** (`WithWriteTimeout`, 10 s, through
-`http.ResponseController`). A subscriber that stops reading parks the handler in a socket
+**`gqlsse` sets a write deadline before every event** (`WithWriteTimeout`, 10 s, through
+`http.ResponseController`), **a query's or mutation's single result included**: `single` wrote
+with none, on both SSE handlers, so a client that asked for 32 MB and read nothing held the
+handler and the buffer (`transport/sse_stall_test.go`, four handlers). Payloads go out in
+32 KiB pieces with the deadline set again before each (`httpreq.TimedWriter`, shared with
+`gqlfiber`; one deadline per event and one more per further piece, not one per write), because one deadline over
+a whole result bounds its size by the client's bandwidth; the slow-reader test fails with the
+piece made unbounded. `gqlfiber`'s single result goes through a stream writer for this, since a
+buffered body is written by fasthttp after the handler has returned; with `WithWriteTimeout(0)`
+there is no deadline to set and it is buffered, the same response under a `Content-Length`
+instead of chunks (`TestSSEAnswersAQueryTheSameWithAndWithoutAWriteTimeout`). The deadline also replaces
+`http.Server.WriteTimeout` on the stream, so the two can be set together
+(`TestTheServersWriteTimeoutAndAStream`); with `WithWriteTimeout(0)` the server's ends it. A subscriber that stops reading parks the handler in a socket
 write, where it sees neither `drain.Closing()` nor its context, and the stream outlived
 `drain.Shutdown` and `http.Server.Shutdown` both (`stall_test.go`, a raw TCP client that reads
 the status line and nothing else). `gqlfiber`'s SSE stalled the same way and is bounded the same
@@ -270,6 +323,18 @@ in `httpreq`, where they exist once: `Negotiate` keeps a type refused with `q=0`
 wildcard follows; `AcceptsEventStream` reads the weight and lets the most specific range decide
 (it used to be two verbatim copies that ignored `q`); and `WriteBatch` replaces an entry that
 will not serialize with the fallback body instead of leaving the client `[{...},` under a 200.
+
+**Smaller rules that exist once and are asserted across handlers.** Every HTTP-carrying handler
+answers `Vary: Accept`, since Accept picks the media type, the status of a request error, and
+behind `gqlmux` whether the URL streams. A body member of the wrong JSON type is refused in the
+request's words (`"query" must be a string, not a number.`), not encoding/json's, which name
+the Go struct and type. `WithReadLimit(0)` is no limit on both WebSocket drivers; coder/websocket
+reads zero as "refuse every message", so `gqlws` passes it -1. **`Executor.Subscribe` returns
+nothing but a `*SubscribeError`**: a `SubscriptionInterceptor`'s own error is presented by the
+executor (`interceptorRefusal`) instead of reaching the transports raw, which sent its text past
+a masking presenter on all five streaming handlers. The transports' branch for any other error
+logs it and answers a fixed internal error; nothing reaches that branch through an `Executor`,
+which is why it has no test.
 
 **What `DecorateContext` adds for the handshake is taken off again by `ClearContext`.** Both
 `RequestFrom` and `ConnFrom` are documented as available to a `ConnectFunc` and to nothing

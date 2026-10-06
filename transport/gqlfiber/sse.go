@@ -55,6 +55,8 @@ func SSE(exec *graphql.Executor, opts ...Option) fiber.Handler {
 // producing the same statuses and messages. It always returns nil, because
 // the response is already written.
 func (h *sseHandler) serve(c fiber.Ctx) error {
+	// As in gqlsse: stream or 406 is decided by Accept.
+	c.Vary("Accept")
 	if !httpreq.AcceptsEventStream(c.Get("Accept")) {
 		h.writeError(c, http.StatusNotAcceptable, "Accept header does not allow %s.", MediaTypeEventStream)
 		return nil
@@ -69,13 +71,14 @@ func (h *sseHandler) serve(c fiber.Ctx) error {
 
 	src := newSource(c)
 
-	if h.csrf && httpreq.Forgeable(src, h.csrfHeaders) {
+	var ct httpreq.ContentType
+	if h.csrf && httpreq.Forgeable(src, &ct, h.csrfHeaders) {
 		h.writeError(c, http.StatusForbidden,
 			"This request could be forged cross-site. Send a non-simple Content-Type or one of the headers %s.", strings.Join(h.csrfHeaders, ", "))
 		return nil
 	}
 
-	req, status, err := h.parse(src)
+	req, status, err := h.parse(src, &ct)
 	if err != nil {
 		h.writeError(c, status, "%v", err)
 		return nil
@@ -85,7 +88,7 @@ func (h *sseHandler) serve(c fiber.Ctx) error {
 	// text, so the checks below would have nothing to inspect.
 	if h.apq != nil {
 		if resp := apq.Resolve(h.apq, req); resp != nil {
-			h.writeResponse(c, http.StatusOK, resp)
+			h.writeResponse(c, httpreq.PersistedStatus(resp), resp)
 			return nil
 		}
 		if req.Query == "" {
@@ -99,7 +102,7 @@ func (h *sseHandler) serve(c fiber.Ctx) error {
 	// a request error from the executor.
 	if kind, kerr := h.exec.OperationKind(req.Query, req.OperationName); kerr == nil {
 		if method == http.MethodGet && kind == ast.Mutation {
-			h.writeError(c, http.StatusMethodNotAllowed, "Mutations are not allowed over GET; use POST.")
+			h.refuseMutationOverGET(c)
 			return nil
 		}
 		if kind == ast.Subscription {
@@ -109,7 +112,7 @@ func (h *sseHandler) serve(c fiber.Ctx) error {
 	return h.single(c, req)
 }
 
-func (h *sseHandler) parse(src httpreq.Source) (*graphql.Request, int, error) {
+func (h *sseHandler) parse(src httpreq.Source, ct *httpreq.ContentType) (*graphql.Request, int, error) {
 	if src.Method() == http.MethodGet {
 		req, err := httpreq.ParseGET(src, h.apq != nil)
 		if err != nil {
@@ -117,7 +120,7 @@ func (h *sseHandler) parse(src httpreq.Source) (*graphql.Request, int, error) {
 		}
 		return req, 0, nil
 	}
-	if err := httpreq.RequireJSONBody(src); err != nil {
+	if err := httpreq.RequireJSONBody(src, ct); err != nil {
 		return nil, http.StatusUnsupportedMediaType, err
 	}
 	body, status, err := httpreq.ReadBody(src, h.maxBody)
@@ -131,33 +134,105 @@ func (h *sseHandler) parse(src httpreq.Source) (*graphql.Request, int, error) {
 	return req, 0, nil
 }
 
-// single serves a query or mutation as one next event and a complete. The
-// result is complete before anything is written, so it needs no stream: the
-// bytes are the ones gqlsse sends, buffered into the response in one go.
+// single serves a query or mutation as one next event and a complete.
+//
+// The result is complete before anything is written, and under a write
+// timeout it is still sent through a stream writer rather than buffered into
+// the response. Buffered, it is fasthttp that writes it, after this handler
+// has returned, under whatever fiber.Config.WriteTimeout says -- nothing, by
+// default -- so a client that asked for a large result and read none of it
+// held the connection and the response for as long as it stayed. A stream
+// writer is where this package can put its own deadline on the connection, a
+// piece at a time, as it does for a subscription.
 func (h *sseHandler) single(c fiber.Ctx, req *graphql.Request) error {
 	ctx, cancel := requestContext(c)
 	defer cancel()
 
 	resp := h.exec.Execute(ctx, req)
-	defer resp.Release()
 
+	// The check in serve read the text as received; this is the executor
+	// refusing a mutation a RequestInterceptor put in its place.
+	if req.QueryOnly && httpreq.QueryOnlyRefused(resp) {
+		resp.Release()
+		h.refuseMutationOverGET(c)
+		return nil
+	}
 	// An operation that never ran is a transport-level failure, reported the
 	// way New's handler reports it rather than as a payload on an opened
 	// stream.
 	if resp.HasRequestErrors() {
 		h.writeResponse(c, httpreq.ErrorStatus(resp), resp)
+		resp.Release()
 		return nil
 	}
 
 	h.beginStream(c)
-	if err := h.writeNext(c, resp); err != nil {
-		h.logWrite(err)
+	if h.writeTimeout <= 0 {
+		// No deadline to set, so nothing a stream writer is for: it costs a
+		// goroutine and a pipe to hand fasthttp the same bytes. They differ
+		// only in framing, a Content-Length here and chunks there.
+		defer resp.Release()
+		if err := h.writeNext(c, resp); err != nil {
+			h.logWrite(err)
+			return nil
+		}
+		if err := h.writeComplete(c); err != nil {
+			h.logWrite(err)
+		}
 		return nil
 	}
-	if err := h.writeComplete(c); err != nil {
-		h.logWrite(err)
-	}
+	arm := h.armer(c)
+	// The closure outlives this handler and must not capture c; see subscribe.
+	_ = c.SendStreamWriter(func(w *bufio.Writer) {
+		// The response is released here, not by the handler: its buffer is
+		// what the closure is writing.
+		defer resp.Release()
+		defer h.recoverStream()
+		out := httpreq.NewTimedWriter(w, arm, w.Flush)
+		out.Arm()
+		if err := h.writeNext(out, resp); err != nil {
+			h.logWrite(err)
+			return
+		}
+		if err := h.writeComplete(out); err != nil {
+			h.logWrite(err)
+			return
+		}
+		arm()
+		h.flush(w)
+		// For what fasthttp still has to write once this returns; see
+		// subscribe.
+		arm()
+	})
 	return nil
+}
+
+func (h *sseHandler) refuseMutationOverGET(c fiber.Ctx) {
+	h.writeError(c, http.StatusMethodNotAllowed, "%v", httpreq.ErrMutationOverGET)
+}
+
+// armer returns the function that gives the next write on this response's
+// connection the write timeout. It takes the connection now because it is
+// called from a stream writer, after c has been recycled: the connection is
+// the one thing that still belongs to this response then.
+func (h *sseHandler) armer(c fiber.Ctx) func() {
+	conn := c.RequestCtx().Conn()
+	return func() {
+		if h.writeTimeout > 0 {
+			_ = conn.SetWriteDeadline(time.Now().Add(h.writeTimeout))
+		}
+	}
+}
+
+// recoverStream is deferred in a stream writer. fasthttp runs one on a bare
+// goroutine of its own with no recover, so a panic there would end the
+// process. Under net/http the same panic costs gqlsse one connection, and a
+// panic three transports survive must not kill the fourth.
+func (h *sseHandler) recoverStream() {
+	if r := recover(); r != nil {
+		h.logger.Error("gqlfiber: panic while streaming",
+			"panic", r, "stack", string(debug.Stack()))
+	}
 }
 
 // subscribe streams one next event per source event.
@@ -179,7 +254,11 @@ func (h *sseHandler) subscribe(c fiber.Ctx, req *graphql.Request) error {
 			h.writeResponse(c, httpreq.ErrorStatus(se.Response), se.Response)
 			return nil
 		}
-		h.writeError(c, http.StatusInternalServerError, "%v", err)
+		// Subscribe returns nothing but a *SubscribeError, whose errors have
+		// been through the executor's presenter. Anything else has not, so
+		// its text is logged and not sent.
+		h.logger.Warn("gqlfiber: opening subscription", "error", err)
+		h.writeResponse(c, http.StatusInternalServerError, httpreq.InternalError())
 		return nil
 	}
 
@@ -201,12 +280,7 @@ func (h *sseHandler) subscribe(c fiber.Ctx, req *graphql.Request) error {
 	// reading blocks fasthttp's write to the socket, then the pipe this
 	// closure writes into, then the closure -- in a Flush, where it sees
 	// neither the drain nor its context, so the stream outlived both.
-	conn := c.RequestCtx().Conn()
-	arm := func() {
-		if h.writeTimeout > 0 {
-			_ = conn.SetWriteDeadline(time.Now().Add(h.writeTimeout))
-		}
-	}
+	arm := h.armer(c)
 
 	// Its error is discarded rather than returned, because by now the
 	// response is committed to a stream: handing fiber an error would let
@@ -233,16 +307,7 @@ func (h *sseHandler) subscribe(c fiber.Ctx, req *graphql.Request) error {
 			// for its writes.
 			leave()
 		}()
-		defer func() {
-			// fasthttp runs this closure on a bare goroutine of its own with
-			// no recover, so a panic here would end the process. Under
-			// net/http the same panic costs gqlsse one connection, and a
-			// panic three transports survive must not kill the fourth.
-			if r := recover(); r != nil {
-				h.logger.Error("gqlfiber: panic while streaming",
-					"panic", r, "stack", string(debug.Stack()))
-			}
-		}()
+		defer h.recoverStream()
 		h.stream(ctx, w, events, arm)
 		// However the stream ended, fasthttp still has what is in the pipe
 		// and the chunk that terminates the response to write, to a peer that
@@ -256,8 +321,15 @@ func (h *sseHandler) subscribe(c fiber.Ctx, req *graphql.Request) error {
 }
 
 // stream pumps events onto an open stream until the source ends, the context
-// is cancelled, or a write shows that nobody is reading. arm is called before
-// each write, to give it the write timeout.
+// is cancelled, or a write shows that nobody is reading. arm gives a write the
+// write timeout.
+//
+// Every write goes through a TimedWriter, which sets the connection's
+// deadline for each event and again for each further piece of a large one,
+// flushing the piece on to fasthttp first. The pipe between the two holds a
+// few pieces and then blocks, so a client that takes nothing stops the writer
+// within a few pieces, and the last deadline set is the one its connection
+// fails on.
 func (h *sseHandler) stream(ctx context.Context, w *bufio.Writer, events <-chan *graphql.Response, arm func()) {
 	var idle <-chan time.Time
 	if h.keepAlive > 0 {
@@ -273,19 +345,20 @@ func (h *sseHandler) stream(ctx context.Context, w *bufio.Writer, events <-chan 
 		aged = t.C
 	}
 
+	out := httpreq.NewTimedWriter(w, arm, w.Flush)
 	for {
 		select {
 		case resp, ok := <-events:
-			arm()
+			out.Arm()
 			if !ok {
-				if err := h.writeComplete(w); err != nil {
+				if err := h.writeComplete(out); err != nil {
 					h.logWrite(err)
 					return
 				}
 				h.flush(w)
 				return
 			}
-			err := h.writeNext(w, resp)
+			err := h.writeNext(out, resp)
 			resp.Release()
 			if err != nil {
 				h.logWrite(err)
@@ -295,8 +368,8 @@ func (h *sseHandler) stream(ctx context.Context, w *bufio.Writer, events <-chan 
 				return
 			}
 		case <-idle:
-			arm()
-			if _, err := w.WriteString(":\n\n"); err != nil {
+			out.Arm()
+			if _, err := out.WriteString(":\n\n"); err != nil {
 				h.logWrite(err)
 				return
 			}

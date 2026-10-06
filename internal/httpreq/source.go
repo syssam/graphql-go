@@ -21,6 +21,11 @@ var ErrBodyTooLarge = errors.New("request body too large")
 type Source interface {
 	Method() string
 	Header(name string) string
+	// Repeated reports whether the request carried the header more than once.
+	// Header answers with one value however many there were, and net/http
+	// picks the first where fasthttp keeps the last, so a rule that reads a
+	// repeated header would have two answers.
+	Repeated(name string) bool
 	QueryParam(name string) string
 	Body(limit int64) ([]byte, error)
 }
@@ -38,6 +43,7 @@ func FromRequest(w http.ResponseWriter, r *http.Request) Source { return netHTTP
 
 func (s netHTTP) Method() string                { return s.r.Method }
 func (s netHTTP) Header(name string) string     { return s.r.Header.Get(name) }
+func (s netHTTP) Repeated(name string) bool     { return len(s.r.Header.Values(name)) > 1 }
 func (s netHTTP) QueryParam(name string) string { return QueryValue(s.r.URL.RawQuery, name) }
 
 // QueryValue is the first value of name in a raw query string, by net/url's

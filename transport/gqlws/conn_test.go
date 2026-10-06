@@ -785,3 +785,13 @@ func TestReadLimitClosesAnOversizedMessage(t *testing.T) {
 		t.Fatalf("close code = %d, want %d", got, websocket.StatusMessageTooBig)
 	}
 }
+
+// Zero means no limit, as every other zero in these packages does and as it
+// does on gqlfiber. coder/websocket reads a zero limit as "refuse every
+// message", so WithReadLimit(0) used to close each connection on its first
+// frame, connection_init included.
+func TestReadLimitZeroIsNoLimit(t *testing.T) {
+	_, e := newTestExecutor(t)
+	c := dial(t, e, gqlws.WithReadLimit(0))
+	c.init(`{"pad":"` + strings.Repeat("x", 2<<20) + `"}`)
+}

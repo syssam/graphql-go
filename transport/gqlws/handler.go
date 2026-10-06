@@ -67,10 +67,15 @@ func WithWriteTimeout(d time.Duration) Option { return func(h *Handler) { h.writ
 // WithMaxSubscriptions caps the operations one connection may run at once.
 // Beyond the cap a subscribe is answered with an error message and the
 // connection stays open. The default is 100; zero means unlimited.
+//
+// An operation the client has completed keeps its place until it has stopped,
+// which is when its resolvers return. One subscribed meanwhile is accepted and
+// waits for that place, so completing and resubscribing cannot run more than
+// the cap at a time.
 func WithMaxSubscriptions(n int) Option { return func(h *Handler) { h.maxSubs = n } }
 
 // WithReadLimit caps the size of a single client message. The default is
-// 1 MiB.
+// 1 MiB; zero or less means no limit, as it does on gqlfiber.
 func WithReadLimit(n int64) Option { return func(h *Handler) { h.readLimit = n } }
 
 // WithOnConnect registers the authentication hook run on connection_init.
@@ -177,7 +182,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = ws.Close(StatusSubprotocolNotAcceptable, "Subprotocol not acceptable")
 		return
 	}
-	ws.SetReadLimit(h.readLimit)
+	// coder/websocket reads zero as "refuse every message" and -1 as no limit.
+	// Zero is no limit everywhere else in these packages, and on gqlfiber's
+	// WebSocket, so it is here too.
+	limit := h.readLimit
+	if limit <= 0 {
+		limit = -1
+	}
+	ws.SetReadLimit(limit)
 
 	// The connection outlives the HTTP request once the handshake is done, and
 	// coder/websocket documents the request context as unsafe to use past

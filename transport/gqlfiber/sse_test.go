@@ -6,7 +6,9 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -146,6 +148,62 @@ func TestSSEStreamsAQuery(t *testing.T) {
 	const want = "event: next\ndata: {\"data\":{\"hello\":\"world\"}}\n\nevent: complete\ndata:\n\n"
 	if got := string(body); got != want {
 		t.Fatalf("stream = %q, want %q", got, want)
+	}
+}
+
+// With no write timeout there is no deadline for a stream writer to set, so a
+// query's result is buffered into the response like any other body. A client
+// must not be able to tell the two apart by anything but the framing: the
+// status, every header that is not about framing, and the bytes of the stream
+// are the same.
+func TestSSEAnswersAQueryTheSameWithAndWithoutAWriteTimeout(t *testing.T) {
+	ask := func(t *testing.T, timeout time.Duration) (*http.Response, string) {
+		t.Helper()
+		app := fiber.New()
+		app.Post("/graphql", SSE(newTestExecutor(t), WithWriteTimeout(timeout)))
+		req, err := http.NewRequest(http.MethodPost, startFiber(t, app)+"/graphql", strings.NewReader(`{"query":"{hello}"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "text/event-stream")
+		resp, err := streamClient(t).Do(req)
+		if err != nil {
+			t.Fatalf("Do: %v", err)
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("reading the stream: %v", err)
+		}
+		resp.Header.Del("Date")
+		return resp, string(body)
+	}
+
+	buffered, bufferedBody := ask(t, 0)
+	streamed, streamedBody := ask(t, time.Second)
+
+	if buffered.ContentLength != int64(len(bufferedBody)) || len(buffered.TransferEncoding) != 0 {
+		t.Errorf("with no write timeout: Content-Length %d, Transfer-Encoding %v; want the length of the body, %d, and no encoding",
+			buffered.ContentLength, buffered.TransferEncoding, len(bufferedBody))
+	}
+	if streamed.ContentLength != -1 || !slices.Equal(streamed.TransferEncoding, []string{"chunked"}) {
+		t.Errorf("under a write timeout: Content-Length %d, Transfer-Encoding %v; want a chunked stream",
+			streamed.ContentLength, streamed.TransferEncoding)
+	}
+
+	// Content-Length is the one header only one of them carries; net/http has
+	// already taken Transfer-Encoding and Connection out of both.
+	buffered.Header.Del("Content-Length")
+	if buffered.StatusCode != streamed.StatusCode || !maps.EqualFunc(buffered.Header, streamed.Header, slices.Equal[[]string]) {
+		t.Errorf("the two answers differ beyond their framing:\n%d %v\n%d %v",
+			buffered.StatusCode, buffered.Header, streamed.StatusCode, streamed.Header)
+	}
+	if !buffered.Close || !streamed.Close {
+		t.Errorf("Connection: close on the buffered answer %v, on the streamed one %v; want both", buffered.Close, streamed.Close)
+	}
+	if bufferedBody != streamedBody {
+		t.Errorf("buffered body %q, streamed body %q", bufferedBody, streamedBody)
 	}
 }
 
