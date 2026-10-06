@@ -17,8 +17,7 @@ type benchAggArgs struct {
 
 // A list or input-object literal is decoded on every request, because decoded
 // once it is one slice or struct shared by every request. This is what that
-// costs, against BenchmarkExecuteConstantArgs, whose scalar literals are still
-// decoded once.
+// costs.
 func BenchmarkExecuteLiteralAggregateArgs(b *testing.B) {
 	s, err := NewSchema(SDL(`
 		input Filter { name: String limit: Int }

@@ -73,3 +73,66 @@ type Subscription { ticks: Int! @note @deprecated(reason: "x") }
 		t.Fatalf("NewSchema rejected an unbound directive: %v", err)
 	}
 }
+
+// Order is part of what a directive means: @auth @cache must refuse before the
+// cache answers. A field's directives wrap in the order written, the first
+// outermost, and the object's wrap all of them -- a guard on the type runs
+// before anything written on its fields.
+func TestDirectivesWrapInWrittenOrderWithTheObjectsOutermost(t *testing.T) {
+	var trace []string
+	traced := func(name string) SchemaOption {
+		return Directive(name, func(next FieldFunc) FieldFunc {
+			return func(ctx context.Context, parent, args any) (any, error) {
+				trace = append(trace, name)
+				return next(ctx, parent, args)
+			}
+		})
+	}
+	s, err := NewSchema(SDL(`
+directive @a on FIELD_DEFINITION | OBJECT
+directive @b on FIELD_DEFINITION | OBJECT
+directive @c on FIELD_DEFINITION | OBJECT
+directive @d on FIELD_DEFINITION | OBJECT
+type T @c @d { x: String @a @b }
+type Query { t: T }
+`),
+		traced("a"), traced("b"), traced("c"), traced("d"),
+		Object[struct{}]("T", Field("x", func(*struct{}) *string { trace = append(trace, "x"); return nil })),
+		Query(Field("t", func(Root) *struct{} { return &struct{}{} })),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	expectData(t, run(t, NewExecutor(s), `{ t { x } }`, ""), `{"t":{"x":null}}`)
+	if got := strings.Join(trace, " "); got != "c d a b x" {
+		t.Fatalf("ran in the order %q, want %q", got, "c d a b x")
+	}
+}
+
+// A directive that withholds a field answers nil, whatever the field's Go
+// type is. For a scalar that is null where the schema allows one and the
+// usual error where it does not -- not a complaint that nil is no string.
+func TestADirectiveMayAnswerALeafFieldWithNil(t *testing.T) {
+	s, err := NewSchema(SDL(`
+directive @hide on FIELD_DEFINITION
+type Box { required: String! @hide }
+type Query { ok: String! secret: String @hide box: Box }
+`),
+		Directive("hide", func(FieldFunc) FieldFunc {
+			return func(context.Context, any, any) (any, error) { return nil, nil }
+		}),
+		Object[struct{}]("Box", Field("required", func(*struct{}) string { return "shown" })),
+		Query(
+			Field("ok", func(Root) string { return "x" }),
+			Field("secret", func(Root) string { return "shown" }),
+			Field("box", func(Root) *struct{} { return &struct{}{} }),
+		),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	e := NewExecutor(s)
+	expectData(t, run(t, e, `{ ok secret }`, ""), `{"ok":"x","secret":null}`)
+	expectError(t, run(t, e, `{ ok box { required } }`, ""), `{"ok":"x","box":null}`, "box.required",
+		"Cannot return null for non-nullable field Box.required.")
+}

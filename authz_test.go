@@ -249,6 +249,14 @@ func TestNewSchemaRejectsMalformedScopesValue(t *testing.T) {
 		{"not a list at all", `"x"`},
 		{"empty outer list", `[]`},
 		{"empty inner group", `[[]]`},
+		// gqlparser does not hold a directive's literal to its declared
+		// type, so each of these parses, and each has a Raw the reader
+		// would take for a scope name: "1", "ADMIN", "null".
+		{"an integer where a scope belongs", `[[1]]`},
+		{"an enum value where a scope belongs", `[[ADMIN]]`},
+		{"a null where a scope belongs", `[[null]]`},
+		{"one bad scope beside a good one", `[["x", 1]]`},
+		{"a group nested one level too deep", `[[["x"]]]`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -742,18 +750,14 @@ type Subscription { tick: Int! @requiresScopes(scopes: [["x"]]) }
 // Null on a non-null site must be refused at Decision.Set rather than
 // silently written and left to the caller to notice.
 func TestNullOutcomeRejectedOnNonNullField(t *testing.T) {
+	logged := captureLog(t)
 	s := shapeSchema(t)
 	e := NewExecutor(s, WithAuthorizer(AuthorizerFunc(
 		func(ctx context.Context, shape *AuthShape, d *Decision) error {
 			return d.Set(0, Null())
 		})))
 	resp := run(t, e, `{ me { salary } }`, "")
-	if len(resp.Errors) == 0 {
-		t.Fatal("operation was not rejected")
-	}
-	if !strings.Contains(resp.Errors[0].Message, "Null is not valid for") {
-		t.Errorf("error = %s, want it to name Null as invalid", resp.Errors[0].Message)
-	}
+	assertPolicyMistake(t, resp.Errors, logged, "Null is not valid for User.salary")
 }
 
 // enforceAuth's actionNull case is the only thing that makes Null() do
@@ -836,19 +840,14 @@ type Nested { id: ID! }
 // (leaf, not a list) and would only panic at write time, on whichever
 // request first reaches it. Reject it at Decision.Set instead, by name.
 func TestRedactNilFunctionRejected(t *testing.T) {
+	logged := captureLog(t)
 	s := shapeSchema(t)
 	e := NewExecutor(s, WithAuthorizer(AuthorizerFunc(
 		func(ctx context.Context, shape *AuthShape, d *Decision) error {
 			return d.Set(0, Redact(nil))
 		})))
 	resp := run(t, e, `{ me { salary } }`, "")
-	if len(resp.Errors) == 0 {
-		t.Fatal("operation was not rejected")
-	}
-	msg := resp.Errors[0].Message
-	if !strings.Contains(msg, "User.salary") || !strings.Contains(msg, "nil function") {
-		t.Errorf("error = %s, want it to name the coordinate and a nil function", msg)
-	}
+	assertPolicyMistake(t, resp.Errors, logged, "User.salary", "nil function")
 }
 
 // Zero's rejection message offers Null as an alternative only when Null
@@ -885,15 +884,19 @@ type Query {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			var setErr error
 			e := NewExecutor(s, WithAuthorizer(AuthorizerFunc(
 				func(ctx context.Context, shape *AuthShape, d *Decision) error {
-					return d.Set(0, Zero())
+					setErr = d.Set(0, Zero())
+					return setErr
 				})))
 			resp := run(t, e, tc.query, "")
-			if len(resp.Errors) == 0 {
+			if len(resp.Errors) == 0 || setErr == nil {
 				t.Fatal("operation was not rejected")
 			}
-			msg := resp.Errors[0].Message
+			// The advice is for whoever wrote the policy, so it is read off
+			// what Set returned to them.
+			msg := setErr.Error()
 			if !strings.Contains(msg, tc.want) {
 				t.Errorf("error = %s, want it to contain %q", msg, tc.want)
 			}

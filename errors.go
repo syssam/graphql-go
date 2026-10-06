@@ -43,6 +43,9 @@ const (
 	// CodeErrorLimitExceeded marks the one error that stands in for those
 	// omitted past WithMaxErrors.
 	CodeErrorLimitExceeded = "ERROR_LIMIT_EXCEEDED"
+	// CodeQueryOnly is on the refusal of a mutation for a request marked
+	// Request.QueryOnly, which a transport finds by it to answer 405.
+	CodeQueryOnly = "QUERY_ONLY"
 )
 
 // Location is a line/column position in the request document.

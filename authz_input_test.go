@@ -62,6 +62,18 @@ func supplied(t *testing.T, query, field, arg string) (map[string]*ast.Definitio
 	return schema.Types, def.Type, v
 }
 
+// allInputKeys walks one argument with a whole request's budget, for inputs
+// that are nowhere near it.
+func allInputKeys(t *testing.T, types map[string]*ast.Definition, typ *ast.Type, v *ast.Value, vars map[string]any) []InputKey {
+	t.Helper()
+	budget := maxInputPathElems
+	keys, ok := inputKeys(types, typ, v, vars, &budget)
+	if !ok {
+		t.Fatal("the walk ran out of budget on a small input")
+	}
+	return keys
+}
+
 func render(keys []InputKey) []string {
 	var out []string
 	for _, k := range keys {
@@ -155,6 +167,24 @@ func TestInputKeys(t *testing.T) {
 			map[string]any{"w": map[string]any{"nameContains": "x"}},
 			[]string{"not", "not.nameContains"}},
 
+		// The same rule on the variable side, where the key and its value
+		// both arrive in the variable: a key holding an object or a list is
+		// a position of its own, and when what it holds is empty that is
+		// the only report there is. "has any orders" is a filter by the key
+		// alone.
+		{"variable key holding an empty object is still reported",
+			`query($w: Where) { customers(where: $w) }`, "customers", "where",
+			map[string]any{"w": map[string]any{"not": map[string]any{}}},
+			[]string{"not"}},
+		{"variable key holding an empty list is still reported",
+			`query($w: Where) { customers(where: $w) }`, "customers", "where",
+			map[string]any{"w": map[string]any{"and": []any{}}},
+			[]string{"and"}},
+		{"variable key holding a list of nothing but nulls is still reported",
+			`query($w: Where) { customers(where: $w) }`, "customers", "where",
+			map[string]any{"w": map[string]any{"and": []any{nil}}},
+			[]string{"and"}},
+
 		// Fix round 1, R5a: a null list element is not a null at the list's
 		// key; the key is still reported as an intermediate key when nested.
 		{"null element in a nested literal list is not a null at that key",
@@ -201,7 +231,7 @@ func TestInputKeys(t *testing.T) {
 			types, typ, v := supplied(t, tc.query, tc.field, tc.arg)
 			var got []InputKey
 			if v != nil {
-				got = inputKeys(types, typ, v, tc.vars)
+				got = allInputKeys(t, types, typ, v, tc.vars)
 			}
 			if r := render(got); !slices.Equal(r, tc.want) {
 				t.Errorf("keys = %v, want %v", r, tc.want)
@@ -222,7 +252,7 @@ func TestInputKeysVariableMapOrderDeterministic(t *testing.T) {
 		"not":          nil,
 		"nameContains": nil,
 	}}
-	keys := inputKeys(types, typ, v, vars)
+	keys := allInputKeys(t, types, typ, v, vars)
 	var got []string
 	for _, k := range keys {
 		got = append(got, strings.Join(k.Path, "."))
@@ -236,7 +266,7 @@ func TestInputKeysVariableMapOrderDeterministic(t *testing.T) {
 // A variable's value never appears in a key: only paths and enum identifiers.
 func TestInputKeysNeverCarryScalarValues(t *testing.T) {
 	types, typ, v := supplied(t, `query($w: Where) { customers(where: $w) }`, "customers", "where")
-	keys := inputKeys(types, typ, v, map[string]any{"w": map[string]any{"taxNumber": "SECRET-123"}})
+	keys := allInputKeys(t, types, typ, v, map[string]any{"w": map[string]any{"taxNumber": "SECRET-123"}})
 	for _, k := range keys {
 		if strings.Contains(strings.Join(k.Path, "."), "SECRET") || strings.Contains(k.Enum, "SECRET") {
 			t.Fatalf("a scalar value leaked into %+v", k)
@@ -681,6 +711,39 @@ func TestArgumentSiteDenyRefusesTheField(t *testing.T) {
 				t.Errorf("resolver ran %d times; a denied argument must refuse before it runs", n)
 			}
 		})
+	}
+}
+
+// A field refused for its argument is as withheld as one refused for itself:
+// enforceAuth checks the argument sites first and the resolver never runs. An
+// eager loader asking Withheld must hear that, or it loads -- filtered by the
+// very input the policy refused -- the rows nothing will write.
+func TestSelectedFieldWithheldByAnArgumentDeny(t *testing.T) {
+	got := map[string]bool{}
+	observe := WithFieldInterceptor(FieldInterceptorFunc(
+		func(ctx context.Context, fc *FieldContext, next FieldHandler) (any, error) {
+			if fc.Field.Name == "customers" {
+				for f := range fc.Selection().Fields() {
+					got[f.Alias] = f.Withheld(ctx)
+				}
+			}
+			return next(ctx)
+		}))
+	e := NewExecutor(argSiteSchema(t), WithAuthorizer(taxPolicy(nil)), observe)
+	resp := run(t, e, `{ customers {
+		name
+		refused: related(where: {taxNumber: "1"}) { name }
+		allowed: related(where: {nameContains: "a"}) { name }
+		unfiltered: related { name }
+	} }`, "")
+	if len(resp.Errors) != 1 || resp.Errors[0].Path.String() != "customers[0].refused" {
+		t.Fatalf("errors = %s, want only the refused filter", errorsJSON(resp.Errors))
+	}
+	want := map[string]bool{"name": false, "refused": true, "allowed": false, "unfiltered": false}
+	for alias, w := range want {
+		if g, seen := got[alias]; !seen || g != w {
+			t.Errorf("Withheld(%s) = %v (seen %v), want %v", alias, g, seen, w)
+		}
 	}
 }
 

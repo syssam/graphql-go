@@ -56,11 +56,48 @@ func TestRedactRowDecidesPerRow(t *testing.T) {
 }
 
 func TestRedactRowNilFunctionRejected(t *testing.T) {
+	logged := captureLog(t)
 	e := NewExecutor(rowSchema(t), WithAuthorizer(AuthorizerFunc(
 		func(_ context.Context, _ *AuthShape, d *Decision) error { return d.Set(0, RedactRow(nil)) })))
 	resp := run(t, e, `{ users { email } }`, "")
-	if len(resp.Errors) == 0 || !strings.Contains(resp.Errors[0].Message, "nil function") {
-		t.Fatalf("RedactRow(nil) was not rejected: %s", errorsJSON(resp.Errors))
+	assertPolicyMistake(t, resp.Errors, logged, "nil function")
+}
+
+// A list of leaves is a leaf to the schema builder and not to Redact. The
+// function is written for one value -- mask this address -- and handing it
+// the whole slice instead would be the same call meaning something else: a
+// policy that type-asserts a string returns its argument untouched when the
+// assertion fails, which serves the list unredacted.
+func TestRedactIsRefusedOnAListOfLeaves(t *testing.T) {
+	s, err := NewSchema(SDL(`
+directive @requiresScopes(scopes: [[String!]!]!) on FIELD_DEFINITION | OBJECT
+type Query { emails: [String!]! @requiresScopes(scopes: [["x"]]) }
+`),
+		Query(Field("emails", func(Root) []string { return []string{"ada@example.com"} })),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mask := func(v any) any {
+		if s, ok := v.(string); ok {
+			return "***" + s[len(s)-4:]
+		}
+		return v
+	}
+	for name, o := range map[string]Outcome{
+		"Redact":    Redact(mask),
+		"RedactRow": RedactRow(func(_ context.Context, _, v any) any { return mask(v) }),
+	} {
+		t.Run(name, func(t *testing.T) {
+			logged := captureLog(t)
+			e := NewExecutor(s, WithAuthorizer(AuthorizerFunc(
+				func(_ context.Context, _ *AuthShape, d *Decision) error { return d.Set(0, o) })))
+			resp := run(t, e, `{ emails }`, "")
+			if strings.Contains(string(resp.Data), "ada@") {
+				t.Fatalf("the list was served unredacted: %s", resp.Data)
+			}
+			assertPolicyMistake(t, resp.Errors, logged, "Redact is valid only on a leaf field, not Query.emails")
+		})
 	}
 }
 
@@ -79,11 +116,13 @@ type Query { me: User @requiresScopes(scopes: [["x"]]) }
 	if err != nil {
 		t.Fatal(err)
 	}
+	logged := captureLog(t)
 	e := NewExecutor(s, WithAuthorizer(AuthorizerFunc(func(_ context.Context, _ *AuthShape, d *Decision) error {
 		return d.Set(0, RedactRow(func(context.Context, any, any) any { return nil }))
 	})))
 	resp := run(t, e, `{ me { id } }`, "")
-	if len(resp.Errors) == 0 || !strings.Contains(resp.Errors[0].Message, "leaf field") || strings.Contains(string(resp.Data), `"id"`) {
+	if strings.Contains(string(resp.Data), `"id"`) {
 		t.Fatalf("RedactRow on a composite field was not refused: %s %s", resp.Data, errorsJSON(resp.Errors))
 	}
+	assertPolicyMistake(t, resp.Errors, logged, "leaf field")
 }

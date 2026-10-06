@@ -1237,6 +1237,65 @@ func TestAuthorizerTransportErrorIsNotShownAtSubscribe(t *testing.T) {
 	}
 }
 
+// A mistake in the policy is not a decision, and what explains it is written
+// for whoever maintains the policy: the coordinate, the outcome that does not
+// fit there, what to use instead. An *Error an Authorizer returns is shown to
+// the client as something written for it, so these must not be one, or a bug
+// in a policy publishes the schema position it is about and a nullable
+// position can be told from a non-null one by which sentence comes back.
+func TestPolicyMistakeIsLoggedAndNotShownToTheClient(t *testing.T) {
+	t.Run("an outcome its field cannot represent", func(t *testing.T) {
+		logged := captureLog(t)
+		e := NewExecutor(shapeSchema(t), WithAuthorizer(AuthorizerFunc(
+			func(_ context.Context, _ *AuthShape, d *Decision) error { return d.Set(0, Drop()) })))
+		resp := run(t, e, `{ me { salary } }`, "")
+		if resp.Data != nil {
+			t.Fatalf("data = %s, want the operation rejected", resp.Data)
+		}
+		assertPolicyMistake(t, resp.Errors, logged, "Drop is valid only for an instance site, not User.salary")
+	})
+	t.Run("a site that does not exist", func(t *testing.T) {
+		logged := captureLog(t)
+		e := NewExecutor(shapeSchema(t), WithAuthorizer(AuthorizerFunc(
+			func(_ context.Context, _ *AuthShape, d *Decision) error { return d.Set(99, Allow()) })))
+		resp := run(t, e, `{ me { salary } }`, "")
+		assertPolicyMistake(t, resp.Errors, logged, "site 99 is out of range")
+	})
+	t.Run("an instance reply of the wrong length", func(t *testing.T) {
+		logged := captureLog(t)
+		short := objectAuthorizerFunc(func(context.Context, []ObjectCheck) ([]Outcome, error) { return nil, nil })
+		e := newInstanceExecutorWith(t, short)
+		resp := run(t, e, `{ customers { id } }`, "")
+		assertJSON(t, resp.Data, `null`)
+		assertPolicyMistake(t, resp.Errors, logged, "returned 0 outcomes for 3 checks at Customer")
+	})
+	t.Run("at subscribe", func(t *testing.T) {
+		logged := captureLog(t)
+		src, e := newAuthSubGuardedExecutor(t, nil)
+		e.authorizer = AuthorizerFunc(func(_ context.Context, _ *AuthShape, d *Decision) error {
+			return d.Set(0, Zero())
+		})
+		_, err := e.Subscribe(t.Context(), &Request{Query: `subscription { messages { id } }`})
+		var se *SubscribeError
+		if !errors.As(err, &se) || se.Response == nil {
+			t.Fatalf("Subscribe error = %v, want a SubscribeError with a response", err)
+		}
+		assertPolicyMistake(t, se.Response.Errors, logged, "Zero is not valid for Subscription.messages")
+		if n := src.opens.Load(); n != 0 {
+			t.Errorf("source opened %d times", n)
+		}
+	})
+	// The control: an error the Authorizer wrote for the client still reaches it.
+	t.Run("a refusal the Authorizer wrote", func(t *testing.T) {
+		e := NewExecutor(shapeSchema(t), WithAuthorizer(AuthorizerFunc(
+			func(context.Context, *AuthShape, *Decision) error {
+				return Errorf("Sign in to see salaries.").WithCode(CodeForbidden)
+			})))
+		resp := run(t, e, `{ me { salary } }`, "")
+		assertErrorContains(t, resp.Errors, "Sign in to see salaries.")
+	})
+}
+
 // authzExtError mimics a policy backend's transport error type that also
 // happens to implement ExtensionsProvider -- a real client for a tracing or
 // observability system might attach exactly this kind of metadata to its own

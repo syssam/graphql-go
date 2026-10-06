@@ -90,23 +90,49 @@ type Writer jsonw.Writer
 func (w *Writer) inner() *jsonw.Writer { return (*jsonw.Writer)(w) }
 
 // String writes a JSON string.
-func (w *Writer) String(s string) { w.inner().String(s) }
+func (w *Writer) String(s string) {
+	w.inner().NoteLeaf(false)
+	w.inner().String(s)
+}
 
 // Int64 writes a JSON number.
-func (w *Writer) Int64(v int64) { w.inner().Int64(v) }
+func (w *Writer) Int64(v int64) {
+	w.inner().NoteLeaf(false)
+	w.inner().Int64(v)
+}
 
 // Uint64 writes a JSON number.
-func (w *Writer) Uint64(v uint64) { w.inner().Uint64(v) }
+func (w *Writer) Uint64(v uint64) {
+	w.inner().NoteLeaf(false)
+	w.inner().Uint64(v)
+}
 
-// Float64 writes a JSON number. It returns an error for NaN and infinities.
-func (w *Writer) Float64(v float64) error { return w.inner().Float64(v) }
+// Float64 writes a JSON number. It returns an error for NaN and infinities,
+// and writes nothing then.
+func (w *Writer) Float64(v float64) error {
+	err := w.inner().Float64(v)
+	if err == nil {
+		w.inner().NoteLeaf(false)
+	}
+	return err
+}
 
 // Bool writes true or false.
-func (w *Writer) Bool(v bool) { w.inner().Bool(v) }
+func (w *Writer) Bool(v bool) {
+	w.inner().NoteLeaf(false)
+	w.inner().Bool(v)
+}
 
 // Null writes null.
-func (w *Writer) Null() { w.inner().Null() }
+func (w *Writer) Null() {
+	w.inner().NoteLeaf(false)
+	w.inner().Null()
+}
 
-// Raw writes an already-encoded JSON value. The caller is responsible for
-// its validity.
-func (w *Writer) Raw(b []byte) { w.inner().Raw(b) }
+// Raw writes an already-encoded JSON value. A Scalar's marshal that uses it
+// has what it wrote read back, to see that it is one JSON value; the other
+// methods write one by construction and are not.
+func (w *Writer) Raw(b []byte) {
+	w.inner().NoteLeaf(true)
+	w.inner().Raw(b)
+}

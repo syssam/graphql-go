@@ -312,13 +312,12 @@ func findField(t *testing.T, sel *selectionSet, alias string) *planField {
 //	control:  { a: root { id next { id } } b: root { id next { id } } }
 //
 // a: and b: are distinct *ast.Field nodes owning their own brace pairs in
-// both queries, so their sub-selections are never shared — that holds
-// regardless of memoization and is asserted here as the always-false half of
-// the table. Below that, the fragment case has collectInto expand F's single
-// "next" field into both parents' field groups, so buildField sees one
-// *ast.Field reached from two sites and compileSelection's memo key matches,
-// returning one shared sub-selection. The control writes "next" out twice, so
-// there are two distinct AST nodes, two fingerprints, two selection sets.
+// both queries. In the fragment case each pair holds nothing but a spread of
+// F, and a spread is fingerprinted by the fragment it names, so the two are
+// one selection: one abstract set, one concrete expansion per type, and below
+// that F's single "next" field reached from both. The control writes
+// everything out twice, so there are two of each AST node, two fingerprints
+// and two selection sets at every level.
 //
 // The control is load-bearing: without it, a probe that reports "shared"
 // unconditionally, or a memo keyed too loosely and collapsing a/b themselves,
@@ -327,38 +326,38 @@ func TestFanOutMemoSharesFragmentSelections(t *testing.T) {
 	const fragmentQuery = `fragment F on Node { id next { id } } { a: root { ...F } b: root { ...F } }`
 	const controlQuery = `{ a: root { id next { id } } b: root { id next { id } } }`
 
-	check := func(t *testing.T, query string, wantNextFieldShared, wantNextSubShared bool) {
+	check := func(t *testing.T, query string, wantShared bool) {
 		t.Helper()
 		p := fanPlanFromExecute(t, query)
 
 		a := findField(t, p.sel, "a")
 		b := findField(t, p.sel, "b")
 
-		if a.sub == b.sub {
-			t.Fatalf("a/b abstract selection sets identical, want distinct: a and b are separate *ast.Field nodes")
+		if got := a.sub == b.sub; got != wantShared {
+			t.Fatalf("a/b abstract selection sets identical = %v, want %v", got, wantShared)
 		}
 
 		aT0, bT0 := a.sub.byType["T0"], b.sub.byType["T0"]
 		if aT0 == nil || bT0 == nil {
 			t.Fatalf("T0 concrete selection set missing: a=%v b=%v", aT0, bT0)
 		}
-		if aT0 == bT0 {
-			t.Fatalf("a/b T0 concrete selection sets identical, want distinct: each root field owns its own concrete expansion")
+		if got := aT0 == bT0; got != wantShared {
+			t.Fatalf("a/b T0 concrete selection sets identical = %v, want %v", got, wantShared)
 		}
 
 		aNext := findField(t, aT0, "next")
 		bNext := findField(t, bT0, "next")
 
-		if got := aNext.ast == bNext.ast; got != wantNextFieldShared {
-			t.Fatalf("next *ast.Field identical = %v, want %v", got, wantNextFieldShared)
+		if got := aNext.ast == bNext.ast; got != wantShared {
+			t.Fatalf("next *ast.Field identical = %v, want %v", got, wantShared)
 		}
-		if got := aNext.sub == bNext.sub; got != wantNextSubShared {
-			t.Fatalf("next sub-selection identical = %v, want %v", got, wantNextSubShared)
+		if got := aNext.sub == bNext.sub; got != wantShared {
+			t.Fatalf("next sub-selection identical = %v, want %v", got, wantShared)
 		}
 	}
 
-	t.Run("fragment", func(t *testing.T) { check(t, fragmentQuery, true, true) })
-	t.Run("control", func(t *testing.T) { check(t, controlQuery, false, false) })
+	t.Run("fragment", func(t *testing.T) { check(t, fragmentQuery, true) })
+	t.Run("control", func(t *testing.T) { check(t, controlQuery, false) })
 }
 
 // TestDepthLimitRejectsWithoutCompiling is the point of the guard, asserted
@@ -408,8 +407,8 @@ func TestDepthLimitRejectsWithoutCompiling(t *testing.T) {
 // requires oc.plan, and execute returns via requestError before an
 // OperationContext is ever built when the guard fires, so attachCost never
 // runs. This is deliberate, not a regression to fix — QueryCost.Max
-// rejections are unaffected, since that check stays in rejectIfOverLimit,
-// after compilation, because it depends on request variables.
+// rejections are unaffected, since that check is rejectIfOverCost, after
+// compilation, because it depends on request variables.
 func TestQueryCostAbsentOnDepthRejection(t *testing.T) {
 	s, e := newFanExecutor(t, WithMaxDepth(3), WithQueryCost(QueryCost{Report: true}))
 	_ = s
@@ -436,7 +435,7 @@ func TestQueryCostAbsentOnDepthRejection(t *testing.T) {
 // observable, and what this test checks instead, is the same absence
 // TestQueryCostAbsentOnDepthRejection checks: a guard rejection never builds
 // an OperationContext, so extensions.cost never appears, whereas a rejection
-// caught only by the post-compile rejectIfOverLimit check still reports it.
+// by QueryCost.Max, which is made on the compiled plan, still reports it.
 func TestDepthLimitRejectsOnUncacheablePath(t *testing.T) {
 	s, e := newFanExecutor(t, WithMaxDepth(3), WithQueryCost(QueryCost{Report: true}))
 	_ = s

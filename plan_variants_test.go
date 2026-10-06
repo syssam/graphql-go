@@ -86,15 +86,37 @@ func noErrors(t *testing.T, resp *Response) {
 	}
 }
 
+// variantSizes is what the document and each of its first few variants' plans
+// are charged, read from an executor with room for all of them.
+func variantSizes(t *testing.T, query string, n, variants int) (doc int64, plans []int64) {
+	t.Helper()
+	e := variantExecutor(t)
+	for mask := range variants {
+		noErrors(t, run(t, e, query, variantVars(n, mask)))
+	}
+	entry := e.cache.get(query)
+	if entry == nil || storedPlans(entry) != variants {
+		t.Fatalf("an executor with the default budget did not keep all %d variants", variants)
+	}
+	for mask := range variants {
+		p := entry.plans[planKey{op: "V", variant: uint16(mask)}]
+		if p == nil || p.size <= 0 {
+			t.Fatalf("variant %d has no plan with a size", mask)
+		}
+		plans = append(plans, p.size)
+	}
+	return int64(len(query)), plans
+}
+
 // The byte budget is what bounds retained memory, and a plan is the larger
-// part of what a document retains. Every plan kept beyond a document's first
-// is charged the query text again, so variants of one text and distinct texts
-// meet the same budget.
+// part of what a document retains. Every plan kept is charged what it holds,
+// so variants of one text and distinct texts meet the same budget.
 func TestPlanVariantsAreChargedToTheByteBudget(t *testing.T) {
 	const n = 4
 	query := variantQuery(n)
-	size := int64(len(query))
-	e := variantExecutor(t, WithPlanCacheBytes(4*size))
+	doc, plans := variantSizes(t, query, n, 4)
+	budget := doc + plans[0] + plans[1] + plans[2] + plans[3]
+	e := variantExecutor(t, WithPlanCacheBytes(budget))
 
 	for mask := range 1 << n {
 		noErrors(t, run(t, e, query, variantVars(n, mask)))
@@ -104,10 +126,15 @@ func TestPlanVariantsAreChargedToTheByteBudget(t *testing.T) {
 		t.Fatal("the document is not cached")
 	}
 	if got := storedPlans(entry); got != 4 {
-		t.Fatalf("%d plans kept under a budget of four times the query text, want 4", got)
+		t.Fatalf("%d plans kept under a budget of the document and four plans, want 4", got)
 	}
-	if got := e.cache.bytes(); got != 4*size {
-		t.Fatalf("cache counts %d bytes for four plans of a %d-byte query, want %d", got, size, 4*size)
+	if got := e.cache.bytes(); got != budget || got != cachedBytes(e.cache) {
+		t.Fatalf("cache counts %d bytes and holds %d, want %d: the document and its four plans", got, cachedBytes(e.cache), budget)
+	}
+	// A variant the budget refused is still answered, and still not kept.
+	noErrors(t, run(t, e, query, variantVars(n, 4)))
+	if got := storedPlans(entry); got != 4 {
+		t.Fatalf("%d plans kept after asking again for one the budget refused", got)
 	}
 
 	// Evicting the document gives every charge back.
@@ -121,8 +148,8 @@ func TestPlanVariantsAreChargedToTheByteBudget(t *testing.T) {
 		t.Fatalf("cache counts %d bytes with nothing in it", got)
 	}
 	noErrors(t, run(t, e, other, ""))
-	if got := e.cache.bytes(); got != int64(len(other)) {
-		t.Fatalf("cache counts %d bytes for one %d-byte query", got, len(other))
+	if got, held := e.cache.bytes(), cachedBytes(e.cache); got != held || got <= int64(len(other)) {
+		t.Fatalf("cache counts %d bytes for one %d-byte query and its plan, and holds %d", got, len(other), held)
 	}
 }
 
@@ -130,10 +157,14 @@ func TestPlanVariantsAreChargedToTheByteBudget(t *testing.T) {
 func TestPlanVariantChargeEvictsOtherDocuments(t *testing.T) {
 	const n = 2
 	query := variantQuery(n)
-	size := int64(len(query))
 	filler := `{ filler: a }`
-	// Room for three plans of the query, or for two and the filler.
-	e := variantExecutor(t, WithPlanCacheBytes(3*size))
+	doc, plans := variantSizes(t, query, n, 3)
+	probe := variantExecutor(t)
+	noErrors(t, run(t, probe, filler, ""))
+	fill := probe.cache.bytes()
+	// Room for the filler and two plans of the query, and one byte short of
+	// a third beside them.
+	e := variantExecutor(t, WithPlanCacheBytes(fill+doc+plans[0]+plans[1]+plans[2]-1))
 
 	noErrors(t, run(t, e, filler, ""))
 	noErrors(t, run(t, e, query, variantVars(n, 0)))
@@ -148,8 +179,8 @@ func TestPlanVariantChargeEvictsOtherDocuments(t *testing.T) {
 	if got := storedPlans(e.cache.get(query)); got != 3 {
 		t.Fatalf("%d plans kept, want 3: evicting the filler made room for the third", got)
 	}
-	if got := e.cache.bytes(); got != 3*size {
-		t.Fatalf("cache counts %d bytes for three plans of a %d-byte query", got, size)
+	if got, want := e.cache.bytes(), doc+plans[0]+plans[1]+plans[2]; got != want || got != cachedBytes(e.cache) {
+		t.Fatalf("cache counts %d bytes and holds %d, want %d: the document and three plans", got, cachedBytes(e.cache), want)
 	}
 }
 
@@ -209,5 +240,123 @@ func TestAnUncachedVariantIsNotCompiledUnderTheDocumentLock(t *testing.T) {
 	}
 	if held != 0 {
 		t.Fatalf("%d of %d compiles past the cap ran with the document's lock held", held, compiles)
+	}
+}
+
+// A plan is kept per value of the variables its @skip and @include read, and
+// condVariables is what finds them. One it misses is not part of the key, so
+// the plan compiled for the first request answers the second, whatever the
+// second sent: every place a condition can be written is asked here with both
+// values on one executor, in both orders.
+func TestAConditionVariableSelectsItsPlanWhereverItIsWritten(t *testing.T) {
+	for name, tc := range map[string]struct{ query, on, off string }{
+		"on a field": {
+			`query($s: Boolean!) { strings @skip(if: $s) ctxPath }`,
+			`{"ctxPath":"ctxPath"}`, `{"strings":["x","y"],"ctxPath":"ctxPath"}`,
+		},
+		"on a fragment spread": {
+			`query($s: Boolean!) { ...F @skip(if: $s) ctxPath } fragment F on Query { strings }`,
+			`{"ctxPath":"ctxPath"}`, `{"strings":["x","y"],"ctxPath":"ctxPath"}`,
+		},
+		"on an inline fragment": {
+			`query($s: Boolean!) { ... @skip(if: $s) { strings } ctxPath }`,
+			`{"ctxPath":"ctxPath"}`, `{"strings":["x","y"],"ctxPath":"ctxPath"}`,
+		},
+		"on a field inside a fragment": {
+			`query($s: Boolean!) { ...F ctxPath } fragment F on Query { strings @skip(if: $s) }`,
+			`{"ctxPath":"ctxPath"}`, `{"strings":["x","y"],"ctxPath":"ctxPath"}`,
+		},
+		"on an inline fragment inside a fragment": {
+			`query($s: Boolean!) { me { ...G } } fragment G on User { ... on User @include(if: $s) { id } name }`,
+			`{"me":{"id":"1","name":"Alice"}}`, `{"me":{"name":"Alice"}}`,
+		},
+		"on a spread inside a fragment": {
+			`query($s: Boolean!) { me { ...G } } fragment G on User { ...H @include(if: $s) name } fragment H on User { id }`,
+			`{"me":{"id":"1","name":"Alice"}}`, `{"me":{"name":"Alice"}}`,
+		},
+		"beneath a field of a fragment": {
+			`query($s: Boolean!) { ...F } fragment F on Query { me { id @include(if: $s) name } }`,
+			`{"me":{"id":"1","name":"Alice"}}`, `{"me":{"name":"Alice"}}`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, order := range [][]bool{{true, false, true}, {false, true, false}} {
+				_, e := newFixtureExecutor(t)
+				for _, s := range order {
+					want := tc.off
+					if s {
+						want = tc.on
+					}
+					expectData(t, run(t, e, tc.query, fmt.Sprintf(`{"s":%t}`, s)), want)
+				}
+			}
+		})
+	}
+}
+
+// @skip wins when both are present, in either order they are written in.
+func TestSkipWinsOverIncludeInEitherOrder(t *testing.T) {
+	_, e := newFixtureExecutor(t)
+	for _, q := range []string{
+		`{ strings @skip(if: true) @include(if: true) ctxPath }`,
+		`{ strings @include(if: true) @skip(if: true) ctxPath }`,
+		`{ ... @include(if: true) @skip(if: true) { strings } ctxPath }`,
+		`{ ...F @include(if: true) @skip(if: true) ctxPath } fragment F on Query { strings }`,
+	} {
+		expectData(t, run(t, e, q, ""), `{"ctxPath":"ctxPath"}`)
+	}
+	for _, q := range []string{
+		`{ strings @skip(if: false) @include(if: true) ctxPath }`,
+		`{ strings @include(if: true) @skip(if: false) ctxPath }`,
+	} {
+		expectData(t, run(t, e, q, ""), `{"strings":["x","y"],"ctxPath":"ctxPath"}`)
+	}
+}
+
+// A plan the byte budget has no room for is refused once, under the lock like
+// any plan that might be kept, and remembered: what the document is charged
+// only grows, so asking again can only be told the same. From then on it is
+// compiled outside the lock, as a variant past the cap is.
+func TestAPlanTheBudgetRefusedIsCompiledUnderTheLockOnlyOnce(t *testing.T) {
+	var entry *docEntry
+	var held, compiles int
+	s, err := NewSchema(SDL(`scalar Probe type Query { a: Int! take(v: Probe!): Int! }`),
+		Scalar("Probe",
+			func(w *Writer, _ lockProbe) error { w.Null(); return nil },
+			func(any) (lockProbe, error) {
+				if entry != nil {
+					compiles++
+					if entry.mu.TryLock() {
+						entry.mu.Unlock()
+					} else {
+						held++
+					}
+				}
+				return lockProbe{}, nil
+			}),
+		Args[struct{ V lockProbe }](),
+		Query(
+			Field("a", func(Root) int { return 1 }),
+			FieldArgs("take", func(Root, struct{ V lockProbe }) int { return 1 }),
+		),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	const query = `{ a take(v: 5) }`
+	// Room for the document and nothing of its plan.
+	e := NewExecutor(s, WithPlanCacheBytes(int64(len(query))+1))
+	var errs []*Error
+	if entry, errs = e.document(query); errs != nil {
+		t.Fatalf("document: %v", errs[0])
+	}
+	for range 4 {
+		noErrors(t, run(t, e, query, ""))
+	}
+	if storedPlans(entry) != 0 {
+		t.Fatal("a plan larger than the budget was kept")
+	}
+	if compiles != 4 || held != 1 {
+		t.Fatalf("%d compiles, %d of them with the document's lock held; want 4 and only the first", compiles, held)
 	}
 }

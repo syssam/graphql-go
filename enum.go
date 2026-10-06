@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strconv"
@@ -32,7 +33,8 @@ func enumValueList(names []string) string {
 
 // Enum binds the GraphQL enum name to the Go type T using an explicit
 // mapping from Go values to SDL enum value names. Every SDL value must be
-// mapped exactly once.
+// mapped exactly once. The mapping is copied when the schema is built, so
+// changing the map afterwards changes nothing.
 func Enum[T comparable](name string, values map[T]string) SchemaOption {
 	return schemaOptionFunc(func(b *schemaBuilder) {
 		def := b.ast.Types[name]
@@ -40,6 +42,10 @@ func Enum[T comparable](name string, values map[T]string) SchemaOption {
 			b.errorf("Enum %q: type is not an enum in the schema", name)
 			return
 		}
+		// What is validated below is what is written from afterwards; the
+		// caller's map could be changed under a schema that is documented as
+		// immutable and is read without a lock.
+		values := maps.Clone(values)
 		reverse := make(map[string]T, len(values))
 		// Collected and sorted rather than reported as met: values is a map,
 		// so the first bad entry differs from run to run, and naming one of

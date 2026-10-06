@@ -290,19 +290,14 @@ func (st *execState) writeComposite(ctx context.Context, w *jsonw.Writer, v any,
 			return true
 		}
 		switch o.act {
+		case actionAllow:
 		case actionNull:
 			return st.writeNullValue(ctx, w, t, f, path)
-		case actionDeny:
+		default:
+			// Deny, and with it any outcome with no meaning at one object:
+			// validFor refuses those before this, and what it missed is
+			// refused here rather than served.
 			st.addFieldError(ctx, o.denial(), path, f.ast.Position)
-			if t.NonNull {
-				return false
-			}
-			w.Null()
-			return true
-		case actionDrop:
-			// One error, as for Deny: writeNullValue would add a second,
-			// non-null one describing the same refusal.
-			st.addFieldError(ctx, Errorf("authorization: Drop is valid only for a list element, not at %s", coordinate(f.def.object.name, f.def.name)), path, f.ast.Position)
 			if t.NonNull {
 				return false
 			}
@@ -316,6 +311,9 @@ func (st *execState) writeComposite(ctx context.Context, w *jsonw.Writer, v any,
 // decodeArgs decodes the arguments of a field whose arguments reference
 // variables, so they cannot be decoded once at plan compile.
 func (f *planField) decodeArgs(obj *objectType, vars map[string]any) (any, *Error) {
+	if f.freshArgs {
+		return f.def.args.copier.fresh(f.args), nil
+	}
 	raw, aerr := fieldArguments(f.ast, vars)
 	v, err := f.def.args.decode(raw)
 	if err == nil {
@@ -618,8 +616,8 @@ type taskResult struct {
 // one: a task waiting for a slot has not begun, and a DataLoader wave cannot
 // dispatch until every announced task has, so tasks parked on a batch while
 // holding every slot would wait forever for the ones queued behind them.
-// Panics escaping a goroutine (only possible with recovery disabled) are
-// re-raised in the waiting goroutine.
+// A panic that escapes a goroutine -- one raised outside a resolver call, or
+// any with recovery disabled -- is re-raised in the waiting goroutine.
 //
 // The group announces its tasks to the operation's WaveCoordinator when it is
 // made, before any is launched, and reports each task's begin and end and its
@@ -754,8 +752,10 @@ func (st *execState) writeFieldsConcurrent(ctx context.Context, w *jsonw.Writer,
 // they write -- a reviewer's reversal of the splice loop in one of them failed
 // it -- but not one in a branch that does not change the output for that
 // input: breaking only the guarded path's LimitExceeded early return still
-// passed. Neither the response limit nor any outcome but Allow is covered by
-// it, so a change to those halves needs its own test.
+// passed, because a tripped response is refused whatever was written. That
+// return has a test of its own in each copy, which asks writeObject directly.
+// No outcome but Allow is covered by either, so a change to that half needs
+// its own test.
 // handled is false when the list is too short; the drained
 // elements come back with it so the caller can write them without traversing
 // the value again, which a single-pass iter.Seq would answer with nothing.

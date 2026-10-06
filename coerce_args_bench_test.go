@@ -36,8 +36,9 @@ func benchArgsExec(t testing.TB) *Executor {
 	return NewExecutor(s)
 }
 
-// Constant arguments: decoded once at plan compile, then reused. The benchmark
-// therefore measures the cached path, which is what a served request pays.
+// Constant arguments. benchArgs binds each one as a pointer, so a request is
+// given a copy of the struct and what the two set pointers point at: this
+// measures that copy without the variables in front of it.
 func BenchmarkExecuteConstantArgs(b *testing.B) {
 	e := benchArgsExec(b)
 	req := &Request{Query: `{ rows(first: 10, name: "ada") }`}

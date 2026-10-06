@@ -21,6 +21,20 @@ gqlparser's module, `TestFieldsCanMergeAgreesWithGqlparserRandom` 20 000 generat
 `FuzzFieldsCanMerge` the same differential. gqlparser compares untyped fields by name and
 treats a composite type as conflicting with nothing, so its relation is not transitive --
 `shapeConflict` compares leaf types with the first leaf, not the first field, for that reason.
+**The replacement never writes a union out.** Its first version flattened every selection set
+into one list, fragments included, so one fragment of 7 500 fields under 1 070 fields was 8
+million visits and 2.2 s for 37 KB -- quadratic in exactly the shape a client that shares a
+fragment writes. A selection set is now its own fields plus one shared set per fragment
+(`fieldSet`, one per strongly connected group of fragments), a union is checked part by part
+and pair by pair by looking the smaller's response names up in the larger, and a union of more
+than `maxSetProbes` indexed sets has part of it indexed as one (`settle`: the part is whatever
+is shared, so the index is paid once). The same document is 6 ms. `overlap_oracle_test.go`
+keeps the flat rule as the readable one; `TestFieldsCanMergeAgreesWithTheFlatRule` runs 12 000
+documents that reuse fragments through gqlparser's rule, the flat one, and this one at probe
+limits 64, 3 and 1 (788 000 were run once), and `TestMergeRuleWorkGrowsWithTheDocument` counts
+steps rather than time. Between two sets nothing may be assumed about either being consistent
+within itself -- a union of subselections of fields on different object types need not be --
+so each side is reduced to one field and the first that differs from it (`alike`).
 The fragment budget was written as a stopgap for the walker's linear `Fragments.ForName`, to be
 dropped when gqlparser indexed fragments. v2.5.59 does, and **the budget is still needed**:
 measured with it removed, the largest fragment DAG the token limit admits (1 362 fragments,
@@ -33,13 +47,24 @@ list without comparing the list's own non-null, the replacement compared it, and
 (`TestMergeValidityDoesNotDependOnDocumentSize`). The differential's schema had no `[T]!` field.
 
 **Plan compile (`plan.go`).** A document is parsed and validated once and
-cached in an LRU (`docEntry`), bounded by entry count and by query text
+cached in an LRU (`docEntry`), bounded by entry count and by bytes
 (`WithPlanCacheBytes`, 16 MiB by default). The byte budget matters more than it looks: a
 parsed and validated document retained roughly 26 times its query text, measured linear from
 64 KiB to 1 MiB on an alias-heavy query (other shapes will differ), so without it 1024 distinct
 valid 1 MiB queries of that shape would hold tens of gigabytes. The
 document is cached before the depth and complexity guard runs, so that guard does not bound
-this. **Concurrent misses for one query text share a single parse** (`Executor.document`,
+this. **A document is charged its text and each kept plan what it retains** (`plan.size`,
+summed by the compiler: 176 bytes a `planField` plus its key, each selection set once). The
+budget used to count text alone, and a plan is not a function of the text: it holds a field
+per possible type of everything selected on an interface, so 990 aliases on an interface with
+1 000 implementers -- 8.8 KB, complexity 991 -- was a 190 MB plan the cache reported as
+8.8 KB, and eight of them 1.5 GB. The estimate is within 1% of the heap on that shape
+(`TestAPlansSizeIsNearWhatItHolds`). A plan that would take its document past the whole budget
+is not kept (`docEntry.unkept`) and is compiled per request, outside the document's lock after
+the first refusal. **That is the cost of not expanding lazily**: such a plan still takes
+1 s (1 000 types) to 4.6 s (5 000) to compile, now on every request rather than the first,
+until the budget is raised to hold it. An ordinary plan is thirty-odd times its text, so the
+default holds about 400 documents of 1.2 KB rather than the 1024 the entry count allows. **Concurrent misses for one query text share a single parse** (`Executor.document`,
 `docCall`): a 100 KB query measured about 8 ms and 6.8 MB to parse and validate, and 64 identical
 requests on a cold cache took 19 times the wall time of one. Plan compilation already had this
 property through `docEntry.mu`; parsing did not. Only a success is cached — a failure is shared
@@ -65,21 +90,30 @@ immutable `plan` with fragments flattened, directives constant-folded per varian
 are 65 536 plans of one query text, every one used to be kept while its document stayed
 cached, and the budget counted the text once -- 2 048 variants of a 17.8 KB query held 1.1 GB
 under an entry the cache reported as 17.8 KB. A document keeps at most `maxPlanVariants` (64)
-and each plan after its first is charged the query text again (`planCache.charge`), evicting
+and each plan is charged what it retains (`planCache.charge`), evicting
 other documents to make room; past either bound the variant is compiled for its request and
-not kept (`plan_variants_test.go`). **Pre-decoded means scalars and enums**: a list or
-input-object literal (or default) is validated at compile and decoded per request
-(`literalAggregates`), because decoded once it is one slice or struct shared by every request,
-and a resolver that sorted or defaulted its own arguments changed the next request's
-(`TestLiteralArgumentsAreNotSharedBetweenRequests`). A custom scalar that decodes a scalar
-literal to something holding a slice is still shared. **This is a trade and it costs**:
-`BenchmarkExecuteLiteralAggregateArgs`, a field given a three-element list and a two-field input
-object as literals, went from 511 ns to 1 413 ns a request, 560 B to 1 505 B and 7 allocations to
-24 (interleaved n=12, p=0.000), with `ExecuteConstantArgs`, `ExecuteVariableArgs`,
-`ExecuteUsers` and `ExecuteTypenameHeavy` not distinguishable. It is what the same query costs
-when it sends those arguments as variables, which is how a client that parameterises its
-queries sends them anyway. The alternative is to decode once and document that a resolver must
-not modify its arguments.
+not kept (`plan_variants_test.go`). **A request's arguments are its own, by the cheapest of three ways**
+(`argsCopier.sharing`, asked of the decoded value at plan compile, so an optional argument left
+out costs nothing). A resolver is handed its argument struct by value, and a copy still points
+wherever the original did. *Shared*: the value holds no non-nil pointer, map, interface or
+slice with capacity, and the plan's serves every request. *Copied* (`planField.freshArgs`): all
+it holds is top-level pointers to a scalar's or enum's Go type that is plain data, and the
+struct and its pointees are copied into one block -- **one allocation, whatever the number of
+pointers**. *Decoded again*: everything else -- a slice, a map, an `Omittable` around a
+pointer, a pointer to an input object, a value behind an interface -- and **one pointer found
+in two fields**, which a setter written by hand may have done and a copy would split. A
+hand-written setter is otherwise copied like a derived one and runs once, at plan compile
+(`TestASetterWrittenByHandRunsOnceForAPlannedLiteral`); decoding every such binding again
+measured 422 ns and 6 allocations going to 738 ns and 15 on `BenchmarkExecuteConstantArgs`. The
+first version of this rule looked at the literal's kind -- lists and input objects -- and
+missed that a nullable scalar binds as a pointer: `clamp(first: 500)` with a resolver clamping
+`*a.First` answered 500 and then 100, and `-race` reported it. The second decoded every such
+argument again, five allocations for `conn(first: 5)` -- the argument map, the number, the
+struct, the int -- on the commonest argument there is; the copy is one
+(`BenchmarkQueryCostDisabled` 15 -> 20 -> 16, `TestCopyingLiteralArgumentsIsOneAllocation`).
+`time.Time` is the one struct not looked into. The decoded value stays on the plan for
+`SelectedField.Args` either way. `freshArgs` sits in `dynamicArgs`'s padding: `planField` is
+still 176 bytes.
 The variant store also changed shape after a review of this change: a variant that will not be
 kept is compiled outside `docEntry.mu` (`TestAnUncachedVariantIsNotCompiledUnderTheDocumentLock`,
 which looks at the lock from inside a compile), since it is compiled again on every request for
@@ -89,24 +123,36 @@ executor needs. Abstract parents expand through a memo keyed on `(parent type, s
 set)`, so the expansion is a DAG rather than a tree — without it, 8 implementers selected 6
 deep built 2,696,338 selection sets; with it, 64. The memo key is a fingerprint of AST node
 identities, not of the selection slice: `buildField` allocates a fresh slice when a response
-key has more than one AST node, so a pointer key is defeated by `{ a { b } a { b } }`. Every
+key has more than one AST node, so a pointer key is defeated by `{ a { b } a { b } }`. **A spread is
+fingerprinted by the fragment it names** (unless this variant excludes it), so one fragment
+under a thousand fields is one selection set, where numbering the spread node made it a
+thousand collects and a thousand copies in the plan: 900 fields spreading 2 500 aliases went
+from 3.8 s and 433 MB to 1.8 ms and 0.5 MB. Fields that add something of their own beside the
+spread are still distinct selections and still collect the fragment each
+(`TestOperationMetricsStopsCollectingOnceTheOperationIsRefused` bounds the refusal, nothing
+bounds the compile: 700 x 7 900 same-name fields is 240 ms, once per document text). Every
 walk over a plan must memoize on `*selectionSet` for the same reason, `queryCostOf` included,
 because it runs per request. Depth and complexity are computed by `operationMetrics` from the
 document before `compilePlan`, so the limits refuse a query rather than reporting on one
 already expanded; `plan_metrics_oracle_test.go` holds the plan-tree walk it replaced, and the
 two are checked against each other by `TestOperationMetricsMatchesPlan` and fuzzed by
 `FuzzOperationMetrics`. The guard's value is structural, not latency: with memoization already
-in place, a rejected query and a compiled one finish in the same sub-millisecond range, since
+in place, a rejected query and a compiled one finish in the same sub-millisecond range on the
+fan-out fixture, since
 the memo bounds compilation whether or not the guard runs first — what the guard actually
 buys is that no plan is built or cached for a rejected query, and that compilation stays
 bounded by document size times type count, which memoization alone does not bound. The guard
 rejects from `execute`/`Subscribe` directly, before an `OperationContext` exists, so a
 rejected query never reaches `opChain` or any `OperationInterceptor` — `ext/otel` never
 renames its span or sets the operation attributes, and `ext/throttle` never sees the request
-to meter it. That is one full `operationMetrics` walk over the AST, not a plan compile, so
-the request is cheaper than before the guard existed, just invisible to interceptors; the one
-path where the walk runs on every request rather than once per cached document is
-`docEntry.planUncacheable()`, where every request already recompiles anyway. A subscription
+to meter it. That is one `operationMetrics` walk over the AST, not a plan compile, and **the
+refusal is kept** per (operation, variant) in `docEntry.refused`, as a plan would have been:
+a repeat is a map lookup (`TestARefusedOperationIsNotWalkedAgain`). It used to walk again on
+every request, under the document's lock. The walk still runs per request where nothing is
+kept: `docEntry.planUncacheable()`, and variants past `maxPlanVariants`. **Once over a limit
+the walk stops** as soon as it has collected `metricExactWork` fields (`settled`): possible
+types are taken in schema order so the figure reported is stable, and a small walk is finished
+so an ordinary refusal still says by exactly how much. A subscription
 over the limit is rejected once at `Subscribe`, before the stream opens, instead of emitting
 an error `next` on every event as it did before this guard existed. Cost depends on the
 variables, so `Subscribe` refuses it separately (`rejectIfOverCost`) after coercing them and
@@ -116,7 +162,21 @@ interceptor is the no-model fallback (`TestSubscriptionEventCostUsesTheConfigure
 **The page size is read in every spelling `Int` accepts**: `asCostInt` falls back to
 `Float64` for `5e2` and `500.0`, which `rawInt64` coerces, or such a page is priced as
 `DefaultListSize` while the resolver receives the real one
-(`TestAFloatSpelledPageSizeCostsTheSameAsAnInteger`).
+(`TestAFloatSpelledPageSizeCostsTheSameAsAnInteger`). **And it is read where the resolver
+gets it from**: an omitted argument, or one given a variable the request did not set, is priced
+at its declared default (`pageValue`); `items(first: Int = 100)` three deep cost 1 111 omitted
+and 1 010 101 written out (`TestAnOmittedPageSizeIsPricedAtItsDeclaredDefault`).
+
+**A null for `@skip`/`@include` is a request error** (`nullCondition`). A variable with a
+default may be declared nullable in that `Boolean!` position, so validation cannot refuse it;
+folded into the variant as "not true" it ran the request as though the client had chosen.
+`variantKey` notices the null for free and the walk that finds the directive runs only then,
+over the one operation (`TestANullConditionVariableIsARequestError`). **A literal argument is
+decoded in every variant** (`checkSkipped`): compile decodes the ones it keeps, and whatever a
+directive excluded is walked by concrete type and decoded too, so an out-of-range `Int` or a
+custom scalar's refusal is the same validation error whatever the variables say
+(`TestALiteralArgumentIsValidatedInEveryVariant`). Not covered: a bad literal beside a
+variable argument on one field is still a field error at execution.
 
 **A variable's default is validated once per document** (`variableDefaultErrors`, in
 `parseDocument`). gqlparser checks a default's kind and not its value, so `$l: Int = 99999999999`
@@ -126,8 +186,9 @@ its own page size when it names one** (`fieldCost`): it is then a second page ra
 connection's edges, and `items(first: 500)` used to cost what `items(first: 5)` did.
 
 **Operation interceptors wrap the engine's own limit check; they do not follow it.**
-`rejectIfOverLimit` and `attachCost` are the innermost layer of `opChain`
-(`interceptor.go:132`), and an interceptor registered earlier sits further out. So an
+`rejectIfOverCost` and `attachCost` are the innermost layer of `opChain`
+(`buildChains`), installed only when a cost model is configured; depth and complexity are
+refused before a plan exists and have no second check, and an interceptor registered earlier sits further out. So an
 extension reading `OperationContext.Cost` runs before the engine would compute it, which is
 why `execute` computes it eagerly whenever a cost model is configured, and why a limiter must
 be registered before any interceptor that should not run for a request it rejects.

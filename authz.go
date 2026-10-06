@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -217,6 +218,9 @@ const (
 )
 
 // AuthSite is one position in a plan that may need a decision.
+//
+// Experimental: the authorization types have one consumer so far, and their
+// shape may change before v1; see docs/api-stability.md.
 type AuthSite struct {
 	Coord string
 
@@ -231,7 +235,12 @@ type AuthSite struct {
 
 	Kind     SiteKind
 	Requires Requirement
-	Grants   []string
+
+	// Grants is reserved and is always empty. It is where the static grants
+	// in effect on the path down to this position would be reported, and no
+	// directive declares a grant, so nothing fills it in. An empty Grants
+	// therefore says nothing about the position: decide on Requires.
+	Grants []string
 
 	// Arg names the argument for SiteFilterArg and SiteInputWrite sites. For
 	// those kinds, Coord is Type.field(arg:) and Decision.Input reports what
@@ -285,6 +294,9 @@ func positionNonNull(t *ast.Type) bool {
 // AuthShape is what an operation touches, independent of who is asking. It
 // is computed once per compiled plan and cached with it, which is why the
 // plan cache is not multiplied by the number of distinct policies.
+//
+// Experimental: the authorization types have one consumer so far, and their
+// shape may change before v1; see docs/api-stability.md.
 type AuthShape struct {
 	sites  []AuthSite
 	scopes []string
@@ -366,6 +378,9 @@ const (
 
 // Outcome is what the executor does with a site. The zero Outcome allows, so
 // a Decision an Authorizer leaves untouched changes nothing.
+//
+// Experimental: the authorization types have one consumer so far, and their
+// shape may change before v1; see docs/api-stability.md.
 type Outcome struct {
 	act action
 	// redact rewrites a resolved value. For actionRedactRow it receives a
@@ -459,32 +474,55 @@ func zeroWritable(t *ast.Type) bool {
 // an object type's without the schema's type registry.
 func isLeafField(site AuthSite) bool { return site.leaf }
 
+// policyError is a mistake in the policy itself rather than a decision it
+// made: an outcome its site cannot represent, a site that does not exist, a
+// reply of the wrong length. It is deliberately not an *Error. authorizerError
+// passes an *Error through as something an Authorizer wrote for the client,
+// and these are written for whoever maintains the policy -- they name the
+// coordinate, the outcome and what to use instead -- so they take the path a
+// policy backend's failure takes: logged in full, and presented as an
+// internal error that says none of it.
+type policyError struct{ msg string }
+
+func (e *policyError) Error() string { return e.msg }
+
+func policyErrorf(format string, args ...any) error {
+	return &policyError{msg: fmt.Sprintf(format, args...)}
+}
+
 // validFor rejects an outcome the site cannot represent, so a policy mistake
 // surfaces once per request with the coordinate attached rather than as a
-// null-bubbled parent at write time.
+// null-bubbled parent at write time. It surfaces in the log: the error is a
+// policyError, which no client is shown.
 func (o Outcome) validFor(site AuthSite) error {
 	// An object site guards __typename, a String! with no resolver: Null
 	// would write a silent spec-violating null, and Zero and Redact have no
 	// field to act on.
 	if site.Kind == SiteObject && o.act != actionAllow && o.act != actionDeny {
-		return Errorf("authorization: only Allow and Deny are valid for %s, an object site guarding __typename", site.Coord)
+		return policyErrorf("authorization: only Allow and Deny are valid for %s, an object site guarding __typename", site.Coord)
 	}
 	// An argument site decides whether the field may run with the input it
 	// was given; there is no value of its own to null, zero or redact.
 	if (site.Kind == SiteFilterArg || site.Kind == SiteInputWrite) && o.act != actionAllow && o.act != actionDeny {
-		return Errorf("authorization: only Allow and Deny are valid for %s, an argument site", site.Coord)
+		return policyErrorf("authorization: only Allow and Deny are valid for %s, an argument site", site.Coord)
 	}
 	// An instance site decides whether one object may be seen. Zero and
 	// Redact act on a leaf's value and have nothing to act on here.
 	if site.Kind == SiteInstance && o.act != actionAllow && o.act != actionDeny &&
 		o.act != actionNull && o.act != actionDrop {
-		return Errorf("authorization: only Allow, Null, Deny and Drop are valid for %s, an instance site", site.Coord)
+		return policyErrorf("authorization: only Allow, Null, Deny and Drop are valid for %s, an instance site", site.Coord)
 	}
 	// Drop removes a list element, and only an instance site is decided per
 	// element. enforceAuth has no Drop case, so letting one through here
 	// would resolve the field as if the policy had said Allow.
 	if site.Kind != SiteInstance && o.act == actionDrop {
-		return Errorf("authorization: Drop is valid only for an instance site, not %s", site.Coord)
+		return policyErrorf("authorization: Drop is valid only for an instance site, not %s", site.Coord)
+	}
+	// And only where there is a list to drop out of. A single position has
+	// nothing to omit the value from, so the write path can only refuse it;
+	// refusing it here keeps that refusal with every other policy mistake.
+	if site.Kind == SiteInstance && o.act == actionDrop && !site.ListElement {
+		return policyErrorf("authorization: Drop is not valid for %s, an instance site that is not a list element; use Null where the position is nullable, or Deny", site.Coord)
 	}
 	switch o.act {
 	case actionNull:
@@ -497,18 +535,18 @@ func (o Outcome) validFor(site AuthSite) error {
 		// (Zero for a leaf, Deny for anything) are the ones the type
 		// system can represent.
 		if site.Field != nil && site.Field.Type.NonNull {
-			return Errorf("authorization: Null is not valid for %s, which is non-null; use Zero or Deny", site.Coord)
+			return policyErrorf("authorization: Null is not valid for %s, which is non-null; use Zero or Deny", site.Coord)
 		}
 		// Same rule, read from the site rather than from Field: an instance
 		// site has no Field, and writeComposite hands its Null straight to
 		// writeNullValue, so a non-null position would bubble to the client
 		// as a bare spec error with nothing saying a policy decided it.
 		if site.Kind == SiteInstance && site.NonNull {
-			return Errorf("authorization: Null is not valid for %s, an instance site at a non-null position; use Drop in a list or Deny", site.Coord)
+			return policyErrorf("authorization: Null is not valid for %s, an instance site at a non-null position; use Drop in a list or Deny", site.Coord)
 		}
 	case actionZero:
 		if site.Field == nil {
-			return Errorf("authorization: Zero is not valid for %s, which is an object site", site.Coord)
+			return policyErrorf("authorization: Zero is not valid for %s, which is an object site", site.Coord)
 		}
 		if !zeroWritable(site.Field.Type) {
 			alt := "Deny or Null"
@@ -517,14 +555,14 @@ func (o Outcome) validFor(site AuthSite) error {
 				// above), so don't suggest a second dead end.
 				alt = "Deny"
 			}
-			return Errorf("authorization: Zero is not valid for %s: %s has no zero value this package can write; use %s", site.Coord, site.Field.Type.String(), alt)
+			return policyErrorf("authorization: Zero is not valid for %s: %s has no zero value this package can write; use %s", site.Coord, site.Field.Type.String(), alt)
 		}
 	case actionRedact, actionRedactRow:
 		if site.Field == nil || site.Field.Type.Elem != nil || !isLeafField(site) {
-			return Errorf("authorization: Redact is valid only on a leaf field, not %s", site.Coord)
+			return policyErrorf("authorization: Redact is valid only on a leaf field, not %s", site.Coord)
 		}
 		if o.redact == nil {
-			return Errorf("authorization: Redact for %s was constructed with a nil function", site.Coord)
+			return policyErrorf("authorization: Redact for %s was constructed with a nil function", site.Coord)
 		}
 	}
 	return nil
@@ -561,6 +599,9 @@ func WithAuthorizer(a Authorizer) ExecutorOption {
 // ObjectCheck is one resolved object an ObjectAuthorizer decides on. Type is
 // the concrete object type's name, which differs from Site.Coord when the
 // field's declared type is an interface or a union.
+//
+// Experimental: the authorization types have one consumer so far, and their
+// shape may change before v1; see docs/api-stability.md.
 type ObjectCheck struct {
 	Site   AuthSite
 	Type   string
@@ -578,6 +619,15 @@ type ObjectCheck struct {
 // nested single-object fields issues one call per such field. Where that
 // matters, model the position as a list or cache inside the implementation.
 //
+// AuthorizeObjects is called concurrently, and not only across requests:
+// sibling resolver fields are written on goroutines of their own, and every
+// guarded list or object beneath them makes its own call, so several calls
+// for one request are in flight at once. An implementation must be safe for
+// that. A cache is the usual way to get it wrong, because a cache scoped to
+// one request looks as if it had one user: whatever it is kept in -- a value
+// carried by the context, a field of the implementation -- needs a lock or a
+// sync.Map exactly as a cache shared between requests would.
+//
 // The returned slice is positional over checks and must have the same length;
 // any other length is an error, because a short slice would silently allow the
 // rows it does not cover. checks is only valid for the duration of the call:
@@ -594,7 +644,7 @@ func WithObjectAuthorizer(a ObjectAuthorizer) ExecutorOption {
 }
 
 // WithObjectAuthBatch bounds how many checks one AuthorizeObjects call
-// carries; larger waves are split into sequential calls. The default of 50
+// carries; a longer list is split into sequential calls. The default of 50
 // matches OpenFGA's BatchCheck default, which is the shape most remote
 // policy backends are tuned for.
 //
@@ -615,6 +665,9 @@ func WithObjectAuthBatch(n int) ExecutorOption {
 // Decision records the outcome for each site in a shape. It is passed to the
 // Authorizer rather than returned by it so the framework owns the allocation
 // and sizes it from the shape. The zero value of every entry allows.
+//
+// Experimental: the authorization types have one consumer so far, and their
+// shape may change before v1; see docs/api-stability.md.
 type Decision struct {
 	src      *decisionSource
 	outcomes []Outcome
@@ -651,15 +704,20 @@ func newDecision(shape *AuthShape) *Decision {
 // the site cannot represent, so a policy mistake surfaces once per request
 // with the coordinate attached rather than as a null-bubbled parent, and
 // records a denial in its place so the mistake never widens access.
+//
+// The error is for the policy's author. An Authorizer that returns it rejects
+// the operation with an internal error, and the message, which names schema
+// coordinates and the outcomes they accept, goes to the log and not to the
+// client.
 func (d *Decision) Set(site int, o Outcome) error {
 	if d == nil || site < 0 || site >= len(d.outcomes) {
-		return Errorf("authorization: site %d is out of range", site)
+		return policyErrorf("authorization: site %d is out of range", site)
 	}
 	if s := d.src.shape.sites[site]; s.Kind == SiteInstance {
 		// The executor reads an instance outcome from the ObjectAuthorizer's
 		// reply, never from here, so recording one would be a decision that
 		// silently does nothing.
-		return Errorf("authorization: %s is an instance site; its outcome comes from the ObjectAuthorizer, not from Decision.Set", s.Coord)
+		return policyErrorf("authorization: %s is an instance site; its outcome comes from the ObjectAuthorizer, not from Decision.Set", s.Coord)
 	}
 	if err := o.validFor(d.src.shape.sites[site]); err != nil {
 		// Fail closed: an Authorizer that drops this error must not leave

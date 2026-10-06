@@ -145,9 +145,13 @@ type schemaBuilder struct {
 	// boundChecks are objects another package of this module needs bound to
 	// a particular Go type; see internal/bindhook.
 	boundChecks []boundCheck
-	// leafBound is every (leaf type, Go type) an option has bound, so a
-	// second binding of the pair is refused rather than replacing the first.
-	leafBound     map[typeKey]bool
+	// leafBound is every (leaf type, Go type) a built-in scalar or an option
+	// has bound, so a second binding of the pair is refused rather than
+	// replacing the first.
+	leafBound map[typeKey]leafBinder
+	// defaultsCycle is set when an input object's defaults never finish
+	// decoding (rejectDefaultCycles), so that no default is decoded to check it.
+	defaultsCycle bool
 	introspection bool
 	authCoverage  bool
 	authCapped    map[string]bool
@@ -199,7 +203,7 @@ func NewSchema(src Source, opts ...SchemaOption) (*Schema, error) {
 		abstracts:     make(map[string]*abstractBinding),
 		directives:    make(map[string]*directiveBinding),
 		subDirectives: make(map[string]bool),
-		leafBound:     make(map[typeKey]bool),
+		leafBound:     make(map[typeKey]leafBinder),
 		introspection: true,
 		// Seeded before options apply, so the Apollo spelling is always present
 		// and a caller redeclaring it collides rather than silently winning.
@@ -207,7 +211,11 @@ func NewSchema(src Source, opts ...SchemaOption) (*Schema, error) {
 	}
 	registerBuiltins(b)
 	for _, opt := range opts {
-		opt.applySchema(b)
+		// As Options does: an option chosen at run time is nil when it is
+		// not wanted.
+		if opt != nil {
+			opt.applySchema(b)
+		}
 	}
 	if b.introspection {
 		for _, opt := range introspectionOptions(b) {
@@ -231,6 +239,12 @@ func (b *schemaBuilder) build() *Schema {
 		abstracts:     make(map[string]*abstractType),
 		inputs:        indexInputs(b.ast),
 		introspection: b.introspection,
+	}
+
+	// The specification requires a query root and gqlparser does not: without
+	// one every query, introspection included, is refused at request time.
+	if b.ast.Query == nil {
+		b.errorf("the schema has no query root type; declare type Query, or name the root in a schema definition")
 	}
 
 	// Phase 1: object shells, so that shapes and Go-type lookups exist before
@@ -273,6 +287,13 @@ func (b *schemaBuilder) build() *Schema {
 	// Phase 2: input decoders, whose setters may reference any input type.
 	for _, ib := range b.inputs {
 		ib.resolve(b)
+	}
+	// Defaults are checked only now: one may hold another input object, whose
+	// decoder is complete once every binding above has resolved.
+	if b.defaultsCycle = b.rejectDefaultCycles(); !b.defaultsCycle {
+		for _, ib := range b.inputs {
+			ib.checkDefaults(b)
+		}
 	}
 
 	b.endPhase()

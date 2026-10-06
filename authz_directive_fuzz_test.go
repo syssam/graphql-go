@@ -38,10 +38,19 @@ func FuzzRequirementDirectiveLiteral(f *testing.F) {
 			if err != nil {
 				continue
 			}
-			// A schema that built must carry a self-consistent requirement:
-			// no group may be empty, since Satisfied over an empty group is
-			// vacuously true and would guard nothing while reading as guarded.
-			for _, g := range s.objects["Query"].fields["a"].requires.anyOf {
+			// The field carries the directive, so a schema that built must
+			// carry a requirement for it. The reader skips an occurrence
+			// that yields no groups, trusting the validator to have refused
+			// it; a literal the validator lets through and the reader makes
+			// nothing of is a field that reads as guarded and is open.
+			req := s.objects["Query"].fields["a"].requires
+			if req.IsZero() {
+				t.Fatalf("shape %d, literal %q: built with the directive present and no requirement", shape, lit)
+			}
+			// And a self-consistent one: no group may be empty, since
+			// Satisfied over an empty group is vacuously true and would
+			// guard nothing while reading as guarded.
+			for _, g := range req.anyOf {
 				if len(g) == 0 {
 					t.Fatalf("shape %d, literal %q: built a requirement with an empty group, which nothing can fail", shape, lit)
 				}

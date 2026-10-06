@@ -96,18 +96,22 @@ func WithPlanCache(size int) ExecutorOption {
 	return func(e *Executor) { e.cacheSize = size }
 }
 
-// WithPlanCacheBytes bounds the query text the plan cache holds, evicting the
-// least recently used documents to stay within it. Zero means no byte limit;
-// the entry count from WithPlanCache still applies. The default is 16 MiB.
+// WithPlanCacheBytes bounds what the plan cache holds, evicting the least
+// recently used documents to stay within it. Zero means no byte limit; the
+// entry count from WithPlanCache still applies. The default is 16 MiB.
 //
-// The budget is on query text because that is what can be counted cheaply, but
-// what it actually bounds is memory: a parsed and validated document retained
-// roughly 26 times its query text when measured on an alias-heavy query (other
-// shapes will differ), so without this limit 1024 distinct valid 1 MiB queries
-// of that shape hold tens of gigabytes. Ordinary queries are a few kilobytes,
-// so the default entry count binds long before this does and only unusually
-// large queries ever reach it. A query larger than the whole budget is not
-// cached but still executes.
+// A document is counted as its query text, and each plan kept for it as an
+// estimate of the bytes the plan retains: about 240 for a selected field, and
+// that again for every possible type of a field selected on an interface or
+// union. That is thirty-odd times the text for an ordinary query, and for
+// one on an interface with many implementers it is not a function of the
+// text at all. The parsed document is not counted beyond its text; it
+// retained roughly 26 times that when measured on an alias-heavy query (other
+// shapes will differ). At the default, some 400 documents of a kilobyte each
+// are kept with their plans, so a service with more distinct operations than
+// that meets this bound before the entry count. A plan that would take its
+// document past the whole budget is compiled for each request and not kept,
+// and a query larger than the whole budget is not cached but still executes.
 func WithPlanCacheBytes(n int64) ExecutorOption {
 	return func(e *Executor) { e.cacheBytes = n }
 }
@@ -196,6 +200,7 @@ func NewExecutor(s *Schema, opts ...ExecutorOption) *Executor {
 	if e.maxConcurrency > 0 {
 		e.sem = make(chan struct{}, e.maxConcurrency)
 	}
+	e.sayIfUnbounded()
 	e.rules = e.validationRules()
 	e.largeRules = e.validationRules()
 	e.largeRules.ReplaceRule(fieldsCanMergeRule.Name, fieldsCanMergeRule.RuleFunc)
@@ -228,6 +233,9 @@ func (e *Executor) Execute(ctx context.Context, req *Request) *Response {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeoutCause(ctx, e.operationTimeout, e.timeoutCause)
 		defer cancel()
+	}
+	if req.QueryOnly && len(e.reqInterceptors) > 0 {
+		ctx = context.WithValue(ctx, queryOnlyKey{}, true)
 	}
 	if e.recover {
 		return e.executeRecovering(ctx, req)
@@ -474,6 +482,9 @@ func (e *Executor) execute(ctx context.Context, req *Request) *Response {
 	if errs != nil {
 		return e.requestError(ctx, errs...)
 	}
+	if oc.Operation.Operation != ast.Query && e.queryOnly(ctx, req) {
+		return queryOnlyRefusal()
+	}
 	return e.opChain(withOperation(ctx, oc), oc)
 }
 
@@ -646,16 +657,11 @@ func (e *Executor) runAuthorizer(ctx context.Context, p *plan, vars map[string]a
 	// like an Authorizer's. It is gated so a plan with no argument site walks
 	// and allocates nothing.
 	if p.shape.hasArgSites {
-		src := &decisionSource{shape: p.shape, inputs: make([][]InputKey, len(p.shape.sites))}
-		// By index: an AuthSite is 136 bytes and this runs per request, so
-		// ranging by value memmoves the whole table every time.
-		for i := range p.shape.sites {
-			s := &p.shape.sites[i]
-			if s.argValue != nil {
-				src.inputs[i] = inputKeys(e.schema.ast.Types, s.argType, s.argValue, vars)
-			}
+		inputs, ierr := p.shape.argumentInputs(e.schema.ast.Types, vars)
+		if ierr != nil {
+			return nil, ierr
 		}
-		d.src = src
+		d.src = &decisionSource{shape: p.shape, inputs: inputs}
 	}
 	if err := e.authorizer.Authorize(ctx, p.shape, d); err != nil {
 		return nil, err

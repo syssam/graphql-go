@@ -15,6 +15,9 @@ import (
 // DefaultListSize when the field returns a list and neither argument is
 // present. __typename is free, and so are __schema and __type with all they
 // select: see WithMaxDepth.
+//
+// Experimental: what a field means, and its default, may change before v1;
+// adding a field will not break a caller. See docs/api-stability.md.
 type QueryCost struct {
 	// Max is the maximum allowed cost. Zero means unlimited.
 	Max int
@@ -188,29 +191,10 @@ func WithQueryCost(c QueryCost) ExecutorOption {
 	}
 }
 
-func (e *Executor) rejectIfOverLimit(oc *OperationContext) *Error {
-	if oc.plan == nil {
-		return nil
-	}
-	if e.maxComplexity > 0 && oc.plan.complexity > e.maxComplexity {
-		return Errorf("query exceeds complexity limit: %d > %d", oc.plan.complexity, e.maxComplexity).
-			WithCode(CodeTooComplex).
-			WithExtension("complexity", oc.plan.complexity).
-			WithExtension("maxComplexity", e.maxComplexity)
-	}
-	if e.maxDepth > 0 && oc.plan.depth > e.maxDepth {
-		return Errorf("query exceeds maximum depth: %d > %d", oc.plan.depth, e.maxDepth).
-			WithCode(CodeMaxDepth).
-			WithExtension("depth", oc.plan.depth).
-			WithExtension("maxDepth", e.maxDepth)
-	}
-	return e.rejectIfOverCost(oc)
-}
-
 // rejectIfOverCost is the one limit that depends on variables, so it cannot
 // be applied before the plan is compiled the way depth and complexity are.
 func (e *Executor) rejectIfOverCost(oc *OperationContext) *Error {
-	if e.cost == nil || e.cost.Max <= 0 {
+	if e.cost == nil || e.cost.Max <= 0 || oc.plan == nil {
 		return nil
 	}
 	if n := oc.ensureCost(*e.cost); n > e.cost.Max {
@@ -223,9 +207,10 @@ func (e *Executor) rejectIfOverCost(oc *OperationContext) *Error {
 }
 
 // rejectByMetrics applies the static limits to metrics computed before the
-// plan is compiled. rejectIfOverLimit applies the same two limits per request
-// from the cached plan; this one exists so that a query over the limit is
-// never compiled at all.
+// plan is compiled, so that a query over a limit is never compiled at all.
+// It is the only place they are applied: a plan exists only for an operation
+// that passed here, under the limits of the one executor whose cache holds
+// it, so there is nothing for a second check on the plan to find.
 func (e *Executor) rejectByMetrics(m planMetrics) *Error {
 	if e.maxComplexity > 0 && m.complexity > e.maxComplexity {
 		return Errorf("query exceeds complexity limit: %d > %d", m.complexity, e.maxComplexity).
@@ -423,19 +408,40 @@ func pageArg(f *planField, w costWalk) (int, bool) {
 	}
 	best, found := 0, false
 	for _, name := range w.cfg.listArgs() {
-		a := f.ast.Arguments.ForName(name)
-		if a == nil {
-			continue
-		}
-		raw, err := a.Value.Value(w.vars)
-		if err != nil {
-			continue
-		}
-		if n, ok := asCostInt(raw); ok && n > 0 && (!found || n > best) {
+		if n, ok := asCostInt(pageValue(f, name, w.vars)); ok && n > 0 && (!found || n > best) {
 			best, found = n, true
 		}
 	}
 	return best, found
+}
+
+// pageValue is the value the resolver will be handed for the argument name:
+// what the client sent wins, null included, and an argument left out, or
+// given a variable the request did not set, takes its declared default.
+// Pricing only what was written made omitting first cheaper than writing its
+// default out.
+//
+// An argument the query does not write at all is the common case, and its
+// default is the one the field's decoder converted when the schema was built:
+// converting it again here was an allocation per list field per request.
+func pageValue(f *planField, name string, vars map[string]any) any {
+	if f.ast.Definition == nil {
+		return nil
+	}
+	if f.ast.Arguments.ForName(name) == nil && f.def != nil && f.def.args != nil {
+		for _, st := range f.def.args.setters {
+			if st.name == name {
+				return st.defaultRaw
+			}
+		}
+		return nil
+	}
+	def := f.ast.Definition.Arguments.ForName(name)
+	if def == nil {
+		return nil
+	}
+	v, _, _ := argumentValue(f.ast, def, vars)
+	return v
 }
 
 func asCostInt(v any) (int, bool) {

@@ -109,6 +109,26 @@ func TestAbstractShapeChecks(t *testing.T) {
 		t.Fatalf("concrete non-member should fail, got %v", err)
 	}
 
+	// tUnbound backs no object at all, so no value of it can be resolved.
+	type tUnbound struct{}
+	err = Validate(SDL(abstractSDL),
+		append(abstractObjects(),
+			Object[Root]("Query",
+				Field("node", func(Root) *tUnbound { return nil }),
+				Field("search", func(Root) []tUnbound { return nil }),
+				Field("anyNode", func(Root) node { return nil }),
+			),
+		)...,
+	)
+	for _, want := range []string{
+		"field Query.node: Go type *graphql.tUnbound returned for abstract type Node is not bound to any object type",
+		"field Query.search: Go type graphql.tUnbound returned for abstract type SearchResult is not bound to any object type",
+	} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("want %q, got %v", want, err)
+		}
+	}
+
 	err = Validate(SDL(abstractSDL),
 		append(abstractObjects(),
 			Object[Root]("Query",

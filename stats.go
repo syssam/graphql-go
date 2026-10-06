@@ -1,11 +1,17 @@
 package graphql
 
+import (
+	"log/slog"
+	"sync/atomic"
+)
+
 // ExecutorStats is a point-in-time view of an Executor's shared state, for
 // exporting as metrics (ext/otel.ObserveExecutor does). Taking one is cheap
 // and safe from any goroutine.
 type ExecutorStats struct {
 	// PlanCacheEntries and PlanCacheBytes are the documents the plan cache
-	// holds and their total query text, the quantity WithPlanCacheBytes bounds.
+	// holds and what they are charged, their query text and what their plans
+	// retain: the quantity WithPlanCacheBytes bounds.
 	PlanCacheEntries int
 	PlanCacheBytes   int64
 
@@ -27,6 +33,13 @@ type ExecutorStats struct {
 	// disabled.
 	ConcurrencyInUse int
 	ConcurrencyLimit int
+
+	// RequestsUnbounded is true when nothing bounds what one request may ask
+	// for: none of WithMaxDepth, WithMaxComplexity and a WithQueryCost Max is
+	// set. It is the default, because the right numbers belong to a schema
+	// and not to this package, and it is here so that the default shows on a
+	// dashboard rather than in the incident that found it.
+	RequestsUnbounded bool
 }
 
 // Stats reports the executor's current shared state.
@@ -39,6 +52,25 @@ func (e *Executor) Stats() ExecutorStats {
 		PlanCacheMisses:  e.planMisses.Load(),
 		ConcurrencyInUse: len(e.sem),
 		ConcurrencyLimit: cap(e.sem),
+
+		RequestsUnbounded: e.requestsUnbounded(),
+	}
+}
+
+// requestsUnbounded reports that no option bounds the size of an operation.
+// A QueryCost with no Max prices operations and refuses none.
+func (e *Executor) requestsUnbounded() bool {
+	return e.maxDepth == 0 && e.maxComplexity == 0 && (e.cost == nil || e.cost.Max == 0)
+}
+
+// unboundedSaid is set once this process has been told an executor is
+// unbounded: the line is for whoever reads the log at start-up, and a process
+// that builds an executor per tenant has no use for it per tenant.
+var unboundedSaid atomic.Bool
+
+func (e *Executor) sayIfUnbounded() {
+	if e.requestsUnbounded() && unboundedSaid.CompareAndSwap(false, true) {
+		slog.Warn("graphql: this executor has no depth, complexity or cost limit, so one request can ask for any amount of work; set WithMaxDepth, WithMaxComplexity or WithQueryCost for this schema, or bound what clients may send another way (ExecutorStats.RequestsUnbounded reports this)")
 	}
 }
 

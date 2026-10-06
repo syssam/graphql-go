@@ -12,20 +12,21 @@ import (
 // instance site leaves AuthSite.Field nil, so the guard that does this needs
 // the position's nullability recorded on the site itself.
 func TestInstanceNullIsRejectedAtANonNullField(t *testing.T) {
+	logged := captureLog(t)
 	e := newInstanceExecutorWith(t, constantObjectPolicy(Null()))
 	resp := run(t, e, `{ required { id } }`, "")
 	assertJSON(t, resp.Data, `null`)
-	assertErrorContains(t, resp.Errors, "instance site")
-	assertErrorContains(t, resp.Errors, "Customer")
+	assertPolicyMistake(t, resp.Errors, logged, "Null is not valid for Customer, an instance site at a non-null position")
 }
 
 func TestInstanceNullIsRejectedAtANonNullListElement(t *testing.T) {
 	// customers is [Customer!]!: an element may not be null, so Null is a
 	// policy mistake there and Drop is the outcome that means "not visible".
+	logged := captureLog(t)
 	e := newInstanceExecutorWith(t, constantObjectPolicy(Null()))
 	resp := run(t, e, `{ customers { id } }`, "")
 	assertJSON(t, resp.Data, `null`)
-	assertErrorContains(t, resp.Errors, "instance site")
+	assertPolicyMistake(t, resp.Errors, logged, "instance site at a non-null position")
 }
 
 func TestInstanceNullIsAllowedAtANullableField(t *testing.T) {
@@ -170,6 +171,7 @@ func TestInstanceOnlyPlanDoesNotCallTheAuthorizer(t *testing.T) {
 // against one site chosen for the whole batch: Null is valid at a nullable
 // position and not at a non-null one, and both can be in the same call.
 func TestCheckObjectsValidatesEachOutcomeAgainstItsOwnSite(t *testing.T) {
+	logged := captureLog(t)
 	st := newInstanceState(t, constantObjectPolicy(Null()))
 	nullable := AuthSite{Coord: "Customer", Kind: SiteInstance}
 	nonNull := AuthSite{Coord: "Customer", Kind: SiteInstance, NonNull: true}
@@ -181,9 +183,7 @@ func TestCheckObjectsValidatesEachOutcomeAgainstItsOwnSite(t *testing.T) {
 	if err == nil {
 		t.Fatal("Null accepted for a batch whose second check is at a non-null position")
 	}
-	if !strings.Contains(err.Error(), "non-null position") {
-		t.Fatalf("error does not name the offending position: %v", err)
-	}
+	assertPolicyMistake(t, []*Error{err.(*Error)}, logged, "non-null position")
 }
 
 // Batching is per list. A guarded object reached through a field that is not

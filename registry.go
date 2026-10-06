@@ -142,7 +142,9 @@ func registerLeaf[E any](r *registry, name string, kind ast.DefinitionKind, writ
 	// A Go interface holds nil, so as E itself it can stand for null: a value of type any backs
 	// a nullable JSON argument without a pointer to the interface. Its decoder therefore maps
 	// null to the zero value instead of refusing it; a NON-NULL SDL position still refuses null
-	// before any decoder runs, so nothing is loosened there.
+	// before any decoder runs, so nothing is loosened there. Its writer treats nil as the *E
+	// writer treats a nil pointer: handed to the marshal instead, nil came back as a "null" the
+	// marshal wrote, and a non-null position carried it with no error.
 	eNilable := reflect.TypeFor[E]().Kind() == reflect.Interface
 	if eNilable {
 		dE = func(raw any, _ *ast.Type) (E, error) {
@@ -151,6 +153,12 @@ func registerLeaf[E any](r *registry, name string, kind ast.DefinitionKind, writ
 				return zero, nil
 			}
 			return decode(raw)
+		}
+		wE = func(w *jsonw.Writer, v E, t *ast.Type) error {
+			if any(v) == nil {
+				return writeNull(w, t)
+			}
+			return write(w, v)
 		}
 	}
 	wSE, dSE := listWriter(wE), listDecoder(dE)
@@ -164,20 +172,34 @@ func registerLeaf[E any](r *registry, name string, kind ast.DefinitionKind, writ
 	r.addLeafShape(name, []bool{true, true, true}, leafShape(name, listWriter(wSPE), listDecoder(dSPE)))
 }
 
+// leafBinder says what bound a (leaf type, Go type) pair.
+type leafBinder uint8
+
+const (
+	boundByOption leafBinder = iota + 1
+	boundBuiltIn
+)
+
 // claimLeaf records that an option binds the leaf type name to Go type t, and
 // refuses a second binding of the same pair. Several Go types may back one
 // GraphQL type, so the pair is the key; without the check the later option
 // replaced the earlier one's writer and decoders while the first kept
 // validating variables, and which of two bindings answered depended on the
-// order of the options. It is not generic so that the binding functions, which
-// are instantiated once per type in generated code, only call it.
+// order of the options. The built-in scalars hold their pairs before any
+// option runs (builtinLeaf), so the same goes for them. It is not generic so
+// that the binding functions, which are instantiated once per type in
+// generated code, only call it.
 func (b *schemaBuilder) claimLeaf(option, name string, t reflect.Type) bool {
 	key := typeKey{name: name, typ: t}
-	if b.leafBound[key] {
+	switch b.leafBound[key] {
+	case boundBuiltIn:
+		b.errorf("%s %q: the built-in %s scalar already binds Go type %s; bind a Go type of your own to add to it", option, name, name, t)
+		return false
+	case boundByOption:
 		b.errorf("%s %q: Go type %s is bound more than once", option, name, t)
 		return false
 	}
-	b.leafBound[key] = true
+	b.leafBound[key] = boundByOption
 	return true
 }
 

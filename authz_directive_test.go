@@ -167,18 +167,37 @@ func TestCustomDirectiveIsEnforced(t *testing.T) {
 // its argument literal. Without a per-shape check, @auth(requires: "admin") --
 // a string where a list belongs -- builds clean and guards nothing.
 func TestCustomDirectiveMalformedLiteralIsRejected(t *testing.T) {
-	const sdl = `
-directive @auth(requires: [String!]) on FIELD_DEFINITION
-type Query { secret: String! @auth(requires: "admin") }
-`
-	_, err := NewSchema(SDL(sdl),
-		RequirementDirective("auth", "requires", ScopesAllOf),
-		Query(Field("secret", func(Root) string { return "s" })))
-	if err == nil {
-		t.Fatal("a malformed literal was accepted")
+	cases := []struct{ name, literal string }{
+		{"a string where a list belongs", `"admin"`},
+		// The one that matters most. An empty list reads as no groups at
+		// all, and a directive that yields no groups is skipped by the
+		// reader as already reported -- so if nothing reports it, the field
+		// builds carrying the directive and no requirement.
+		{"an empty list", `[]`},
+		{"an integer where a scope belongs", `[1]`},
+		{"an enum value where a scope belongs", `[ADMIN]`},
+		{"a null where a scope belongs", `[null]`},
+		{"one bad scope beside a good one", `["a", 1]`},
+		{"a nested list in a flat shape", `[["a"]]`},
+		{"an object", `{a: 1}`},
 	}
-	if !strings.Contains(err.Error(), "@auth") {
-		t.Fatalf("error does not name the offending directive: %v", err)
+	for _, shape := range []ScopeShape{ScopesAllOf, ScopesAnyOf} {
+		for _, c := range cases {
+			t.Run(fmt.Sprintf("shape %d/%s", shape, c.name), func(t *testing.T) {
+				sdl := "directive @auth(requires: [String!]) on FIELD_DEFINITION\n" +
+					"type Query { secret: String! @auth(requires: " + c.literal + ") }\n"
+				s, err := NewSchema(SDL(sdl),
+					RequirementDirective("auth", "requires", shape),
+					Query(Field("secret", func(Root) string { return "s" })))
+				if err == nil {
+					t.Fatalf("%s was accepted; Query.secret requires %v",
+						c.literal, s.objects["Query"].fields["secret"].requires.anyOf)
+				}
+				if !strings.Contains(err.Error(), "Query.secret: @auth") {
+					t.Fatalf("error does not name the coordinate and the directive: %v", err)
+				}
+			})
+		}
 	}
 }
 

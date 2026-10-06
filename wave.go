@@ -13,15 +13,28 @@ import "sync"
 //	w := graphql.OperationFrom(ctx).Waves()
 //	w.OnReady(flush)  // once per operation
 //	w.Park()          // before blocking on batched work
-//	defer w.Unpark()
+//	w.Unpark()        // once for each Park, before the parked goroutine is woken
 //
 // When nothing in the operation is left running -- every task begun, and each
 // either parked or waiting for tasks of its own -- the registered callbacks
 // run so the keys queued by all of them dispatch together. The
 // loader package is built on this; most applications use that instead.
 //
+// Unpark belongs to whoever ends the wait, and for a batch that is the
+// callback, not the goroutines it wakes: it calls Unpark once for each of
+// them and only then hands out the results. A goroutine left to report itself
+// still counts as parked from the moment it is woken until it is scheduled,
+// and for that long the operation looks idle; the first of its siblings to
+// reach its next Park is then dispatched alone, and what should have been one
+// batch becomes one per key. A goroutine that stops waiting for another
+// reason, such as its context ending, calls Unpark itself, and the two must
+// agree which of them did.
+//
 // A nil *WaveCoordinator is valid and does nothing, which is what Waves
 // returns outside an Execute call.
+//
+// Experimental: loader is the only thing that has driven this protocol, and
+// it may change before v1; see docs/api-stability.md.
 type WaveCoordinator struct {
 	mu sync.Mutex
 	// The counts are for the whole operation, not per wave. A stack of waves
@@ -35,6 +48,12 @@ type WaveCoordinator struct {
 	// begun, less those parked on batched work or waiting for their own tasks.
 	// A park by a goroutine the executor did not start can take it below
 	// zero, which reads the same as zero.
+	//
+	// waiting is goroutines parked. An Unpark made on a goroutine's behalf can
+	// arrive before the Park it answers -- its batch finished between its
+	// queueing a key and parking -- so waiting dips below zero until that Park
+	// lands. running is one too high for exactly as long, which is what keeps
+	// the dip from reading as a wave to dispatch.
 	pending int32
 	running int32
 	waiting int32
@@ -42,8 +61,10 @@ type WaveCoordinator struct {
 }
 
 // Waves returns the coordinator for this operation. It is nil when the
-// operation is not running under an Executor, in which case extensions fall
-// back to their own scheduling.
+// operation is not being executed, in which case extensions fall back to
+// their own scheduling: outside an Executor, and on the context a
+// subscription's interceptors and source are given, which outlives every
+// event and is executed for none of them.
 func (oc *OperationContext) Waves() *WaveCoordinator {
 	if oc == nil {
 		return nil
@@ -84,15 +105,15 @@ func (w *WaveCoordinator) Park() {
 	w.unlockAndFlushIfReady()
 }
 
-// Unpark reports that the caller is no longer blocked.
+// Unpark reports that a parked goroutine is running again. It is called once
+// for each Park, by the goroutine itself or, before waking it, by the one
+// that ends its wait.
 func (w *WaveCoordinator) Unpark() {
 	if w == nil {
 		return
 	}
 	w.mu.Lock()
-	if w.waiting > 0 {
-		w.waiting--
-	}
+	w.waiting--
 	w.running++
 	w.mu.Unlock()
 }
@@ -150,7 +171,7 @@ func (w *WaveCoordinator) resume() {
 // unlockAndFlushIfReady releases w.mu, running the callbacks outside it when
 // the operation is ready to dispatch.
 func (w *WaveCoordinator) unlockAndFlushIfReady() {
-	if w.waiting == 0 || w.pending > 0 || w.running > 0 {
+	if w.waiting <= 0 || w.pending > 0 || w.running > 0 {
 		w.mu.Unlock()
 		return
 	}

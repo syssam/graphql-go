@@ -45,7 +45,7 @@ func decoder[V any](t *testing.T, r *registry, name string) func(any, *ast.Type)
 }
 
 func newTestRegistry() *registry {
-	b := &schemaBuilder{reg: newRegistry()}
+	b := &schemaBuilder{reg: newRegistry(), leafBound: make(map[typeKey]leafBinder)}
 	registerBuiltins(b)
 	return b.reg
 }

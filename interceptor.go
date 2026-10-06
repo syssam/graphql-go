@@ -168,10 +168,10 @@ func (e *Executor) buildChains() {
 		}
 	}
 	e.opChain = e.runOperation
-	if e.maxComplexity > 0 || e.maxDepth > 0 || e.cost != nil {
+	if e.cost != nil {
 		next := e.opChain
 		e.opChain = func(ctx context.Context, oc *OperationContext) *Response {
-			if err := e.rejectIfOverLimit(oc); err != nil {
+			if err := e.rejectIfOverCost(oc); err != nil {
 				resp := e.requestError(ctx, err)
 				e.attachCost(oc, resp)
 				return resp

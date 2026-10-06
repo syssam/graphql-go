@@ -496,3 +496,22 @@ type Query { ok: String! }`),
 		t.Errorf("a schema-declared @defer must stay visible: %s", got)
 	}
 }
+
+// Every field met after the context ends reaches the same checkpoint, and the
+// response says why it stopped once. The error is an engine error, which
+// WithMaxErrors never drops, so one per field would be a list as long as the
+// query with nothing to bound it.
+func TestExecCancellationIsReportedOnce(t *testing.T) {
+	for _, concurrency := range []int{0, 8} {
+		_, e := newFixtureExecutor(t, WithMaxConcurrency(concurrency))
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		resp := e.Execute(ctx, &Request{Query: `{ a: failNullable b: failNullable c: failNullable d: panics }`})
+		if got, want := string(resp.Data), `{"a":null,"b":null,"c":null,"d":null}`; got != want {
+			t.Fatalf("concurrency %d: data = %s, want %s", concurrency, got, want)
+		}
+		if len(resp.Errors) != 1 || resp.Errors[0].Extensions["code"] != CodeRequestCancelled {
+			t.Fatalf("concurrency %d: errors = %s, want exactly one %s", concurrency, errorsJSON(resp.Errors), CodeRequestCancelled)
+		}
+	}
+}

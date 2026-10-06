@@ -78,7 +78,9 @@ the resolver ran first, on the nil, and the usual resolver is a method call on t
 (`TestATypedNilIsNullBeforeTheTypeResolverSeesIt`). **The actual cost saturates** at `MaxInt32`
 like every other cost sum: it is 32 bits for `execState`'s padding and three fields weighing
 2^30 wrapped it negative, which `ext/throttle` refunded. `float32` is written with its own
-shortest digits (`jsonw.Float32`), not widened to `0.10000000149011612`.
+shortest digits (`jsonw.Float32`), not widened to `0.10000000149011612`, and chooses exponent
+notation at its own width too: widened, `float32(1e-6)` fell under the threshold and printed
+`1e-6` (`TestFloatNotationChangesWhereEncodingJSONChangesIt`).
 
 **Three per-request allocations that were there only because nobody looked** (interleaved
 n=14, sec/op unchanged on every one of them; allocation counts are the figure):
@@ -119,7 +121,9 @@ rejected a response that fit at about half its real size, depending only on fiel
 will not pool, or an oversized sub-writer never gives its bytes back. Once a checkpoint sees
 the limit passed the response is rejected even if null bubbling later rewinds those bytes,
 because everything after that point was cut short. A trip also makes every failure bubble,
-nullable or not (`writeField`, `writeList`, and a check after each concurrent group): before
+nullable or not (`writeField`, `writeList`, and a check after each concurrent group, which
+`Execute` cannot show because a tripped response is refused either way, so
+`TestALimitTripInAConcurrentGroupFailsTheObject` and its two list siblings ask `writeObject`): before
 that, a nullable field or element turned the failure into a null and traversal went on, so a
 lazy list of nullable fields was pulled to the end and the root writer reached 229 times the
 limit. A concurrent list still drains its source into a slice before spawning, which predates
@@ -238,6 +242,36 @@ nothing inside a pure field, interceptor or not). A registered interceptor still
 the semaphore is a slot budget that `Stats` reports and a task never waits on, because a task waiting for a slot has not begun and its wave could never dispatch (`taskGroup`). `Inline()`/`Concurrent()` override per field. `loader.Loader` (`loader/`)
 coalesces `Load` calls within one concurrent wave — the executor announces a wave before
 launching sibling tasks (`newTaskGroup`, which calls `announce`), which is what makes DataLoader batching work.
+**A wave is dispatched whole, by one callback per operation** (`dispatcher` in `loader/`): it
+takes what every `Loader` has queued once, runs each loader's batches on a goroutine of its own
+(a loader's `WithMaxBatchSize` chunks stay in sequence), and only when all have returned reports
+every waiting `Load` running (`Unpark`, on its behalf) and then delivers. Each half was a bug.
+**Unpark before the wake**: a woken waiter that reported itself still counted as parked until it
+was scheduled, so the first to reach its next `Load` found the operation idle and dispatched
+alone — 100 nodes loaded their second level in up to 100 batches, and only the first level had a
+test (`TestEveryLevelOfALoaderChainIsOneBatch`, real goroutines, because `synctest` serializes
+the race away). **Deliver together**: per loader, the first loader's resolvers ran ahead of the
+second's and split the level they share (`TestTwoLoadersFeedOneBatchAtTheNextLevel`); and the
+batches ran one after another, so five loader-backed fields cost the sum of five round trips
+(`TestLoadersQueuedInOneWaveRunTogether`). The price of delivering together is that a fast
+loader's results wait for the slowest batch in the same wave. `Park` and `Unpark` pair through a
+per-`Load` state (queued, parked, resumed) because two goroutines can each end a wait — the
+dispatch, and the `Load` itself when its context ends — and a dispatch can take a `Load`'s keys
+before it has parked; doubling an `Unpark` hangs the next level
+(`TestWaitersThatGiveUpLeaveTheNextLevelOneBatch`,
+`TestLoadsFromAResolversOwnGoroutinesLeaveTheWaveBalanced`). An extension written against
+`WaveCoordinator` owes the same order; its doc comment says so.
+**Dispatch waits for every goroutine in the operation, and nothing falls back.** That is the rule
+that keeps a key from missing its batch, and it has two costs a user meets: a batch waits for the
+slowest unrelated resolver (`TestABatchWaitsForEveryRunningResolver` pins it), and a resolver
+that holds a lock, a singleflight or a size-one semaphore across `Load` hangs the request until
+its context ends, since its blocked sibling counts as running. Both are in the `loader` package
+doc and on `Load`. A timer fallback was removed on purpose; do not add one back.
+**A subscription's own `OperationContext` has no coordinator** (`base.hub = nil` in `subscribe`):
+it is what the interceptors and the source see and it lives as long as the stream, and a `Loader`
+treats an operation without a coordinator as no request, so it caches nothing there. With one, a
+source that built each event through a loader served the first event's value for the life of
+the stream (`TestALoaderInASubscriptionsSourceIsNotCachedForTheStream`).
 **A batch's context comes from the Loads waiting on it, never from the first `Load` of the
 request** (`batchContext`): values from one waiter, cancelled only once every waiter has given
 up, deadline the latest of theirs. The scope used to keep the first `Load`'s context, so a

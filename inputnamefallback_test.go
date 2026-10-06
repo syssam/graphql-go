@@ -90,3 +90,24 @@ func TestInputTagWinsOverTheGoFieldName(t *testing.T) {
 		t.Fatalf("data = %s, want the tags to have decided", got)
 	}
 }
+
+// The fallback is for a name nobody holds. Old's tag names nothing, and its Go
+// name is what New's tag already claims, so Old is left with its tag and the
+// error is about that: taking the name instead reports `old` as bound twice,
+// which sends the author to the one field that is right.
+func TestInputFallbackLeavesAClaimedNameAlone(t *testing.T) {
+	type renamed struct {
+		Old string `json:"legacy"`
+		New string `json:"old"`
+	}
+	err := Validate(SDL(`input Renamed { old: String! } type Query { f(in: Renamed!): Int }`),
+		Input[renamed]("Renamed"),
+		Query(FieldArgs("f", func(Root, struct{ In renamed }) *int { return nil })),
+	)
+	if err == nil || !strings.Contains(err.Error(), "input field Renamed.legacy is not defined in the schema") {
+		t.Fatalf("want the tag that names nothing reported, got %v", err)
+	}
+	if strings.Contains(err.Error(), "bound more than once") {
+		t.Fatalf("the fallback took a name another field's tag claimed:\n%v", err)
+	}
+}

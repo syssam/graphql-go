@@ -7,7 +7,7 @@ BenchmarkExecuteTypenameHeavy 47
 BenchmarkExecuteNoAuthorizer 8
 BenchmarkExecuteWithAuthorizer 10
 BenchmarkListResultsSlice 14
-BenchmarkQueryCostDisabled 15
+BenchmarkQueryCostDisabled 16
 BenchmarkResponseLimitOn 82
 BenchmarkExecuteVariableArgs 17
 BenchmarkExecuteInputVariable 70

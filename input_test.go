@@ -195,6 +195,51 @@ func TestInputShapeValidation(t *testing.T) {
 	}
 }
 
+// Each of these is a binding NewSchema refuses outright. Without the refusal
+// the second Input replaced the first's decoder under shapes already handed
+// out, a non-struct reached reflect's field walk and panicked there, and a
+// list bound to a single value was decoded by whichever decoder the Go type
+// happened to select.
+func TestMalformedInputAndArgsBindingsAreBuildErrors(t *testing.T) {
+	type in struct{ A *int }
+	type other struct{ A *int }
+	type args struct{ In *in }
+	type flat struct {
+		A []int
+		B *int
+	}
+	const sdl = `input In { a: Int } input Lists { a: Int b: [Int] } type Query { q(in: In): Int }`
+	query := Query(FieldArgs("q", func(Root, args) *int { return nil }))
+	for _, tc := range []struct {
+		name string
+		opts []SchemaOption
+		want []string
+	}{
+		{"an input object bound twice", []SchemaOption{Input[in]("In"), Input[other]("In")},
+			[]string{`Input "In": already bound to graphql.in`}},
+		{"an argument struct registered twice", []SchemaOption{Input[in]("In"), Args[args](), Args[args]()},
+			[]string{"Args[graphql.args]: registered more than once"}},
+		{"an input object bound to a non-struct", []SchemaOption{Input[string]("In")},
+			[]string{`Input "In": Go type string must be a struct`}},
+		{"arguments bound to a non-struct", []SchemaOption{Input[in]("In"), Args[int]()},
+			[]string{"Args[int]: Go type must be a struct"}},
+		{"a list where the schema has one value, and one value where it has a list", []SchemaOption{Input[in]("In"), Input[flat]("Lists")},
+			[]string{"Lists.a: Go type []int has 1 list level(s) but Int has 0", "Lists.b: Go type *int has 0 list level(s) but [Int] has 1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := Validate(SDL(sdl), append(tc.opts, query)...)
+			if err == nil {
+				t.Fatal("the schema built")
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error does not say %q:\n%v", want, err)
+				}
+			}
+		})
+	}
+}
+
 func TestInputCoverageAndUnknownField(t *testing.T) {
 	sdl := `input In { a: Int! b: Int! } type Query { q(in: In!): Int }`
 	type in struct{ A, B, C int }
@@ -277,6 +322,130 @@ func TestArgsValidation(t *testing.T) {
 	}
 }
 
+// A default is a value like any other and has to be one its position accepts.
+// gqlparser checks only that the SDL parses, so `n: Int = "abc"` built, and
+// every request that left the argument out failed with an error about a value
+// the client never sent -- on a schema the author believed was valid.
+func TestADefaultThePositionRefusesIsABuildError(t *testing.T) {
+	type inner struct{ Need int }
+	type opts struct {
+		N      *int
+		C      *string
+		Nested *inner
+		List   []int
+		Fine   *int
+	}
+	type good struct {
+		A     *int
+		Inner *inner
+	}
+	type nArgs struct {
+		N    *int
+		Fine *int
+	}
+	type dArgs struct{ Level *int }
+	err := Validate(SDL(`
+		directive @d(level: Int = "high") on FIELD_DEFINITION
+		enum Color { RED GREEN }
+		input Inner { need: Int! }
+		input Opts { n: Int = "abc" c: Color = PURPLE nested: Inner = {} list: [Int!] = [1, "x"] fine: Int = 3 }
+		input Good { a: Int = 1 inner: Inner = {need: 1} }
+		type Query {
+			byNumber(n: Int = 1.5, fine: Int = 1): Int
+			byColor(c: Color! = null): Int
+			guarded: Int @d
+			sound(in: Good = {a: 5}, c: Color = RED): Int
+		}`),
+		Enum("Color", map[string]string{"RED": "RED", "GREEN": "GREEN"}),
+		Input[inner]("Inner"),
+		Input[opts]("Opts"),
+		Input[good]("Good"),
+		DirectiveArgs("d", func(next FieldFunc, _ dArgs) FieldFunc { return next }),
+		Query(
+			FieldArgs("byNumber", func(Root, nArgs) *int { return nil }),
+			FieldArgs("byColor", func(Root, struct{ C string }) *int { return nil }),
+			Field("guarded", func(Root) *int { return nil }),
+			FieldArgs("sound", func(Root, struct {
+				In *good
+				C  *string
+			}) *int {
+				return nil
+			}),
+		),
+	)
+	if err == nil {
+		t.Fatal("the schema built; each of these defaults fails the first request that relies on it")
+	}
+	for _, want := range []string{
+		`input field Opts.n: its default "abc" is not a value it accepts: Int cannot represent non-integer value: "abc"`,
+		`input field Opts.c: its default PURPLE is not a value it accepts: value "PURPLE" does not exist in Color enum`,
+		`input field Opts.nested: its default {} is not a value it accepts: field "need" of required type Int! was not provided`,
+		`input field Opts.list: its default [1,"x"] is not a value it accepts: [1]: Int cannot represent non-integer value: "x"`,
+		`field Query.byNumber: argument "n": its default 1.5 is not a value it accepts: Int cannot represent non-integer value: 1.5`,
+		`field Query.byColor: argument "c": its default null is not a value it accepts: null value for non-null type`,
+		`field @d: argument "level": its default "high" is not a value it accepts: Int cannot represent non-integer value: "high"`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not say %q:\n%v", want, err)
+		}
+	}
+	for _, sound := range []string{"Opts.fine", "Good", "Query.sound"} {
+		if strings.Contains(err.Error(), sound) {
+			t.Errorf("a default that does coerce (%s) was reported:\n%v", sound, err)
+		}
+	}
+}
+
+// A default that leaves out a field whose own default is the same kind of
+// value never finishes: `input A { a: A = {} }` decodes {} by applying a's
+// default, which is {}. The specification forbids the cycle, gqlparser does not
+// look, and decoding it is unbounded recursion -- a stack overflow, which no
+// recover catches, on the first request to send an A.
+func TestADefaultThatLeadsBackToItsOwnFieldIsABuildError(t *testing.T) {
+	type a struct{ A *a }
+	for _, tc := range []struct {
+		name, sdl string
+		want      string
+	}{
+		{"itself", `input A { a: A = {} }`, `input field A.a: its default {} leads back to it through A.a`},
+		{"through another input", `input A { a: B = {} } input B { b: A = {} }`, `input field A.a: its default {} leads back to it through A.a, B.b`},
+		{"through a list", `input A { a: [A] = [{}] }`, `input field A.a: its default [{}] leads back to it through A.a`},
+		{"below what the default supplies", `input A { a: A = {a: {}} }`, `input field A.a: its default {a:{}} leads back to it through A.a`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := Validate(SDL(tc.sdl+` type Query { f(in: A = {}): Int }`),
+				Query(Field("f", func(Root) *int { return nil })))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want an error saying %q, got %v", tc.want, err)
+			}
+		})
+	}
+
+	// Bound, the cycle is still only reported: checking a default decodes it,
+	// and decoding this one is the recursion.
+	err := Validate(SDL(`input A { a: A = {} } type Query { f(in: A = {}): Int }`),
+		Input[a]("A"),
+		Query(FieldArgs("f", func(Root, struct{ In *a }) *int { return nil })))
+	if err == nil || !strings.Contains(err.Error(), "input field A.a: its default {} leads back to it through A.a") {
+		t.Fatalf("got %v", err)
+	}
+
+	// A default that ends is not a cycle, however the type refers to itself.
+	for _, sdl := range []string{
+		`input A { a: A }`,
+		`input A { a: A = null }`,
+		`input A { a: A = {a: null} }`,
+		`input A { a: A = {a: {a: null}} }`,
+	} {
+		err := Validate(SDL(sdl+` type Query { f(in: A = {}): Int }`),
+			Input[a]("A"),
+			Query(FieldArgs("f", func(Root, struct{ In *a }) *int { return nil })))
+		if err != nil {
+			t.Errorf("%s: %v", sdl, err)
+		}
+	}
+}
+
 func TestExportedToGraphQL(t *testing.T) {
 	cases := map[string]string{
 		"ID":        "id",
@@ -285,11 +454,75 @@ func TestExportedToGraphQL(t *testing.T) {
 		"URL":       "url",
 		"HomeURL":   "homeUrl",
 		"firstName": "firstName",
+
+		// An initialism is a word, wherever it sits and whatever follows it:
+		// the predicates an ORM generates put a suffix straight after one.
+		"IDs":            "ids",
+		"UserIDs":        "userIds",
+		"IDIn":           "idIn",
+		"IDNEQ":          "idNEQ",
+		"OwnerIDNEQ":     "ownerIdNEQ",
+		"VariantIDIsNil": "variantIdIsNil",
+		"URLs":           "urls",
+		"URLPath":        "urlPath",
+		"ImageURLID":     "imageUrlId",
+		"CreatedAt":      "createdAt",
+		"XCoord":         "xCoord",
+		"IOSVersion":     "iOSVersion",
+
+		// UUID and GUID end in ID without being a word followed by one, and
+		// were split there: uUId, gUId, userUUId.
+		"UUID":       "uuid",
+		"GUID":       "guid",
+		"UUIDs":      "uuids",
+		"UUIDIn":     "uuidIn",
+		"UserUUID":   "userUuid",
+		"ParentGUID": "parentGuid",
+		"UUIDURL":    "uuidUrl",
 	}
 	for in, want := range cases {
 		if got := exportedToGraphQL(in); got != want {
 			t.Errorf("exportedToGraphQL(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// Teaching the derivation UUID and GUID must change nothing else: a struct
+// whose fields bind by their Go names today has to bind to the same names
+// after. Every name over the letters the rules look at, to six of them, is
+// derived as it was unless it spells one of the two.
+func TestExportedToGraphQLChangesOnlyUUIDAndGUID(t *testing.T) {
+	before := func(name string) string {
+		name = strings.ReplaceAll(name, "ID", "Id")
+		name = strings.ReplaceAll(name, "URL", "Url")
+		return strings.ToLower(name[:1]) + name[1:]
+	}
+	const letters = "IDURLGXas"
+	checked := 0
+	var walk func(name []byte)
+	walk = func(name []byte) {
+		if len(name) > 0 {
+			n := string(name)
+			got := exportedToGraphQL(n)
+			if strings.Contains(n, "UUID") || strings.Contains(n, "GUID") {
+				if strings.Contains(got, "UUId") || strings.Contains(got, "GUId") {
+					t.Fatalf("exportedToGraphQL(%q) = %q still splits the initialism", n, got)
+				}
+			} else if want := before(n); got != want {
+				t.Fatalf("exportedToGraphQL(%q) = %q, and it was %q", n, got, want)
+			}
+			checked++
+		}
+		if len(name) == 6 {
+			return
+		}
+		for i := range len(letters) {
+			walk(append(name, letters[i]))
+		}
+	}
+	walk(make([]byte, 0, 6))
+	if checked < 500_000 {
+		t.Fatalf("checked %d names", checked)
 	}
 }
 

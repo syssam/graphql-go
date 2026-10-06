@@ -19,17 +19,29 @@ func (f abstractOptFunc) applyAbstract(ab *abstractBinding) { f(ab) }
 
 // TypeResolver overrides dynamic Go type lookup with an explicit function
 // returning the concrete GraphQL object type name for a value.
+//
+// T has to take every value the position can hold. NewSchema refuses a
+// binding, and a field's result type, that cannot be T; a field typed any can
+// still hold such a value, and that value is a field error.
 func TypeResolver[T any](fn func(T) string) AbstractOption {
 	return abstractOptFunc(func(ab *abstractBinding) {
 		ab.resolverType = reflect.TypeFor[T]()
-		ab.resolveType = func(v any) string { return fn(v.(T)) }
+		ab.resolveType = func(v any) (string, bool) {
+			tv, ok := v.(T)
+			if !ok {
+				return "", false
+			}
+			return fn(tv), true
+		}
 	})
 }
 
 type abstractBinding struct {
-	name        string
-	goType      reflect.Type
-	resolveType func(any) string
+	name   string
+	goType reflect.Type
+	// resolveType reports false for a value that is not the TypeResolver's
+	// parameter type.
+	resolveType func(any) (string, bool)
 	// resolverType is the TypeResolver's parameter type. Every value at the
 	// position is asserted to it, so it has to take whatever the binding's
 	// own type can hold.
@@ -95,11 +107,12 @@ func articleFor(kind ast.DefinitionKind) string {
 
 // abstractType is a resolved interface or union.
 type abstractType struct {
-	name        string
-	def         *ast.Definition
-	goType      reflect.Type
-	resolveType func(any) string
-	possible    map[string]*objectType
+	name         string
+	def          *ast.Definition
+	goType       reflect.Type
+	resolveType  func(any) (string, bool)
+	resolverType reflect.Type
+	possible     map[string]*objectType
 }
 
 func (b *schemaBuilder) resolveAbstract(s *Schema, name string, def *ast.Definition) *abstractType {
@@ -112,6 +125,7 @@ func (b *schemaBuilder) resolveAbstract(s *Schema, name string, def *ast.Definit
 	if ab := b.abstracts[name]; ab != nil {
 		at.goType = ab.goType
 		at.resolveType = ab.resolveType
+		at.resolverType = ab.resolverType
 	}
 	return at
 }
@@ -121,7 +135,10 @@ func (b *schemaBuilder) resolveAbstract(s *Schema, name string, def *ast.Definit
 // dynamic Go type otherwise.
 func (s *Schema) concreteType(at *abstractType, v any) (*objectType, error) {
 	if at.resolveType != nil {
-		name := at.resolveType(v)
+		name, ok := at.resolveType(v)
+		if !ok {
+			return nil, fmt.Errorf("abstract type %s: its TypeResolver takes %s and cannot be given Go type %T", at.name, at.resolverType, v)
+		}
 		obj := at.possible[name]
 		if obj == nil {
 			return nil, fmt.Errorf("abstract type %s resolved to %q, which is not one of its possible types", at.name, name)

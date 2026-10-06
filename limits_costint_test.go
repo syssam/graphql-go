@@ -93,3 +93,62 @@ func TestAFloatSpelledPageSizeCostsTheSameAsAnInteger(t *testing.T) {
 		t.Errorf("a page size of 2e9 ran under Max 100: %s", resp.Data)
 	}
 }
+
+// An argument's declared default is the page size the resolver receives when
+// the client leaves the argument out, so it is the page size to price. Read
+// only from what the client wrote, items(first: Int = 500) cost DefaultListSize
+// when omitted and 500 when spelled out: the same request, a fiftieth of the
+// price, and nested three deep under any Max.
+func TestAnOmittedPageSizeIsPricedAtItsDeclaredDefault(t *testing.T) {
+	type user struct{ ID ID }
+	type pageArgs struct{ First *int }
+	var received []int
+	s, err := NewSchema(SDL(`type User { id: ID! } type Query { users(first: Int = 500): [User!]! }`),
+		Args[pageArgs](),
+		Object[user]("User", Field("id", func(u *user) ID { return u.ID })),
+		Query(ResolveArgs("users", func(_ context.Context, _ Root, a pageArgs) ([]*user, error) {
+			if a.First != nil {
+				received = append(received, *a.First)
+			}
+			return []*user{{"1"}}, nil
+		})),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	written := costReported(t, s, `{ users(first: 500) { id } }`, "")
+	if written != 501 {
+		t.Fatalf("first: 500 costs %d, want 501", written)
+	}
+	for _, tc := range []struct{ name, query, vars string }{
+		{"omitted", `{ users { id } }`, ""},
+		{"an unset variable", `query($n: Int){ users(first: $n) { id } }`, ""},
+	} {
+		if got := costReported(t, s, tc.query, tc.vars); got != written {
+			t.Errorf("%s: costs %d, and %d with the default written out", tc.name, got, written)
+		}
+	}
+	// What the client sends still wins over the default, null included: the
+	// resolver is handed no page size then, so the list is priced as one
+	// without.
+	for _, tc := range []struct {
+		name, query, vars string
+		want              int
+	}{
+		{"a literal", `{ users(first: 5) { id } }`, "", 6},
+		{"a variable", `query($n: Int){ users(first: $n) { id } }`, `{"n":5}`, 6},
+		{"a literal null", `{ users(first: null) { id } }`, "", 11},
+		{"a null variable", `query($n: Int){ users(first: $n) { id } }`, `{"n":null}`, 11},
+	} {
+		if got := costReported(t, s, tc.query, tc.vars); got != tc.want {
+			t.Errorf("%s: costs %d, want %d", tc.name, got, tc.want)
+		}
+	}
+	// The premise: the default is what an omitting request is served with.
+	received = nil
+	resp := run(t, NewExecutor(s), `{ users { id } }`, "")
+	expectData(t, resp, `{"users":[{"id":"1"}]}`)
+	if len(received) != 1 || received[0] != 500 {
+		t.Fatalf("the resolver received %v, want the declared default 500", received)
+	}
+}

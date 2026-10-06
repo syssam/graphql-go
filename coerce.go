@@ -51,7 +51,7 @@ func (s *Schema) coerceVariables(op *ast.OperationDefinition, raw map[string]any
 			continue
 		}
 		if !s.validInput(vd.Type, v) {
-			if err := s.validateInput(vd.Type, v, "$"+vd.Variable); err != nil {
+			if err := s.validateInput(vd.Type, v, &inputPath{name: "$" + vd.Variable}); err != nil {
 				return nil, variableError(vd, "got invalid value %s; %v", describeJSON(v), err)
 			}
 		}
@@ -92,7 +92,7 @@ func (s *Schema) variableDefaultErrors(doc *ast.QueryDocument) []*Error {
 			}
 			dv, err := astJSON(vd.DefaultValue, nil)
 			if err == nil && dv != nil && !s.validInput(vd.Type, dv) {
-				err = s.validateInput(vd.Type, dv, "$"+vd.Variable)
+				err = s.validateInput(vd.Type, dv, &inputPath{name: "$" + vd.Variable})
 			}
 			if err != nil {
 				errs = append(errs, variableError(vd, "has an invalid default value: %v", err).WithCode(CodeValidationFailed))
@@ -135,7 +135,7 @@ func (s *Schema) validInput(t *ast.Type, v any) bool {
 	if in == nil {
 		// Not an input object: scalars and enums hold no path to build,
 		// so the full check costs nothing extra.
-		return s.validateInput(t, v, "") == nil
+		return s.validateInput(t, v, nil) == nil
 	}
 	m, ok := v.(map[string]any)
 	if !ok || (in.oneOf && len(m) != 1) {
@@ -180,13 +180,61 @@ func indexInputs(schema *ast.Schema) map[string]*inputInfo {
 	return out
 }
 
+// inputPath is where validateInput has got to in a value: the name it was
+// given for the whole, then a field or a list index for each level below. It
+// is kept as a link back to the level above, on the stack of the call that
+// made it, and written out only by the error that names it. Written out on
+// the way down instead, as it was, every level built a string one step longer
+// than its parent's whether or not anything was wrong beneath it: refusing a
+// variable nested 9 900 deep allocated 207 MB for a path of 40 KB.
+type inputPath struct {
+	parent *inputPath
+	// name is a field's, or the whole value's at the root; an element of a
+	// list has none and is its index.
+	name  string
+	index int
+}
+
+func (p *inputPath) width() int {
+	switch {
+	case p.parent == nil:
+		return len(p.name)
+	case p.name != "":
+		return 1 + len(p.name)
+	}
+	return 2 + len(strconv.Itoa(p.index))
+}
+
+// String is the path as a variable error has always written it:
+// $v.field[3].other.
+func (p *inputPath) String() string {
+	n := 0
+	for q := p; q != nil; q = q.parent {
+		n += q.width()
+	}
+	b := make([]byte, n)
+	for q := p; q != nil; q = q.parent {
+		n -= q.width()
+		switch at := b[n:n]; {
+		case q.parent == nil:
+			_ = append(at, q.name...)
+		case q.name != "":
+			_ = append(append(at, '.'), q.name...)
+		default:
+			_ = append(strconv.AppendInt(append(at, '['), int64(q.index), 10), ']')
+		}
+	}
+	return string(b)
+}
+
 // validateInput checks a raw JSON-shaped value against an input type without
 // producing a typed value. It mirrors the checks the typed decoders perform
-// so that variable errors are reported before execution starts.
-func (s *Schema) validateInput(t *ast.Type, v any, path string) error {
+// so that variable errors are reported before execution starts. path is nil
+// for a caller that wants the verdict and not the message.
+func (s *Schema) validateInput(t *ast.Type, v any, path *inputPath) error {
 	if v == nil {
 		if t.NonNull {
-			return fmt.Errorf("Expected non-nullable type %q not to be null at %s.", t.String(), path)
+			return fmt.Errorf("Expected non-nullable type %q not to be null at %s.", t.String(), path.String())
 		}
 		return nil
 	}
@@ -196,7 +244,7 @@ func (s *Schema) validateInput(t *ast.Type, v any, path string) error {
 			return s.validateInput(t.Elem, v, path)
 		}
 		for i, it := range items {
-			if err := s.validateInput(t.Elem, it, path+"["+strconv.Itoa(i)+"]"); err != nil {
+			if err := s.validateInput(t.Elem, it, &inputPath{parent: path, index: i}); err != nil {
 				return err
 			}
 		}
@@ -210,50 +258,50 @@ func (s *Schema) validateInput(t *ast.Type, v any, path string) error {
 	case ast.Scalar:
 		if validate := s.reg.leafValidators[def.Name]; validate != nil {
 			if err := validate(v); err != nil {
-				return fmt.Errorf("%w at %s.", err, path)
+				return fmt.Errorf("%w at %s.", err, path.String())
 			}
 		}
 		return nil
 	case ast.Enum:
 		str, ok := v.(string)
 		if !ok {
-			return fmt.Errorf("Enum %q cannot represent non-string value: %s at %s.", def.Name, describeRaw(v), path)
+			return fmt.Errorf("Enum %q cannot represent non-string value: %s at %s.", def.Name, describeRaw(v), path.String())
 		}
 		if def.EnumValues.ForName(str) == nil {
-			return fmt.Errorf("Value %q does not exist in %q enum at %s.", str, def.Name, path)
+			return fmt.Errorf("Value %q does not exist in %q enum at %s.", str, def.Name, path.String())
 		}
 		return nil
 	case ast.InputObject:
 		m, ok := v.(map[string]any)
 		if !ok {
-			return fmt.Errorf("Expected type %q to be an object at %s.", def.Name, path)
+			return fmt.Errorf("Expected type %q to be an object at %s.", def.Name, path.String())
 		}
 		// A OneOf Input Object arriving whole from a variable is never seen by
 		// the validator, which only inspects literals.
 		if def.Directives.ForName("oneOf") != nil {
 			if len(m) != 1 {
-				return fmt.Errorf("OneOf Input Object %q must specify exactly one key at %s.", def.Name, path)
+				return fmt.Errorf("OneOf Input Object %q must specify exactly one key at %s.", def.Name, path.String())
 			}
 			for name, fv := range m {
 				if fv == nil {
-					return fmt.Errorf("Field %q must be non-null at %s.", def.Name+"."+name, path)
+					return fmt.Errorf("Field %q must be non-null at %s.", def.Name+"."+name, path.String())
 				}
 			}
 		}
 		for name := range m {
 			if def.Fields.ForName(name) == nil {
-				return fmt.Errorf("Field %q is not defined by type %q at %s.", name, def.Name, path)
+				return fmt.Errorf("Field %q is not defined by type %q at %s.", name, def.Name, path.String())
 			}
 		}
 		for _, fd := range def.Fields {
 			fv, present := m[fd.Name]
 			if !present {
 				if fd.Type.NonNull && fd.DefaultValue == nil {
-					return fmt.Errorf("Field %q of required type %q was not provided at %s.", fd.Name, fd.Type.String(), path)
+					return fmt.Errorf("Field %q of required type %q was not provided at %s.", fd.Name, fd.Type.String(), path.String())
 				}
 				continue
 			}
-			if err := s.validateInput(fd.Type, fv, path+"."+fd.Name); err != nil {
+			if err := s.validateInput(fd.Type, fv, &inputPath{parent: path, name: fd.Name}); err != nil {
 				return err
 			}
 		}
@@ -388,29 +436,37 @@ func fieldArguments(f *ast.Field, vars map[string]any) (map[string]any, error) {
 	}
 	out := make(map[string]any, len(defs))
 	for _, def := range defs {
-		var val any
-		var has bool
-		if supplied := f.Arguments.ForName(def.Name); supplied != nil {
-			if supplied.Value.Kind == ast.Variable {
-				val, has = vars[supplied.Value.Raw]
-			} else {
-				v, err := astJSON(supplied.Value, vars)
-				if err != nil {
-					return nil, fmt.Errorf("argument %q: %w", def.Name, err)
-				}
-				val, has = v, true
-			}
-		}
-		if !has && def.DefaultValue != nil {
-			v, err := astJSON(def.DefaultValue, vars)
-			if err != nil {
-				return nil, fmt.Errorf("argument %q default: %w", def.Name, err)
-			}
-			val, has = v, true
+		val, has, err := argumentValue(f, def, vars)
+		if err != nil {
+			return nil, err
 		}
 		if has {
 			out[def.Name] = val
 		}
 	}
 	return out, nil
+}
+
+// argumentValue is the value one argument of f takes, and whether it takes
+// one at all. It is the rule of the paragraph above for a single argument,
+// apart so that the cost walk, which prices a page size, reads the argument
+// the resolver will be handed and not one of its own working out.
+func argumentValue(f *ast.Field, def *ast.ArgumentDefinition, vars map[string]any) (val any, has bool, err error) {
+	if supplied := f.Arguments.ForName(def.Name); supplied != nil {
+		if supplied.Value.Kind == ast.Variable {
+			val, has = vars[supplied.Value.Raw]
+		} else {
+			if val, err = astJSON(supplied.Value, vars); err != nil {
+				return nil, false, fmt.Errorf("argument %q: %w", def.Name, err)
+			}
+			has = true
+		}
+	}
+	if !has && def.DefaultValue != nil {
+		if val, err = astJSON(def.DefaultValue, vars); err != nil {
+			return nil, false, fmt.Errorf("argument %q default: %w", def.Name, err)
+		}
+		has = true
+	}
+	return val, has, nil
 }

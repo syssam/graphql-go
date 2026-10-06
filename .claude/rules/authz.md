@@ -287,3 +287,46 @@ safe choice at a single position was `Deny`, whose error is an existence oracle 
 says; `examples/storefront` made exactly that claim and did not meet it
 (`TestSomeoneElsesOrderAnswersLikeOneThatDoesNotExist`). The shape walk's `seen` memo is now
 pinned by `TestAuthShapeWalkIsLinearInThePlanDAG`, which fails at 11 s with the memo removed.
+
+## The input walk, policy mistakes, and three things nothing pinned
+
+**`inputKeys` is linear in its input and budgeted, and `authz_input_oracle_test.go` is the walk
+it replaced.** The old one cloned the path per key and joined it into a string to deduplicate:
+quadratic in depth, and a variable nests to 10 000 where a literal stops at 100, so a 79 KB
+request (`{"not":` x 9 900) allocated **2.07 GB** and held 823 MB live before `Authorize` was
+called -- for any caller, since the walk precedes the decision. Positions are now a tree
+(`inputPos`): the node is the dedup identity, and a position's first child extends its path in
+the same array, so a chain shares one. `TestInputKeysMatchTheWalkTheyReplaced` holds the output
+to the old walk's, order and nil-versus-empty path included, over 4 000 generated inputs.
+**Sharing cannot make a comb linear** -- `{a: 1, not: {a: 1, not: ...}}` is n paths of up to n
+elements because `InputKey.Path` is a slice per key -- so `maxInputPathElems` (1 << 18, per
+request, shared by every argument site) refuses past that with `BAD_USER_INPUT` before the
+Authorizer or the resolver sees part of an argument. It is eight times what a 10 000-deep chain
+needs, so it is not a depth limit. `Path` now shares storage between keys: capped, so an append
+never reaches another key, but assigning to an element would.
+
+**A mistake in the policy is a `policyError`, not an `*Error`.** `authorizerError` passes an
+`*Error` to the client as something the Authorizer wrote for it, and `validFor`, `Decision.Set`
+and the reply-length check built theirs with `Errorf`, so "Null is not valid for Customer, an
+instance site at a non-null position; use Drop in a list or Deny" was a client-facing message.
+They now take the backend-failure path: logged in full, presented as `internal system error`
+(`TestPolicyMistakeIsLoggedAndNotShownToTheClient`). `Drop` at a position that is not a list
+element is refused in `validFor` with the rest, so `writeComposite`'s own Drop branch is a
+defensive leftover.
+
+**Unpinned until a mutation survived the whole suite:** the `at[]` mapping in
+`instanceOutcomes` (`TestInstanceOutcomesFollowTheirRowsPastSkippedElements` -- every other
+guarded list is all guarded rows, where batch and list position are the same number);
+`flatScopesValid`'s emptiness check, whose loss builds `@auth(requires: [])` with no
+requirement (the table in `TestCustomDirectiveMalformedLiteralIsRejected`, and the fuzz
+invariant "directive present, so requirement non-zero" -- the old invariant only looked for an
+empty *group*, and an empty list yields no group at all); and the `StringValue` checks.
+
+**`AuthorizeObjects` runs concurrently within one request** -- sibling resolver fields decide
+their lists on their own goroutines (`TestObjectAuthorizerIsCalledConcurrentlyWithinOneRequest`)
+-- so the godoc's "cache inside the implementation" needs a lock. **`SelectedField.Withheld`
+reads argument sites too**, as `enforceAuth` does. **`AuthSite.Grants` is reserved and always
+empty.** **`fed.Subgraph` marks its three injected fields `@public`** when the author's SDL
+declares that directive for `FIELD_DEFINITION` (`fed/prelude.go`), which is what lets
+`RequireAuthCoverage` and federation be used together without `@public` on the whole `Query`.
+

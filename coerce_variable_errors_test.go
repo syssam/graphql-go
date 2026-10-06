@@ -3,6 +3,7 @@ package graphql
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/vektah/gqlparser/v2/ast"
 	"reflect"
 	"strings"
@@ -285,5 +286,141 @@ func TestCoerceVariablesReusesTheDecodedMapWhenNothingDiffers(t *testing.T) {
 	}
 	if out, _ := s.coerceVariables(op(q), map[string]any{"b": "x"}); len(out) != 1 {
 		t.Errorf("an absent variable with no default must stay absent: %v", out)
+	}
+}
+
+// @skip and @include take a Boolean!, and a variable with a default may be
+// declared nullable there, so a request can still send it as null. That is a
+// null for a non-null argument: graphql-js refuses the operation. Read as
+// "not true", it ran the request with the field included, or excluded, and
+// said nothing.
+func TestANullConditionVariableIsARequestError(t *testing.T) {
+	_, e := newFixtureExecutor(t)
+	for name, q := range map[string]string{
+		"skip on a field":             `query($b: Boolean = true) { strings @skip(if: $b) ctxPath }`,
+		"include on a field":          `query($b: Boolean = false) { strings @include(if: $b) ctxPath }`,
+		"on a fragment spread":        `query($b: Boolean = true) { ...F @skip(if: $b) ctxPath } fragment F on Query { strings }`,
+		"on an inline fragment":       `query($b: Boolean = true) { ... @include(if: $b) { strings } ctxPath }`,
+		"inside a fragment":           `query($b: Boolean = true) { ...F ctxPath } fragment F on Query { strings @skip(if: $b) }`,
+		"beneath a field":             `query($b: Boolean = true) { me { id @skip(if: $b) name } }`,
+		"in a fragment under a field": `query($b: Boolean = true) { me { ...U } } fragment U on User { id @skip(if: $b) name }`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			// A request with a value first, so the null arrives at a plan the
+			// cache already holds: the check cannot live in the compile.
+			if resp := run(t, e, q, `{"b":false}`); len(resp.Errors) > 0 {
+				t.Fatalf("b=false: %s", errorsJSON(resp.Errors))
+			}
+			resp := run(t, e, q, `{"b":null}`)
+			if !resp.HasRequestErrors() {
+				t.Fatalf("a null condition ran the operation: data=%s errors=%s", resp.Data, errorsJSON(resp.Errors))
+			}
+			err := resp.Errors[0]
+			if !strings.Contains(err.Message, `"$b"`) || err.Extensions["code"] != CodeBadUserInput || len(err.Locations) == 0 {
+				t.Fatalf("error = %s", errorsJSON(resp.Errors))
+			}
+			// The default still applies when the variable is left out.
+			if resp := run(t, e, q, ""); len(resp.Errors) > 0 {
+				t.Fatalf("no variables: %s", errorsJSON(resp.Errors))
+			}
+		})
+	}
+}
+
+// The refusal is for a condition, not for a null: a nullable variable that
+// this operation hands to an ordinary argument may be null, even when another
+// operation of the document uses the same name in a directive.
+func TestANullVariableOutsideAConditionIsStillAccepted(t *testing.T) {
+	_, e := newFixtureExecutor(t)
+	const q = `query A($b: Boolean = true) { echo(b: $b) } query B($b: Boolean = true) { strings @skip(if: $b) }`
+	resp := e.Execute(t.Context(), &Request{Query: q, OperationName: "A", Variables: []byte(`{"b":null}`)})
+	expectData(t, resp, `{"echo":"{\"V\":null,\"S\":\"d\",\"F\":null,\"B\":null,\"List\":null}"}`)
+	resp = e.Execute(t.Context(), &Request{Query: q, OperationName: "B", Variables: []byte(`{"b":null}`)})
+	if !resp.HasRequestErrors() {
+		t.Fatalf("operation B ran with a null condition: %s", resp.Data)
+	}
+}
+
+// A document past maxCondVars takes the uncached path, which reads the
+// conditions separately; the refusal has to hold there too.
+func TestANullConditionVariableIsRefusedOnTheUncachedPath(t *testing.T) {
+	_, e := newFixtureExecutor(t)
+	var decl, body, vars []string
+	for i := range maxCondVars + 1 {
+		decl = append(decl, fmt.Sprintf("$c%d: Boolean = false", i))
+		body = append(body, fmt.Sprintf("s%d: strings @skip(if: $c%d)", i, i))
+		vars = append(vars, fmt.Sprintf(`"c%d": false`, i))
+	}
+	q := "query(" + strings.Join(decl, ", ") + ") { " + strings.Join(body, " ") + " }"
+	if resp := run(t, e, q, "{"+strings.Join(vars, ",")+"}"); len(resp.Errors) > 0 {
+		t.Fatalf("all false: %s", errorsJSON(resp.Errors))
+	}
+	vars[len(vars)-1] = fmt.Sprintf(`"c%d": null`, maxCondVars)
+	if resp := run(t, e, q, "{"+strings.Join(vars, ",")+"}"); !resp.HasRequestErrors() {
+		t.Fatalf("a null condition ran the operation: %s", resp.Data)
+	}
+}
+
+type deepWhere struct {
+	Name  *string
+	Not   *deepWhere
+	Items []*deepWhere
+}
+
+type deepWhereArgs struct{ F *deepWhere }
+
+// A variable's error names where in the value it is, and that path used to be
+// built on the way down: a string a level, each a copy of the last and a
+// little longer, whether or not anything turned out to be wrong. So refusing
+// a value nested as deep as the variables decoder admits -- an 80 KB body --
+// allocated 221 MB, quadratic in a depth the client chooses. The path is now
+// written once, for the error that is reported, and what it says is the same.
+func TestAnInvalidVariableIsRefusedInSpaceLinearInItsDepth(t *testing.T) {
+	s, err := NewSchema(SDL(`
+		input Where { name: String, not: Where, items: [Where!] }
+		type Query { q(f: Where): String }
+	`),
+		Input[deepWhere]("Where"),
+		Query(ResolveArgs("q", func(context.Context, Root, deepWhereArgs) (string, error) { return "", nil })),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	e := NewExecutor(s)
+	const query = `query($f: Where) { q(f: $f) }`
+	refusal := func(vars string) string {
+		t.Helper()
+		resp := run(t, e, query, vars)
+		if len(resp.Errors) != 1 || resp.Errors[0].Extensions["code"] != CodeBadUserInput || resp.Data != nil {
+			t.Fatalf("want one BAD_USER_INPUT and no data, got %.300s", errorsJSON(resp.Errors))
+		}
+		return resp.Errors[0].Message
+	}
+
+	// The wording, where it is short enough to write out: fields, list
+	// indexes and both together, as they were.
+	for vars, want := range map[string]string{
+		`{"f":{"name":5}}`:                                    `Variable "$f" got invalid value {"name":5}; String cannot represent a non string value: 5 at $f.name.`,
+		`{"f":{"not":{"not":{"name":5}}}}`:                    `Variable "$f" got invalid value {"not":{"not":{"name":5}}}; String cannot represent a non string value: 5 at $f.not.not.name.`,
+		`{"f":{"items":[{},{"not":{"items":[{"name":5}]}}]}}`: `Variable "$f" got invalid value {"items":[{},{"not":{"items":[{"name":5}]}}]}; String cannot represent a non string value: 5 at $f.items[1].not.items[0].name.`,
+		`{"f":{"items":[{},null]}}`:                           `Variable "$f" got invalid value {"items":[{},null]}; Expected non-nullable type "Where!" not to be null at $f.items[1].`,
+		`{"f":{"not":{"nope":1}}}`:                            `Variable "$f" got invalid value {"not":{"nope":1}}; Field "nope" is not defined by type "Where" at $f.not.`,
+	} {
+		if got := refusal(vars); got != want {
+			t.Errorf("%s:\n got %s\nwant %s", vars, got, want)
+		}
+	}
+
+	const depth = 9900
+	vars := `{"f":` + strings.Repeat(`{"not":`, depth) + `{"name":5}` + strings.Repeat("}", depth) + "}"
+	var message string
+	got := allocatedBytes(func() { message = refusal(vars) })
+	if want := "String cannot represent a non string value: 5 at $f" + strings.Repeat(".not", depth) + ".name."; !strings.HasSuffix(message, want) {
+		t.Fatalf("the error does not end with the path to the value: ...%s", message[max(0, len(message)-120):])
+	}
+	// Decoding the body, and the one path the error carries, are a few
+	// megabytes; a path a level was two hundred.
+	if got > 16<<20 {
+		t.Fatalf("refusing a %d-byte variable nested %d deep allocated %d MB", len(vars), depth, got>>20)
 	}
 }

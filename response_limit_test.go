@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/syssam/graphql-go/internal/jsonw"
 )
 
 const limitSDL = `
@@ -295,5 +297,88 @@ func TestExecutorResponseLimitDefault(t *testing.T) {
 	}
 	if got := NewExecutor(base.Schema(), WithMaxResponseBytes(0)).maxResponseBytes; got != 0 {
 		t.Fatalf("WithMaxResponseBytes(0) = %d, want 0 (unlimited)", got)
+	}
+}
+
+const limitGroupSDL = `
+directive @authorizeObject on OBJECT
+type Wide @authorizeObject { r: String! p1: String! p2: String! p3: String! }
+type Query { a: Wide b: Wide rows: [Wide]! }
+`
+
+type limitWide struct{}
+
+// writeRootUnderLimit writes query's root selection the way runOperation does
+// and reports what writeObject answered, which Execute cannot show: once the
+// limit has tripped the response is refused whatever was written.
+func writeRootUnderLimit(t *testing.T, limit int64, query string, opts ...ExecutorOption) (ok bool, written string) {
+	t.Helper()
+	part := strings.Repeat("x", 1<<10)
+	s, err := NewSchema(SDL(limitGroupSDL),
+		Object[limitWide]("Wide",
+			Resolve("r", func(context.Context, *limitWide) (string, error) { return "r", nil }),
+			// Three pure fields, so the second and third each report the one
+			// before and the trip happens inside the field or element being
+			// written rather than after it.
+			Field("p1", func(*limitWide) string { return part }),
+			Field("p2", func(*limitWide) string { return part }),
+			Field("p3", func(*limitWide) string { return part }),
+		),
+		Query(
+			Resolve("a", func(context.Context, Root) (*limitWide, error) { return &limitWide{}, nil }),
+			Resolve("b", func(context.Context, Root) (*limitWide, error) { return &limitWide{}, nil }),
+			Resolve("rows", func(context.Context, Root) ([]*limitWide, error) {
+				return []*limitWide{{}, {}, {}, {}}, nil
+			}),
+		),
+	)
+	if err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	e := NewExecutor(s, append([]ExecutorOption{WithMaxConcurrency(4), WithMaxResponseBytes(limit)}, opts...)...)
+	oc, errs := e.prepareOperation(&Request{Query: query}, false)
+	if errs != nil {
+		t.Fatalf("prepare: %s", errorsJSON(errs))
+	}
+	w := e.newResponseWriter()
+	defer jsonw.Put(w)
+	st := &execState{e: e, vars: oc.Variables}
+	ok = st.writeObject(withOperation(context.Background(), oc), w, oc.plan.root, oc.plan.sel, &Root{}, nil, false)
+	if !w.LimitExceeded() {
+		t.Fatalf("the limit of %d did not trip, so the case was not exercised: %s", limit, w.Bytes())
+	}
+	return ok, string(w.Bytes())
+}
+
+// A trip makes every failure bubble, nullable or not, and the check after a
+// group of concurrent fields is the part of that rule for fields written each
+// into its own buffer. a and b are nullable: without the check each failed
+// field is spliced in as null and the object reports success, which tells
+// whatever encloses it to carry on to its next field or element.
+func TestALimitTripInAConcurrentGroupFailsTheObject(t *testing.T) {
+	ok, written := writeRootUnderLimit(t, 1500, `{ a { p1 p2 p3 } b { p1 p2 p3 } }`)
+	if ok || written != "" {
+		t.Fatalf("writeObject = %v having written %q; want the failure to bubble and nothing left written", ok, written)
+	}
+}
+
+// The same check after a list whose elements are written concurrently. The
+// elements are nullable, so without it the list is written as nulls and
+// reported as a success.
+func TestALimitTripInAConcurrentListFailsTheList(t *testing.T) {
+	ok, written := writeRootUnderLimit(t, 1500, `{ rows { r p1 p2 p3 } }`)
+	if ok || written != "" {
+		t.Fatalf("writeObject = %v having written %q; want the failure to bubble and nothing left written", ok, written)
+	}
+}
+
+// And after a list whose elements an ObjectAuthorizer decided, which is
+// written by a copy of that loop kept apart for the hot path's sake. The two
+// must stay in step, and a list written through both with the same bytes does
+// not show whether this half of them has.
+func TestALimitTripInAGuardedConcurrentListFailsTheList(t *testing.T) {
+	ok, written := writeRootUnderLimit(t, 1500, `{ rows { r p1 p2 p3 } }`, WithObjectAuthorizer(constantObjectPolicy(Allow())))
+	if ok || written != "" {
+		t.Fatalf("writeObject = %v having written %q; want the failure to bubble and nothing left written", ok, written)
 	}
 }

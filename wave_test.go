@@ -155,3 +155,31 @@ func TestWaveCoordinatorWaitsForEveryRunningSubtree(t *testing.T) {
 		t.Fatalf("flushes = %d, want 1 once nothing is left running", flushes)
 	}
 }
+
+// A batch can finish between a Load queueing its key and parking, when the
+// count was brought to idle by goroutines the executor does not know about.
+// The Unpark made for that Load then lands before its Park. The pair must
+// still cancel out: clamped at zero, the early Unpark was lost and the Park
+// that followed left a goroutine counted as parked for the rest of the
+// operation, so every later moment with nothing running was dispatched as a
+// wave.
+func TestWaveCoordinatorUnparkMayArriveBeforeItsPark(t *testing.T) {
+	flushes := 0
+	w := newWaves(&flushes)
+
+	w.announce(1)
+	w.taskBegin()
+	w.Unpark()
+	w.Park()
+	if flushes != 0 {
+		t.Fatal("dispatched for a task whose wait had already been ended")
+	}
+	w.block()
+	if flushes != 0 {
+		t.Fatal("dispatched while the task was still running")
+	}
+	w.taskEnd()
+	if flushes != 0 {
+		t.Fatal("dispatched with nothing parked: the answered Park was still counted")
+	}
+}

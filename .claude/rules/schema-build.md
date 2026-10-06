@@ -80,6 +80,12 @@ represent null", the second with "null value for non-null type". It applies to d
 only: a field declared with `InputField` carries its own setter, so its Go type is already
 the author's choice.
 
+**It reaches list elements too.** The relaxed check passes `[]string` under `[String]`, so a null
+element is the zero value of whatever the slice holds -- a nil for `[]*string` -- instead of the
+element decoder's "null value for non-null type" on a request the SDL calls valid. Only a shape
+that needs it gets the reflective `zeroingListDecoder`; `[String!]` and every non-`ZeroForNull`
+binding keep their typed decoder (`TestZeroForNullReachesListElements`).
+
 **A serialization tag that names nothing in the schema falls back to the Go field name**
 (`autoInputFields`, `input.go`). An ORM writes `RoleID int64 \`json:"role_id"\`` because
 snake_case is its wire format with the database; the SDL declares `roleId` because camelCase
@@ -89,9 +95,11 @@ from outside**, because `Input` refuses a second binding for one type name and t
 sound way to relax that: an input object decodes a map into exactly one Go type, so unlike
 `Enum` and `Object` its registry key cannot carry a `reflect.Type`. The fallback can only turn
 an error into a binding: a tag naming a field the schema does not declare is rejected today,
-so nothing that builds now changes. A tag that *does* name a declared field always wins, and
-the fallback never takes a name another field's tag claimed, or two fields could quietly swap
-(`TestInputTagWinsOverTheGoFieldName`). It applies to `Input` only -- `Args` arguments are not
+so nothing that builds now changes. A tag that *does* name a declared field always wins, or
+two fields could quietly swap (`TestInputTagWinsOverTheGoFieldName`). The fallback never takes a
+name another field's tag claimed; that cannot swap anything, since two fields under one name are
+a build error, but it decides which error: the tag that names nothing, not a duplicate binding of
+the field that is right (`TestInputFallbackLeavesAClaimedNameAlone`). It applies to `Input` only -- `Args` arguments are not
 known until the field that uses them is resolved, so `declared` is nil there.
 
 **A `Directive` binding whose directive can never wrap a field is a build error.**
@@ -156,10 +164,16 @@ to run and named one of several; it reports every undefined and every doubly-map
 sorted (`TestEnumBuildErrorsNameEveryValueInOneOrder`). A second `Scalar`, `Enum` or
 `*Marshaler` for the same `(GraphQL type, Go type)` replaced the first silently while the first
 kept validating variables, so option order changed behaviour; `claimLeaf` refuses it, and
-several Go types behind one GraphQL type still build (`leaf_duplicate_test.go`). An `InputField`
+several Go types behind one GraphQL type still build (`leaf_duplicate_test.go`). **The built-in
+scalars hold their pairs too** (`builtinLeaf`): `Scalar[string]("String", ...)` used to replace how
+every String was written and decoded, introspection's included, and is refused; another Go type
+for a built-in (ID as a UUID type) still adds to it. An `InputField`
 setter for a struct other than the one the binding is for, and a `TypeResolver` whose parameter
 cannot take every value of the binding's type, both asserted at request time
-(`build_mismatch_test.go`). **Not a build error, on purpose**: one Go type bound to two members
+(`build_mismatch_test.go`). So did a field whose concrete result type the `TypeResolver` cannot
+take, which is refused in `checkOutputCompositeShape`; a field typed `any` can still hold such a
+value, and the resolver's assertion is comma-ok, so that is a field error and not a panic outside
+any resolver that cost the whole response. **Not a build error, on purpose**: one Go type bound to two members
 of a union with no `TypeResolver`. `TestSharedGoTypeOnTwoObjects` pins that as a request-time
 error, since the concrete positions of both objects still work.
 
@@ -227,3 +241,37 @@ where the rules already allow reflection; `inputDecoderFor` adapts one for a han
 closure: a pointer GC shape cannot say `p == nil`, and `reflectIsNil` would put reflection on
 every object position. `TestBindingCodeSize` bounds the instantiated code of a generated-shaped
 group at 8% over the current figure; moving the field composition alone back fails it.
+
+**A `Scalar` marshal must write exactly one JSON value, and the engine checks it** (`Scalar`,
+`scalar.go`). `Writer.Raw` trusts its caller, so a marshal that wrote nothing produced
+`{"p":}` and one that wrote two produced `{"p":"a","b"}`, each with no error and an invalid
+response. The output is now `json.Valid`-checked, rewound on failure, and the error names the
+scalar; `Time` binds through `bindScalar`, which skips the check because its marshal is ours.
+`TestCustomScalarMarshalMustWriteOneValue` fails with the check disabled, and
+`TestCustomScalarEndToEnd` pins unmarshal running once for a literal and twice for a variable.
+**`ScalarMarshaler` goes through the same `checkScalarOutput`**: it is the binding gqlc emits for
+every type with `MarshalGQL`, and an unquoted or unescaped value there wrote a second key into the
+response with no error (`TestScalarMarshalerMustWriteOneValue`). The check allocates nothing
+(`TestScalarOutputCheckDoesNotAllocate`). An interface-typed scalar (`Scalar[any]`) writes nil as
+null itself, as a nil `*E` is written, so `JSON!` holding nil is the usual non-null error rather
+than a null the marshal wrote.
+
+**A default the schema cannot decode is a build error** (`checkDefault`, `rejectDefaultCycles`,
+`input.go`). gqlparser holds an SDL default to syntax only, so `n: Int = "abc"` and
+`c: Color = PURPLE` built and failed every request that left the argument out. Each default is
+decoded once at `NewSchema` into a discarded value, by the setter a request would use -- so a
+hand-written `InputField` setter runs once at build for a field that has a default. Input-field
+defaults are checked after every input has resolved, because a default may hold another input
+object. `input A { a: A = {} }` is refused first and by itself: decoding it is unbounded
+recursion, a stack overflow no recover catches, which used to wait for the first request. A
+default on an argument of a field bound without an argument struct has no decoder and is not
+checked.
+
+**Smaller refusals and tolerances.** A schema with no query root is a build error (the
+specification requires one; `fed` always extends `Query`). `NewSchema` skips a nil option as
+`Options` does. `Enum` copies its map, so changing it after the build changes nothing. A `Float`
+outside float32's range is a coercion error for a `float32` field, not `+Inf`. Derived names take
+`UUID` and `GUID` whole (`uuid`, `userUuid`); no other name derives differently
+(`TestExportedToGraphQLChangesOnlyUUIDAndGUID`), and a leading run of capitals is still only
+lower-cased at its first letter (`APIKey` is `aPIKey`), because `IOSVersion` is `iOSVersion` today
+and lower-casing the run would change it.

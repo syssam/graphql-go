@@ -32,7 +32,10 @@ var errSubscriptionResolved = errors.New("subscription root field is resolved fr
 // fn is called once per operation. It should return promptly and do its work
 // in a goroutine feeding the channel; closing the channel ends the
 // subscription. An error returned here prevents the subscription from
-// starting. A channel carries no error of its own, so a source that can fail
+// starting. Its context lives as long as the stream and belongs to no one
+// event, so OperationFrom(ctx).Waves() is nil and a loader.Loader used with it
+// batches but caches nothing; wrap it in loader.WithScope for each unit of
+// work that should share a cache. A channel carries no error of its own, so a source that can fail
 // mid-stream should carry the failure in its event type.
 func Subscribe[R any](name string, fn func(context.Context) (<-chan R, error), opts ...FieldSchedule) FieldOption {
 	return subscribeSpec[R](name, nil, opts, func(ctx context.Context, _ any) (<-chan R, error) {
@@ -154,6 +157,13 @@ func (e *Executor) subscribe(ctx context.Context, req *Request) (<-chan *Respons
 	if errs != nil {
 		return nil, e.subscribeError(ctx, errs...)
 	}
+	// base is never executed: each event runs under a context of its own. It
+	// is what the interceptors, the Authorizer and the source see, and the
+	// source keeps it for as long as the stream is open, so it must not look
+	// like a request to anything that scopes state to one. With no coordinator
+	// a Loader caches nothing against it; a cache there answered every event
+	// from what the first one loaded.
+	base.hub = nil
 	p := base.plan
 
 	// The validator enforces a single root selection, but @skip and @include
@@ -245,7 +255,30 @@ func (e *Executor) subscribe(ctx context.Context, req *Request) (<-chan *Respons
 			return si.InterceptSubscription(ctx, oc, next)
 		}
 	}
-	return open(ctx, base)
+	out, err := open(ctx, base)
+	if err != nil {
+		return nil, e.interceptorRefusal(ctx, err)
+	}
+	return out, nil
+}
+
+// interceptorRefusal is the error Subscribe returns for one that came out of
+// the interceptor chain. A refusal the engine raised below the interceptors is
+// a *SubscribeError already, presented once, and passes through. Anything
+// else is an interceptor's own -- a rate limiter's, or whatever its backend
+// said -- and is presented here like every other request error, so that it
+// reaches a client through the ErrorPresenter and Subscribe keeps its
+// promise that every error is a *SubscribeError.
+func (e *Executor) interceptorRefusal(ctx context.Context, err error) error {
+	var se *SubscribeError
+	if errors.As(err, &se) {
+		return err
+	}
+	var refusal *Error
+	if !errors.As(err, &refusal) {
+		refusal = &Error{Message: err.Error(), Err: err}
+	}
+	return e.subscribeError(ctx, refusal)
 }
 
 // pump drains the source stream, executing the selection once per event.

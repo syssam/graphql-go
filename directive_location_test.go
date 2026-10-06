@@ -16,8 +16,6 @@ import (
 // the SDL does not declare at all, was already a build error. This makes the
 // two consistent.
 
-type dlArgs struct{ N int }
-
 func TestADirectiveBindingThatCanNeverWrapIsABuildError(t *testing.T) {
 	for _, c := range []struct{ name, locations string }{
 		{"argument only", "ARGUMENT_DEFINITION"},

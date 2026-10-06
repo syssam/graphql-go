@@ -193,3 +193,49 @@ func TestAPanicOnAScheduledFieldIsLoggedWithItsOwnStack(t *testing.T) {
 		t.Fatalf("the logged stack does not reach the function that panicked:\n%s", logged.String())
 	}
 }
+
+// The same, one group further down: the panic is raised on a field's goroutine
+// inside box, carried to the goroutine writing box, and from there to the one
+// running the operation. The second hop must pass on what the first recovered.
+// Wrapping it again logged the first hop's wait for a stack and its carrier
+// for a value.
+func TestAPanicBelowANestedGroupIsLoggedWithItsOwnStack(t *testing.T) {
+	var logged bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	defer slog.SetDefault(prev)
+
+	type box struct{}
+	s, err := NewSchema(SDL(`
+		interface Pet { name: String! }
+		type Dog implements Pet { name: String! }
+		type Box { a: Pet b: Pet }
+		type Query { box: Box other: Box }
+	`),
+		Interface[panicPet]("Pet", TypeResolver(boomTypeResolver)),
+		Object[panicDog]("Dog", Field("name", func(d *panicDog) string { return d.Name })),
+		Object[box]("Box",
+			Resolve("a", func(context.Context, *box) (panicPet, error) { return &panicDog{}, nil }),
+			Resolve("b", func(context.Context, *box) (panicPet, error) { return &panicDog{}, nil }),
+		),
+		Query(
+			// Two resolver fields here as well, so box is written on a goroutine
+			// of its own and its fields on two more beneath it.
+			Resolve("box", func(context.Context, Root) (*box, error) { return &box{}, nil }),
+			Resolve("other", func(context.Context, Root) (*box, error) { return nil, nil }),
+		),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	resp := run(t, NewExecutor(s), `{ box { a { name } b { name } } other { a { name } } }`, "")
+	if len(resp.Errors) != 1 || resp.Errors[0].Extensions["code"] != CodeInternal {
+		t.Fatalf("errors = %s, want one INTERNAL_SERVER_ERROR", errorsJSON(resp.Errors))
+	}
+	if !strings.Contains(logged.String(), "boomTypeResolver") {
+		t.Fatalf("the logged stack does not reach the function that panicked:\n%s", logged.String())
+	}
+	if !strings.Contains(logged.String(), `panic="type resolver boom"`) {
+		t.Fatalf("the logged value is not what was panicked with:\n%s", logged.String())
+	}
+}

@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 
@@ -14,6 +15,48 @@ type Request struct {
 	OperationName string          `json:"operationName,omitempty"`
 	Variables     json.RawMessage `json:"variables,omitempty"`
 	Extensions    map[string]any  `json:"extensions,omitempty"`
+
+	// QueryOnly makes Execute refuse a mutation. A transport sets it on a
+	// request that must not change state -- an HTTP GET, which a link, a
+	// prefetch or a cache may replay -- and the executor enforces it on the
+	// operation it is about to run, after every RequestInterceptor. That is
+	// the only place it can be enforced: an interceptor may replace Query, as
+	// a persisted-query lookup does, so the text a transport received is not
+	// always the text that runs.
+	//
+	// A refused request carries no data and one error whose code is
+	// CodeQueryOnly. That error does not pass through the ErrorPresenter,
+	// because a transport finds the refusal by its code to answer with a
+	// status of its own. Subscribe ignores the field: it runs nothing but
+	// subscriptions. It is never read from a request body. An interceptor
+	// that hands next a Request of its own need not copy it: Execute carries
+	// it in the context it gives the chain, so it is lost only by an
+	// interceptor that also replaces that context.
+	QueryOnly bool `json:"-"`
+}
+
+// queryOnlyKey marks, in the context Execute hands the request chain, that
+// the request it was given was QueryOnly.
+type queryOnlyKey struct{}
+
+// queryOnly reports whether the request Execute was given was QueryOnly. The
+// one that reaches the innermost handler is not always that request: an
+// interceptor resolving a stored document may build a Request of its own, and
+// the flag it left behind is exactly the one a GET depends on. The context is
+// only asked when there is an interceptor to have done so, and only for an
+// operation that is not a query.
+func (e *Executor) queryOnly(ctx context.Context, req *Request) bool {
+	return req.QueryOnly || (len(e.reqInterceptors) > 0 && ctx.Value(queryOnlyKey{}) != nil)
+}
+
+// queryOnlyRefusal is the response to a mutation on a QueryOnly request. It
+// is built unpresented, like the WithMaxErrors notice: the code is how a
+// transport tells this refusal from a request error, and a presenter that
+// rewrote the error would turn a 405 into whatever the media type gives.
+func queryOnlyRefusal() *Response {
+	return &Response{Errors: []*Error{
+		Errorf("This request may only run a query; send a mutation with POST.").WithCode(CodeQueryOnly),
+	}}
 }
 
 // Response is the result of executing a Request.

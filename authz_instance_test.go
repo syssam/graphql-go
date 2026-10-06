@@ -1,9 +1,12 @@
 package graphql
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -128,10 +131,18 @@ func TestAuthorizeObjectMarksTheType(t *testing.T) {
 
 func TestInstanceSiteAdmitsOnlyAllowNullDenyDrop(t *testing.T) {
 	site := AuthSite{Coord: "Customer", Kind: SiteInstance}
-	for _, o := range []Outcome{Allow(), Null(), Deny("read", "Customer"), Drop()} {
+	for _, o := range []Outcome{Allow(), Null(), Deny("read", "Customer")} {
 		if err := o.validFor(site); err != nil {
 			t.Fatalf("outcome rejected for an instance site: %v", err)
 		}
+	}
+	// Drop needs a list to drop out of, which the site says.
+	element := AuthSite{Coord: "Customer", Kind: SiteInstance, ListElement: true}
+	if err := Drop().validFor(element); err != nil {
+		t.Fatalf("Drop rejected at a list element: %v", err)
+	}
+	if err := Drop().validFor(site); err == nil || !strings.Contains(err.Error(), "not a list element") {
+		t.Fatalf("Drop at a single position: err = %v, want it refused for not being a list element", err)
 	}
 	for name, o := range map[string]Outcome{
 		"Zero":   Zero(),
@@ -277,6 +288,40 @@ func assertJSON(t *testing.T, data []byte, want string) {
 	t.Helper()
 	if got := string(data); got != want {
 		t.Fatalf("data mismatch\n got: %s\nwant: %s", got, want)
+	}
+}
+
+// captureLog returns what is logged from here to the end of the test.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var logged bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &logged
+}
+
+// assertPolicyMistake asserts how a mistake in the policy itself is reported:
+// in the log, in full, and to the client as an internal error that carries
+// none of it. want is what the log must say.
+func assertPolicyMistake(t *testing.T, errs []*Error, logged *bytes.Buffer, want ...string) {
+	t.Helper()
+	internal := false
+	for _, e := range errs {
+		if strings.Contains(e.Message, "authorization:") {
+			t.Fatalf("the client was shown the policy's mistake: %s", errorsJSON(errs))
+		}
+		if e.Extensions["code"] == CodeInternal && e.Message == "internal system error" {
+			internal = true
+		}
+	}
+	if !internal {
+		t.Fatalf("errors = %s, want an internal error", errorsJSON(errs))
+	}
+	for _, w := range want {
+		if !strings.Contains(logged.String(), w) {
+			t.Fatalf("the log does not say %q, and it is the only place left that could:\n%s", w, logged.String())
+		}
 	}
 }
 
@@ -472,6 +517,7 @@ func TestCheckObjectsSplitsAtTheBatchSize(t *testing.T) {
 }
 
 func TestCheckObjectsRejectsAShortResult(t *testing.T) {
+	logged := captureLog(t)
 	a := objectAuthorizerFunc(func(_ context.Context, checks []ObjectCheck) ([]Outcome, error) {
 		return make([]Outcome, len(checks)-1), nil
 	})
@@ -480,17 +526,20 @@ func TestCheckObjectsRejectsAShortResult(t *testing.T) {
 	if err == nil {
 		t.Fatal("a short result was accepted, which would silently allow the rows it does not cover")
 	}
+	assertPolicyMistake(t, []*Error{err.(*Error)}, logged, "returned 2 outcomes for 3 checks")
 }
 
 func TestCheckObjectsRejectsAnInvalidOutcome(t *testing.T) {
+	logged := captureLog(t)
 	a := objectAuthorizerFunc(func(_ context.Context, checks []ObjectCheck) ([]Outcome, error) {
 		return []Outcome{Zero()}, nil
 	})
 	st := newInstanceState(t, a)
 	_, err := st.checkObjects(context.Background(), instanceChecks(1))
-	if err == nil || indexOf(err.Error(), "instance site") < 0 {
-		t.Fatalf("err = %v, want the validFor rejection", err)
+	if err == nil {
+		t.Fatal("Zero was accepted for an instance site")
 	}
+	assertPolicyMistake(t, []*Error{err.(*Error)}, logged, "instance site")
 }
 
 func TestCheckObjectsHidesABackendFailure(t *testing.T) {
@@ -531,19 +580,27 @@ func TestInstanceOutcomesOnASingleObject(t *testing.T) {
 		// wantOneErr: a refusal is one error, not one plus the non-null
 		// violation it caused.
 		wantOneErr bool
+		// wantLogged: the outcome is a mistake in the policy, which the log
+		// explains and the client is not told.
+		wantLogged string
 	}{
 		{name: "allow", outcome: Allow(), query: `{ maybe { id } }`, wantData: `{"maybe":{"id":"c1"}}`},
 		{name: "null", outcome: Null(), query: `{ maybe { id } }`, wantData: `{"maybe":null}`},
 		{name: "deny", outcome: Deny("customer:read", "Customer"), query: `{ maybe { id } }`, wantData: `{"maybe":null}`, wantErr: "denied"},
-		{name: "drop outside a list", outcome: Drop(), query: `{ maybe { id } }`, wantData: `{"maybe":null}`, wantErr: "Drop is valid only for a list element"},
-		{name: "drop at a non-null position", outcome: Drop(), query: `{ required { id } }`, wantData: `null`, wantErr: "Drop is valid only for a list element", wantOneErr: true},
+		{name: "drop outside a list", outcome: Drop(), query: `{ maybe { id } }`, wantData: `{"maybe":null}`, wantOneErr: true, wantLogged: "not a list element"},
+		{name: "drop at a non-null position", outcome: Drop(), query: `{ required { id } }`, wantData: `null`, wantOneErr: true, wantLogged: "not a list element"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			logged := captureLog(t)
 			e := newInstanceExecutorWith(t, constantObjectPolicy(c.outcome))
 			resp := run(t, e, c.query, "")
 			assertJSON(t, resp.Data, c.wantData)
-			assertErrorContains(t, resp.Errors, c.wantErr)
+			if c.wantLogged != "" {
+				assertPolicyMistake(t, resp.Errors, logged, c.wantLogged)
+			} else {
+				assertErrorContains(t, resp.Errors, c.wantErr)
+			}
 			if c.wantOneErr && len(resp.Errors) != 1 {
 				t.Errorf("got %d errors, want 1: %s", len(resp.Errors), errorsJSON(resp.Errors))
 			}
@@ -667,6 +724,137 @@ func TestInstanceChecksAreBatchedPerList(t *testing.T) {
 	if calls != 1 || seen != 3 {
 		t.Fatalf("calls=%d checks=%d, want 1 call carrying 3 checks", calls, seen)
 	}
+}
+
+const mixedListSDL = `
+directive @authorizeObject on OBJECT
+interface Node { id: ID! }
+type Customer implements Node @authorizeObject { id: ID! owner: String! }
+type Open implements Node { id: ID! }
+type Query { nodes: [Node]! }
+`
+
+// Only the guarded elements of a list are sent to the policy, so the batch is
+// shorter than the list and its outcomes have to be put back at the positions
+// they came from. Every other guarded-list fixture is a list of guarded
+// values and nothing else, where batch position and list position are the
+// same number, so mapping an outcome to the wrong row would have passed all of
+// them -- and here it hands one row's decision to another.
+func TestInstanceOutcomesFollowTheirRowsPastSkippedElements(t *testing.T) {
+	var nobody *authzInstanceCustomer
+	// An unguarded type, a nil and another unguarded type sit ahead of the
+	// rows the policy refuses: three positions the batch does not contain.
+	rows := []any{&instanceOpen{ID: "o1"}, nobody, &instanceC1, &instanceOpen{ID: "o2"}, &instanceC2, &instanceC3}
+
+	cases := []struct {
+		name     string
+		refuse   Outcome
+		wantData string
+		wantPath string
+	}{
+		{"deny", Deny("customer:read", "Customer"),
+			`{"nodes":[{"id":"o1"},null,{"id":"c1"},{"id":"o2"},null,{"id":"c3"}]}`, "nodes[4]"},
+		{"null", Null(),
+			`{"nodes":[{"id":"o1"},null,{"id":"c1"},{"id":"o2"},null,{"id":"c3"}]}`, ""},
+		{"drop", Drop(),
+			`{"nodes":[{"id":"o1"},null,{"id":"c1"},{"id":"o2"},{"id":"c3"}]}`, ""},
+	}
+	for _, c := range cases {
+		// The serial and the concurrent list path each read the mapped
+		// outcomes; selecting a resolver field is what picks the second.
+		for _, query := range []string{`{ nodes { id } }`, `{ nodes { id ... on Customer { owner } } }`} {
+			t.Run(c.name+" "+query, func(t *testing.T) {
+				var checked []string
+				policy := objectAuthorizerFunc(func(_ context.Context, checks []ObjectCheck) ([]Outcome, error) {
+					outs := make([]Outcome, len(checks))
+					for i, check := range checks {
+						checked = append(checked, idOf(check.Object))
+						if idOf(check.Object) == "c2" {
+							outs[i] = c.refuse
+						}
+					}
+					return outs, nil
+				})
+				s, err := NewSchema(SDL(mixedListSDL),
+					Object[authzInstanceCustomer]("Customer",
+						Field("id", func(c *authzInstanceCustomer) ID { return ID(c.ID) }),
+						Resolve("owner", func(_ context.Context, c *authzInstanceCustomer) (string, error) {
+							return "owner-" + c.ID, nil
+						}),
+					),
+					Object[instanceOpen]("Open", Field("id", func(o *instanceOpen) ID { return ID(o.ID) })),
+					Query(Resolve("nodes", func(context.Context, Root) ([]any, error) { return rows, nil })),
+				)
+				if err != nil {
+					t.Fatalf("NewSchema: %v", err)
+				}
+				e := NewExecutor(s, WithObjectAuthorizer(policy), WithMaxConcurrency(8))
+				resp := run(t, e, query, "")
+
+				if got := strings.Join(checked, ","); got != "c1,c2,c3" {
+					t.Fatalf("the policy was asked about %s, want only the three guarded rows", got)
+				}
+				want := c.wantData
+				if strings.Contains(query, "owner") {
+					want = strings.NewReplacer(`{"id":"c1"}`, `{"id":"c1","owner":"owner-c1"}`,
+						`{"id":"c3"}`, `{"id":"c3","owner":"owner-c3"}`).Replace(want)
+				}
+				assertJSON(t, resp.Data, want)
+				if c.wantPath == "" {
+					assertErrorContains(t, resp.Errors, "")
+					return
+				}
+				if len(resp.Errors) != 1 || resp.Errors[0].Path.String() != c.wantPath {
+					t.Fatalf("errors = %s, want one at %s", errorsJSON(resp.Errors), c.wantPath)
+				}
+			})
+		}
+	}
+}
+
+const siblingListsSDL = `
+directive @authorizeObject on OBJECT
+type Customer @authorizeObject { id: ID! }
+type Query { left: [Customer!]! right: [Customer!]! }
+`
+
+// ObjectAuthorizer's godoc says an implementation is called concurrently
+// within one request, and tells it to lock any cache it keeps. That is a
+// claim about the executor, so it is held here: two guarded lists behind
+// sibling resolver fields are each decided on the goroutine their field is
+// written on. Each call waits for the other to have arrived, which only two
+// calls in flight at once can satisfy.
+func TestObjectAuthorizerIsCalledConcurrentlyWithinOneRequest(t *testing.T) {
+	arrived := make(chan struct{}, 2)
+	both := make(chan struct{})
+	var once sync.Once
+	policy := objectAuthorizerFunc(func(ctx context.Context, checks []ObjectCheck) ([]Outcome, error) {
+		arrived <- struct{}{}
+		if len(arrived) == 2 {
+			once.Do(func() { close(both) })
+		}
+		select {
+		case <-both:
+		case <-time.After(5 * time.Second):
+			return nil, errors.New("no second call arrived while this one was in flight")
+		}
+		return make([]Outcome, len(checks)), nil
+	})
+	rows := func(context.Context, Root) ([]*authzInstanceCustomer, error) {
+		return []*authzInstanceCustomer{&instanceC1}, nil
+	}
+	s, err := NewSchema(SDL(siblingListsSDL),
+		Object[authzInstanceCustomer]("Customer",
+			Field("id", func(c *authzInstanceCustomer) ID { return ID(c.ID) }),
+		),
+		Query(Resolve("left", rows), Resolve("right", rows)),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	e := NewExecutor(s, WithObjectAuthorizer(policy), WithMaxConcurrency(8))
+	resp := run(t, e, `{ left { id } right { id } }`, "")
+	expectData(t, resp, `{"left":[{"id":"c1"}],"right":[{"id":"c1"}]}`)
 }
 
 func TestInstanceCheckCarriesTheConcreteType(t *testing.T) {

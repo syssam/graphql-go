@@ -166,12 +166,17 @@ func TestANumericScalarArgumentIsAJSONNumber(t *testing.T) {
 	}
 }
 
-// A custom scalar's unmarshal runs once for a literal and *twice* for a
-// variable, and that is not written down anywhere. The second call is
-// registerLeaf's leaf validator, which is the decoder itself: coerceVariables
-// decodes the value to find out whether it is acceptable, discards the result
-// so a variable error is reported before execution starts, and the argument
-// decode then does the same work again.
+// A custom scalar's unmarshal runs *twice* for a variable, and that was not
+// written down anywhere. The second call is registerLeaf's leaf validator,
+// which is the decoder itself: coerceVariables decodes the value to find out
+// whether it is acceptable, discards the result so a variable error is
+// reported before execution starts, and the argument decode then does the
+// same work again.
+//
+// A literal runs it once per plan when the plan's decoded arguments can
+// serve every request, shared or copied -- as here, where the argument is a
+// pointer and each request is handed a copy of what it points at -- and once
+// more per request only when they have to be decoded again.
 //
 // It matters for anyone whose unmarshal is not free -- parsing a decimal, a
 // UUID, a timestamp, decoding base64 -- or not pure, because a counter or a
@@ -183,11 +188,14 @@ func TestACustomScalarUnmarshalRunsTwiceForAVariable(t *testing.T) {
 	var lit, vr []seen
 
 	e := NewExecutor(probeSchema(t, &lit))
-	if resp := run(t, e, `{ take(v: 5) }`, ""); len(resp.Errors) > 0 {
-		t.Fatalf("literal: %s", errorsJSON(resp.Errors))
-	}
-	if len(lit) != 1 {
-		t.Errorf("literal form called unmarshal %d times, want 1", len(lit))
+	for request, want := range []int{1, 1} {
+		if resp := run(t, e, `{ take(v: 5) }`, ""); len(resp.Errors) > 0 {
+			t.Fatalf("literal: %s", errorsJSON(resp.Errors))
+		}
+		if len(lit) != want {
+			t.Errorf("after request %d the literal form had called unmarshal %d times, want %d "+
+				"(once for the plan, and a copy for each request)", request+1, len(lit), want)
+		}
 	}
 
 	e = NewExecutor(probeSchema(t, &vr))

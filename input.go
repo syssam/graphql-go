@@ -2,7 +2,9 @@ package graphql
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -70,6 +72,15 @@ type inputDecoder struct {
 	// declares a hundred fields and a request sends two.
 	byName map[string]*inputSetter
 	absent []*inputSetter
+	// copier makes a request its own copy of arguments decoded from literals,
+	// in place of decoding them again; see argsCopier. A setter written by
+	// hand has one too: it may put what it is handed in two fields, or deeper
+	// in the struct, and sharing looks at the value it produced for exactly
+	// that before a copy is trusted with it. It depends on the Go type alone,
+	// so the template an Args binding registers builds it once, copierBuilt,
+	// for every field that takes those arguments.
+	copier      *argsCopier
+	copierBuilt bool
 }
 
 // inputSetter decodes one input field or argument into its struct field.
@@ -93,6 +104,25 @@ func newSetter(name string, typ *ast.Type, def *ast.Value, set func(target, raw 
 	st.hasDefault = true
 	st.defaultRaw = raw
 	return st, nil
+}
+
+// checkDefault decodes the setter's default into target, which the caller
+// discards, the way decodeOrdered does for a request that leaves the field
+// out. gqlparser holds a default to SDL syntax and not to the field's type, so
+// `n: Int = "abc"` loaded, and every request relying on the default failed
+// over a value its client never sent. The error names the default as written.
+func (st *inputSetter) checkDefault(target any, def *ast.Value) error {
+	if !st.hasDefault {
+		return nil
+	}
+	err := errNonNull
+	if st.defaultRaw != nil || !st.typ.NonNull {
+		err = st.set(target, st.defaultRaw)
+	}
+	if err != nil {
+		return fmt.Errorf("its default %s is not a value it accepts: %w", def.String(), err)
+	}
+	return nil
 }
 
 // decode applies every setter to a freshly allocated *T. Absent fields fall
@@ -357,6 +387,112 @@ func (ib *inputBinding) resolve(b *schemaBuilder) {
 	}
 }
 
+// defaultCycles finds input object defaults that never finish decoding. A
+// value that leaves a field out is given the field's default, so a default
+// that itself leaves the field out -- `input A { a: A = {} }`, or the same
+// through other input objects -- is decoded without end. The specification
+// forbids it and gqlparser does not check, and unbounded recursion is a stack
+// overflow no recover catches.
+type defaultCycles struct {
+	schema *ast.Schema
+	// path is the fields whose defaults are being expanded, outermost first.
+	path []*inputFieldRef
+	// settled fields were expanded in full, or reported already.
+	settled map[*ast.FieldDefinition]bool
+}
+
+type inputFieldRef struct {
+	owner string
+	field *ast.FieldDefinition
+}
+
+// rejectDefaultCycles reports each cycle once, at the field that closes it,
+// and returns whether there was one. Decoding any default is unsafe then, so
+// the caller skips checkDefault.
+func (b *schemaBuilder) rejectDefaultCycles() bool {
+	c := &defaultCycles{schema: b.ast, settled: make(map[*ast.FieldDefinition]bool)}
+	found := false
+	for _, name := range slices.Sorted(maps.Keys(b.ast.Types)) {
+		def := b.ast.Types[name]
+		if def.Kind != ast.InputObject {
+			continue
+		}
+		if closing := c.expand(def, nil); closing != nil {
+			found = true
+			var through []string
+			for _, ref := range c.path {
+				c.settled[ref.field] = true
+				if len(through) > 0 || ref.field == closing.field {
+					through = append(through, coordinate(ref.owner, ref.field.Name))
+				}
+			}
+			c.path = c.path[:0]
+			b.errorf("input field %s: its default %s leads back to it through %s, so a value that leaves the field out never finishes decoding",
+				coordinate(closing.owner, closing.field.Name), closing.field.DefaultValue.String(), strings.Join(through, ", "))
+		}
+	}
+	return found
+}
+
+// expand follows what decoding v as a def applies: for each field of an input
+// object type, the value v supplies, or else the field's default. It returns
+// the field whose default was reached while already being expanded, leaving
+// path as it stood there. A nil v is the empty object.
+func (c *defaultCycles) expand(def *ast.Definition, v *ast.Value) *inputFieldRef {
+	if v != nil && v.Kind == ast.ListValue {
+		for _, item := range v.Children {
+			if closing := c.expand(def, item.Value); closing != nil {
+				return closing
+			}
+		}
+		return nil
+	}
+	if v != nil && v.Kind != ast.ObjectValue {
+		return nil
+	}
+	for _, f := range def.Fields {
+		fdef := c.schema.Types[f.Type.Name()]
+		if fdef == nil || fdef.Kind != ast.InputObject {
+			continue
+		}
+		if v != nil {
+			if supplied := v.Children.ForName(f.Name); supplied != nil {
+				if closing := c.expand(fdef, supplied); closing != nil {
+					return closing
+				}
+				continue
+			}
+		}
+		if f.DefaultValue == nil || c.settled[f] {
+			continue
+		}
+		for _, ref := range c.path {
+			if ref.field == f {
+				return ref
+			}
+		}
+		c.path = append(c.path, &inputFieldRef{owner: def.Name, field: f})
+		if closing := c.expand(fdef, f.DefaultValue); closing != nil {
+			return closing
+		}
+		c.path = c.path[:len(c.path)-1]
+		c.settled[f] = true
+	}
+	return nil
+}
+
+// checkDefaults reports each field default the field's own decoder refuses.
+// It runs once every input binding has resolved, because a default may hold
+// another input object, and that one's decoder is complete only then.
+func (ib *inputBinding) checkDefaults(b *schemaBuilder) {
+	def := b.ast.Types[ib.name]
+	for _, st := range ib.dec.setters {
+		if err := st.checkDefault(ib.dec.newValue(), def.Fields.ForName(st.name).DefaultValue); err != nil {
+			b.errorf("input field %s: %w", coordinate(ib.name, st.name), err)
+		}
+	}
+}
+
 // Args declares how a field's arguments are decoded into the Go struct A.
 // The same A may be shared by several fields with identical arguments.
 //
@@ -386,6 +522,7 @@ func bindArgs(b *schemaBuilder, tA reflect.Type, newValue func() any, fields []I
 		for _, f := range autoInputFields(tA, ib.zeroForNull, nil) {
 			f.applyInput(ib)
 		}
+		ib.derived = true
 	}
 	b.reg.argsDecoders[tA] = &inputDecoder{goType: tA, newValue: newValue, argsBinding: ib}
 }
@@ -407,7 +544,7 @@ func (b *schemaBuilder) argsDecoderFor(tA reflect.Type) (*inputDecoder, error) {
 	if tA.Kind() != reflect.Struct {
 		return nil, fmt.Errorf("arguments are decoded into a struct, and %s is not one", tA)
 	}
-	ib := &inputBinding{goType: tA}
+	ib := &inputBinding{goType: tA, derived: true}
 	for _, f := range autoInputFields(tA, false, nil) {
 		f.applyInput(ib)
 	}
@@ -421,6 +558,21 @@ func (b *schemaBuilder) argsDecoderFor(tA reflect.Type) (*inputDecoder, error) {
 func (d *inputDecoder) build(b *schemaBuilder, args ast.ArgumentDefinitionList, coord string) (*inputDecoder, error) {
 	ib := d.argsBinding
 	out := &inputDecoder{goType: d.goType, newValue: d.newValue}
+	if !d.copierBuilt {
+		// A pointer to an input object is left to the decode: its binding
+		// may have setters written by hand, and nothing here sees what they
+		// made.
+		d.copier = newArgsCopier(d.goType, func(t reflect.Type) bool {
+			for _, in := range b.reg.inputsByName {
+				if in.goType == t {
+					return true
+				}
+			}
+			return false
+		})
+		d.copierBuilt = true
+	}
+	out.copier = d.copier
 	seen := make(map[string]bool, len(ib.fields))
 	for _, f := range ib.fields {
 		adef := args.ForName(f.name)
@@ -442,6 +594,11 @@ func (d *inputDecoder) build(b *schemaBuilder, args ast.ArgumentDefinitionList, 
 		if serr != nil {
 			return nil, fmt.Errorf("field %s: %w", coord, serr)
 		}
+		if !b.defaultsCycle {
+			if err := st.checkDefault(d.newValue(), adef.DefaultValue); err != nil {
+				return nil, fmt.Errorf("field %s: argument %q: %w", coord, f.name, err)
+			}
+		}
 		out.setters = append(out.setters, st)
 	}
 	for _, adef := range args {
@@ -454,7 +611,8 @@ func (d *inputDecoder) build(b *schemaBuilder, args ast.ArgumentDefinitionList, 
 
 // ZeroForNull lets a Go type that cannot represent null back a nullable
 // input position on this binding: absent, explicit null and the zero value
-// all decode to the zero value.
+// all decode to the zero value. A null element of a list is the zero value of
+// the slice's element type in the same way.
 //
 // The rule it relaxes is there for a reason -- a bool field cannot tell an
 // omitted flag from a false one, and for a PATCH-style input those are
@@ -475,6 +633,10 @@ func ZeroForNull() InputFieldOption { return inputFlag{zeroForNull: true} }
 // InputField binds the input field or argument name to a setter on *T. V
 // must be registered for the field's GraphQL type through a scalar, enum or
 // input binding.
+//
+// A field or argument with a default has it decoded once at NewSchema, into a
+// value that is discarded, so that a default the schema cannot decode is a
+// build error; set runs for that as it does for a request.
 func InputField[T, V any](name string, set func(*T, V)) InputFieldOption {
 	return &inputFieldSpec{
 		name:       name,
@@ -608,8 +770,12 @@ func autoSetter(index []int, valueType reflect.Type, omittable bool, zeroForNull
 		// A relaxed shape check is only half of it: the decoder for a Go type
 		// that cannot be null still refuses one, so an explicit null has to be
 		// answered here, before it reaches the decoder, with the same zero value
-		// an absent field leaves behind.
+		// an absent field leaves behind. The check is relaxed at every list
+		// level, so a null element is answered the same way.
 		nullIsZero := zeroForNull && !typ.NonNull
+		if zeroForNull && nullBelowNeedsZero(b.reg.shapes[key], typ) {
+			dec = b.reg.zeroingListDecoder(key, typ)
+		}
 		return func(target, raw any) error {
 			if raw == nil && nullIsZero {
 				fv := reflect.ValueOf(target).Elem().FieldByIndex(index)
@@ -640,6 +806,52 @@ func autoSetter(index []int, valueType reflect.Type, omittable bool, zeroForNull
 			fv.Set(reflect.ValueOf(v))
 			return nil
 		}, nil
+	}
+}
+
+// nullBelowNeedsZero reports whether sdl lets an element be null where the Go
+// shape cannot hold one, which only a ZeroForNull binding builds with.
+func nullBelowNeedsZero(info shapeInfo, sdl *ast.Type) bool {
+	level := 1
+	for t := sdl.Elem; t != nil; t = t.Elem {
+		if !t.NonNull && !info.nullable[level] {
+			return true
+		}
+		level++
+	}
+	return false
+}
+
+// zeroingListDecoder decodes the list shape key as its registered decoder
+// does, except that a null element at a nullable position is left as the zero
+// value of the Go element type rather than handed to a decoder that refuses
+// it. The registered decoder is tried first and answers every list that holds
+// no such null, so only a list that does is built again here, reflectively.
+func (r *registry) zeroingListDecoder(key typeKey, sdl *ast.Type) func(any, *ast.Type) (any, error) {
+	whole := r.decodersAny[key]
+	if sdl.Elem == nil {
+		return whole
+	}
+	elem := r.zeroingListDecoder(typeKey{key.name, key.typ.Elem()}, sdl.Elem)
+	return func(raw any, at *ast.Type) (any, error) {
+		if v, err := whole(raw, at); err == nil || raw == nil {
+			return v, err
+		}
+		items := asList(raw)
+		out := reflect.MakeSlice(key.typ, len(items), len(items))
+		for i, it := range items {
+			if it == nil && !at.Elem.NonNull {
+				continue
+			}
+			v, err := elem(it, at.Elem)
+			if err != nil {
+				return nil, &indexedError{i, err}
+			}
+			if v != nil {
+				out.Index(i).Set(reflect.ValueOf(v))
+			}
+		}
+		return out.Interface(), nil
 	}
 }
 
@@ -688,13 +900,17 @@ func graphqlNameOf(sf reflect.StructField) (name string, fromTag, skip bool) {
 	return exportedToGraphQL(sf.Name), false, false
 }
 
-// exportedToGraphQL maps AuthorID → authorId and URL → url.
+// initialisms are the words a Go name writes in capitals and a GraphQL name
+// does not. UUID and GUID come first so that each is taken whole: they end in
+// ID, and read as a word followed by one they became uUId and gUId.
+var initialisms = strings.NewReplacer("UUID", "Uuid", "GUID", "Guid", "ID", "Id", "URL", "Url")
+
+// exportedToGraphQL maps AuthorID → authorId, URL → url and UUID → uuid.
 func exportedToGraphQL(name string) string {
 	if name == "" {
 		return name
 	}
-	name = strings.ReplaceAll(name, "ID", "Id")
-	name = strings.ReplaceAll(name, "URL", "Url")
+	name = initialisms.Replace(name)
 	r, w := utf8.DecodeRuneInString(name)
 	return string(unicode.ToLower(r)) + name[w:]
 }

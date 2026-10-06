@@ -59,7 +59,7 @@ func TestInputHonoursTheJSONDashComaEscape(t *testing.T) {
 		// staticcheck SA5008 flags this tag as ambiguous, which is the whole
 		// point: json:"-," is encoding/json's documented escape for a field
 		// really named "-", and the engine has to tell it from json:"-".
-		Dash *string `json:"-,"` //nolint:staticcheck
+		Dash *string `json:"-,"` //nolint:staticcheck // SA5008, as above
 	}
 	const sdl = `
 input Odd { "-": String }

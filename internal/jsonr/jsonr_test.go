@@ -67,6 +67,10 @@ var corpus = []string{
 	`{"s":"é"}`, `{"s":"日本語"}`, `{"s":"😀"}`, `{"é":"é"}`,
 	`{"s":"\x"}`, `{"s":"\u12"}`, `{"s":"\u12g4"}`, `{"s":"\`, `{"s":"abc`, `{"s":"a` + "\n" + `b"}`,
 	`{"s":"a` + "\x00" + `b"}`, `{"s":"a` + "\x1f" + `b"}`, `{"s":"a` + "\x7f" + `b"}`,
+	// A raw control character after an escape: the string is built rather than
+	// sliced from there on, and that path refuses one by a check of its own.
+	`{"s":"\n` + "\x01" + `"}`, `{"s":"\\` + "\x1f" + `b"}`, `{"s":"a\u0041` + "\x00" + `"}`, `{"` + `\b` + "\x01" + `":1}`,
+	`{"s":"\n` + "\x7f" + `"}`,
 	// Not valid UTF-8: repaired byte for byte, not refused.
 	"{\"s\":\"\xff\"}", "{\"s\":\"a\xffb\"}", "{\"s\":\"\xe2\x82\"}", "{\"s\":\"\xe2\x82\xac\"}",
 	"{\"s\":\"\xc0\x80\"}", "{\"s\":\"\xed\xa0\x80\"}", "{\"\xff\":1}", "{\"s\":\"\\n\xff\"}",

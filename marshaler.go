@@ -88,7 +88,8 @@ func checkEnumInput(raw any, name string) error {
 // ScalarMarshaler binds the custom scalar name to a Go type that encodes
 // itself -- a Relay cursor, a decimal, anything a generator emitted with
 // MarshalGQL and UnmarshalGQL. It is Scalar with the two functions taken from
-// the type.
+// the type, and held to the same rule: MarshalGQL must write exactly one JSON
+// value, and anything else is a field error naming the scalar.
 func ScalarMarshaler[T any, PT Marshaler[T]](name string) SchemaOption {
 	return schemaOptionFunc(func(b *schemaBuilder) {
 		def := b.ast.Types[name]
@@ -100,10 +101,7 @@ func ScalarMarshaler[T any, PT Marshaler[T]](name string) SchemaOption {
 			return
 		}
 		registerLeaf(b.reg, name, ast.Scalar, func(w *jsonw.Writer, v T) error {
-			if err := marshalGQL[T, PT](w, v); err != nil {
-				return fmt.Errorf("scalar %s: %w", name, err)
-			}
-			return nil
+			return checkScalarOutput(w, w.Mark(), marshalGQL[T, PT](w, v), name, false)
 		}, func(raw any) (T, error) {
 			var v T
 			err := PT(&v).UnmarshalGQL(raw)

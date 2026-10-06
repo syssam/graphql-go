@@ -553,7 +553,7 @@ func (b *schemaBuilder) validateObjectDirectives() {
 
 // checkInputDirectiveKind exists because gqlparser never type-checks a
 // directive argument's literal against its declared type, the same gap
-// checkRequiresScopes closes for scopes. Plan compile reads kind by its raw
+// checkRequirementDirectives closes for scopes. Plan compile reads kind by its raw
 // name, so an unknown name or a string literal would otherwise build and
 // silently classify a write site as a filter.
 func (b *schemaBuilder) checkInputDirectiveKind(coord string, ds ast.DirectiveList) {
@@ -756,11 +756,11 @@ func (b *schemaBuilder) validateAuthCoverage(s *Schema) {
 	}
 }
 
-// checkRequiresScopes shape-checks every @requiresScopes occurrence on coord,
-// not just the first ds.ForName match: a repeatable directive or an
-// extension can add a second occurrence gqlparser never folds into the
-// first (see requirementOf), and a malformed one must fail the build exactly
-// like a malformed first occurrence would.
+// checkRequirementDirectives shape-checks every occurrence of every declared
+// requirement directive on coord, not just the first ds.ForName match: a
+// repeatable directive or an extension can add a second occurrence gqlparser
+// never folds into the first (see requirementOf), and a malformed one must
+// fail the build exactly like a malformed first occurrence would.
 func (b *schemaBuilder) checkRequirementDirectives(coord string, ds ast.DirectiveList) {
 	for _, rd := range b.reqDirectives {
 		if rd.shape == scopesMarker {

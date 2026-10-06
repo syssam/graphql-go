@@ -22,9 +22,9 @@ type OperationContext struct {
 	plan  *plan
 	entry *docEntry
 
-	// hub points at wave for an operation the executor started, and stays nil
-	// for an OperationContext built by hand, which is the distinction Waves
-	// documents. The coordinator is held by value because both are allocated
+	// hub points at wave for an operation the executor is executing, and is nil
+	// for an OperationContext built by hand and for a subscription's own, which
+	// is the distinction Waves documents. The coordinator is held by value because both are allocated
 	// together and always live as long as each other, so the two are one
 	// allocation instead of two. TestStructSizes pins the result, and
 	// executor.md has why it must stay on a size class.
@@ -426,11 +426,12 @@ func (s Selection) Collect[T any](fn func(SelectedField) T) []T {
 type decisionCtxKey struct{}
 
 // Withheld reports whether authorization withholds the field in this
-// request: the Authorizer's Outcome for it is Deny, Null or Zero, so it is
-// never resolved and nothing beneath it is read. Code that loads data for a
-// selection ahead of the resolvers -- an ORM eager-loading edges -- skips
-// such a field, so a subtree the caller may not see costs no query and never
-// enters memory. ctx is the executing resolver's or interceptor's.
+// request: the Authorizer's Outcome for it is Deny, Null or Zero, or is Deny
+// for one of its @authorizeInput arguments, so it is never resolved and
+// nothing beneath it is read. Code that loads data for a selection ahead of
+// the resolvers -- an ORM eager-loading edges -- skips such a field, so a
+// subtree the caller may not see costs no query and never enters memory. ctx
+// is the executing resolver's or interceptor's.
 //
 // A Redact outcome resolves the field and is not withheld. Instance-level
 // decisions (ObjectAuthorizer) are made per object as values arrive, after
@@ -440,6 +441,13 @@ func (f SelectedField) Withheld(ctx context.Context) bool {
 		return false
 	}
 	d, _ := ctx.Value(decisionCtxKey{}).(*Decision)
+	// The same sites, in the same order, as enforceAuth: a refused argument
+	// refuses the field whatever the field's own outcome is.
+	for i := f.field.authIdx + 1; i <= f.field.authIdx+f.field.argSiteCount(); i++ {
+		if d.Outcome(int(i)).act == actionDeny {
+			return true
+		}
+	}
 	switch d.Outcome(int(f.field.authIdx)).act {
 	case actionDeny, actionNull, actionZero:
 		return true

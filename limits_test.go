@@ -339,3 +339,24 @@ func TestQueryCostPricesAListsOwnPageSizeUnderAPaidField(t *testing.T) {
 		t.Fatalf("a plain connection costs %d, want 7", got)
 	}
 }
+
+// An abstract position is priced at the costliest of its possible types: the
+// value there may be any of them, and the limit has to hold for whichever it
+// is. The plan keeps the types in a map, so anything but the largest is a
+// different answer from one request to the next, and usually too low.
+func TestQueryCostTakesTheCostliestPossibleType(t *testing.T) {
+	_, e := newFixtureExecutor(t, WithQueryCost(QueryCost{DefaultListSize: 10, Report: true}))
+	const q = `{ node(id: "1") { id ... on User { friends { id name nick } } ... on Post { title } } }`
+	// node 1; on a User, id 1 and friends 1 + 10 x 3; on a Post, id and title.
+	const want = 1 + 1 + 1 + 10*3
+	for range 40 {
+		resp := run(t, e, q, "")
+		if len(resp.Errors) > 0 {
+			t.Fatalf("errors: %s", errorsJSON(resp.Errors))
+		}
+		cost, _ := resp.Extensions["cost"].(map[string]any)
+		if got := cost["requestedQueryCost"]; got != want {
+			t.Fatalf("cost = %v, want %d: the User's, whichever type the map yields last", got, want)
+		}
+	}
+}

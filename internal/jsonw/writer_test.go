@@ -125,6 +125,56 @@ func TestFloat64(t *testing.T) {
 	}
 }
 
+// Fixed or exponent notation is decided at 1e-6 and 1e21, and encoding/json
+// decides it at the value's own width. Widened first, float32(1e-6) is
+// 9.99999997e-07, below the threshold it sits exactly on, and was written
+// 1e-6 where encoding/json writes 0.000001. Each threshold is taken with the
+// value on either side of it, at both widths and both signs.
+func TestFloatNotationChangesWhereEncodingJSONChangesIt(t *testing.T) {
+	var around32 []float32
+	for _, at := range []float32{1e-6, 1e21} {
+		around32 = append(around32, math.Nextafter32(at, 0), at, math.Nextafter32(at, math.MaxFloat32))
+	}
+	var around64 []float64
+	for _, at := range []float64{1e-6, 1e21} {
+		around64 = append(around64, math.Nextafter(at, 0), at, math.Nextafter(at, math.MaxFloat64))
+	}
+	// The other width's neighbours as well: a float32 threshold value widened
+	// is an ordinary float64 just off the float64 threshold, and back again.
+	for _, v := range around32 {
+		around64 = append(around64, float64(v))
+	}
+	for _, v := range around64[:6] {
+		around32 = append(around32, float32(v))
+	}
+	for _, sign := range []float32{1, -1} {
+		for _, v := range around32 {
+			v *= sign
+			w := New()
+			if err := w.Float32(v); err != nil {
+				t.Fatal(err)
+			}
+			want, _ := json.Marshal(v)
+			if got := string(w.Bytes()); got != string(want) {
+				t.Errorf("Float32(%x) = %s, want %s", math.Float32bits(v), got, want)
+			}
+		}
+	}
+	for _, sign := range []float64{1, -1} {
+		for _, v := range around64 {
+			v *= sign
+			w := New()
+			if err := w.Float64(v); err != nil {
+				t.Fatal(err)
+			}
+			want, _ := json.Marshal(v)
+			if got := string(w.Bytes()); got != string(want) {
+				t.Errorf("Float64(%x) = %s, want %s", math.Float64bits(v), got, want)
+			}
+		}
+	}
+}
+
 func TestStringEscaping(t *testing.T) {
 	cases := map[string]string{
 		"plain":            `"plain"`,

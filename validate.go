@@ -100,14 +100,21 @@ func checkOutputCompositeShape(s *Schema, goType reflect.Type, sdl *ast.Type) (*
 		}
 		return obj, nil
 	case ast.Interface, ast.Union:
+		at := s.abstracts[def.Name]
 		if t.Kind() == reflect.Interface {
 			return nil, nil
+		}
+		// Every value of a concrete result type is that type, so one the
+		// TypeResolver's parameter cannot hold fails on every request. An
+		// interface result is decided value by value, in concreteType.
+		if at != nil && at.resolverType != nil && !resolverTakes(at.resolverType, t) {
+			return nil, fmt.Errorf("Go type %s cannot be given to the TypeResolver of %s, which takes %s", goType, def.Name, at.resolverType)
 		}
 		objs := s.goTypes[t]
 		if len(objs) == 0 {
 			return nil, fmt.Errorf("Go type %s returned for abstract type %s is not bound to any object type", t, def.Name)
 		}
-		if at := s.abstracts[def.Name]; at != nil {
+		if at != nil {
 			n := 0
 			for _, obj := range objs {
 				if _, ok := at.possible[obj.name]; ok {

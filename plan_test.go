@@ -93,7 +93,7 @@ func TestPlanConditions(t *testing.T) {
 	if got := fieldNames(p.sel.fields[0].sub.fields); got != "tags" {
 		t.Fatalf("fields = %s", got)
 	}
-	key := variantKey([]string{"a", "b"}, map[string]any{"a": true, "b": true})
+	key, _ := variantKey([]string{"a", "b"}, map[string]any{"a": true, "b": true})
 	if key != 3 {
 		t.Fatalf("variant key = %d", key)
 	}
@@ -105,7 +105,8 @@ func TestPlanArgumentPreDecoding(t *testing.T) {
 	a, b, c := p.sel.fields[0], p.sel.fields[1], p.sel.fields[2]
 	// An input object literal is validated at compile and decoded per
 	// request: decoded once, it would be one struct shared by every request.
-	if !a.dynamicArgs || a.args != nil {
+	// What compile decoded is kept for Selection to show, not for a resolver.
+	if !a.dynamicArgs || a.args == nil {
 		t.Fatalf("an input object literal must be decoded per request: %+v", a.args)
 	}
 	if !b.dynamicArgs || b.args != nil {

@@ -148,3 +148,85 @@ func TestSubscribeAndExecuteAgreeOnABadVariable(t *testing.T) {
 		t.Errorf("Subscribe reports %v and Execute %v for the same bad variable", sCode, eCode)
 	}
 }
+
+// A SubscriptionInterceptor refuses by returning an error, and what it returns
+// is whatever its backend said. Every other refusal reaches the client through
+// the ErrorPresenter; this one was handed to the transport as it came, which
+// sent its text past a presenter written to mask exactly that.
+func TestASubscriptionInterceptorsErrorIsPresented(t *testing.T) {
+	backend := errors.New("dial tcp 10.0.0.7:6379: connection refused")
+	refuse := func(err error) ExecutorOption {
+		return WithSubscriptionInterceptor(SubscriptionInterceptorFunc(
+			func(context.Context, *OperationContext, SubscriptionHandler) (<-chan *Response, error) {
+				return nil, err
+			}))
+	}
+	subscribe := func(t *testing.T, e *Executor) *SubscribeError {
+		t.Helper()
+		ch, err := e.Subscribe(context.Background(), &Request{Query: `subscription { counter }`})
+		if ch != nil {
+			t.Fatal("a refused subscription returned a channel")
+		}
+		var se *SubscribeError
+		if !errors.As(err, &se) || se.Response == nil || len(se.Response.Errors) != 1 {
+			t.Fatalf("err = %#v, want a *SubscribeError carrying one error", err)
+		}
+		return se
+	}
+
+	t.Run("a masking presenter masks it", func(t *testing.T) {
+		presented := 0
+		_, e := newSubExecutor(t, refuse(backend), WithErrorPresenter(func(_ context.Context, err error) *Error {
+			presented++
+			if !errors.Is(err, backend) {
+				t.Errorf("the presenter was not given the interceptor's error: %v", err)
+			}
+			return Errorf("masked")
+		}))
+		se := subscribe(t, e)
+		if got := se.Response.Errors[0].Message; got != "masked" {
+			t.Fatalf("message = %q, want the presenter's", got)
+		}
+		if presented != 1 {
+			t.Fatalf("presented %d times, want once", presented)
+		}
+	})
+
+	t.Run("the default presenter keeps the message and the chain", func(t *testing.T) {
+		_, e := newSubExecutor(t, refuse(backend))
+		se := subscribe(t, e)
+		if got := se.Response.Errors[0].Message; got != backend.Error() {
+			t.Fatalf("message = %q, want %q", got, backend)
+		}
+		if !errors.Is(se, backend) {
+			t.Fatal("errors.Is no longer reaches the interceptor's error")
+		}
+	})
+
+	t.Run("an *Error keeps its code", func(t *testing.T) {
+		_, e := newSubExecutor(t, refuse(Errorf("too many subscriptions").WithCode("RATE_LIMITED")))
+		se := subscribe(t, e)
+		if got := se.Response.Errors[0].Extensions["code"]; got != "RATE_LIMITED" {
+			t.Fatalf("code = %v, want RATE_LIMITED", got)
+		}
+	})
+
+	// The engine's own refusals come back through the interceptor already
+	// presented, and must not be presented again on the way out.
+	t.Run("a refusal from below is not presented twice", func(t *testing.T) {
+		presented := 0
+		_, e := newSubExecutor(t,
+			WithSubscriptionInterceptor(SubscriptionInterceptorFunc(
+				func(ctx context.Context, oc *OperationContext, next SubscriptionHandler) (<-chan *Response, error) {
+					return nil, &SubscribeError{Response: &Response{Errors: []*Error{Errorf("already presented")}}}
+				})),
+			WithErrorPresenter(func(_ context.Context, err error) *Error {
+				presented++
+				return Errorf("masked")
+			}))
+		se := subscribe(t, e)
+		if presented != 0 || se.Response.Errors[0].Message != "already presented" {
+			t.Fatalf("presented %d times, message %q", presented, se.Response.Errors[0].Message)
+		}
+	})
+}

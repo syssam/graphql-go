@@ -92,3 +92,57 @@ func TestPlanArgErrorPerConcreteType(t *testing.T) {
 		t.Fatalf("got %d errors, want 3 (one per concrete type)", len(perrs))
 	}
 }
+
+// Whether a literal argument is acceptable is a fact about the document. It
+// was checked only where the plan decodes it, which is in the variants that
+// include its field: the same query text was a validation error with one
+// value of a variable and ran with the other, and behind @skip(if: true) the
+// literal was never looked at.
+func TestALiteralArgumentIsValidatedInEveryVariant(t *testing.T) {
+	_, fixture := newFixtureExecutor(t)
+	dup := NewExecutor(newDupErrSchema(t))
+	for _, tc := range []struct {
+		name  string
+		e     *Executor
+		query string
+		want  int
+	}{
+		{"a skipped field", fixture, `query($s: Boolean!) { strings a: echo(v: 2147483648) @skip(if: $s) }`, 1},
+		{"an included field", fixture, `query($s: Boolean!) { strings a: echo(v: 2147483648) @include(if: $s) }`, 1},
+		{"a skipped inline fragment", fixture, `query($s: Boolean!) { strings ... @skip(if: $s) { a: echo(v: 2147483648) } }`, 1},
+		{"a skipped spread", fixture, `query($s: Boolean!) { strings ...F @skip(if: $s) } fragment F on Query { a: echo(v: 2147483648) }`, 1},
+		{"beneath a skipped field", dup, `query($s: Boolean!) { root @skip(if: $s) { id at(day: "Funday") } }`, 3},
+		{"on an abstract parent", dup, `query($s: Boolean!) { root { id at(day: "Funday") @skip(if: $s) } }`, 3},
+		{"one type of an abstract parent", dup, `query($s: Boolean!) { root { id ... on D1 @skip(if: $s) { at(day: "Funday") } } }`, 1},
+		// The two selections are the same once the skipped spreads are gone,
+		// and the second must still be looked at.
+		{"skipped spreads that leave equal selections", dup, `query($s: Boolean!) { a: root { ...A ...F @skip(if: $s) } b: root { ...A ...G @skip(if: $s) } }
+			fragment A on Node { id } fragment F on Node { id } fragment G on Node { at(day: "Funday") }`, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			on := run(t, tc.e, tc.query, `{"s":true}`)
+			off := run(t, tc.e, tc.query, `{"s":false}`)
+			if !on.HasRequestErrors() || !off.HasRequestErrors() {
+				t.Fatalf("s=true: data=%s errors=%s\ns=false: data=%s errors=%s",
+					on.Data, errorsJSON(on.Errors), off.Data, errorsJSON(off.Errors))
+			}
+			if got, want := errorsJSON(on.Errors), errorsJSON(off.Errors); got != want {
+				t.Fatalf("the error depends on the variable:\ns=true:  %s\ns=false: %s", got, want)
+			}
+			if len(on.Errors) != tc.want || on.Errors[0].Extensions["code"] != CodeValidationFailed {
+				t.Fatalf("errors = %s, want %d with code %s", errorsJSON(on.Errors), tc.want, CodeValidationFailed)
+			}
+		})
+	}
+
+	// A condition written as a literal excludes the field from every plan.
+	if resp := run(t, fixture, `{ strings a: echo(v: 2147483648) @skip(if: true) }`, ""); !resp.HasRequestErrors() {
+		t.Fatalf("an out-of-range literal behind @skip(if: true) ran: %s", resp.Data)
+	}
+	// And what is acceptable stays acceptable, skipped or not.
+	for _, vars := range []string{`{"s":true}`, `{"s":false}`} {
+		if resp := run(t, fixture, `query($s: Boolean!) { strings a: echo(v: 1) @skip(if: $s) }`, vars); len(resp.Errors) > 0 {
+			t.Fatalf("%s: %s", vars, errorsJSON(resp.Errors))
+		}
+	}
+}

@@ -2,6 +2,8 @@ package graphql
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -135,5 +137,76 @@ func TestZeroForNullKeepsOmittableAbleToSeeAbsence(t *testing.T) {
 		{`{ q(f: {}) }`, `{"q":"omitted"}`},
 	} {
 		expectData(t, run(t, e, c.query, ""), c.want)
+	}
+}
+
+type zfnLists struct {
+	Tags   []string    `json:"tags"`
+	Grid   [][]int     `json:"grid"`
+	Kids   []zfnFilter `json:"kids"`
+	Ptrs   []*string   `json:"ptrs"`
+	Strict []string    `json:"strict"`
+	Rows   [][]int     `json:"rows"`
+}
+
+// A null inside a list is the same promise one level down. The build already
+// accepted []string under [String] for a ZeroForNull binding, and then the
+// element decoder refused the null the schema allows there -- a request the
+// SDL calls valid failed with "null value for non-null type". A null element
+// is the zero value of whatever the Go slice holds, which for a pointer is
+// still nil, and a non-null element type refuses null as it always did.
+func TestZeroForNullReachesListElements(t *testing.T) {
+	s, err := NewSchema(SDL(`
+		input Filter { isNil: Boolean name: String }
+		input Lists { tags: [String] grid: [[Int]] kids: [Filter] ptrs: [String] strict: [String!] rows: [[Int]!] }
+		type Query { l(in: Lists!): String! }`),
+		Input[zfnFilter]("Filter", ZeroForNull()),
+		Input[zfnLists]("Lists", ZeroForNull()),
+		Query(FieldArgs("l", func(_ Root, a struct{ In zfnLists }) string {
+			ptrs := make([]string, len(a.In.Ptrs))
+			for i, p := range a.In.Ptrs {
+				ptrs[i] = "nil"
+				if p != nil {
+					ptrs[i] = *p
+				}
+			}
+			return fmt.Sprintf("%q %v %v %v", a.In.Tags, a.In.Grid, a.In.Kids, ptrs)
+		})),
+	)
+	if err != nil {
+		t.Fatalf("NewSchema: %v", err)
+	}
+	e := NewExecutor(s)
+	for _, c := range []struct{ in, want string }{
+		{`{tags: ["a", null]}`, `["a" ""] [] [] []`},
+		{`{tags: null}`, `[] [] [] []`},
+		{`{grid: [[1, null], null, 3]}`, `[] [[1 0] [] [3]] [] []`},
+		{`{kids: [{isNil: true}, null]}`, `[] [] [{true } {false }] []`},
+		{`{ptrs: ["a", null]}`, `[] [] [] [a nil]`},
+	} {
+		want, _ := json.Marshal(map[string]string{"l": c.want})
+		expectData(t, run(t, e, `{ l(in: `+c.in+`) }`, ""), string(want))
+
+		// The same value as a variable takes the other route in: coerced
+		// against the SDL first, then decoded.
+		vars := strings.NewReplacer("tags:", `"tags":`, "grid:", `"grid":`, "kids:", `"kids":`, "isNil:", `"isNil":`, "ptrs:", `"ptrs":`).Replace(c.in)
+		expectData(t, run(t, e, `query($in: Lists!) { l(in: $in) }`, `{"in":`+vars+`}`), string(want))
+	}
+
+	resp := run(t, e, `query($in: Lists!) { l(in: $in) }`, `{"in":{"strict":["a",null]}}`)
+	if len(resp.Errors) != 1 || !strings.Contains(resp.Errors[0].Message, "String!") {
+		t.Fatalf("a null element of [String!] must still be refused, got data %s errors %s", resp.Data, errorsJSON(resp.Errors))
+	}
+
+	// Validation refuses a null at a non-null level before any decoder sees
+	// it; the decoder is asked directly because it is the last thing that
+	// would. In [[Int]!] the rows cannot be null and their numbers can.
+	dec := s.reg.inputsByName["Lists"]
+	got, err := dec.decode(map[string]any{"rows": []any{[]any{json.Number("1"), nil}}})
+	if err != nil || fmt.Sprint(got.(*zfnLists).Rows) != "[[1 0]]" {
+		t.Fatalf("rows = %v, %v", got, err)
+	}
+	if _, err := dec.decode(map[string]any{"rows": []any{[]any{json.Number("1")}, nil}}); err == nil || !strings.Contains(err.Error(), "[1]: null value for non-null type") {
+		t.Fatalf("a null row of [[Int]!] was decoded: %v", err)
 	}
 }

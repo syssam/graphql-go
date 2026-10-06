@@ -6,9 +6,10 @@ import (
 	"runtime/debug"
 )
 
-// checkObjects asks the ObjectAuthorizer about one wave's worth of resolved
-// values, splitting the call at the configured batch size. The result is
-// positional: outs[i] is the outcome for checks[i].
+// checkObjects asks the ObjectAuthorizer about the guarded values of one list,
+// or the one value behind a field that is not a list, splitting the call at
+// the configured batch size. The result is positional: outs[i] is the outcome
+// for checks[i].
 //
 // A batch that fails -- an error, a mismatched length, or an outcome the
 // site cannot represent -- fails every check still outstanding rather than
@@ -41,7 +42,7 @@ func (st *execState) checkObjects(ctx context.Context, checks []ObjectCheck) (ou
 			return nil, authorizerError(ctx, berr)
 		}
 		if len(batch) != end-start {
-			return nil, authorizerError(ctx, Errorf(
+			return nil, authorizerError(ctx, policyErrorf(
 				"authorization: ObjectAuthorizer returned %d outcomes for %d checks at %s",
 				len(batch), end-start, checks[start].Site.Coord))
 		}

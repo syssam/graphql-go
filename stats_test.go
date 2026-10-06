@@ -2,13 +2,14 @@ package graphql
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 )
 
 // TestStatsCountsPlanCache pins what the plan cache figures mean: one miss
 // for the first run of an operation, a hit for every run after, and the
-// cache holding the one document by its query text.
+// cache holding the one document by its query text and what its plan retains.
 func TestStatsCountsPlanCache(t *testing.T) {
 	_, e := newFixtureExecutor(t)
 	const query = `{ me { id } }`
@@ -22,8 +23,9 @@ func TestStatsCountsPlanCache(t *testing.T) {
 	if s.PlanCacheMisses != 1 || s.PlanCacheHits != 2 {
 		t.Fatalf("hits = %d, misses = %d after three runs, want 2 and 1", s.PlanCacheHits, s.PlanCacheMisses)
 	}
-	if s.PlanCacheEntries != 1 || s.PlanCacheBytes != int64(len(query)) {
-		t.Fatalf("entries = %d, bytes = %d, want 1 and %d", s.PlanCacheEntries, s.PlanCacheBytes, len(query))
+	want := cachedBytes(e.cache)
+	if s.PlanCacheEntries != 1 || s.PlanCacheBytes != want || want <= int64(len(query)) {
+		t.Fatalf("entries = %d, bytes = %d, want 1 and %d, the %d of query text and the plan", s.PlanCacheEntries, s.PlanCacheBytes, want, len(query))
 	}
 }
 
@@ -106,5 +108,45 @@ func TestStatsCountsSubscriptionOnce(t *testing.T) {
 	expectClosed(t, out)
 	if s := e.Stats(); s.PlanCacheMisses != 1 || s.PlanCacheHits != 0 {
 		t.Fatalf("hits = %d, misses = %d for one subscription of three events, want 0 and 1", s.PlanCacheHits, s.PlanCacheMisses)
+	}
+}
+
+// With none of WithMaxDepth, WithMaxComplexity and a query cost limit set, a
+// single request may ask for any amount of work. That is the documented
+// default, since the right numbers are a schema's own, and it has to be
+// visible: said once in the log when such an executor is built, and reported
+// in Stats for a dashboard, so that the first person on call does not learn
+// it from the request that used it.
+func TestAnExecutorWithNoRequestLimitSaysSo(t *testing.T) {
+	s, err := NewSchema(SDL(fixtureSDL), newFixture().options()...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		opts      []ExecutorOption
+		unbounded bool
+	}{
+		"nothing set":            {nil, true},
+		"a cost model, no limit": {[]ExecutorOption{WithQueryCost(QueryCost{DefaultListSize: 20})}, true},
+		"depth":                  {[]ExecutorOption{WithMaxDepth(12)}, false},
+		"complexity":             {[]ExecutorOption{WithMaxComplexity(500)}, false},
+		"a cost limit":           {[]ExecutorOption{WithQueryCost(QueryCost{Max: 1000})}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			unboundedSaid.Store(false)
+			logged := captureLog(t)
+			e := NewExecutor(s, tc.opts...)
+			NewExecutor(s, tc.opts...)
+			if got := e.Stats().RequestsUnbounded; got != tc.unbounded {
+				t.Errorf("Stats().RequestsUnbounded = %t, want %t", got, tc.unbounded)
+			}
+			want := 0
+			if tc.unbounded {
+				want = 1
+			}
+			if got := strings.Count(logged.String(), "no depth, complexity or cost limit"); got != want {
+				t.Errorf("said %d time(s) for two executors, want %d:\n%s", got, want, logged)
+			}
+		})
 	}
 }

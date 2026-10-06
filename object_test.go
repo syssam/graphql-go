@@ -125,7 +125,12 @@ func TestObjectValidationErrors(t *testing.T) {
 		{
 			"root bound to non-Root",
 			[]SchemaOption{Object[tUser]("Query")},
-			"graphql.Root",
+			"root operation types must be bound to graphql.Root, got graphql.tUser",
+		},
+		{
+			"one object bound to two Go types",
+			[]SchemaOption{Object[tUser]("User"), Object[tPost]("User")},
+			`Object "User": bound to both graphql.tUser and graphql.tPost`,
 		},
 		{
 			"unknown object",
@@ -140,6 +145,26 @@ func TestObjectValidationErrors(t *testing.T) {
 				t.Fatalf("want error containing %q, got %v", tc.want, err)
 			}
 		})
+	}
+}
+
+// Introspection binds the query root to Root itself, so a query root bound to
+// something else is reported twice over. Nothing else binds the other roots:
+// without the check a mutation root built over any Go type, and its fields
+// were handed a Root they then asserted to that type.
+func TestARootBoundToAnotherGoTypeIsABuildError(t *testing.T) {
+	err := Validate(SDL(`type Query { a: Int } type Mutation { rename: Int } type Subscription { ticks: Int }`),
+		Query(Field("a", func(Root) *int { return nil })),
+		Object[tUser]("Mutation", Field("rename", func(*tUser) *int { return nil })),
+		Object[tUser]("Subscription"),
+	)
+	for _, want := range []string{
+		`Object "Mutation": root operation types must be bound to graphql.Root, got graphql.tUser`,
+		`Object "Subscription": root operation types must be bound to graphql.Root, got graphql.tUser`,
+	} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("want %q, got %v", want, err)
+		}
 	}
 }
 

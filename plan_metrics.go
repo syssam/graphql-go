@@ -19,6 +19,15 @@ type planMetrics struct {
 // TestOperationMetricsMatchesPlan checks that agreement directly against a
 // compiled plan.
 func operationMetrics(s *Schema, doc *ast.QueryDocument, op *ast.OperationDefinition, cond map[string]bool) planMetrics {
+	return limitedMetrics(s, doc, op, cond, 0, 0)
+}
+
+// limitedMetrics is operationMetrics for a caller that only needs to know
+// whether the operation is within maxComplexity and maxDepth, zero for no
+// limit. Within them the result is exact. Past either it is exact too unless
+// the walk was a large one, and then it is past that limit and no greater
+// than the true figure: see metricWalker.settled.
+func limitedMetrics(s *Schema, doc *ast.QueryDocument, op *ast.OperationDefinition, cond map[string]bool, maxComplexity, maxDepth int) planMetrics {
 	root := s.rootFor(op.Operation)
 	if root == nil {
 		return planMetrics{}
@@ -28,11 +37,21 @@ func operationMetrics(s *Schema, doc *ast.QueryDocument, op *ast.OperationDefini
 	// that reads or writes memo), so the nil map is never touched. Building
 	// the real memo here would cost an allocation this walk never uses.
 	w := &metricWalker{
-		c:    &compiler{s: s, doc: doc, cond: cond, nodeID: make(map[ast.Selection]int32)},
-		memo: make(map[selKey]planMetrics),
+		c:             &compiler{s: s, doc: doc, cond: cond, nodeID: make(map[ast.Selection]int32)},
+		memo:          make(map[selKey]planMetrics),
+		maxComplexity: maxComplexity,
+		maxDepth:      maxDepth,
+		exact:         metricExactWork,
 	}
 	return w.walk(root, nil, op.SelectionSet)
 }
+
+// metricExactWork is how many fields a walk may collect and still owe an
+// exact figure. A document under the default token limit has fewer fields
+// than this, so a walk past it is collecting the same ones again -- under
+// each possible type of an abstract parent, or a fragment at each place it
+// is spread -- and that is the walk a refusal should not have to finish.
+const metricExactWork = 1 << 14
 
 // metricWalker mirrors compileSelection without building a plan. It carries
 // the same memo, because a guard that expands N^depth in order to decide
@@ -40,6 +59,14 @@ func operationMetrics(s *Schema, doc *ast.QueryDocument, op *ast.OperationDefini
 type metricWalker struct {
 	c    *compiler
 	memo map[selKey]planMetrics
+
+	// maxComplexity and maxDepth are the executor's limits, zero for none,
+	// and exact is how many fields the walk collects before being over one
+	// of them is reason to stop: see settled.
+	maxComplexity int
+	maxDepth      int
+	exact         int
+	collected     int
 
 	// calls counts walkConcrete invocations. It is plain bookkeeping with no
 	// effect on the result: operationMetrics never reads it, and nothing
@@ -72,18 +99,39 @@ func (w *metricWalker) walk(obj *objectType, abs *abstractType, sels ast.Selecti
 		// uses, so a concrete type reached from two different abstract
 		// ancestors with the same AST selection is computed once.
 		//
-		// Ranging over abs.possible (a map) visits concrete types in an
-		// unspecified order, unlike compileSelection's sorted iteration.
-		// That is fine only because max is commutative;
-		// an edit that makes this loop order-sensitive needs the same sort.
-		for _, concrete := range abs.possible {
+		// The types are taken in the schema's order, not the map's: the walk
+		// may stop part way (settled), and what it reports then must be the
+		// same on every request.
+		for _, def := range w.c.s.ast.GetPossibleTypes(abs.def) {
+			concrete := abs.possible[def.Name]
+			if concrete == nil {
+				continue
+			}
 			c := w.walk(concrete, nil, sels)
 			m.complexity = max(m.complexity, c.complexity)
 			m.depth = max(m.depth, c.depth)
+			if w.settled(m) {
+				break
+			}
 		}
 	}
 	w.memo[key] = m
 	return m
+}
+
+// settled reports that the walk may stop with m as it stands. A selection's
+// metrics only add to those of whatever contains it, so once m is past a
+// limit the operation is refused whatever the rest measures, and the rest
+// can be most of the work: an interface every entity implements is walked
+// once per entity, and a fragment once for each field it is spread under.
+// The figure reported is then how far the walk got rather than the whole.
+// A small walk is finished anyway, so that an ordinary query over the limit
+// is still told by exactly how much.
+func (w *metricWalker) settled(m planMetrics) bool {
+	if w.collected < w.exact {
+		return false
+	}
+	return (w.maxComplexity > 0 && m.complexity > w.maxComplexity) || (w.maxDepth > 0 && m.depth > w.maxDepth)
 }
 
 func (w *metricWalker) walkConcrete(obj *objectType, sels ast.SelectionSet) planMetrics {
@@ -94,8 +142,15 @@ func (w *metricWalker) walkConcrete(obj *objectType, sels ast.SelectionSet) plan
 	visited := make(map[string]bool)
 	w.c.collectInto(obj, sels, &groups, index, visited)
 
+	for _, g := range groups {
+		w.collected += len(g.fields)
+	}
+
 	var m planMetrics
 	for _, g := range groups {
+		if w.settled(m) {
+			break
+		}
 		first := g.fields[0]
 		if first.Name == "__typename" {
 			m.complexity = costAdd(m.complexity, 1)

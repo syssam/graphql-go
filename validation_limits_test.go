@@ -73,6 +73,18 @@ var validationAttacks = map[string]func(n int) string{
 	"nested list literal": func(n int) string {
 		return "{__typename@skip(if:" + strings.Repeat("[", n) + strings.Repeat("]", n) + ")}"
 	},
+	// One fragment collected again under every field that spreads it: the
+	// replacement rule wrote each selection set out, 37 KB, 2.2 s.
+	"one fragment under many fields": func(n int) string {
+		return "{" + repeated(n, func(i int) string { return fmt.Sprintf("u%d:me{...F} ", i) }) + "} fragment F on User{" +
+			repeated(7*n, func(int) string { return "id " }) + "}"
+	},
+	// The same with something of its own beside each spread, so that no two
+	// of the selection sets are alike.
+	"one fragment beside a field of its own": func(n int) string {
+		return "{" + repeated(n, func(i int) string { return fmt.Sprintf("u%d:me{s%d:id ...F} ", i, i) }) + "} fragment F on User{" +
+			repeated(10*n, func(int) string { return "id " }) + "}"
+	},
 	"many variables": func(n int) string {
 		return "query(" + repeated(n, func(i int) string { return fmt.Sprintf("$v%d:Int ", i) }) + "){" +
 			repeated(n, func(i int) string { return fmt.Sprintf("a%d:echo(v:$v%d) ", i, i) }) + "}"
@@ -194,6 +206,35 @@ func TestDocumentLimitsRefuseEarly(t *testing.T) {
 	}
 	if resp := run(t, tight, "{me{id} a:me{id}}", ""); len(resp.Errors) != 1 || resp.Errors[0].Message != "exceeded token limit of 10" {
 		t.Fatalf("WithMaxTokens(10): %s", errorsJSON(resp.Errors))
+	}
+}
+
+// A literal can be written wherever a directive or a default can, and the
+// nesting limit has to look in every one of those places: validation checks a
+// value the same way whichever it is in, so a place the limit misses is a
+// place the 100 levels do not apply.
+func TestNestingLimitCoversEveryPlaceAValueIsWritten(t *testing.T) {
+	deep := strings.Repeat("[", 102) + strings.Repeat("]", 102)
+	for name, q := range map[string]string{
+		"a field's argument":              "{ echo(list: " + deep + ") }",
+		"a field's directive":             "{ __typename @skip(if: " + deep + ") }",
+		"a fragment spread's directive":   "{ ...F @skip(if: " + deep + ") } fragment F on Query { __typename }",
+		"an inline fragment's directive":  "{ ... @skip(if: " + deep + ") { __typename } }",
+		"an operation's directive":        "query @skip(if: " + deep + ") { __typename }",
+		"a fragment definition's":         "{ ...F } fragment F on Query @skip(if: " + deep + ") { __typename }",
+		"a variable's default":            "query($v: [Int] = " + deep + ") { echo(list: $v) }",
+		"a variable definition's":         "query($v: Int @skip(if: " + deep + ")) { echo(v: $v) }",
+		"a directive beneath a field":     "{ me { id @include(if: " + deep + ") } }",
+		"a directive inside a fragment":   "{ me { ...F } } fragment F on User { id @include(if: " + deep + ") }",
+		"a default beside a deeper query": "query($v: [Int] = " + deep + ") { me { bestFriend { id } } echo(list: $v) }",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, e := newFixtureExecutor(t)
+			_, errs := e.document(q)
+			if len(errs) != 1 || errs[0].Message != "document nesting exceeds the limit of 100" || errs[0].Extensions["code"] != CodeParseFailed {
+				t.Fatalf("want the nesting limit's refusal, got %s", errorsJSON(errs))
+			}
+		})
 	}
 }
 

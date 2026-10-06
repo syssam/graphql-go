@@ -62,6 +62,27 @@ func TestEnumUnknownGoValueOutput(t *testing.T) {
 	}
 }
 
+// The mapping is checked against the schema once, so it has to be the mapping
+// used afterwards. Enum kept the caller's map for output and a copy for
+// input: a value changed after NewSchema was written without being declared,
+// and still decoded as it had been.
+func TestEnumMappingIsCopiedAtBuild(t *testing.T) {
+	mapping := map[role]string{roleAdmin: "ADMIN", roleUser: "USER"}
+	s, err := NewSchema(SDL(`enum Role { ADMIN USER } type Query { r: Role! echo(r: Role!): Role! }`),
+		Enum("Role", mapping),
+		Query(
+			Field("r", func(Root) role { return roleAdmin }),
+			FieldArgs("echo", func(_ Root, a struct{ R role }) role { return a.R }),
+		),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapping[roleAdmin] = "ROOT"
+	delete(mapping, roleUser)
+	expectData(t, run(t, NewExecutor(s), `{ r echo(r: USER) }`, ""), `{"r":"ADMIN","echo":"USER"}`)
+}
+
 func TestEnumMappingValidation(t *testing.T) {
 	base := func(opts ...SchemaOption) error {
 		return Validate(SDL(`enum Role { ADMIN USER GUEST } type Query { r: Role! }`),

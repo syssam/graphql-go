@@ -56,6 +56,13 @@ type Writer struct {
 	stack      []bool // per open container: whether a value has been written
 	pendingKey bool
 
+	// leaf counts the values a custom scalar's marshal wrote since BeginLeaf,
+	// to two, and leafRaw is whether any of them was handed over already
+	// encoded. They are what lets the caller know it wrote one value without
+	// reading the bytes back: only what came through Raw has to be read.
+	leaf    uint8
+	leafRaw bool
+
 	// budget is nil when unlimited, &own on a root writer, and the root's on a
 	// sub-writer, so concurrently written buffers count against one limit. It
 	// lives here rather than on the executor's per-request state because the
@@ -79,6 +86,9 @@ type Mark struct {
 	comma      bool
 	pendingKey bool
 }
+
+// Offset is how many bytes had been written when the mark was taken.
+func (m Mark) Offset() int { return m.off }
 
 // New returns an empty writer.
 func New() *Writer {
@@ -205,6 +215,22 @@ func (w *Writer) Rewind(m Mark) {
 	}
 	w.pendingKey = m.pendingKey
 }
+
+// BeginLeaf starts counting the values a custom scalar's marshal writes.
+func (w *Writer) BeginLeaf() { w.leaf, w.leafRaw = 0, false }
+
+// NoteLeaf counts one value written for a custom scalar, raw when its bytes
+// were the caller's own encoding rather than this writer's.
+func (w *Writer) NoteLeaf(raw bool) {
+	if w.leaf < 2 {
+		w.leaf++
+	}
+	w.leafRaw = w.leafRaw || raw
+}
+
+// Leaf reports how many values were noted since BeginLeaf, at most two, and
+// whether any was raw.
+func (w *Writer) Leaf() (values int, raw bool) { return int(w.leaf), w.leafRaw }
 
 // sep emits the comma required before a value in the current container,
 // unless a key was just written.
@@ -359,8 +385,16 @@ func AppendFloat32(dst []byte, v float32) []byte { return appendFloat(dst, float
 func appendFloat(dst []byte, v float64, bits int) []byte {
 	abs := math.Abs(v)
 	format := byte('f')
-	if abs != 0 && (abs < 1e-6 || abs >= 1e21) {
-		format = 'e'
+	// The thresholds are compared at the value's own width, as encoding/json
+	// compares them: float32(1e-6) widened is just under 1e-6.
+	if abs != 0 {
+		if bits == 32 {
+			if a := float32(abs); a < 1e-6 || a >= 1e21 {
+				format = 'e'
+			}
+		} else if abs < 1e-6 || abs >= 1e21 {
+			format = 'e'
+		}
 	}
 	start := len(dst)
 	dst = strconv.AppendFloat(dst, v, format, -1, bits)

@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strconv"
@@ -151,5 +152,60 @@ type Query { f: Field c: Cursor }`),
 	if err == nil || !strings.Contains(err.Error(), `EnumMarshaler "Cursor": type is not an enum`) ||
 		!strings.Contains(err.Error(), `ScalarMarshaler "Field": type is not a scalar`) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// mRaw writes what it holds, which is what a hand-written MarshalGQL does
+// when it forgets a quote or interpolates a value without escaping it.
+type mRaw struct{ out string }
+
+func (r mRaw) MarshalGQL(w io.Writer)  { io.WriteString(w, r.out) }
+func (*mRaw) UnmarshalGQL(v any) error { return nil }
+
+// ScalarMarshaler is Scalar with the functions taken from the type, and the
+// output check comes with it: what MarshalGQL wrote went into the response
+// as it was, so one bad value produced a document no client could parse, or
+// one with a key the schema never declared, and no error either way.
+func TestScalarMarshalerMustWriteOneValue(t *testing.T) {
+	var out string
+	s, err := NewSchema(SDL(`scalar Raw type Query { ok: String! r: Raw rs: [Raw] }`),
+		ScalarMarshaler[mRaw]("Raw"),
+		Query(
+			Field("ok", func(Root) string { return "x" }),
+			Field("r", func(Root) mRaw { return mRaw{out} }),
+			Field("rs", func(Root) []mRaw { return []mRaw{{`"a"`}, {out}} }),
+		))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := NewExecutor(s)
+	for _, tc := range []struct{ name, out string }{
+		{"a second value and a key", `"a","b":"c"`},
+		{"an unquoted string", `123e4567-e89b-12d3-a456-426614174000`},
+		{"an unterminated string", `"a`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out = tc.out
+			resp := run(t, e, `{ ok r rs }`, "")
+			if got := string(resp.Data); got != `{"ok":"x","r":null,"rs":["a",null]}` {
+				t.Fatalf("data = %s, want the bad value withheld and its neighbours intact", got)
+			}
+			if len(resp.Errors) != 2 {
+				t.Fatalf("want one error per bad value, got %s", errorsJSON(resp.Errors))
+			}
+			for _, e := range resp.Errors {
+				if e.Message != "scalar Raw: marshal must write exactly one JSON value" {
+					t.Errorf("message = %q", e.Message)
+				}
+			}
+		})
+	}
+
+	// What an encoder writes is one value and stays one: json.Encoder ends
+	// it with a newline.
+	out = "{\"k\":[1,2]}\n"
+	resp := run(t, e, `{ r }`, "")
+	if len(resp.Errors) > 0 || !json.Valid(resp.Data) || !strings.Contains(string(resp.Data), `{"k":[1,2]}`) {
+		t.Fatalf("a well-formed value was refused: data %s, errors %s", resp.Data, errorsJSON(resp.Errors))
 	}
 }

@@ -23,6 +23,45 @@ func TestNewSchemaMinimal(t *testing.T) {
 	}
 }
 
+// An option chosen at run time is nil when the condition is false, and
+// Options already skips one; passed to NewSchema directly it was a nil
+// dereference before the schema had reported anything.
+func TestNewSchemaSkipsANilOption(t *testing.T) {
+	var optional SchemaOption
+	s, err := NewSchema(SDL(`type Query { a: Int }`),
+		optional,
+		Object[Root]("Query", Field("a", func(Root) int { return 1 })),
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectData(t, run(t, NewExecutor(s), `{ a }`, ""), `{"a":1}`)
+}
+
+// The specification requires a query root and gqlparser does not ask for one,
+// so SDL with only a Mutation -- or no SDL text at all -- built into a schema
+// that answers every query, introspection included, with "Schema does not
+// support operation type".
+func TestNewSchemaRequiresAQueryRoot(t *testing.T) {
+	for name, src := range map[string]Source{
+		"empty SDL":                           SDL(""),
+		"mutation only":                       SDL(`type Mutation { a: Int }`),
+		"a schema definition that names none": SDL(`schema { mutation: M } type M { a: Int } type Query { a: Int }`),
+	} {
+		_, err := NewSchema(src)
+		if err == nil || !strings.Contains(err.Error(), "the schema has no query root type") {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+	// A root under another name is a root.
+	_, err := NewSchema(SDL(`schema { query: Q } type Q { a: Int }`),
+		Query(Field("a", func(Root) *int { return nil })))
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNewSchemaInvalidSDL(t *testing.T) {
 	_, err := NewSchema(SDL(`type Query { a: Missing }`))
 	if err == nil || !strings.Contains(err.Error(), "Missing") {
