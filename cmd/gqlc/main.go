@@ -164,6 +164,18 @@ type fileConfig struct {
 		// &d.Field. See codegen.Wire.Pass.
 		Pass map[string]string `yaml:"pass"`
 	} `yaml:"wire"`
+	// fields says how single fields are answered, by type and field name,
+	// where gqlc's own reading has to be overruled:
+	//
+	//	fields:
+	//	  Employee:
+	//	    salary: { resolver: true }
+	//	  AiMcpServer:
+	//	    url: { name: URL }
+	//
+	// See fieldEntry. A generate ends by checking that every resolver: true
+	// field came out as a Resolver method.
+	Fields map[string]map[string]fieldEntry `yaml:"fields"`
 }
 
 // applyPreset fills in what the preset stands for wherever the file left a
@@ -331,7 +343,12 @@ func runTo(args []string, stdout, stderr io.Writer) error {
 	if err := fc.applyPreset(); err != nil {
 		return fmt.Errorf("gqlc: %s: %w", configPath, err)
 	}
+	manifest, err := fc.manifest()
+	if err != nil {
+		return fmt.Errorf("gqlc: %s: %w", configPath, err)
+	}
 	cfg := codegen.Config{
+		Manifest:               manifest,
 		AutoBind:               fc.AutoBind,
 		GroupFunc:              fc.groupFunc(),
 		RootFieldGroup:         rootFieldGroup,
@@ -359,7 +376,17 @@ func runTo(args []string, stdout, stderr io.Writer) error {
 		Verify:                 o.verify,
 		Notef:                  notef,
 	}
-	return codegen.Generate(context.Background(), cfg)
+	if err := codegen.Generate(context.Background(), cfg); err != nil {
+		return err
+	}
+	// Under -check as well: a check that passes has found the files on disk
+	// to be what a generate writes, and a generate writes them before this
+	// can refuse them, so a job that runs only -check must not pass them.
+	out := filepath.FromSlash(fc.Output)
+	if !filepath.IsAbs(out) {
+		out = filepath.Join(cfg.Dir, out)
+	}
+	return checkForcedResolvers(out, fc.GroupDir, fc.forcedResolvers())
 }
 
 // runFlags is the config-file-free path. Dir stays the process working

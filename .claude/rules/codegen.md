@@ -655,6 +655,20 @@ the other reserved names, since the root package declares each beside its unalia
 imports; `fed` is renamed only when `Federation` is on, which is the only time the root imports
 it -- renaming it always would have moved a package a non-federated schema already had.
 
+**`fields` in gqlc.yaml is `Manifest`'s field bindings, there so that no consumer keeps a
+wrapper for them** (`cmd/gqlc/fields.go`). The one real consumer ran a 270-line copy of gqlc's
+config parsing to add a manifest from two files of its own: 63 fields a service gates, which
+bound to a struct are read past the gate by every connection, `node(id)` and edge, and a few
+Go names gqlc does not derive. An entry that could be read two ways is refused, since on that
+list either reading is a silent override; `newManifest` already refuses an unknown type or
+field; and `checkForcedResolvers` reads each `generated.go` back, under `-check` too because a
+generate writes its files before it can fail them. It matches the `// Method resolves
+Type.field.` line `emitResolver` writes and derives no method name of its own, so a change to
+that line fails every forced field rather than passing one. The wrapper's output and gqlc's
+were diffed on that project: 3 187 files, no difference. **Still open, in `newManifest`:** a
+`name` entry on a field of an interface or input object is accepted and binds nothing, and one
+on a root field emits a call on `model.Query`, which does not exist.
+
 **`gqlc -check` (`Config.Check`) is a generate that writes and deletes nothing** and returns
 `ErrStale` naming each file it would create, rewrite or delete, relative to `Config.Dir`. It
 runs every refusal a generate runs first, so a broken configuration is an error and never

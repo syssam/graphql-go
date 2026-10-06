@@ -162,6 +162,23 @@ func (m *manifest) bound(typeName string) bool {
 	return ok && !tb.Go.zero()
 }
 
+// kindPhrase is a definition kind as an error names it.
+func kindPhrase(k ast.DefinitionKind) string {
+	switch k {
+	case ast.Interface:
+		return "an interface"
+	case ast.InputObject:
+		return "an input object"
+	case ast.Union:
+		return "a union"
+	case ast.Enum:
+		return "an enum"
+	case ast.Scalar:
+		return "a scalar"
+	}
+	return "not an object type"
+}
+
 // newManifest validates a manifest against the schema and folds its type
 // bindings into models. It returns the merged model map so an explicit
 // Config.Models entry and a manifest binding cannot silently disagree.
@@ -209,12 +226,28 @@ func newManifest(src *Manifest, schema *ast.Schema, models map[string]string) (*
 		if len(tb.Fields) == 0 {
 			continue
 		}
+		root := (schema.Query != nil && schema.Query.Name == tb.Name) ||
+			(schema.Mutation != nil && schema.Mutation.Name == tb.Name) ||
+			(schema.Subscription != nil && schema.Subscription.Name == tb.Name)
 		fields := make(map[string]FieldBinding, len(tb.Fields))
 		for _, name := range sortedKeys(tb.Fields) {
 			fb := tb.Fields[name]
 			fd := def.Fields.ForName(name)
 			if fd == nil {
 				errs = append(errs, fmt.Sprintf("manifest: field %s.%s is not defined in the schema", tb.Name, name))
+				continue
+			}
+			// A binding is how an object's field is answered. Anywhere else
+			// it binds nothing, silently: on a list of fields forced to be
+			// resolvers that is a gate believed to be there.
+			if def.Kind != ast.Object {
+				errs = append(errs, fmt.Sprintf("manifest: field %s.%s: %s is %s, and a field binding applies to an object type's field", tb.Name, name, tb.Name, kindPhrase(def.Kind)))
+				continue
+			}
+			// A root has no Go value to read a field or call a method on:
+			// its fields are Resolver methods and nothing else.
+			if root && fb.Kind != FieldResolver {
+				errs = append(errs, fmt.Sprintf("manifest: field %s.%s is a root field, which is always a Resolver method and cannot be bound to a Go field or method", tb.Name, name))
 				continue
 			}
 			if fb.Kind == FieldStruct && len(fd.Arguments) > 0 {

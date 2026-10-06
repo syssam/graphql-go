@@ -53,6 +53,13 @@ gqlc.yaml keys (cmd/gqlc/README.md describes each):
     tagDirective.valueArg   its argument holding the tag value
   fieldNames                Go names for SDL fields and arguments, by name or
                             by coordinate (User.userId, Query.user(byId:))
+  fields                    Type: field: how that one field is answered;
+                            gqlc.yaml only, the -schema form has no flag for it
+    fields.resolver         true: always a Resolver method, which a generate
+                            and a -check confirm it became
+    fields.name             the Go field answering it, if not the one derived
+    fields.method           true: name is a method, not a struct field
+    fields.value            true: name holds a value at a nullable position
   jsonTags                  json tags on generated model fields
   structObjectFields        object fields read from the model, as gqlgen did
   inputListPointers         []*T for lists of input objects, as gqlgen did

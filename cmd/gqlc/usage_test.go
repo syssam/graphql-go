@@ -31,7 +31,7 @@ func TestHelpNamesEveryKeyAndFlag(t *testing.T) {
 	hasLine := func(indent, key string) bool {
 		return strings.Contains(help, "\n"+indent+key+" ") || strings.Contains(help, "\n"+indent+key+"\n")
 	}
-	keys := 0
+	keys, nested := 0, 0
 	typ := reflect.TypeFor[fileConfig]()
 	for i := range typ.NumField() {
 		f := typ.Field(i)
@@ -43,13 +43,23 @@ func TestHelpNamesEveryKeyAndFlag(t *testing.T) {
 		if !hasLine("  ", key) {
 			t.Errorf("the help has no line for the gqlc.yaml key %s", key)
 		}
-		if f.Type.Kind() != reflect.Struct {
+		// A key whose entries are structs has their keys to list too, however
+		// many maps or lists the entries sit under: fields is type, then
+		// field, then the entry.
+		entry := f.Type
+		for entry.Kind() == reflect.Map || entry.Kind() == reflect.Slice || entry.Kind() == reflect.Pointer {
+			entry = entry.Elem()
+		}
+		if entry.Kind() != reflect.Struct {
 			continue
 		}
-		for j := range f.Type.NumField() {
-			sub, _, _ := strings.Cut(f.Type.Field(j).Tag.Get("yaml"), ",")
+		if f.Type != entry {
+			nested++
+		}
+		for j := range entry.NumField() {
+			sub, _, _ := strings.Cut(entry.Field(j).Tag.Get("yaml"), ",")
 			if sub == "" {
-				t.Fatalf("fileConfig.%s.%s has no yaml key", f.Name, f.Type.Field(j).Name)
+				t.Fatalf("fileConfig.%s.%s has no yaml key", f.Name, entry.Field(j).Name)
 			}
 			keys++
 			if !hasLine("    ", key+"."+sub) {
@@ -57,8 +67,11 @@ func TestHelpNamesEveryKeyAndFlag(t *testing.T) {
 			}
 		}
 	}
-	if keys < 30 {
+	if keys < 35 {
 		t.Fatalf("only %d keys found by reflection; the test is not reading fileConfig", keys)
+	}
+	if nested == 0 {
+		t.Fatal("no key with entries under a map was walked; fields is one, and its keys went unchecked")
 	}
 	fs, _ := newFlags(&bytes.Buffer{})
 	fs.VisitAll(func(f *flag.Flag) {

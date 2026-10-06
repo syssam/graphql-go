@@ -430,3 +430,50 @@ func TestInlineList(t *testing.T) {
 		t.Errorf("a misspelled coordinate must fail generation, got %v", err)
 	}
 }
+
+// A field binding says how one field of an object type is answered, and
+// nothing else has a field to answer that way. On an interface or an input
+// object it bound nothing and said nothing, which on a list of fields forced
+// to be resolvers is a gate the author believes is there; on a root field it
+// emitted a call on a Query model the generator never writes.
+func TestManifestRefusesAFieldBindingWithNothingToBind(t *testing.T) {
+	const sdl = `
+interface Node { id: ID! }
+input Filter { q: String }
+type Product implements Node { id: ID! title: String! }
+type Query { product(f: Filter): Product }
+`
+	for name, tc := range map[string]struct {
+		typ, field string
+		binding    FieldBinding
+		want       string
+	}{
+		"a Go field on an interface":        {"Node", "id", FieldBinding{Kind: FieldStruct, GoName: "ID"}, "field Node.id: Node is an interface"},
+		"a forced resolver on an interface": {"Node", "id", FieldBinding{Kind: FieldResolver}, "field Node.id: Node is an interface"},
+		"a Go field on an input object":     {"Filter", "q", FieldBinding{Kind: FieldStruct, GoName: "Q"}, "field Filter.q: Filter is an input object"},
+		"a Go field on a root field":        {"Query", "product", FieldBinding{Kind: FieldStruct, GoName: "Product"}, "field Query.product is a root field"},
+		"a Go method on a root field":       {"Query", "product", FieldBinding{Kind: FieldMethod, GoName: "Product"}, "field Query.product is a root field"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFiles(t, dir, map[string]string{"schema.graphql": sdl})
+			err := Generate(context.Background(), Config{
+				Dir: dir, SchemaGlobs: []string{"schema.graphql"}, Output: "graph", Package: "hello/graph",
+				Manifest: &Manifest{Types: []TypeBinding{{Name: tc.typ, Fields: map[string]FieldBinding{tc.field: tc.binding}}}},
+			})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want one containing %q", err, tc.want)
+			}
+		})
+	}
+
+	// A root field forced to be a resolver is what it already is.
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{"schema.graphql": sdl})
+	if err := Generate(context.Background(), Config{
+		Dir: dir, SchemaGlobs: []string{"schema.graphql"}, Output: "graph", Package: "hello/graph",
+		Manifest: &Manifest{Types: []TypeBinding{{Name: "Query", Fields: map[string]FieldBinding{"product": {Kind: FieldResolver}}}}},
+	}); err != nil {
+		t.Fatalf("a root field named as a resolver was refused: %v", err)
+	}
+}
