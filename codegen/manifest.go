@@ -255,3 +255,75 @@ func (m *manifest) enumConstant(typeName, value string) (string, bool) {
 	c, ok := tb.Values[value]
 	return c, ok && c != ""
 }
+
+// mergeManifests lets an explicit manifest override discovery. Discovery is a
+// guess from names; a written binding is a statement, so the statement wins,
+// field by field rather than whole types.
+func mergeManifests(discovered, explicit *Manifest) *Manifest {
+	if discovered == nil {
+		return explicit
+	}
+	if explicit == nil {
+		return discovered
+	}
+	out := &Manifest{}
+	byName := map[string]int{}
+	for _, tb := range discovered.Types {
+		byName[tb.Name] = len(out.Types)
+		out.Types = append(out.Types, tb)
+	}
+	for _, tb := range explicit.Types {
+		i, ok := byName[tb.Name]
+		if !ok {
+			out.Types = append(out.Types, tb)
+			continue
+		}
+		merged := out.Types[i]
+		if !tb.Go.zero() {
+			merged.Go = tb.Go
+		}
+		if tb.Group != "" {
+			merged.Group = tb.Group
+		}
+		if len(tb.Fields) > 0 {
+			fields := map[string]FieldBinding{}
+			for k, v := range merged.Fields {
+				fields[k] = v
+			}
+			for k, v := range tb.Fields {
+				fields[k] = v
+			}
+			merged.Fields = fields
+		}
+		out.Types[i] = merged
+	}
+	// Discovery is the only producer of these, and an explicit manifest may
+	// add its own: an author who knows about a second Go type says so here
+	// rather than editing generated code.
+	out.ExtraEnums = slices.Concat(discovered.ExtraEnums, explicit.ExtraEnums)
+	return out
+}
+
+// yieldToDeclared drops the Go type a discovery found for a type that is
+// already declared in Models, keeping whatever else the discovery learned
+// about it.
+//
+// AutoBind discovers; Models and a binding directive declare. A disagreement
+// between two declarations is a mistake and stays an error, but a discovery
+// that disagrees with a declaration is not one -- it is the declaration doing
+// its job. The two only meet once a schema carries its bindings in the SDL:
+// before ModelDirective, Models was empty on this path and the discovery had
+// nothing to disagree with.
+func yieldToDeclared(discovered *Manifest, models map[string]string) *Manifest {
+	if discovered == nil || len(models) == 0 {
+		return discovered
+	}
+	out := &Manifest{Types: make([]TypeBinding, len(discovered.Types)), ExtraEnums: discovered.ExtraEnums}
+	copy(out.Types, discovered.Types)
+	for i := range out.Types {
+		if _, declared := models[out.Types[i].Name]; declared {
+			out.Types[i].Go = GoType{}
+		}
+	}
+	return out
+}

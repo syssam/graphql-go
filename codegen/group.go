@@ -371,3 +371,15 @@ func (b *builder) modelGroupsAcyclic(groups []string) bool {
 	}
 	return true
 }
+
+// groupRel is a group package's directory relative to Output, and
+// groupImport its import path. Every place that names a group package goes
+// through them, so a file and the imports of it cannot disagree.
+func (b *builder) groupRel(g string) string {
+	if b.cfg.GroupDir == "" {
+		return g
+	}
+	return filepath.ToSlash(filepath.Clean(b.cfg.GroupDir)) + "/" + g
+}
+
+func (b *builder) groupImport(g string) string { return b.cfg.Package + "/" + b.groupRel(g) }

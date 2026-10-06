@@ -696,7 +696,7 @@ delete (hand-written, scaffolded, another generator's); a directory the go comma
 (`testdata`, `vendor`, `.`/`_` names) is not walked, since a golden copy of gqlc output there
 is a fixture; a subdirectory is another gqlc root only with *both* a `schema/` directory and a
 gqlc-headed `schema.go` (`isGqlcRoot`) -- `schema/` alone skipped a group holding a
-hand-written one and left its stale files forever; and `emit.go`'s `header` uses the same
+hand-written one and left its stale files forever; and `header.go`'s `header` uses the same
 constant, so the header written and the header recognised cannot drift. What this run wrote is
 recognised **by file identity** (`writtenSet.has`): the same path, or a spelling differing only
 in case that `os.SameFile` says is the same file. Both simpler rules were shipped and both were
