@@ -10,11 +10,11 @@ require (
 	github.com/labstack/echo/v5 v5.3.1
 	github.com/syssam/graphql-go v0.0.0-00010101000000-000000000000
 	github.com/valyala/fasthttp v1.74.0
-	github.com/vektah/gqlparser/v2 v2.5.59
+	github.com/vektah/gqlparser/v2 v2.5.64
 )
 
 require (
-	github.com/agnivade/levenshtein v1.2.1 // indirect
+	github.com/agnivade/levenshtein v1.2.2 // indirect
 	github.com/coder/websocket v1.8.15 // indirect
 	github.com/fasthttp/websocket v1.5.12 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
