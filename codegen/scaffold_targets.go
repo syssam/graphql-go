@@ -34,6 +34,13 @@ func (b *builder) checkScaffoldTargets(outDir string, files map[string][]byte) e
 		if err != nil {
 			return fmt.Errorf("codegen: scaffold %s: %w", name, err)
 		}
+		// Asked outright: ReadDir's answer for a file where the directory
+		// should be is the OS's. Windows gave one that reads as "not there
+		// yet", so the refusal came after the first file was written, and a
+		// check called the same setup current.
+		if fi, err := os.Stat(dir); err == nil && !fi.IsDir() {
+			return fmt.Errorf("codegen: scaffold %s: %s is a file, not a directory", name, dir)
+		}
 		entries, err := os.ReadDir(dir)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
