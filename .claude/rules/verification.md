@@ -138,6 +138,18 @@ like if the thing under test were broken:
   the workflow did not, though the mirror exists to fail when CI would. A step hardened in one
   belongs in the other; `BACKOFFICE_REQUIRE_POSTGRES` makes the SQLite fallback a failure in
   both.
+- **A mirror with no Windows leg, and a gate that hid why.** `scripts/ci-local.sh` passed every
+  job on 2026-10-28 and the first CI run of 37 commits failed on Windows: the Linux container
+  and the macOS host both refuse a scaffold target that is a file before writing anything,
+  and Windows' `ReadDir` answered in a way `checkScaffoldTargets` read as "not there yet", so
+  the generate wrote eight files and then failed and `-check` called the setup current. Two
+  things made it slow to find. `gate.sh` kept only lines starting `---`, `FAIL` or `ok`, which
+  drops the assertion message and every indented subtest, so the log named the test and not
+  the case; it prints the failing package whole now. And the first guess, a `\` where the
+  test expected `/`, was real and was hiding the bug: fixing it moved the failure to the
+  next assertion. The fix asks `os.Stat` instead of reading the OS's error. **No test fails
+  for it off Windows**, since Linux and macOS refuse correctly with or without it; the
+  Windows leg of CI is the guard, so a PR is the only place this is checked before `main`.
 - **A snapshot that pinned names.** `docs/public-api.txt` held `var X` and `const Y` and no
   more, so an exported variable's type and a constant's value could change under an unchanged
   line. It renders the declared type and the value, following a re-export into the internal
