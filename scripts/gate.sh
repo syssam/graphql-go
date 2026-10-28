@@ -53,7 +53,11 @@ for m in $modules; do
   # because the bug class it finds here is the whole reason it is mandatory.
   if ! (cd "$m" && go test -race -count=1 $short ./... >/tmp/gate.$$ 2>&1); then
     echo "TEST FAILED"
-    grep -E "^(---|FAIL|ok)" /tmp/gate.$$ | grep -v "^ok" | head -20
+    # Everything a failing package printed, not only its "--- FAIL" lines: the
+    # assertion message and the indented subtest that failed are what say why,
+    # and a Windows-only failure cannot be re-run from here. A passing package
+    # prints one "ok" line without -v, so what is left is the failures.
+    grep -v -E "^(ok|\?) " /tmp/gate.$$ | head -300
     failed="$failed $name"
     continue
   fi
