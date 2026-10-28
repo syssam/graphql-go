@@ -136,7 +136,8 @@ func TestTimedWriterSetsADeadlineImmediatelyBeforeALargeWrite(t *testing.T) {
 }
 
 // A buffering writer still holds the end of the piece just written. Setting
-// the next deadline first would spend it on those bytes.
+// the next deadline first would spend it on those bytes. The flush has one of
+// its own before it, so each piece boundary is arm, flush, arm.
 func TestTimedWriterFlushesAPieceBeforeTheNextDeadline(t *testing.T) {
 	var log timedLog
 	w := NewTimedWriter(&log, log.arm, log.flush)
@@ -145,12 +146,45 @@ func TestTimedWriterFlushesAPieceBeforeTheNextDeadline(t *testing.T) {
 	if n, err := w.Write(payload); n != len(payload) || err != nil {
 		t.Fatalf("Write = %d, %v", n, err)
 	}
-	want := []string{"arm", "bytes", "flush", "arm", "bytes", "flush", "arm", "bytes"}
+	want := []string{"arm", "bytes", "arm", "flush", "arm", "bytes", "arm", "flush", "arm", "bytes"}
 	if !slices.Equal(log.ops, want) {
 		t.Errorf("ops = %v, want %v", log.ops, want)
 	}
 	if !bytes.Equal(log.data.Bytes(), payload) {
 		t.Error("the payload did not arrive as written")
+	}
+}
+
+// A flush runs under a deadline set immediately before it. The frame of an
+// event is written under the deadline set with it, and EventData then reads
+// the payload through for line breaks before passing any of it on, which over
+// 32 MiB takes about a second under -race. A buffering writer's flush of the
+// frame, when the payload's first write arrives, ran under a deadline that
+// had passed in the meantime. On fasthttp the status line goes out with the
+// first body bytes, so the connection was closed before a client had read
+// one: "status line = \"\", EOF" in the stall tests of transport/, on
+// GitHub's runners and rarely anywhere faster, because whether the deadline
+// is re-set before fasthttp's goroutine writes is a race.
+func TestTimedWriterFlushesUnderADeadlineSetJustBeforeIt(t *testing.T) {
+	var log timedLog
+	w := NewTimedWriter(&log, log.arm, log.flush)
+	w.Arm()
+	_, _ = w.Write([]byte("event: next\ndata: "))
+	if n, err := w.Write(make([]byte, timedPiece)); n != timedPiece || err != nil {
+		t.Fatalf("Write = %d, %v", n, err)
+	}
+	flushes := 0
+	for i, op := range log.ops {
+		if op != "flush" {
+			continue
+		}
+		flushes++
+		if i == 0 || log.ops[i-1] != "arm" {
+			t.Errorf("ops = %v: the flush at %d does not follow a deadline", log.ops, i)
+		}
+	}
+	if flushes == 0 {
+		t.Errorf("ops = %v: nothing was flushed, so nothing was checked", log.ops)
 	}
 }
 
