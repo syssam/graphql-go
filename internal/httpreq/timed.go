@@ -28,9 +28,14 @@ const timedPiece = 32 << 10
 // was written. Under this rule what happens between a deadline and a write it
 // covers is work on less than a piece.
 //
-// flush, when there is one, runs before the deadline is set again. A writer
-// that buffers -- fasthttp's stream writer -- would otherwise have the new
-// deadline cover bytes of the piece before, still on their way out.
+// flush, when there is one, runs before the deadline is set again for the next
+// piece. A writer that buffers -- fasthttp's stream writer -- would otherwise
+// have the new deadline cover bytes of the piece before, still on their way
+// out. It runs under a deadline set immediately before it as well, since what
+// it flushes was written under one that the work since may have outlived: the
+// frame of an event, and EventData's read of the payload that follows it. On
+// fasthttp the status line goes out with the first body bytes, so a flush
+// under a passed deadline closed the connection before a client had one.
 type TimedWriter struct {
 	w io.Writer
 	// sw is w when it takes a string as it is, which saves the frame around
@@ -61,6 +66,7 @@ func (t *TimedWriter) Write(p []byte) (int, error) {
 		piece := p[written:min(len(p), written+timedPiece)]
 		if t.sent+len(piece) > timedPiece {
 			if t.flush != nil {
+				t.arm()
 				if err := t.flush(); err != nil {
 					return written, err
 				}
