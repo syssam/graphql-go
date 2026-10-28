@@ -228,6 +228,12 @@ job_lint() {
 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@'"$golangci"'
 golangci-lint run ./...
 '"$gen_compare"'
+mods=$(find . -name go.mod -not -path "./ref/*" | sed "s|/go.mod$||")
+[ -n "$mods" ]
+for mod in $mods; do
+  echo "== tidy $mod"
+  (cd "$mod" && go mod tidy -diff)
+done
 for mod in $(find . -name go.mod -not -path "./ref/*" -not -path "./go.mod" | sed "s|/go.mod$||"); do
   echo "== $mod"
   (cd "$mod" && golangci-lint run ./...)
