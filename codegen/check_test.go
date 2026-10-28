@@ -325,7 +325,8 @@ func TestScaffoldRefusalsComeBeforeAnythingIsWritten(t *testing.T) {
 		// The gqlgen habit: the implementation named after the interface
 		// generated.go declares beside it.
 		"a type the generated code declares": {map[string]string{"user": "graph/user.Resolver", "post": "graph/post.Handler"}, nil, "Resolver is declared by the generated code"},
-		"a target directory that is a file":  {map[string]string{"user": "internal/user.H", "post": "graph/post.Handler"}, map[string]string{"internal/user": "a file\n"}, "internal/user"},
+		// The error carries the path as the OS spells it: a backslash on Windows.
+		"a target directory that is a file": {map[string]string{"user": "internal/user.H", "post": "graph/post.Handler"}, map[string]string{"internal/user": "a file\n"}, filepath.FromSlash("internal/user")},
 		"a target package that does not parse": {both,
 			map[string]string{"graph/user/handler.go": "package user\n\nfunc (\n"}, "handler.go"},
 		"a name of the author's that generated code declares": {both,
