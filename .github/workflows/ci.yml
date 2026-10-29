@@ -42,6 +42,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+          # Five modules, five go.sum files. The default hashes only the root
+          # one, so a dependency change under benchmarks/ or examples/ kept the
+          # old key, restored a cache without it, and never saved a new one.
+          cache-dependency-path: "**/go.sum"
 
       - name: Check formatting
         shell: bash
@@ -105,6 +109,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: "**/go.sum"
       # With the URL unset or its name misspelled the same suite passes on
       # SQLite. BACKOFFICE_REQUIRE_POSTGRES makes that a failure, so this job
       # cannot be green without having reached the server.
@@ -124,6 +129,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: "**/go.sum"
       # golangci-lint must be built with a Go at least as new as go.mod's
       # version, or it refuses to load the config with "the Go language
       # version (goX) used to build golangci-lint is lower than the targeted
@@ -212,6 +218,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: "**/go.sum"
 
       # Without -race, deliberately: the detector changes allocation counts,
       # and the test skips itself under it. The gate job runs everything else
@@ -257,6 +264,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: "**/go.sum"
       # Built from source with the toolchain go.mod names, not installed from
       # a release: a govulncheck older than that Go cannot load the packages
       # and reports nothing useful, the same failure staticcheck has here.
@@ -286,6 +294,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: "**/go.sum"
       # Short by design. This is a smoke test that the fuzz targets still build
       # and that the seed corpus passes, not a fuzzing campaign.
       #
