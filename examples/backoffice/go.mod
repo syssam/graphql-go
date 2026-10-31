@@ -11,7 +11,7 @@ require (
 	github.com/syssam/graphql-go v0.0.0-20260926154251-135bb6be891a
 	github.com/syssam/velox v0.3.1-0.20260927083806-b69dda8e0d24
 	github.com/syssam/velox/contrib/graphqlgo v0.0.0-20260927080053-315eb94e9922
-	github.com/vektah/gqlparser/v2 v2.5.59
+	github.com/vektah/gqlparser/v2 v2.5.64
 	go.opentelemetry.io/otel/sdk v1.46.0
 	go.opentelemetry.io/otel/trace v1.46.0
 	go.uber.org/fx v1.24.0
@@ -21,7 +21,7 @@ require (
 require (
 	ariga.io/atlas v1.0.0 // indirect
 	github.com/agext/levenshtein v1.2.3 // indirect
-	github.com/agnivade/levenshtein v1.2.1 // indirect
+	github.com/agnivade/levenshtein v1.2.2 // indirect
 	github.com/apparentlymart/go-textseg/v15 v15.0.0 // indirect
 	github.com/bmatcuk/doublestar v1.3.4 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
