@@ -26,6 +26,7 @@ the single best page to read before writing any binding.
 | [`graphql-http-audit.md`](graphql-http-audit.md) | The GraphQL-over-HTTP specification's own audit suite against `gqlhttp`. |
 | [`benchmarks.md`](benchmarks.md) | The comparison with gqlgen, including per-transport costs and what was retracted. |
 | [`performance.md`](performance.md) | Latency percentiles, subscriptions at scale, schema build cost, and a "what is not measured" section that is the point of the document. |
+| [`migrating-from-gqlgen.md`](migrating-from-gqlgen.md) | What behaves differently from gqlgen without a compile error: HTTP status of a request error, DataLoaders without a timer, enums, nil slices, and what `gqlc` reports. |
 | [`api-stability.md`](api-stability.md) | What is covered by the compatibility promise, and why a gqlparser v3 forces a major version here. |
 | [`external-review.md`](external-review.md) | The scope to hand an outside security reviewer: where to look, what in-repo review already found, what nobody has examined. |
 
