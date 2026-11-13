@@ -55,6 +55,7 @@ func (b *builder) scaffoldGroup(pkgs *pkgCache, name, group, target string) ([]s
 		names[i] = m.name
 	}
 	var stubs strings.Builder
+	var written []string
 	for _, m := range sigs {
 		if have[m.name] {
 			continue
@@ -69,7 +70,8 @@ func (b *builder) scaffoldGroup(pkgs *pkgCache, name, group, target string) ([]s
 				stubs.WriteString(strings.TrimRight("// "+line, " ") + "\n")
 			}
 		}
-		fmt.Fprintf(&stubs, "func (r *%s) %s%s {\n\tpanic(%q)\n}\n", typ, m.name, m.signature, "not implemented: "+m.coord)
+		fmt.Fprintf(&stubs, "func (r *%s) %s%s {\n\tpanic(%q)\n}\n", typ, m.name, m.signature, stubPanic+m.coord)
+		written = append(written, m.coord)
 	}
 	file := filepath.Join(dir, identFrom(name)+".resolvers.go")
 	old, err := os.ReadFile(file)
@@ -228,6 +230,7 @@ func (b *builder) scaffoldGroup(pkgs *pkgCache, name, group, target string) ([]s
 	// What was just written is in the package now, for a later group that
 	// shares it.
 	idx.add(pkg, typ, sigs)
+	idx.addStubs(typ, written)
 	return names, nil
 }
 

@@ -701,6 +701,22 @@ build information -- under `go tool` the version `go.mod` requires and, after `=
 from the code before the replace was read printed the required version alone, which is how the
 first version of this comment came to say a replace is not recorded.
 
+**A change in what answers a field is named, by a generate and a check** (`bindingChanges`).
+AutoBind rebinding `Task.createdAt` from a resolver to a newly added `CreatedAt` column changes
+the value served, and was visible only as a rewritten `generated.go`. The old answer is read
+back from the `generated.go` on disk with `go/parser` (`bindingSources`), so it reads exactly
+the shapes `fieldCall` and `manifestFieldCall` write; an emitter shape it does not recognise is
+left out, which makes a change unreported rather than misreported, and
+`TestBindingSourcesReadsEveryEmittedShape` lists every shape -- add a line there with a new one.
+Only a `generated.go` both runs have is compared.
+
+**A stub left as scaffolded is named after every generate, and `CheckStubs` (`-check -stubs`)
+fails on it** (`scaffoldedStub`). The body must be exactly the one `panic(stubPanic+coord)`
+statement: anything the author added makes it theirs. A generate counts what the package held
+plus what this run wrote (`pkgIndex.addStubs`), since the index is read before the write; a
+check reads `b.checked`, which `checkScaffoldTargets` fills. `-stubs` is refused without
+`-check`, because a generate fails over stubs it has just written.
+
 **A file gqlc stops writing is deleted, and only if it is gqlc's.** `pruneGenerated` removes
 every `.go` under `Output` that starts with `generatedHeader` and was not written this run,
 then any directory that left empty. Before it, `examples/backoffice` carried four

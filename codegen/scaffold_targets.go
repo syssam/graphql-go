@@ -214,6 +214,37 @@ type targetFile struct {
 	// identifier among them.
 	methods              [][2]string
 	funcs, types, values []string
+	// stubs is each method still holding the body scaffolding wrote, as
+	// receiver type and the coordinate it resolves.
+	stubs [][2]string
+}
+
+// stubPanic opens the message of the panic a scaffolded stub holds.
+const stubPanic = "not implemented: "
+
+// scaffoldedStub reports whether d's body is still the one scaffoldGroup
+// wrote, panic("not implemented: Type.field"), and the coordinate it names.
+// That exact body and nothing else: a stub the author began is theirs.
+func scaffoldedStub(d *goast.FuncDecl) (string, bool) {
+	if d.Body == nil || len(d.Body.List) != 1 {
+		return "", false
+	}
+	stmt, ok := d.Body.List[0].(*goast.ExprStmt)
+	if !ok {
+		return "", false
+	}
+	call, ok := stmt.X.(*goast.CallExpr)
+	if !ok || len(call.Args) != 1 {
+		return "", false
+	}
+	if fn, ok := call.Fun.(*goast.Ident); !ok || fn.Name != "panic" {
+		return "", false
+	}
+	msg, ok := stringLit(call.Args[0])
+	if !ok || !strings.HasPrefix(msg, stubPanic) {
+		return "", false
+	}
+	return strings.TrimPrefix(msg, stubPanic), true
 }
 
 // parseTarget parses one file of a target's package.
@@ -229,6 +260,9 @@ func (b *builder) parseTarget(path string, src []byte) (*targetFile, error) {
 		case *goast.FuncDecl:
 			if d.Recv != nil && len(d.Recv.List) == 1 {
 				f.methods = append(f.methods, [2]string{receiverName(d.Recv.List[0].Type), d.Name.Name})
+				if coord, ok := scaffoldedStub(d); ok {
+					f.stubs = append(f.stubs, [2]string{receiverName(d.Recv.List[0].Type), coord})
+				}
 			} else {
 				f.funcs = append(f.funcs, d.Name.Name)
 			}

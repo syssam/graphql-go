@@ -9,7 +9,7 @@ import (
 
 // check is Config.Check: what a generate would create, rewrite and delete,
 // named relative to Config.Dir, in that order and sorted within each.
-func (b *builder) check(outDir string, rels []string, olds [][]byte, files map[string][]byte, recorded []string) error {
+func (b *builder) check(outDir string, rels []string, olds [][]byte, files map[string][]byte, recorded []string, changes []string) error {
 	base, _ := filepath.Abs(b.dir)
 	// name puts p, a path on disk, relative to Config.Dir. Both are made
 	// absolute first, since either may be given relative to the working
@@ -73,6 +73,12 @@ func (b *builder) check(outDir string, rels []string, olds [][]byte, files map[s
 	}
 	if len(lines) == 0 {
 		return nil
+	}
+	if len(changes) > 0 {
+		lines = append(lines, "and answer these fields with something else:")
+		for _, c := range changes {
+			lines = append(lines, "  "+c)
+		}
 	}
 	return fmt.Errorf("%w; a generate would\n%s", ErrStale, strings.Join(lines, "\n"))
 }

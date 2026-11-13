@@ -257,6 +257,7 @@ type options struct {
 	schema, models               repeatable
 	nullableOmittable, zeroNulls bool
 	check, version, verify       bool
+	stubs                        bool
 }
 
 // newFlags is the command's flag set, apart so that a test can list every
@@ -268,6 +269,7 @@ func newFlags(stderr io.Writer) (*flag.FlagSet, *options) {
 	fs.Usage = func() { usage(fs, stderr) }
 	fs.StringVar(&o.config, "config", "gqlc.yaml", "path to gqlc.yaml")
 	fs.BoolVar(&o.check, "check", false, "write nothing; fail naming each file a generate would change")
+	fs.BoolVar(&o.stubs, "stubs", false, "with -check: also fail while a scaffolded stub still panics")
 	fs.BoolVar(&o.verify, "verify", false, "go build the output once written; fail with what the compiler says")
 	fs.BoolVar(&o.version, "version", false, "print the graphql-go version gqlc was built from")
 	fs.Var(&o.schema, "schema", "SDL file or glob, repeated or comma-separated; the flag form")
@@ -299,6 +301,11 @@ func runTo(args []string, stdout, stderr io.Writer) error {
 		_, err := fmt.Fprintln(stdout, version())
 		return err
 	}
+	// A generate names the stubs in a note already; failing it over the stubs
+	// it has just written would fail every generate that adds a field.
+	if o.stubs && !o.check {
+		return errors.New("gqlc: -stubs is part of a check; pass -check with it")
+	}
 	notef := func(format string, args ...any) {
 		// A check that passes says nothing, so that it can stand in a CI job
 		// or a pre-commit hook; the notes are a generate's to make.
@@ -319,7 +326,7 @@ func runTo(args []string, stdout, stderr io.Writer) error {
 		if explicitConfig {
 			return errors.New("gqlc: -config and -schema are two ways to say the same thing; pass one")
 		}
-		return runFlags(o.schema, o.out, o.pkg, o.models, o.nullableOmittable, o.zeroNulls, o.check, o.verify, notef)
+		return runFlags(o.schema, o.out, o.pkg, o.models, o.nullableOmittable, o.zeroNulls, o.check, o.stubs, o.verify, notef)
 	}
 
 	configPath := o.config
@@ -373,6 +380,7 @@ func runTo(args []string, stdout, stderr io.Writer) error {
 		Wire:                   codegen.Wire{Deps: fc.Wire.Deps, Pass: fc.Wire.Pass},
 		FieldNames:             fc.FieldNames,
 		Check:                  o.check,
+		CheckStubs:             o.stubs,
 		Verify:                 o.verify,
 		Notef:                  notef,
 	}
@@ -391,7 +399,7 @@ func runTo(args []string, stdout, stderr io.Writer) error {
 
 // runFlags is the config-file-free path. Dir stays the process working
 // directory, so -schema and -out are read the way a shell would read them.
-func runFlags(schema repeatable, out, pkg string, models repeatable, nullableOmittable, zeroForNull, check, verify bool, notef func(string, ...any)) error {
+func runFlags(schema repeatable, out, pkg string, models repeatable, nullableOmittable, zeroForNull, check, stubs, verify bool, notef func(string, ...any)) error {
 	if out == "" {
 		return errors.New("gqlc: -out is required with -schema")
 	}
@@ -412,6 +420,7 @@ func runFlags(schema repeatable, out, pkg string, models repeatable, nullableOmi
 		NullableInputOmittable: nullableOmittable,
 		ZeroForNullInputs:      zeroForNull,
 		Check:                  check,
+		CheckStubs:             stubs,
 		Verify:                 verify,
 		Notef:                  notef,
 	})

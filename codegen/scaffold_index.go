@@ -60,6 +60,22 @@ type pkgIndex struct {
 	// not in the build Wire is part of, and a second one beside it is a
 	// redeclaration as soon as the tests are built.
 	inTests map[string]string
+	// stubs is, for each type, the coordinates its methods still panic for
+	// as scaffolding wrote them: read from the package, plus what this run
+	// has written.
+	stubs map[string]map[string]bool
+}
+
+func (p *pkgIndex) addStubs(typ string, coords []string) {
+	if len(coords) == 0 {
+		return
+	}
+	if p.stubs[typ] == nil {
+		p.stubs[typ] = map[string]bool{}
+	}
+	for _, c := range coords {
+		p.stubs[typ][c] = true
+	}
 }
 
 // add records the Resolver methods of typ as declared, after its stubs and,
@@ -80,7 +96,7 @@ func (p *pkgIndex) add(pkg, typ string, sigs []resolverSig) {
 // indexPackage reads dir's non-test files once. A directory that does not
 // exist yet is an empty package.
 func (b *builder) indexPackage(dir string) (*pkgIndex, error) {
-	idx := &pkgIndex{dir: dir, methods: map[string]map[string]bool{}, declared: map[string]bool{}, generated: map[string]bool{}, funcs: map[string]bool{}, wanted: map[string]bool{}, names: map[string]bool{}, inTests: map[string]string{}}
+	idx := &pkgIndex{dir: dir, methods: map[string]map[string]bool{}, declared: map[string]bool{}, generated: map[string]bool{}, funcs: map[string]bool{}, wanted: map[string]bool{}, names: map[string]bool{}, inTests: map[string]string{}, stubs: map[string]map[string]bool{}}
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return idx, nil
@@ -145,6 +161,9 @@ func (b *builder) indexPackage(dir string) (*pkgIndex, error) {
 				idx.methods[recv] = map[string]bool{}
 			}
 			idx.methods[recv][name] = true
+		}
+		for _, st := range f.stubs {
+			idx.addStubs(st[0], []string{st[1]})
 		}
 		for _, name := range f.funcs {
 			idx.funcs[name] = true

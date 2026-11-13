@@ -160,11 +160,33 @@ func (b *builder) scaffold(groups []string) error {
 			t.want[m] = true
 		}
 	}
+	stubs := map[string]bool{}
 	for _, k := range order {
 		t := impls[k]
 		b.reportStale(t.groups, t.spelled, k.idx.methods[k.typ], t.want)
+		maps.Copy(stubs, k.idx.stubs[k.typ])
 	}
+	b.reportStubs(stubs)
 	return nil
+}
+
+// reportStubs names the Resolver methods still holding the panic scaffolding
+// wrote, as one note for the whole run however many groups hold them: a
+// project with hundreds of groups and stubs left on purpose would otherwise
+// read a line per group on every generate. CheckStubs lists them all.
+func (b *builder) reportStubs(stubs map[string]bool) {
+	if len(stubs) == 0 {
+		return
+	}
+	const shown = 10
+	coords := slices.Sorted(maps.Keys(stubs))
+	more := ""
+	if len(coords) > shown {
+		more = fmt.Sprintf(" and %d more", len(coords)-shown)
+		coords = coords[:shown]
+	}
+	b.notef("scaffold: %d Resolver method(s) still hold the panic gqlc wrote, which a query reaching them returns as an error: %s%s. gqlc -check -stubs fails while any do.",
+		len(stubs), strings.Join(coords, ", "), more)
 }
 
 // splitTarget reads a Scaffold target, "dir.Type" with dir relative to
@@ -202,4 +224,47 @@ func (b *builder) reportStale(groups []string, target string, have, want map[str
 	}
 	b.notef("scaffold %s: %s has methods %s: %s. If the SDL dropped their fields, delete them.",
 		strings.Join(groups, ", "), target, which, strings.Join(stale, ", "))
+}
+
+// checkStubs is Config.CheckStubs: every method of a Scaffold target still
+// holding its scaffolded body, read from the files checkScaffoldTargets
+// parsed, which are every file of each target's package that gqlc did not
+// write.
+func (b *builder) checkStubs() error {
+	// A directory is matched as the filesystem resolves it (samePath), since
+	// checkScaffoldTargets parsed it under the first spelling a target gave;
+	// two spellings of one directory then find the same files, and a line is
+	// kept once.
+	var lines []string
+	seen := map[string]bool{}
+	for _, name := range slices.Sorted(maps.Keys(b.cfg.Scaffold)) {
+		target := b.cfg.Scaffold[name]
+		dir, typ, err := b.splitTarget(target)
+		if err != nil {
+			continue
+		}
+		for _, path := range slices.Sorted(maps.Keys(b.checked)) {
+			if !samePath(filepath.Dir(path), dir) {
+				continue
+			}
+			for _, st := range b.checked[path].stubs {
+				if st[0] != typ {
+					continue
+				}
+				rel, err := filepath.Rel(b.dir, path)
+				if err != nil {
+					rel = path
+				}
+				line := fmt.Sprintf("  %s (%s.%s, %s)", st[1], filepath.ToSlash(target[:strings.LastIndex(target, ".")]), typ, filepath.ToSlash(rel))
+				if key := path + "\x00" + st[1]; !seen[key] {
+					seen[key] = true
+					lines = append(lines, line)
+				}
+			}
+		}
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w; %d still panic as scaffolded:\n%s", ErrStubs, len(lines), strings.Join(lines, "\n"))
 }

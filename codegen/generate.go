@@ -17,6 +17,10 @@ import (
 // Config.Check finds that a generate would change what is on disk.
 var ErrStale = errors.New("codegen: generated code is not current")
 
+// ErrStubs is what Generate returns, wrapped with the methods concerned, when
+// Config.CheckStubs finds a scaffolded stub left unimplemented.
+var ErrStubs = errors.New("codegen: scaffolded Resolver methods are not implemented")
+
 // Generate writes bindings, models, argument structs and a Resolver
 // interface from SDL. It loads no Go packages unless AutoBind names some, and
 // then only their export data.
@@ -38,6 +42,9 @@ func Generate(ctx context.Context, cfg Config) error {
 	}
 	if err := checkGoConfig(cfg); err != nil {
 		return err
+	}
+	if cfg.CheckStubs && len(cfg.Scaffold) == 0 {
+		return errors.New("codegen: CheckStubs looks for stubs in the Scaffold targets, and Scaffold names none")
 	}
 	dir := cfg.Dir
 	if dir == "" {
@@ -102,9 +109,15 @@ func Generate(ctx context.Context, cfg Config) error {
 	if err := b.checkScaffoldTargets(outDir, files); err != nil {
 		return err
 	}
+	changes := b.bindingChanges(rels, olds, files)
 	if cfg.Check {
-		return b.check(outDir, rels, olds, files, recorded)
+		err := b.check(outDir, rels, olds, files, recorded, changes)
+		if cfg.CheckStubs {
+			err = errors.Join(err, b.checkStubs())
+		}
+		return err
 	}
+	b.reportBindingChanges(changes)
 	boundedEach(len(rels), func(i int) {
 		errs[i] = writeGo(filepath.Join(outDir, rels[i]), olds[i], files[rels[i]])
 	})

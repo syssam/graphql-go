@@ -52,6 +52,7 @@ files declare beside their imports (`r`, `v`, `a`, `ctx`, `sdl`, `opts`,
 |---|---|
 | `gqlc -h` | what gqlc does, every flag, and every `gqlc.yaml` key in a line |
 | `gqlc -check` | generate in memory, write nothing, and fail naming each file a generate would create, rewrite or delete |
+| `gqlc -check -stubs` | the same, and fail while a scaffolded stub still panics |
 | `gqlc -verify` | generate, then `go build` everything under `output` and fail with what the compiler says |
 | `gqlc -version` | the graphql-go version gqlc was built from, and the Go that built it |
 | `gqlc -schema FILES -out DIR` | generate with no `gqlc.yaml`; the package is read from the nearest `go.mod` |
@@ -81,11 +82,42 @@ configuration is never reported as up to date. A file that differs only in
 line endings is the same file, to a check as to a generate: a Windows
 checkout with `core.autocrlf` does not make everything stale.
 
-It does not check scaffolding. Stubs are added to code you own, so whether
-they are all there is the compiler's to say: a missing method at the
-`var _ Resolver` line beside the implementation, a missing implementation
-where it is used -- in `wire.go`, with `wire` configured, or in your own
-call to `Bindings`.
+When a field would be answered by something else -- a Resolver method, a
+field of the bound type, or one of its methods -- a check names that too, below
+the files, and a generate says it in a note:
+
+```
+and answer these fields with something else:
+  Task.createdAt: resolver TaskCreatedAt → field CreatedAt
+```
+
+That is how `autoBind` works: a field the Go type gains is bound to it. But
+the value served may then come from somewhere else (a derived time before, the
+stored column after), and a rewritten `generated.go` alone does not say so.
+Only a `generated.go` both runs have is compared, so a field whose group was
+renamed is not named.
+
+A check does not look for missing scaffolded methods. Stubs are added to code
+you own, so whether they are all there is the compiler's to say: a missing
+method at the `var _ Resolver` line beside the implementation, a missing
+implementation where it is used -- in `wire.go`, with `wire` configured, or in
+your own call to `Bindings`.
+
+What the compiler cannot report is a stub left as it was scaffolded. It
+compiles, and every test that does not select its field passes. A generate
+names those in one note after each run, the first ten of them (`gqlc:
+scaffold: 2 Resolver method(s) still hold the panic gqlc wrote ...:
+Product.weight, Query.products`), and `-check -stubs` fails while there are
+any, naming each with its file:
+
+```sh
+go tool gqlc -config gqlc.yaml -check -stubs
+```
+
+A stub is a method whose whole body is still the `panic("not implemented:
+...")` gqlc wrote. Once you change that body in any way, gqlc treats the method
+as yours. `-stubs` needs `scaffold`, which says where the implementations are,
+and is refused without `-check`.
 
 With one SDL group, implement `graph.Resolver` and call
 `graph.NewSchema(r, extra...)`. With two or more, implement each group's

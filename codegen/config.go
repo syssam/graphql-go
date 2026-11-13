@@ -293,12 +293,25 @@ type Config struct {
 	// refuses whatever a generate would refuse, so a configuration error is
 	// never reported as up to date.
 	//
-	// Scaffolding is not checked, beyond refusing a scaffold configuration
-	// a generate would refuse. It adds to code the author owns, so whether it
-	// is all there is the compiler's to say: a missing method at the var _
-	// Resolver line, a missing implementation wherever it is used. A file
-	// that differs only in line endings is unchanged, here as for a generate.
+	// A field a generate would answer with something else -- a Resolver
+	// method, a field or method of the bound type -- is named below the
+	// files, since the value served changes with it.
+	//
+	// Missing scaffolded methods are not checked, beyond refusing a scaffold
+	// configuration a generate would refuse. Scaffolding adds to code the
+	// author owns, so whether it is all there is the compiler's to say: a
+	// missing method at the var _ Resolver line, a missing implementation
+	// wherever it is used. A stub left unimplemented compiles, which is what
+	// CheckStubs is for. A file that differs only in line endings is
+	// unchanged, here as for a generate.
 	Check bool
+	// CheckStubs makes Check also fail, with an error wrapping ErrStubs,
+	// while a Scaffold target has a method whose body is still the panic
+	// scaffolding wrote. Such a stub compiles and passes every test that does
+	// not select its field, so the compiler cannot report it. It needs
+	// Scaffold, which says where the implementations are, and is ignored by a
+	// generate, which names the stubs in a note instead.
+	CheckStubs bool
 	// Verify builds every package under Output with the go command once the
 	// generate has written it, and fails with what the compiler said.
 	//
