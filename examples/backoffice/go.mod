@@ -6,7 +6,7 @@ replace github.com/syssam/graphql-go => ../..
 
 require (
 	github.com/XSAM/otelsql v0.44.0
-	github.com/labstack/echo/v5 v5.3.1
+	github.com/labstack/echo/v5 v5.4.0
 	github.com/lib/pq v1.12.3
 	github.com/syssam/graphql-go v0.0.0-20260926154251-135bb6be891a
 	github.com/syssam/velox v0.3.1-0.20260927083806-b69dda8e0d24
