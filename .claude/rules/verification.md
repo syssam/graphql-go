@@ -46,6 +46,14 @@ like if the thing under test were broken:
   (application built with go1.26)" on stderr, the findings list is empty, and the exit code
   says pass. It was read here as a green gate. `govulncheck -version` prints the Go it was
   built with; check that before believing a clean scan, and build it from source as CI does.
+- **A scan that stopped at its first failing module.** CI's `govulncheck` step and its mirror
+  looped over every `go.mod` under `bash -e`, so the first module with a finding ended the
+  loop. On 2026-11-14 `benchmarks/` failed first on echo v5.3.1 and `klauspost/compress`
+  v1.20.0, and the log named only that module -- the root, which serves echo through
+  `gqlecho` and also held a vulnerable `golang.org/x/net`, was never scanned. Red, so nobody
+  would call it passing; but it understated what was affected, and the fix for `benchmarks/`
+  alone would have turned the job green with the root never having been read. Each module is
+  scanned now and the step fails at the end (`status=1`, then `exit $status`).
 - A subscription leak test passed against a deliberately broken release path, because a
   second redundant path still freed everything. It only failed when both were broken.
 - A fan-out benchmark reported 45ns per subscriber because it timed a `publish` that drops

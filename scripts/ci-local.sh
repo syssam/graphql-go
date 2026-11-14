@@ -270,10 +270,12 @@ job_vuln() {
 go install golang.org/x/vuln/cmd/govulncheck@latest
 govulncheck -version
 '"$gen_compare"'
+status=0
 for mod in $(find . -name go.mod -not -path "./ref/*" | sed "s|/go.mod$||"); do
   echo "== $mod"
-  (cd "$mod" && govulncheck ./...)
+  (cd "$mod" && govulncheck ./...) || status=1
 done
+exit $status
 '
 }
 

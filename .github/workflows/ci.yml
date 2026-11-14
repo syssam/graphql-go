@@ -275,12 +275,18 @@ jobs:
       - name: Generate compare fixtures
         run: cd compare && go run gen.go -n 25
       # Every module, for the same reason scripts/gate.sh walks every module.
+      # The step's shell is bash -e, so a module that fails would stop the loop
+      # and leave the ones after it unscanned: benchmarks/ failing first hid
+      # that the root module, which serves echo through gqlecho, was affected
+      # too. Each is scanned, and the step fails at the end.
       - name: Scan
         run: |
+          status=0
           for mod in $(find . -name go.mod -not -path "./ref/*" | sed "s|/go.mod$||"); do
             echo "== $mod"
-            (cd "$mod" && govulncheck ./...)
+            (cd "$mod" && govulncheck ./...) || status=1
           done
+          exit $status
 
   fuzz:
     name: fuzz (smoke)
