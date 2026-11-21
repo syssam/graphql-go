@@ -151,7 +151,7 @@ func New(exec *graphql.Executor, opts ...Option) http.Handler {
 // a list of tokens, compared without case.
 func isWebSocket(r *http.Request) bool {
 	for _, v := range r.Header.Values("Upgrade") {
-		for _, token := range strings.Split(v, ",") {
+		for token := range strings.SplitSeq(v, ",") {
 			if strings.EqualFold(strings.TrimSpace(token), "websocket") {
 				return true
 			}

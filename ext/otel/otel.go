@@ -438,8 +438,7 @@ func (c *config) recordSpan(span trace.Span, resp *graphql.Response) {
 			// The message alone, as before: Error() on a *graphql.Error
 			// leads with the path, which the span does not need twice.
 			message := e.Message
-			var code codeOnly
-			if errors.As(err, &code) {
+			if code, ok := errors.AsType[codeOnly](err); ok {
 				message = string(code)
 			}
 			span.SetStatus(codes.Error, message)

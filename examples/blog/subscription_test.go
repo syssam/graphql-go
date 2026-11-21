@@ -44,8 +44,7 @@ func nextEvent(t *testing.T, events <-chan *graphql.Response) string {
 // subscription: a mutation on one connection reaches a subscriber on another.
 func TestCreatePostNotifiesSubscribers(t *testing.T) {
 	_, e := newStoreExecutor(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	events, err := e.Subscribe(ctx, &graphql.Request{
 		Query: `subscription { postCreated { title author { name } } }`,
@@ -65,8 +64,7 @@ func TestCreatePostNotifiesSubscribers(t *testing.T) {
 
 func TestSubscriptionFilterByTag(t *testing.T) {
 	_, e := newStoreExecutor(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	events, err := e.Subscribe(ctx, &graphql.Request{
 		Query: `subscription { postCreatedWithTag(tag: "go") { title } }`,
@@ -121,8 +119,7 @@ func TestSubscriberIsReleasedOnCancel(t *testing.T) {
 // that stops reading loses events rather than stalling every writer.
 func TestSlowSubscriberDoesNotBlockMutations(t *testing.T) {
 	store, _ := newStoreExecutor(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	// Subscribe but never read, so the buffer fills and then overflows.
 	store.PostsCreated(ctx)

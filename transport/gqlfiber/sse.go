@@ -249,8 +249,7 @@ func (h *sseHandler) subscribe(c fiber.Ctx, req *graphql.Request) error {
 	if err != nil {
 		leave()
 		cancel()
-		var se *graphql.SubscribeError
-		if errors.As(err, &se) {
+		if se, ok := errors.AsType[*graphql.SubscribeError](err); ok {
 			h.writeResponse(c, httpreq.ErrorStatus(se.Response), se.Response)
 			return nil
 		}

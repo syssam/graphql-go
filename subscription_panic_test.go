@@ -20,8 +20,7 @@ func TestSubscribeEventPanicIsAnErrorEvent(t *testing.T) {
 			return next(ctx, oc)
 		})))
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	out, serr := e.Subscribe(ctx, &Request{Query: `subscription { messages { id } }`})
 	if serr != nil {
 		t.Fatalf("subscribe: %v", serr)

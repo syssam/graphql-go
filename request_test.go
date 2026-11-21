@@ -174,8 +174,7 @@ func TestQueryOnlyRefusesAMutation(t *testing.T) {
 // graphql-sse opens a subscription with a GET.
 func TestQueryOnlyDoesNotRefuseASubscription(t *testing.T) {
 	_, e := newSubExecutor(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	if _, err := e.Subscribe(ctx, &Request{Query: `subscription { counter }`, QueryOnly: true}); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}

@@ -2,6 +2,7 @@ package gqlfiber
 
 import (
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -106,9 +107,7 @@ func TestSourceReportsARepeatedHeader(t *testing.T) {
 				return nil
 			})
 			req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{}`))
-			for name, values := range tc.header {
-				req.Header[name] = values
-			}
+			maps.Copy(req.Header, tc.header)
 			if _, err := app.Test(req); err != nil {
 				t.Fatalf("app.Test: %v", err)
 			}

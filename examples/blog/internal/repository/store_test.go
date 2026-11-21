@@ -70,8 +70,7 @@ func TestSubscriberIsRemovedOnCancel(t *testing.T) {
 
 func TestSlowSubscriberDoesNotBlockWriters(t *testing.T) {
 	s := NewStore()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	s.PostsCreated(ctx) // subscribe and never read
 
 	done := make(chan struct{})

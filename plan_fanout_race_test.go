@@ -84,17 +84,15 @@ func TestFanOutSharedSelectionSetsRace(t *testing.T) {
 	fanResetConcurrencyWitness()
 
 	var wg sync.WaitGroup
-	for i := 0; i < 16; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 16 {
+		wg.Go(func() {
 			resp := e.Execute(t.Context(), &Request{Query: query})
 			if len(resp.Errors) != 0 {
 				t.Errorf("unexpected errors: %v", resp.Errors)
 				return
 			}
 			verifyFanChain(t, resp.Data, depth)
-		}()
+		})
 	}
 	wg.Wait()
 	_ = s
@@ -113,21 +111,19 @@ func TestFanOutSharedSelectionSetsRace(t *testing.T) {
 func TestFanOutConcurrentCompileRace(t *testing.T) {
 	const depth = 3
 	fanResetConcurrencyWitness()
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		s, e := newFanExecutor(t)
 		query := fanQuery(depth)
 		var wg sync.WaitGroup
-		for j := 0; j < 16; j++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+		for range 16 {
+			wg.Go(func() {
 				resp := e.Execute(t.Context(), &Request{Query: query})
 				if len(resp.Errors) != 0 {
 					t.Errorf("unexpected errors: %v", resp.Errors)
 					return
 				}
 				verifyFanChain(t, resp.Data, depth)
-			}()
+			})
 		}
 		wg.Wait()
 		_ = s

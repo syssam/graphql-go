@@ -124,9 +124,7 @@ func main() {
 	var done atomic.Int64
 	stop := make(chan struct{})
 	var watcher sync.WaitGroup
-	watcher.Add(1)
-	go func() {
-		defer watcher.Done()
+	watcher.Go(func() {
 		var ms runtime.MemStats
 		for {
 			select {
@@ -140,21 +138,19 @@ func main() {
 			}
 			time.Sleep(2 * time.Millisecond)
 		}
-	}()
+	})
 
 	start := time.Now()
 	for r := range *rounds {
 		var wg sync.WaitGroup
 		for range *conc {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				resp := e.Execute(context.Background(), req)
 				if len(resp.Errors) == 0 {
 					done.Add(1)
 				}
 				resp.Release()
-			}()
+			})
 		}
 		wg.Wait()
 		if r == *rounds/2 {

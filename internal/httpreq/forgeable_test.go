@@ -1,6 +1,7 @@
 package httpreq
 
 import (
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -32,9 +33,7 @@ func contentType(values ...string) headerSource { return headerSource{"Content-T
 func TestForgeable(t *testing.T) {
 	with := func(src headerSource, name, value string) headerSource {
 		out := headerSource{name: {value}}
-		for k, v := range src {
-			out[k] = v
-		}
+		maps.Copy(out, src)
 		return out
 	}
 	for _, tc := range []struct {

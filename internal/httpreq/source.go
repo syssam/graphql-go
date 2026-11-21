@@ -59,8 +59,7 @@ func QueryValue(rawQuery, name string) string {
 func (s netHTTP) Body(limit int64) ([]byte, error) {
 	body, err := io.ReadAll(http.MaxBytesReader(s.w, s.r.Body, limit))
 	if err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
+		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 			return nil, ErrBodyTooLarge
 		}
 		return nil, err

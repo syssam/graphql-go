@@ -86,8 +86,7 @@ func TestSubscribeRefusesABadRequest(t *testing.T) {
 			}
 			// errors.As must reach the *Error the ordinary way, which is what
 			// SubscribeError.Unwrap exists for.
-			var ge *Error
-			if !errors.As(err, &ge) {
+			if _, ok := errors.AsType[*Error](err); !ok {
 				t.Fatalf("errors.As could not reach the *Error through %T", err)
 			}
 			if c.wantCode != "" {

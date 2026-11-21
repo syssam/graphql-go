@@ -54,7 +54,7 @@ func onDisk(base, dir string) string {
 	if rel == "." {
 		return at
 	}
-	for _, elem := range strings.Split(rel, string(filepath.Separator)) {
+	for elem := range strings.SplitSeq(rel, string(filepath.Separator)) {
 		entries, err := os.ReadDir(at)
 		if err != nil {
 			return ""

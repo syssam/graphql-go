@@ -161,8 +161,7 @@ func TestAPanicOpeningASubscriptionIsASpanAndAnError(t *testing.T) {
 // before they began.
 func TestASuccessfulSubscriptionOpenAddsNoSpan(t *testing.T) {
 	h := failureHarness(t, nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	events, err := h.exec.Subscribe(ctx, &graphql.Request{Query: `subscription { ticks }`})
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
@@ -237,8 +236,7 @@ func TestAPanicBeforeTheOperationIsKnownIsCountedOnce(t *testing.T) {
 // applied to that span by the layer that made it.
 func TestAPanicServingASubscriptionEventMarksItsSpan(t *testing.T) {
 	h := failureHarness(t, nil, graphql.WithOperationInterceptor(panicking("event bug")))
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	events, err := h.exec.Subscribe(ctx, &graphql.Request{Query: `subscription Feed { ticks }`})
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)

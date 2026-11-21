@@ -66,7 +66,7 @@ func weigh(accept, mediaType string) (q float64, explicit bool) {
 	)
 	var weight [ranges]float64
 	var named [ranges]bool
-	for _, part := range strings.Split(accept, ",") {
+	for part := range strings.SplitSeq(accept, ",") {
 		mt, params, err := mime.ParseMediaType(strings.TrimSpace(part))
 		if err != nil {
 			continue
@@ -113,7 +113,7 @@ func AcceptsEventStream(accept string) bool {
 	}
 	// Indexed by specificity: the type itself, text/*, */*.
 	var seen, accepted [3]bool
-	for _, part := range strings.Split(accept, ",") {
+	for part := range strings.SplitSeq(accept, ",") {
 		mt, params, err := mime.ParseMediaType(strings.TrimSpace(part))
 		if err != nil {
 			continue
@@ -155,7 +155,7 @@ func AcceptsEventStream(accept string) bool {
 // answer a client that cannot read one.
 func PrefersEventStream(accept string) bool {
 	stream := 0.0
-	for _, part := range strings.Split(accept, ",") {
+	for part := range strings.SplitSeq(accept, ",") {
 		mt, params, err := mime.ParseMediaType(strings.TrimSpace(part))
 		if err != nil || mt != MediaTypeEventStream {
 			continue

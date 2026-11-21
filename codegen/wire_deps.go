@@ -262,8 +262,8 @@ func mayImport(importer, importPath string) bool {
 		return true
 	}
 	elems := strings.Split(importPath, "/")
-	for i := len(elems) - 1; i >= 0; i-- {
-		if elems[i] != "internal" {
+	for i, elem := range slices.Backward(elems) {
+		if elem != "internal" {
 			continue
 		}
 		parent := strings.Join(elems[:i], "/")

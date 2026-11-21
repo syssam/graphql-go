@@ -63,7 +63,7 @@ type fanNode interface{ fanNodeID() string }
 func fanSDL() string {
 	var b strings.Builder
 	b.WriteString("interface Node { id: ID! next: Node }\n")
-	for i := 0; i < fanTypes; i++ {
+	for i := range fanTypes {
 		fmt.Fprintf(&b, "type T%d implements Node { id: ID! next: Node }\n", i)
 	}
 	b.WriteString("type Query { root: Node }\n")
@@ -129,7 +129,7 @@ func newFanExecutor(t *testing.T, opts ...ExecutorOption) (*Schema, *Executor) {
 func fanQuery(depth int) string {
 	var b strings.Builder
 	b.WriteString("{ root { id ")
-	for i := 0; i < depth; i++ {
+	for range depth {
 		b.WriteString("next { id ")
 	}
 	b.WriteString(strings.Repeat("} ", depth))
@@ -200,7 +200,7 @@ func TestFanOutMemoSurvivesDuplicateKeys(t *testing.T) {
 	var b strings.Builder
 	b.WriteString("{ root { ")
 	const depth = 5
-	for i := 0; i < depth; i++ {
+	for range depth {
 		// Two selections on the same response key force buildField's merge
 		// branch, which allocates a new slice.
 		b.WriteString("next { id } next { ")
@@ -255,7 +255,7 @@ func TestFanOutQueryCostIsBounded(t *testing.T) {
 	}
 
 	start := time.Now()
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		if n := queryCostOf(p.sel, costWalk{cfg: QueryCost{}}); n <= 0 {
 			t.Fatalf("cost = %d, want positive", n)
 		}
@@ -450,7 +450,7 @@ func TestDepthLimitRejectsOnUncacheablePath(t *testing.T) {
 		fmt.Fprintf(&b, "a%d: id @skip(if: $v%d) ", i, i)
 	}
 	const depth = 3
-	for i := 0; i < depth; i++ {
+	for range depth {
 		b.WriteString("next { id ")
 	}
 	b.WriteString(strings.Repeat("} ", depth))

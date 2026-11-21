@@ -133,8 +133,8 @@ func referencesAny(n *types.Named, bad map[string]bool) bool {
 	if !ok {
 		return false
 	}
-	for i := range st.NumFields() {
-		if elem := namedElem(st.Field(i).Type()); elem != nil && bad[goKey(elem)] {
+	for field := range st.Fields() {
+		if elem := namedElem(field.Type()); elem != nil && bad[goKey(elem)] {
 			return true
 		}
 	}

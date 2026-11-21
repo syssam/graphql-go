@@ -2,6 +2,7 @@ package transport_test
 
 import (
 	"io"
+	"maps"
 	"net/http"
 	"strings"
 	"testing"
@@ -66,9 +67,7 @@ func TestHandlersOfOneFamilyAgree(t *testing.T) {
 	preflight := map[string]string{"GraphQL-Require-Preflight": "1"}
 	with := func(base map[string]string, k, v string) map[string]string {
 		out := map[string]string{k: v}
-		for bk, bv := range base {
-			out[bk] = bv
-		}
+		maps.Copy(out, base)
 		return out
 	}
 	const q = `{"query":"{ hello }"}`

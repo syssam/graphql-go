@@ -106,7 +106,7 @@ func TestForwardPaginationWalksToTheEnd(t *testing.T) {
 
 	var seen []string
 	var after string
-	for page := 0; page < 10; page++ {
+	for page := range 10 {
 		vars := `{"first":2}`
 		if after != "" {
 			vars = `{"first":2,"after":` + jsonString(after) + `}`

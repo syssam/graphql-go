@@ -128,9 +128,9 @@ func newFixture() *fixture {
 	nick := "al"
 	f := &fixture{
 		users: map[string]*fUser{
-			"1": {ID: "1", Name: "Alice", Nick: &nick, Tags: []string{"a", "b"}, Scores: []*int{ptr(1), nil, ptr(3)}, Friends: []string{"2", "3"}, Pet: &fDog{Name: "Rex"}, Role: fRoleAdmin},
+			"1": {ID: "1", Name: "Alice", Nick: &nick, Tags: []string{"a", "b"}, Scores: []*int{new(1), nil, new(3)}, Friends: []string{"2", "3"}, Pet: &fDog{Name: "Rex"}, Role: fRoleAdmin},
 			"2": {ID: "2", Name: "Bob", Tags: []string{}, Scores: []*int{}, Friends: []string{"1"}, Pet: &fCat{Name: "Tom"}, Role: fRoleUser},
-			"3": {ID: "3", Name: "Carol", Tags: []string{"c"}, Scores: []*int{ptr(5)}, Friends: nil, Role: fRoleUser},
+			"3": {ID: "3", Name: "Carol", Tags: []string{"c"}, Scores: []*int{new(5)}, Friends: nil, Role: fRoleUser},
 		},
 		posts: map[string]*fPost{
 			"p1": {ID: "p1", Title: "Hello", Author: "1"},
@@ -266,7 +266,7 @@ func (f *fixture) options() []SchemaOption {
 				return a.Ms, nil
 			}),
 			Field("strings", func(Root) []string { return []string{"x", "y"} }),
-			Field("nullableStrings", func(Root) []*string { return []*string{ptr("x"), nil} }),
+			Field("nullableStrings", func(Root) []*string { return []*string{new("x"), nil} }),
 			ResolveArgs("echo", func(_ context.Context, _ Root, a echoArgs) (string, error) {
 				b, _ := json.Marshal(a)
 				return string(b), nil

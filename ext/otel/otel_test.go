@@ -319,8 +319,7 @@ func TestDocumentIsNotRecordedByDefault(t *testing.T) {
 // own unit of work rather than a subscription open for a day being one span.
 func TestSubscriptionEventsGetTheirOwnSpans(t *testing.T) {
 	h := newHarness(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	events, err := h.exec.Subscribe(ctx, &graphql.Request{Query: `subscription Feed { ticks }`})
 	if err != nil {

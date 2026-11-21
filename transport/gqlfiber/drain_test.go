@@ -192,8 +192,7 @@ func TestSSEDrainEndsStreamWithoutComplete(t *testing.T) {
 	app.Post("/graphql", SSE(idleSSEExecutor(t, src), WithKeepAlive(time.Hour), WithDrain(d)))
 	base := startFiber(t, app)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	resp, err := streamClient(t).Do(sseSubscribeRequest(t, ctx, base))
 	if err != nil {
 		t.Fatalf("Do: %v", err)
@@ -334,8 +333,7 @@ func TestSSEFiberShutdownFinishesWithDrain(t *testing.T) {
 	app.Post("/graphql", SSE(idleSSEExecutor(t, src), WithKeepAlive(time.Hour), WithDrain(d)))
 	base := startFiber(t, app)
 
-	reqCtx, cancelReq := context.WithCancel(context.Background())
-	defer cancelReq()
+	reqCtx := t.Context()
 	resp, err := streamClient(t).Do(sseSubscribeRequest(t, reqCtx, base))
 	if err != nil {
 		t.Fatalf("Do: %v", err)

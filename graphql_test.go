@@ -120,7 +120,7 @@ func TestOmittableUnmarshalJSON(t *testing.T) {
 	})
 
 	t.Run("it round-trips a set value", func(t *testing.T) {
-		b, err := json.Marshal(input{Name: OmittableOf(ptrTo("z")), Count: OmittableOf(7)})
+		b, err := json.Marshal(input{Name: OmittableOf(new("z")), Count: OmittableOf(7)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -133,5 +133,3 @@ func TestOmittableUnmarshalJSON(t *testing.T) {
 		}
 	})
 }
-
-func ptrTo[T any](v T) *T { return &v }

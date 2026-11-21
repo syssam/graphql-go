@@ -271,8 +271,7 @@ func ParseGET(src Source, queryOptional bool) (*graphql.Request, error) {
 	}
 	if e := src.QueryParam("extensions"); e != "" {
 		if err := json.Unmarshal([]byte(e), &req.Extensions); err != nil {
-			var mismatch *json.UnmarshalTypeError
-			if errors.As(err, &mismatch) {
+			if _, ok := errors.AsType[*json.UnmarshalTypeError](err); ok {
 				return nil, errors.New(`"extensions" must be a JSON object`)
 			}
 			return nil, fmt.Errorf(`"extensions" must be a JSON object: %w`, err)

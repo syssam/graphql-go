@@ -386,8 +386,7 @@ func TestMaxPlanFieldsAppliesToSubscriptions(t *testing.T) {
 	}
 
 	_, e = newSubExecutor(t, WithMaxPlanFields(3))
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	if _, err := e.Subscribe(ctx, &Request{Query: q}); err != nil {
 		t.Fatalf("a subscription of three plan fields was refused under a limit of three: %v", err)
 	}

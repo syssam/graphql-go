@@ -33,8 +33,7 @@ func TestHelpNamesEveryKeyAndFlag(t *testing.T) {
 	}
 	keys, nested := 0, 0
 	typ := reflect.TypeFor[fileConfig]()
-	for i := range typ.NumField() {
-		f := typ.Field(i)
+	for f := range typ.Fields() {
 		key, _, _ := strings.Cut(f.Tag.Get("yaml"), ",")
 		if key == "" {
 			t.Fatalf("fileConfig.%s has no yaml key, so this test cannot look for it", f.Name)
@@ -56,10 +55,10 @@ func TestHelpNamesEveryKeyAndFlag(t *testing.T) {
 		if f.Type != entry {
 			nested++
 		}
-		for j := range entry.NumField() {
-			sub, _, _ := strings.Cut(entry.Field(j).Tag.Get("yaml"), ",")
+		for field := range entry.Fields() {
+			sub, _, _ := strings.Cut(field.Tag.Get("yaml"), ",")
 			if sub == "" {
-				t.Fatalf("fileConfig.%s.%s has no yaml key", f.Name, entry.Field(j).Name)
+				t.Fatalf("fileConfig.%s.%s has no yaml key", f.Name, field.Name)
 			}
 			keys++
 			if !hasLine("    ", key+"."+sub) {

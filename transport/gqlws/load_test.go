@@ -184,10 +184,7 @@ func loadConns(t testing.TB) int {
 // meaningfully longer to register and to tear down than 150, and a fixed
 // deadline would report that as a leak.
 func loadWithin(n int, base time.Duration) time.Duration {
-	d := base + time.Duration(n/150)*base
-	if d > 5*time.Minute {
-		d = 5 * time.Minute
-	}
+	d := min(base+time.Duration(n/150)*base, 5*time.Minute)
 	return d
 }
 

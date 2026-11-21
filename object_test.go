@@ -373,7 +373,7 @@ func TestSeqStopsWhenConsumerStops(t *testing.T) {
 		Object[post]("Post", Field("title", func(v *post) string { return v.Title })),
 		Query(Resolve("posts", func(ctx context.Context, _ Root) (iter.Seq[*post], error) {
 			return func(yield func(*post) bool) {
-				for i := 0; i < 100; i++ {
+				for i := range 100 {
 					yielded++
 					var p *post // nil fails the non-null element position
 					if i != 3 {

@@ -52,8 +52,7 @@ func TestALoaderInASubscriptionsSourceIsNotCachedForTheStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	out, err := graphql.NewExecutor(s).Subscribe(ctx, &graphql.Request{Query: `subscription { price }`})
 	if err != nil {
 		t.Fatal(err)

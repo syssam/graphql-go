@@ -235,8 +235,7 @@ func (m goMethod) fits(args ast.ArgumentDefinitionList, want func(*ast.Type, str
 func methodSet(named *types.Named) map[string]goMethod {
 	out := map[string]goMethod{}
 	ms := types.NewMethodSet(types.NewPointer(named))
-	for i := range ms.Len() {
-		sel := ms.At(i)
+	for sel := range ms.Methods() {
 		fn, ok := sel.Obj().(*types.Func)
 		if !ok || !fn.Exported() {
 			continue

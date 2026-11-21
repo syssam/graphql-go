@@ -181,11 +181,11 @@ func (b *schemaBuilder) applyDirectives(s *Schema) {
 				continue
 			}
 			b.rejectDirectivesLeftOnTheInterface(obj, fd)
-			for i := len(fd.def.Directives) - 1; i >= 0; i-- {
-				b.wrapWithDirective(s, fd, fd.def.Directives[i], coordinate(obj.name, fd.name))
+			for _, dir := range slices.Backward(fd.def.Directives) {
+				b.wrapWithDirective(s, fd, dir, coordinate(obj.name, fd.name))
 			}
-			for i := len(obj.def.Directives) - 1; i >= 0; i-- {
-				b.wrapWithDirective(s, fd, obj.def.Directives[i], obj.name)
+			for _, dir := range slices.Backward(obj.def.Directives) {
+				b.wrapWithDirective(s, fd, dir, obj.name)
 			}
 		}
 	}

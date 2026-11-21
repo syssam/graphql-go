@@ -134,7 +134,7 @@ func TestEffectiveRequirementOverTheGroupCapFailsBuild(t *testing.T) {
 	nine := func(prefix string) string {
 		var b strings.Builder
 		b.WriteString("[")
-		for i := 0; i < 9; i++ {
+		for i := range 9 {
 			if i > 0 {
 				b.WriteString(", ")
 			}
@@ -370,7 +370,7 @@ func TestEffectiveRequirementCapCheckedBeforeCombining(t *testing.T) {
 	manyGroups := func(prefix string, n int) string {
 		var b strings.Builder
 		b.WriteString("[")
-		for i := 0; i < n; i++ {
+		for i := range n {
 			if i > 0 {
 				b.WriteString(", ")
 			}
@@ -456,7 +456,7 @@ func TestInterfaceWhoseOwnRequirementIsCappedFailsItsImplementer(t *testing.T) {
 	manyGroups := func(prefix string, n int) string {
 		var b strings.Builder
 		b.WriteString("[")
-		for i := 0; i < n; i++ {
+		for i := range n {
 			if i > 0 {
 				b.WriteString(", ")
 			}
@@ -491,7 +491,7 @@ func TestExtendOccurrencesOverTheCapFailBuildWithOneError(t *testing.T) {
 	manyGroups := func(prefix string, n int) string {
 		var b strings.Builder
 		b.WriteString("[")
-		for i := 0; i < n; i++ {
+		for i := range n {
 			if i > 0 {
 				b.WriteString(", ")
 			}
@@ -535,7 +535,7 @@ func TestEffectiveRequirementCapPreventsBuildingTheProduct(t *testing.T) {
 	groups := func(prefix string) string {
 		var b strings.Builder
 		b.WriteString("[")
-		for i := 0; i < maxRequirementGroups; i++ {
+		for i := range maxRequirementGroups {
 			if i > 0 {
 				b.WriteString(", ")
 			}
@@ -600,7 +600,7 @@ func TestCapErrorIsNotBuriedUnderCoverageErrors(t *testing.T) {
 	nine := func(prefix string) string {
 		var b strings.Builder
 		b.WriteString("[")
-		for i := 0; i < 9; i++ {
+		for i := range 9 {
 			if i > 0 {
 				b.WriteString(", ")
 			}

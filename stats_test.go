@@ -90,8 +90,7 @@ func TestStatsWithoutConcurrency(t *testing.T) {
 // looks a plan up again.
 func TestStatsCountsSubscriptionOnce(t *testing.T) {
 	src, e := newSubExecutor(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	out, err := e.Subscribe(ctx, &Request{Query: `subscription { counter }`})
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)

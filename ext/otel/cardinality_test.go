@@ -85,8 +85,7 @@ func TestOperationNameMetricsAreOptIn(t *testing.T) {
 // subscription.
 func TestSubscriptionEventsGetTheirOwnSpansUnderACallersSpan(t *testing.T) {
 	h := newHarness(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	ctx, parent := sdktrace.NewTracerProvider().Tracer("caller").Start(ctx, "POST /graphql/stream")
 
 	events, err := h.exec.Subscribe(ctx, &graphql.Request{Query: `subscription Feed { ticks }`})

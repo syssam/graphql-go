@@ -165,8 +165,7 @@ func TestDocumentFlightSurvivesLeaderPanic(t *testing.T) {
 func TestDocumentFlightPresenterMayMutate(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		presenter := func(_ context.Context, err error) *Error {
-			var e *Error
-			if errors.As(err, &e) {
+			if e, ok := errors.AsType[*Error](err); ok {
 				e.Message += " (annotated)"
 				return e.WithExtension("request", "seen")
 			}

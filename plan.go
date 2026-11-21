@@ -478,12 +478,7 @@ func (c *compiler) applies(obj *objectType, typeCondition string) bool {
 	if typeCondition == obj.name {
 		return true
 	}
-	for _, d := range c.s.ast.PossibleTypes[typeCondition] {
-		if d == obj.def {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(c.s.ast.PossibleTypes[typeCondition], obj.def)
 }
 
 func (c *compiler) buildField(obj *objectType, g *fieldGroup) *planField {

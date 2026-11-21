@@ -34,8 +34,7 @@ func TestSubscriptionEventCostUsesTheConfiguredModel(t *testing.T) {
 				seen <- oc.Cost()
 				return next(ctx, oc)
 			})))
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	out, err := e.Subscribe(ctx, &Request{Query: `subscription { messages { id body } }`})
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)

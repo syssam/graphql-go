@@ -56,7 +56,7 @@ func newLazySeqExecutor(tb testing.TB) *Executor {
 			}),
 			Field("lazySeq", func(Root) iter.Seq[*lazyItem] {
 				return func(yield func(*lazyItem) bool) {
-					for i := 0; i < lazyListSize; i++ {
+					for i := range lazyListSize {
 						if !yield(newLazyItem(i)) {
 							return
 						}
@@ -110,7 +110,7 @@ func TestLazySeqBenchmarkUsesSequentialPath(t *testing.T) {
 		Query(
 			Field("lazySeq", func(Root) iter.Seq[*lazyItem] {
 				return func(yield func(*lazyItem) bool) {
-					for i := 0; i < lazyListSize; i++ {
+					for i := range lazyListSize {
 						generated++
 						item := newLazyItem(i)
 						if i == failAt {

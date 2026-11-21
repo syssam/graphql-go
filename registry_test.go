@@ -11,8 +11,6 @@ import (
 	"github.com/syssam/graphql-go/internal/jsonw"
 )
 
-func ptr[T any](v T) *T { return &v }
-
 // parseType builds an ast.Type from a compact SDL type string.
 func parseType(s string) *ast.Type {
 	nonNull := false
@@ -74,14 +72,14 @@ func TestLeafWriterShapes(t *testing.T) {
 	}
 
 	w.Reset()
-	err := leafWriter[[]*int](t, r, "Int")(w, []*int{ptr(1), nil}, parseType("[Int!]!"))
+	err := leafWriter[[]*int](t, r, "Int")(w, []*int{new(1), nil}, parseType("[Int!]!"))
 	var ie *indexedError
 	if !errors.As(err, &ie) || ie.index != 1 || !errors.Is(err, errNonNull) {
 		t.Fatalf("nil element in [Int!]! should be indexedError{1, errNonNull}, got %v", err)
 	}
 
 	w.Reset()
-	if err := leafWriter[[]*int](t, r, "Int")(w, []*int{ptr(1), nil}, parseType("[Int]!")); err != nil || string(w.Bytes()) != "[1,null]" {
+	if err := leafWriter[[]*int](t, r, "Int")(w, []*int{new(1), nil}, parseType("[Int]!")); err != nil || string(w.Bytes()) != "[1,null]" {
 		t.Fatalf("[Int]! with nil element: %v %s", err, w.Bytes())
 	}
 
@@ -106,7 +104,7 @@ func TestNestedLeafListShapes(t *testing.T) {
 	}
 
 	w.Reset()
-	if err := leafWriter[[][]*int](t, r, "Int")(w, [][]*int{{ptr(1), nil}, nil}, parseType("[[Int]]")); err != nil || string(w.Bytes()) != "[[1,null],null]" {
+	if err := leafWriter[[][]*int](t, r, "Int")(w, [][]*int{{new(1), nil}, nil}, parseType("[[Int]]")); err != nil || string(w.Bytes()) != "[[1,null],null]" {
 		t.Fatalf("[][]*int with nulls: %v %s", err, w.Bytes())
 	}
 
@@ -181,7 +179,7 @@ func TestNilChecks(t *testing.T) {
 	if !r.nilChecks[reflect.TypeFor[*int]()](np) {
 		t.Fatal("nil *int must be detected")
 	}
-	if r.nilChecks[reflect.TypeFor[*int]()](ptr(1)) {
+	if r.nilChecks[reflect.TypeFor[*int]()](new(1)) {
 		t.Fatal("non-nil *int must not be detected as nil")
 	}
 	if r.nilChecks[reflect.TypeFor[int]()] != nil {

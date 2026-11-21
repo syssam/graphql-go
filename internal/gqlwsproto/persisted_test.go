@@ -2,6 +2,7 @@ package gqlwsproto
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -99,12 +100,7 @@ func TestNoPersistedHookIsUnchanged(t *testing.T) {
 }
 
 func slicesContains(hay []string, needle string) bool {
-	for _, s := range hay {
-		if s == needle {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(hay, needle)
 }
 
 func newPersistedExecutor(t *testing.T) *graphql.Executor {

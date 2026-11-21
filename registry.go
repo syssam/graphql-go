@@ -293,8 +293,7 @@ func writeNilList(w *jsonw.Writer, t *ast.Type) error {
 // after it began writing at m. It returns the list's collected soft errors,
 // or the error that aborts the list.
 func listElementFailed(w *jsonw.Writer, m jsonw.Mark, soft *elementErrors, i int, err error, t *ast.Type) (*elementErrors, error) {
-	var nested *elementErrors
-	if errors.As(err, &nested) {
+	if nested, ok := errors.AsType[*elementErrors](err); ok {
 		// The element is a list that already nulled its own failing
 		// members; keep it and re-index the collected errors.
 		for _, ie := range nested.errs {

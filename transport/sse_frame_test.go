@@ -15,10 +15,10 @@ type rawMeta struct{}
 // sseEventData reassembles the data of the first event named name the way an
 // EventSource does: every data line of the event, joined by a newline.
 func sseEventData(stream, name string) (string, bool) {
-	for _, event := range strings.Split(stream, "\n\n") {
+	for event := range strings.SplitSeq(stream, "\n\n") {
 		var data []string
 		match := false
-		for _, line := range strings.Split(event, "\n") {
+		for line := range strings.SplitSeq(event, "\n") {
 			switch {
 			case line == "event: "+name:
 				match = true

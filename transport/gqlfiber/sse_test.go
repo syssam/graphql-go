@@ -388,8 +388,7 @@ func TestSSEStreamsSubscriptionEventsIncrementally(t *testing.T) {
 	app.Post("/graphql", SSE(exec))
 	base := startFiber(t, app)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/graphql",
 		strings.NewReader(`{"query":"subscription{ticks}"}`))
 	if err != nil {

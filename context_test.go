@@ -36,9 +36,7 @@ func TestOperationContextGetOrSetIsAtomic(t *testing.T) {
 	start := make(chan struct{})
 
 	for i := range n {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			v, loaded := oc.GetOrSet("k", i)
 			actuals[i] = v
@@ -47,7 +45,7 @@ func TestOperationContextGetOrSetIsAtomic(t *testing.T) {
 				winners++
 				mu.Unlock()
 			}
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()

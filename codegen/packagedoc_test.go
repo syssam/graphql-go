@@ -39,7 +39,7 @@ func TestGeneratedPackagesHaveExactlyOnePackageComment(t *testing.T) {
 				}
 				// A package comment is a comment block directly above the
 				// package clause, with no blank line between.
-				for _, line := range strings.Split(src, "\n") {
+				for line := range strings.SplitSeq(src, "\n") {
 					if strings.HasPrefix(line, "package ") {
 						break
 					}

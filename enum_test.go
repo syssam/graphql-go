@@ -21,7 +21,7 @@ func TestEnumRoundTrip(t *testing.T) {
 		Enum("Role", roleNames),
 		Object[Root]("Query",
 			Field("r", func(Root) role { return roleUser }),
-			Field("rs", func(Root) []*role { return []*role{ptr(roleAdmin), nil} }),
+			Field("rs", func(Root) []*role { return []*role{new(roleAdmin), nil} }),
 		),
 	)
 	if err != nil {

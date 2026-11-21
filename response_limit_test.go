@@ -238,8 +238,7 @@ func TestResponseLimitStopsConcurrentList(t *testing.T) {
 // the limit while it executes, not only when its finished size is checked.
 func TestResponseLimitStopsSubscriptionEvent(t *testing.T) {
 	f, e := newLimitExecutor(t, WithMaxResponseBytes(8<<10))
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	out, err := e.Subscribe(ctx, &Request{Query: `subscription { section { items { body } } }`})
 	if err != nil {
@@ -263,8 +262,7 @@ func TestResponseLimitStopsSubscriptionEvent(t *testing.T) {
 // oversized event fails alone and the stream carries on.
 func TestResponseLimitPerSubscriptionEvent(t *testing.T) {
 	src, e := newSubExecutor(t, WithMaxResponseBytes(64))
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	out, err := e.Subscribe(ctx, &Request{Query: `subscription { messages { id body } }`})
 	if err != nil {

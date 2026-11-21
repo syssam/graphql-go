@@ -270,8 +270,7 @@ func (h *Handler) subscribe(w http.ResponseWriter, r *http.Request, req *graphql
 
 	events, err := h.exec.Subscribe(ctx, req)
 	if err != nil {
-		var se *graphql.SubscribeError
-		if errors.As(err, &se) {
+		if se, ok := errors.AsType[*graphql.SubscribeError](err); ok {
 			h.writeResponse(w, httpreq.ErrorStatus(se.Response), se.Response)
 			return
 		}

@@ -10,7 +10,7 @@ import (
 
 var letters = []string{"a", "b", "c", "d", "e"}
 
-func ptr[T any](v T) *T { return &v }
+func ptr[T any](v T) *T { return new(v) }
 
 func nodes[T any](c relay.Connection[T]) []T {
 	out := make([]T, 0, len(c.Edges))
@@ -43,13 +43,13 @@ func TestFromSliceFollowsTheSpecAlgorithm(t *testing.T) {
 		prev bool
 	}{
 		{name: "no arguments returns everything", want: letters},
-		{name: "first truncates from the start", args: relay.Args{First: ptr(2)}, want: []string{"a", "b"}, next: true},
-		{name: "after skips past the cursor", args: relay.Args{After: ptr(relay.OffsetCursor(1)), First: ptr(2)}, want: []string{"c", "d"}, next: true},
-		{name: "last truncates from the end", args: relay.Args{Last: ptr(2)}, want: []string{"d", "e"}, prev: true},
-		{name: "before stops at the cursor", args: relay.Args{Before: ptr(relay.OffsetCursor(3)), Last: ptr(2)}, want: []string{"b", "c"}, prev: true},
-		{name: "first zero returns nothing but reports more", args: relay.Args{First: ptr(0)}, want: nil, next: true},
-		{name: "after the last element is empty", args: relay.Args{After: ptr(relay.OffsetCursor(4))}, want: nil},
-		{name: "first past the end has no next page", args: relay.Args{First: ptr(99)}, want: letters},
+		{name: "first truncates from the start", args: relay.Args{First: new(2)}, want: []string{"a", "b"}, next: true},
+		{name: "after skips past the cursor", args: relay.Args{After: new(relay.OffsetCursor(1)), First: new(2)}, want: []string{"c", "d"}, next: true},
+		{name: "last truncates from the end", args: relay.Args{Last: new(2)}, want: []string{"d", "e"}, prev: true},
+		{name: "before stops at the cursor", args: relay.Args{Before: new(relay.OffsetCursor(3)), Last: new(2)}, want: []string{"b", "c"}, prev: true},
+		{name: "first zero returns nothing but reports more", args: relay.Args{First: new(0)}, want: nil, next: true},
+		{name: "after the last element is empty", args: relay.Args{After: new(relay.OffsetCursor(4))}, want: nil},
+		{name: "first past the end has no next page", args: relay.Args{First: new(99)}, want: letters},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c, err := relay.FromSlice(letters, tc.args)
@@ -73,7 +73,7 @@ func TestFromSliceFollowsTheSpecAlgorithm(t *testing.T) {
 // the after cursor. Measured from the start of the list instead, every page
 // after the first reported a previous page that last had not hidden.
 func TestHasPreviousPageIsMeasuredFromTheAfterCursor(t *testing.T) {
-	c, err := relay.FromSlice(letters, relay.Args{After: ptr(relay.OffsetCursor(0)), Last: ptr(5)})
+	c, err := relay.FromSlice(letters, relay.Args{After: new(relay.OffsetCursor(0)), Last: new(5)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestHasPreviousPageIsMeasuredFromTheAfterCursor(t *testing.T) {
 		t.Fatal("hasPreviousPage is true though last: 5 kept all four edges after the cursor")
 	}
 
-	c, err = relay.FromSlice(letters, relay.Args{After: ptr(relay.OffsetCursor(0)), Last: ptr(2)})
+	c, err = relay.FromSlice(letters, relay.Args{After: new(relay.OffsetCursor(0)), Last: new(2)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,11 +101,11 @@ func TestCrossedCursorsAreAnEmptyPage(t *testing.T) {
 		name string
 		args relay.Args
 	}{
-		{"before ahead of after", relay.Args{After: ptr(relay.OffsetCursor(3)), Before: ptr(relay.OffsetCursor(1))}},
-		{"the same edge", relay.Args{After: ptr(relay.OffsetCursor(2)), Before: ptr(relay.OffsetCursor(2))}},
-		{"with first", relay.Args{After: ptr(relay.OffsetCursor(3)), Before: ptr(relay.OffsetCursor(1)), First: ptr(2)}},
-		{"with last", relay.Args{After: ptr(relay.OffsetCursor(3)), Before: ptr(relay.OffsetCursor(1)), Last: ptr(2)}},
-		{"after past the end", relay.Args{After: ptr(relay.OffsetCursor(9)), Before: ptr(relay.OffsetCursor(1))}},
+		{"before ahead of after", relay.Args{After: new(relay.OffsetCursor(3)), Before: new(relay.OffsetCursor(1))}},
+		{"the same edge", relay.Args{After: new(relay.OffsetCursor(2)), Before: new(relay.OffsetCursor(2))}},
+		{"with first", relay.Args{After: new(relay.OffsetCursor(3)), Before: new(relay.OffsetCursor(1)), First: new(2)}},
+		{"with last", relay.Args{After: new(relay.OffsetCursor(3)), Before: new(relay.OffsetCursor(1)), Last: new(2)}},
+		{"after past the end", relay.Args{After: new(relay.OffsetCursor(9)), Before: new(relay.OffsetCursor(1))}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c, err := relay.FromSlice(letters, tc.args)
@@ -123,7 +123,7 @@ func TestCrossedCursorsAreAnEmptyPage(t *testing.T) {
 }
 
 func TestFromSliceCursorsBoundTheEdges(t *testing.T) {
-	c, err := relay.FromSlice(letters, relay.Args{After: ptr(relay.OffsetCursor(0)), First: ptr(2)})
+	c, err := relay.FromSlice(letters, relay.Args{After: new(relay.OffsetCursor(0)), First: new(2)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,10 +150,10 @@ func TestFromSliceOnAnEmptyListHasNoCursors(t *testing.T) {
 }
 
 func TestFromSliceRejectsNegativeCounts(t *testing.T) {
-	if _, err := relay.FromSlice(letters, relay.Args{First: ptr(-1)}); err == nil {
+	if _, err := relay.FromSlice(letters, relay.Args{First: new(-1)}); err == nil {
 		t.Fatal("first: -1 was accepted")
 	}
-	if _, err := relay.FromSlice(letters, relay.Args{Last: ptr(-1)}); err == nil {
+	if _, err := relay.FromSlice(letters, relay.Args{Last: new(-1)}); err == nil {
 		t.Fatal("last: -1 was accepted")
 	}
 }
@@ -185,7 +185,7 @@ func TestFromPageUsesTheCallersCursors(t *testing.T) {
 // three ways decoding can fail was ever driven.
 func TestAnUnreadableCursorIsIgnoredRatherThanMisread(t *testing.T) {
 	letters := []string{"a", "b", "c", "d", "e"}
-	full, err := relay.FromSlice(letters, relay.Args{First: ptr(2)})
+	full, err := relay.FromSlice(letters, relay.Args{First: new(2)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func TestAnUnreadableCursorIsIgnoredRatherThanMisread(t *testing.T) {
 		base64.StdEncoding.EncodeToString([]byte("arrayconnection:eleven")), // right prefix, not a number
 		"",
 	} {
-		c, err := relay.FromSlice(letters, relay.Args{After: ptr(bad), First: ptr(2)})
+		c, err := relay.FromSlice(letters, relay.Args{After: new(bad), First: new(2)})
 		if err != nil {
 			t.Errorf("after=%q returned an error: %v", bad, err)
 			continue
@@ -223,13 +223,13 @@ func TestFromSliceDoesNotWrapOnACraftedCursor(t *testing.T) {
 		want []string
 		next bool
 	}{
-		{name: "after MaxInt is past the end", args: relay.Args{After: ptr(relay.OffsetCursor(math.MaxInt)), First: ptr(2)}, want: nil},
-		{name: "after MaxInt with no first", args: relay.Args{After: ptr(relay.OffsetCursor(math.MaxInt))}, want: nil},
-		{name: "first MaxInt after a cursor", args: relay.Args{After: ptr(relay.OffsetCursor(1)), First: ptr(math.MaxInt)}, want: []string{"c", "d", "e"}},
+		{name: "after MaxInt is past the end", args: relay.Args{After: new(relay.OffsetCursor(math.MaxInt)), First: new(2)}, want: nil},
+		{name: "after MaxInt with no first", args: relay.Args{After: new(relay.OffsetCursor(math.MaxInt))}, want: nil},
+		{name: "first MaxInt after a cursor", args: relay.Args{After: new(relay.OffsetCursor(1)), First: ptr(math.MaxInt)}, want: []string{"c", "d", "e"}},
 		// A before cursor past the end names no edge: every edge is returned,
 		// and there is no next page to claim.
-		{name: "before past the end", args: relay.Args{Before: ptr(relay.OffsetCursor(1000)), First: ptr(10)}, want: letters},
-		{name: "before below the start", args: relay.Args{Before: ptr(relay.OffsetCursor(-7)), First: ptr(10)}, want: nil},
+		{name: "before past the end", args: relay.Args{Before: new(relay.OffsetCursor(1000)), First: new(10)}, want: letters},
+		{name: "before below the start", args: relay.Args{Before: new(relay.OffsetCursor(-7)), First: new(10)}, want: nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c, err := relay.FromSlice(letters, tc.args)

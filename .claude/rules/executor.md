@@ -346,3 +346,15 @@ non-null list), so the executor tests a bool on the nil path and reflects on not
 an intended divergence, asserted exactly: a Go slice has no null to give at that position, and
 refusing a list is what an error is for. `TestNilSliceAtNonNullListIsEmpty` and
 `TestLeafWriterShapes` each fail with their path's check removed.
+
+**`go fix`'s modernizers are not free on the request path; do not apply them there unmeasured.**
+Run over the root package (2026-11), two of them cost allocations. `slices.Backward` makes the
+loop body a closure, so the interceptor chain builders, which capture and reassign `handler` and
+`next` in it, moved both to the heap: `BenchmarkFieldPathInterceptor` went from 85 to 149
+allocs/op and +27.7%. `wg.Go(f)` wraps the resolver in a second closure: one more allocation
+per resolver goroutine, 423 to 523 on `BenchmarkExecuteConcurrentList`. `reflect.Type.Fields()`
+iterators cost three on `BenchmarkExecuteTypenameHeavy`. All three were reverted; `errors.AsType`
+and `slices.Contains` measured neutral and stayed. The loops keep the indexed form on purpose --
+a later `go fix` will offer the same rewrite again. `go fix` also rewrote
+`errors.As(err, &ep)` with an interface `ep` into `errors.AsType[ExtensionsProvider]`, which
+does not compile, since `AsType` needs an `error`.

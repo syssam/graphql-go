@@ -145,8 +145,7 @@ func expectClosed(t *testing.T, ch <-chan *Response) {
 
 func TestSubscribeCompositeEvents(t *testing.T) {
 	src, e := newSubExecutor(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	out, err := e.Subscribe(ctx, &Request{Query: `subscription { messages { id body } }`})
 	if err != nil {
@@ -178,8 +177,7 @@ func TestSubscribeCompositeEvents(t *testing.T) {
 
 func TestSubscribeLeafEvents(t *testing.T) {
 	src, e := newSubExecutor(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	out, err := e.Subscribe(ctx, &Request{Query: `subscription { counter }`})
 	if err != nil {
@@ -200,8 +198,7 @@ func TestSubscribeLeafEvents(t *testing.T) {
 
 func TestSubscribeArgsAndAlias(t *testing.T) {
 	_, e := newSubExecutor(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	out, err := e.Subscribe(ctx, &Request{Query: `subscription { tick: countdown(from: 3) }`})
 	if err != nil {
@@ -219,8 +216,7 @@ func TestSubscribeArgsAndAlias(t *testing.T) {
 
 func TestSubscribeVariables(t *testing.T) {
 	_, e := newSubExecutor(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	out, err := e.Subscribe(ctx, &Request{
 		Query:     `subscription C($n: Int!) { countdown(from: $n) }`,
@@ -263,8 +259,7 @@ func TestSubscribeCancelStopsStream(t *testing.T) {
 // event payload rather than the subscription ending.
 func TestSubscribeEventErrorsBubble(t *testing.T) {
 	src, e := newSubExecutor(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	out, err := e.Subscribe(ctx, &Request{Query: `subscription { messages { id fail } }`})
 	if err != nil {
@@ -296,8 +291,7 @@ func TestSubscribeEventErrorsBubble(t *testing.T) {
 // writes null for that key and the subscription continues.
 func TestSubscribeNullableEventNulls(t *testing.T) {
 	src, e := newSubExecutor(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	out, err := e.Subscribe(ctx, &Request{Query: `subscription { maybe { id } }`})
 	if err != nil {
@@ -331,8 +325,7 @@ func TestSubscribeNullableEventNulls(t *testing.T) {
 func TestSubscribeFieldObserverSeesRootFieldPerEvent(t *testing.T) {
 	o := &recordingObserver{}
 	src, e := newSubExecutor(t, WithFieldObserver(o))
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	out, err := e.Subscribe(ctx, &Request{Query: `subscription { messages { id body } }`})
 	if err != nil {
@@ -386,8 +379,7 @@ func TestSubscribeOperationInterceptorPerEvent(t *testing.T) {
 			return next(ctx, oc)
 		})))
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	out, serr := e.Subscribe(ctx, &Request{Query: `subscription { messages { id } }`})
 	if serr != nil {
 		t.Fatalf("subscribe: %v", serr)
@@ -550,8 +542,7 @@ func TestSubscribeBindingErrors(t *testing.T) {
 // batch into, and extensions written where no response reads them.
 func TestSubscribeEventStateIsPerEvent(t *testing.T) {
 	src, e := newSubExecutor(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	out, err := e.Subscribe(ctx, &Request{Query: `subscription { messages { id seq } }`})
 	if err != nil {
@@ -618,8 +609,7 @@ func TestSubscriptionInterceptorPassesThrough(t *testing.T) {
 			return next(ctx, oc)
 		}),
 	))
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	out, err := e.Subscribe(ctx, &Request{Query: `subscription { messages { id } }`})
 	if err != nil {

@@ -270,8 +270,7 @@ func (e *Executor) subscribe(ctx context.Context, req *Request) (<-chan *Respons
 // reaches a client through the ErrorPresenter and Subscribe keeps its
 // promise that every error is a *SubscribeError.
 func (e *Executor) interceptorRefusal(ctx context.Context, err error) error {
-	var se *SubscribeError
-	if errors.As(err, &se) {
+	if _, ok := errors.AsType[*SubscribeError](err); ok {
 		return err
 	}
 	var refusal *Error

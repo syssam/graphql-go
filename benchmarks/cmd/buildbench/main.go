@@ -29,13 +29,13 @@ func main() {
 	}
 
 	var results []buildbench.Result
-	for _, s := range strings.Split(*sizes, ",") {
+	for s := range strings.SplitSeq(*sizes, ",") {
 		n, err := strconv.Atoi(strings.TrimSpace(s))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "bad -n value %q: %v\n", s, err)
 			os.Exit(1)
 		}
-		for _, engine := range strings.Split(*engines, ",") {
+		for engine := range strings.SplitSeq(*engines, ",") {
 			engine = strings.TrimSpace(engine)
 			fmt.Fprintf(os.Stderr, "running %s at %d entities...\n", engine, n)
 			r := buildbench.Run(engine, n, root, *split, *keep)
@@ -99,8 +99,8 @@ func thousands(n int) string {
 }
 
 func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
+	if before, _, ok := strings.Cut(s, "\n"); ok {
+		return before
 	}
 	return s
 }

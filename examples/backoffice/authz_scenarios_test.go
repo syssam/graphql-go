@@ -415,8 +415,7 @@ func TestOrderServiceRefusesAnonymousWrites(t *testing.T) {
 	svc := order.New(c)
 	anon := viewer.With(ctx, viewer.Viewer{})
 	code := func(err error) string {
-		var gerr *graphql.Error
-		if errors.As(err, &gerr) {
+		if gerr, ok := errors.AsType[*graphql.Error](err); ok {
 			s, _ := gerr.Extensions["code"].(string)
 			return s
 		}
@@ -511,8 +510,7 @@ func TestServicesRefuseNonStaffWrites(t *testing.T) {
 		"order.Delete": func(ctx context.Context) error { return orders.Delete(ctx, o.ID) },
 	}
 	code := func(err error) string {
-		var gerr *graphql.Error
-		if errors.As(err, &gerr) {
+		if gerr, ok := errors.AsType[*graphql.Error](err); ok {
 			s, _ := gerr.Extensions["code"].(string)
 			return s
 		}

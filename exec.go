@@ -296,8 +296,7 @@ func (t *timeoutError) Is(target error) bool { return target == context.Deadline
 // extensions are kept beside the code.
 func (e *Executor) timeoutFieldError(err error) *Error {
 	out := &Error{Message: e.timeoutCause.Error(), Err: err}
-	var inner *Error
-	if errors.As(err, &inner) {
+	if inner, ok := errors.AsType[*Error](err); ok {
 		for k, v := range inner.Extensions {
 			out = out.WithExtension(k, v)
 		}
@@ -620,12 +619,10 @@ func (c *authorizerCause) Is(target error) bool { return errors.Is(c.cause, targ
 // behind authorizerCause, for a presenter that wants to test it -- unless it
 // is a recovered panic, which runAuthorizer has already logged.
 func authorizerError(ctx context.Context, err error) *Error {
-	var e *Error
-	if errors.As(err, &e) {
+	if e, ok := errors.AsType[*Error](err); ok {
 		return e
 	}
-	var p *panicError
-	if !errors.As(err, &p) {
+	if _, ok := errors.AsType[*panicError](err); !ok {
 		slog.ErrorContext(ctx, "graphql: authorizer failed", "error", err)
 	}
 	return (&Error{Message: "internal system error", Err: &authorizerCause{cause: err}}).WithCode(CodeInternal)
@@ -968,8 +965,7 @@ func (st *execState) fieldError(ctx context.Context, err error, path *pathNode, 
 		st.droppedFieldError(ctx, err)
 		return
 	}
-	var soft *elementErrors
-	if errors.As(err, &soft) {
+	if soft, ok := errors.AsType[*elementErrors](err); ok {
 		for _, ie := range soft.errs {
 			st.fieldError(ctx, ie, path, f, ord)
 		}

@@ -552,8 +552,7 @@ func (c *conn) run(ctx context.Context, op *operation, id string, req *graphql.R
 			// error here would tell the client not to resubscribe.
 			return
 		}
-		var se *graphql.SubscribeError
-		if errors.As(err, &se) {
+		if se, ok := errors.AsType[*graphql.SubscribeError](err); ok {
 			c.finishWithErrors(op, id, se.Response.Errors)
 			return
 		}
