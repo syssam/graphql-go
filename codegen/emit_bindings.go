@@ -8,6 +8,8 @@ import (
 	"github.com/vektah/gqlparser/v2/ast"
 )
 
+// emitBindings writes a group's Bindings function: one registration per
+// type and field the group owns, in the order NewSchema reads them.
 func (b *builder) emitBindings(group string, withResolver bool) string {
 	var w strings.Builder
 	whose := "the schema's"
@@ -24,7 +26,17 @@ func (b *builder) emitBindings(group string, withResolver bool) string {
 		w.WriteString("// Resolver, so NewSchema registers them itself.\n")
 		w.WriteString("func Bindings() graphql.SchemaOption {\n\treturn graphql.Options(\n")
 	}
+	b.bindEnums(&w, group)
+	b.bindLeafAndAbstract(&w, group)
+	rootFields := b.bindObjects(&w, group)
+	b.bindRoots(&w, rootFields)
+	b.bindArgs(&w, group)
+	w.WriteString("\t)\n}\n")
+	return w.String()
+}
 
+// bindEnums registers the group's enums, each with every Go type bound to it.
+func (b *builder) bindEnums(w *strings.Builder, group string) {
 	for _, name := range b.typeNames(ast.Enum) {
 		if !b.inGroup(name, group) {
 			continue
@@ -54,6 +66,11 @@ func (b *builder) emitBindings(group string, withResolver bool) string {
 			w.WriteString("\t\t}),\n")
 		}
 	}
+}
+
+// bindLeafAndAbstract registers the group's self-encoding scalars, inputs,
+// interfaces and unions.
+func (b *builder) bindLeafAndAbstract(w *strings.Builder, group string) {
 	// A scalar is bound here only when its type encodes itself; any other
 	// custom scalar is the author's to bind, and reportUnboundScalars says so.
 	for _, name := range b.typeNames(ast.Scalar) {
@@ -83,8 +100,12 @@ func (b *builder) emitBindings(group string, withResolver bool) string {
 		}
 		w.WriteString("\t\tgraphql.Union[" + b.abstractRef(name) + "](\"" + name + "\"),\n")
 	}
+}
 
-	var rootFields = map[string][]string{}
+// bindObjects registers the group's object types, and returns the field calls
+// of the root fields it owns, keyed by root type, for bindRoots.
+func (b *builder) bindObjects(w *strings.Builder, group string) map[string][]string {
+	rootFields := map[string][]string{}
 	for _, name := range b.typeNames(ast.Object) {
 		if b.isRoot(name) {
 			for _, fd := range b.schema.Types[name].Fields {
@@ -108,9 +129,13 @@ func (b *builder) emitBindings(group string, withResolver bool) string {
 		}
 		w.WriteString("\t\t),\n")
 	}
+	return rootFields
+}
 
-	// Each group binds only its own root fields; the engine merges the
-	// several Query calls this makes across groups into one root.
+// bindRoots registers the root fields one group owns. Each group binds only
+// its own; the engine merges the several Query calls this makes across
+// groups into one root.
+func (b *builder) bindRoots(w *strings.Builder, rootFields map[string][]string) {
 	for _, root := range []struct {
 		def  *ast.Definition
 		call string
@@ -124,7 +149,11 @@ func (b *builder) emitBindings(group string, withResolver bool) string {
 		}
 		w.WriteString("\t\t),\n")
 	}
+}
 
+// bindArgs registers the argument struct of every group field that has
+// arguments.
+func (b *builder) bindArgs(w *strings.Builder, group string) {
 	// Two fields with one args name never reach here: checkNameCollisions
 	// refuses them over this same walk, as emitArgs would otherwise declare
 	// the struct twice.
@@ -134,9 +163,6 @@ func (b *builder) emitBindings(group string, withResolver bool) string {
 		}
 		w.WriteString("\t\tgraphql.Args[" + b.argsName(name, fd.Name) + "](),\n")
 	})
-
-	w.WriteString("\t)\n}\n")
-	return w.String()
 }
 
 func (b *builder) fieldCall(typeName string, fd *ast.FieldDefinition, root bool) string {
