@@ -1953,7 +1953,7 @@ func TestWireReadsAPackagesNameOnce(t *testing.T) {
 		return "package impl\n\nimport \"hello/internal/deps\"\n\ntype " + typ + " struct{}\n\nfunc New" + typ + "(d deps.Deps) *" + typ + " { return &" + typ + "{} }\n"
 	}
 	writeFiles(t, dir, map[string]string{"impl/users.go": ctor("Users"), "impl/posts.go": ctor("Posts")})
-	b, err := newBuilder(dir, Config{
+	b, err := newBuilder(context.Background(), dir, Config{
 		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph",
 		Scaffold: scaffold, Wire: Wire{Deps: "hello/internal/deps.Deps"},
 	})

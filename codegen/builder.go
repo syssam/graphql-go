@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -161,7 +162,7 @@ func (b *builder) setModels(models map[string]string) {
 	b.markers = nil
 }
 
-func newBuilder(dir string, cfg Config) (*builder, error) {
+func newBuilder(ctx context.Context, dir string, cfg Config) (*builder, error) {
 	var srcs []*ast.Source
 	// A file two globs both name is one source: schema/**/*.graphql beside a
 	// file under schema/ named outright would otherwise define its types twice.
@@ -245,7 +246,7 @@ func newBuilder(dir string, cfg Config) (*builder, error) {
 	// already settled.
 	explicit := cfg.Manifest
 	if len(cfg.AutoBind) > 0 {
-		discovered, aerr := autoBind(dir, cfg.AutoBind, sch, b)
+		discovered, aerr := autoBind(ctx, dir, cfg.AutoBind, sch, b)
 		if aerr != nil {
 			return nil, aerr
 		}

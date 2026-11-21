@@ -152,7 +152,7 @@ func render(ctx context.Context, cfg Config) (*builder, []string, map[string][]b
 	if err := checkGroupDirRoot(outDir, cfg.GroupDir); err != nil {
 		return nil, nil, nil, err
 	}
-	b, err := newBuilder(dir, cfg)
+	b, err := newBuilder(ctx, dir, cfg)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -172,6 +172,9 @@ func render(ctx context.Context, cfg Config) (*builder, []string, map[string][]b
 	recorded = b.trustedCopies(recorded)
 	files, err := b.emit()
 	if err != nil {
+		return nil, nil, nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, nil, nil, err
 	}
 	// A scaffold key that names no group is a configuration error, refused

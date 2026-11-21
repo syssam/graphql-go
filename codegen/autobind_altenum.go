@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"context"
 	"go/types"
 	"maps"
 	"slices"
@@ -126,7 +127,7 @@ func namedLeaf(t types.Type) *types.Named {
 // AutoBind pattern and no @goModel named -- they are reachable only through a
 // bound struct's field, and export data for a dependency does not come back
 // from packages.Load as a package of its own.
-func altEnumPkgs(dir string, alt map[string][]*types.Named, loaded []*packages.Package, loads *int) []*packages.Package {
+func altEnumPkgs(ctx context.Context, dir string, alt map[string][]*types.Named, loaded []*packages.Package, loads *int, notef func(string, ...any)) []*packages.Package {
 	have := map[string]bool{}
 	for _, p := range loaded {
 		have[p.PkgPath] = true
@@ -146,8 +147,15 @@ func altEnumPkgs(dir string, alt map[string][]*types.Named, loaded []*packages.P
 		return nil
 	}
 	*loads++
-	pkgs, err := packages.Load(&packages.Config{Dir: dir, Mode: loadMode}, want...)
+	pkgs, err := packages.Load(&packages.Config{Context: ctx, Dir: dir, Mode: loadMode}, want...)
+	// Not a refusal, as for modelPkgs: the enum keeps the binding it had
+	// before alternates were looked for. But the alternates are then not
+	// bound, and the author is told why rather than left to find the enum
+	// unbound at that position. A cancelled context is autoBind's to report.
 	if err != nil {
+		if ctx.Err() == nil {
+			notef("auto-bind: could not load %s for alternate enum types, so they are not bound: %v", strings.Join(want, ", "), err)
+		}
 		return nil
 	}
 	return pkgs

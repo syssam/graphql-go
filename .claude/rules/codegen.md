@@ -738,6 +738,15 @@ goes in `plan`. Nothing in `apply` may refuse: every refusal must come before th
 `TestRenderRefusesWhatAGenerateRefuses` and `TestRenderIsWhatAGenerateWritesAndWritesNothing`
 pin the split.
 
+**The context is honoured until the first write.** Every `packages.Load` gets
+`Context: ctx` (`autoBind`, `modelPkgs`, `altEnumPkgs`), `autoBind` checks `ctx.Err()` after
+each, and `render` checks once more after `emit`. Nothing checks it in `apply`: a write
+abandoned halfway leaves a tree that is no run's. `TestAutoBindStopsAHungGoCommand` puts a
+`go` that sleeps on PATH, because the `ctx.Err()` check after a load hides whether the load
+itself was given the context -- with `Context:` removed every other cancellation test stays
+green. A failed alternate-enum load is a note, not a refusal, and is silent only when the
+context was cancelled.
+
 **A refusal about a place in the SDL is a `*Diagnostic`** (`diagnostic.go`), built with
 `b.diag(pos, coord, ...)`, so its error starts `file:line:col: ` relative to `Config.Dir` and a
 tool reads the parts through `Diagnostics(err)`. Converted: name collisions, list depth,

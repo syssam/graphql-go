@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -33,7 +34,7 @@ type Query { account(id: ID!): Account }
 // read from where they already are.
 func TestModelDirectiveIsRead(t *testing.T) {
 	dir := writeSchema(t, goModelSDL)
-	b, err := newBuilder(dir, Config{
+	b, err := newBuilder(context.Background(), dir, Config{
 		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"},
 		Output: "graph", Package: "example.com/x/graph",
 		ModelDirective: ModelDirective{Name: "goModel", Arg: "model"},
@@ -59,7 +60,7 @@ func TestModelDirectiveIsRead(t *testing.T) {
 // Naming no directive leaves the schema read exactly as before.
 func TestModelDirectiveOffByDefault(t *testing.T) {
 	dir := writeSchema(t, goModelSDL)
-	b, err := newBuilder(dir, Config{
+	b, err := newBuilder(context.Background(), dir, Config{
 		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"},
 		Output: "graph", Package: "example.com/x/graph",
 	})
@@ -74,7 +75,7 @@ func TestModelDirectiveOffByDefault(t *testing.T) {
 // A config file is a deliberate override of what the SDL happens to say.
 func TestModelsBeatsTheDirective(t *testing.T) {
 	dir := writeSchema(t, goModelSDL)
-	b, err := newBuilder(dir, Config{
+	b, err := newBuilder(context.Background(), dir, Config{
 		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"},
 		Output: "graph", Package: "example.com/x/graph",
 		Models:         map[string]string{"Account": "example.com/other.Account"},
@@ -165,7 +166,7 @@ type Product struct {
 		t.Fatal(err)
 	}
 
-	b, err := newBuilder(dir, Config{
+	b, err := newBuilder(context.Background(), dir, Config{
 		Dir: dir, SchemaGlobs: []string{"schema.graphql"},
 		Output: "graph", Package: "hello/graph",
 		AutoBind:       []string{"./ent"},

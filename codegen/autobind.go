@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"context"
 	"fmt"
 	"go/build"
 	"go/types"
@@ -27,9 +28,12 @@ import (
 const loadMode = packages.NeedName | packages.NeedTypes | packages.NeedImports | packages.NeedDeps
 
 // autoBind loads the given package patterns and infers a manifest from them.
-func autoBind(dir string, patterns []string, schema *ast.Schema, b *builder) (*Manifest, error) {
+func autoBind(ctx context.Context, dir string, patterns []string, schema *ast.Schema, b *builder) (*Manifest, error) {
 	b.loads++
-	pkgs, err := packages.Load(&packages.Config{Dir: dir, Mode: loadMode}, patterns...)
+	pkgs, err := packages.Load(&packages.Config{Context: ctx, Dir: dir, Mode: loadMode}, patterns...)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err != nil {
 		return nil, fmt.Errorf("auto-bind: load: %w", err)
 	}
@@ -78,7 +82,10 @@ func autoBind(dir string, patterns []string, schema *ast.Schema, b *builder) (*M
 	// written instead: Product.owner is *ent.Owner against *model.Owner, so
 	// every object-valued and every enum-valued field falls through to the
 	// Resolver however plainly it is a struct field.
-	all := slices.Concat(pkgs, modelPkgs(dir, schema, b.cfg.Models, pkgs, &b.loads))
+	all := slices.Concat(pkgs, modelPkgs(ctx, dir, schema, b.cfg.Models, pkgs, &b.loads))
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	idx := namedIndex(all)
 
 	// A declared binding the loaded packages show cannot work is dropped
@@ -105,7 +112,10 @@ func autoBind(dir string, patterns []string, schema *ast.Schema, b *builder) (*M
 	// It has to be discovered after the drop pass above, so that an enum whose
 	// declared type was dropped is not compared against a type nothing binds.
 	if alt := altEnumTypes(schema, b.cfg.Models, found, idx); len(alt) > 0 {
-		withAlt := slices.Concat(all, altEnumPkgs(dir, alt, all, &b.loads))
+		withAlt := slices.Concat(all, altEnumPkgs(ctx, dir, alt, all, &b.loads, b.notef))
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		man.ExtraEnums = altEnumBindings(schema, alt, constIndex(withAlt), b.notef)
 	}
 	objects := objectNames(schema)
@@ -284,7 +294,7 @@ func goPattern(pattern string) *regexp.Regexp {
 // a package no pattern names -- a service's own result type -- had its fields
 // written from the SDL's names, and a field the struct spells differently, or
 // does not have, was a compile error in generated code.
-func modelPkgs(dir string, schema *ast.Schema, models map[string]string, loaded []*packages.Package, loads *int) []*packages.Package {
+func modelPkgs(ctx context.Context, dir string, schema *ast.Schema, models map[string]string, loaded []*packages.Package, loads *int) []*packages.Package {
 	have := map[string]bool{}
 	for _, p := range loaded {
 		have[p.PkgPath] = true
@@ -304,9 +314,10 @@ func modelPkgs(dir string, schema *ast.Schema, models map[string]string, loaded 
 	}
 	// A path that does not load is not an error: the model map may name a
 	// package outside this module, and the enum then keeps the behaviour it
-	// had before constants were discovered at all.
+	// had before constants were discovered at all. A cancelled context is
+	// the caller's to see, and autoBind checks for it.
 	*loads++
-	pkgs, err := packages.Load(&packages.Config{Dir: dir, Mode: loadMode}, want...)
+	pkgs, err := packages.Load(&packages.Config{Context: ctx, Dir: dir, Mode: loadMode}, want...)
 	if err != nil {
 		return nil
 	}

@@ -39,7 +39,7 @@ func TestScaffoldParsesEachFileOnce(t *testing.T) {
 	}
 	run := func() *builder {
 		t.Helper()
-		b, err := newBuilder(dir, Config{
+		b, err := newBuilder(context.Background(), dir, Config{
 			Dir: dir, SchemaGlobs: []string{"schema/*.graphql"},
 			Output: "graph", Package: "example.com/s/graph", Scaffold: scaffold,
 		})
@@ -100,7 +100,7 @@ func TestScaffoldParsesAgainAFileChangedSinceTheCheck(t *testing.T) {
 		"schema/user.graphql":  "type User { id: ID! }\nextend type Query { user: User }\n",
 		"impl/query.go":        impl,
 	})
-	b, err := newBuilder(dir, Config{
+	b, err := newBuilder(context.Background(), dir, Config{
 		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "example.com/s/graph",
 		Scaffold: map[string]string{"query": "impl.Resolver", "user": "impl.Resolver"},
 	})
@@ -156,7 +156,7 @@ func TestScaffoldTargetsAreMatchedToOutputInOnePass(t *testing.T) {
 	if err := Generate(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	b, err := newBuilder(dir, cfg)
+	b, err := newBuilder(context.Background(), dir, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestCheckStubsMatchesFilesToTargetsInOnePass(t *testing.T) {
 	if err := Generate(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	b, err := newBuilder(dir, cfg)
+	b, err := newBuilder(context.Background(), dir, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

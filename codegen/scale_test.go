@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -47,7 +48,7 @@ func TestTypeNamesIsComputedOncePerKind(t *testing.T) {
 	const groups = 30
 	dir := manyGroupSchema(t, groups)
 
-	b, err := newBuilder(dir, Config{
+	b, err := newBuilder(context.Background(), dir, Config{
 		Dir:         dir,
 		SchemaGlobs: []string{"schema/*.graphql"},
 		Output:      "graph",
@@ -76,7 +77,7 @@ func TestTypeNamesIsComputedOncePerKind(t *testing.T) {
 // neither of which changes once the schema is loaded.
 func TestGroupOfIsMemoized(t *testing.T) {
 	dir := manyGroupSchema(t, 5)
-	b, err := newBuilder(dir, Config{
+	b, err := newBuilder(context.Background(), dir, Config{
 		Dir:         dir,
 		SchemaGlobs: []string{"schema/*.graphql"},
 		Output:      "graph",
@@ -104,7 +105,7 @@ func TestModelExprImportsIsComputedOnce(t *testing.T) {
 	const groups = 30
 	dir := manyGroupSchema(t, groups)
 
-	b, err := newBuilder(dir, Config{
+	b, err := newBuilder(context.Background(), dir, Config{
 		Dir:         dir,
 		SchemaGlobs: []string{"schema/*.graphql"},
 		Output:      "graph",
@@ -145,7 +146,7 @@ func TestNoPackagesAreLoadedWithoutAutoBind(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	b, err := newBuilder(dir, Config{
+	b, err := newBuilder(context.Background(), dir, Config{
 		Dir:         dir,
 		SchemaGlobs: []string{"schema/*.graphql"},
 		Output:      "graph",
@@ -168,7 +169,7 @@ func TestNoPackagesAreLoadedWithoutAutoBind(t *testing.T) {
 func TestGroupFieldsAndGroupsAreComputedOnce(t *testing.T) {
 	const groups = 30
 	dir := manyGroupSchema(t, groups)
-	b, err := newBuilder(dir, Config{
+	b, err := newBuilder(context.Background(), dir, Config{
 		Dir:         dir,
 		SchemaGlobs: []string{"schema/*.graphql"},
 		Output:      "graph",
