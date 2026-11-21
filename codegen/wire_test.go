@@ -1856,10 +1856,10 @@ type Deps struct {
 	if err := generate(); err != nil {
 		t.Fatal(err)
 	}
-	if err := Generate(context.Background(), Config{
+	if err := Check(context.Background(), Config{
 		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph",
-		Scaffold: scaffold, Wire: Wire{Deps: "hello/internal/deps.Deps"}, Check: true,
-	}); err != nil {
+		Scaffold: scaffold, Wire: Wire{Deps: "hello/internal/deps.Deps"},
+	}, CheckOptions{}); err != nil {
 		t.Errorf("a check straight after the generate that scaffolded the constructors: %v", err)
 	}
 	first := snapshot(t, dir)

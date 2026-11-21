@@ -173,7 +173,7 @@ func (b *builder) scaffold(groups []string) error {
 // reportStubs names the Resolver methods still holding the panic scaffolding
 // wrote, as one note for the whole run however many groups hold them: a
 // project with hundreds of groups and stubs left on purpose would otherwise
-// read a line per group on every generate. CheckStubs lists them all.
+// read a line per group on every generate. CheckOptions.Stubs lists them all.
 func (b *builder) reportStubs(stubs map[string]bool) {
 	if len(stubs) == 0 {
 		return
@@ -226,7 +226,7 @@ func (b *builder) reportStale(groups []string, target string, have, want map[str
 		strings.Join(groups, ", "), target, which, strings.Join(stale, ", "))
 }
 
-// checkStubs is Config.CheckStubs: every method of a Scaffold target still
+// checkStubs is CheckOptions.Stubs: every method of a Scaffold target still
 // holding its scaffolded body, read from the files checkScaffoldTargets
 // parsed, which are every file of each target's package that gqlc did not
 // write.

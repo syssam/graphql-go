@@ -73,6 +73,13 @@ is documented rather than designed away.
   so existing code kept compiling. A deprecation alias exists to protect
   released users; there are none, and carrying it past a v1 tag would mean
   carrying it forever. Removed now, when it costs nothing.
+- **`codegen.Config.Check` and `CheckStubs` replaced by `codegen.Check`.** A
+  check writes nothing and a generate writes, so a flag on the configuration
+  made one value mean two operations, and `CheckStubs` was a field ignored by
+  every generate. `Check(ctx, cfg, CheckOptions{Stubs})` is the check;
+  `Render(ctx, cfg)` was added beside it for a caller that wants the files
+  without a directory. `Verify` stays on `Config`, since it is a step of the
+  generate itself.
 
 ## Still expected to change
 

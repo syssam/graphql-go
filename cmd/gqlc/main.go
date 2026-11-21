@@ -382,12 +382,10 @@ func runTo(args []string, stdout, stderr io.Writer) error {
 		JSONTags:               set(fc.JSONTags),
 		Wire:                   codegen.Wire{Deps: fc.Wire.Deps, Pass: fc.Wire.Pass},
 		FieldNames:             fc.FieldNames,
-		Check:                  o.check,
-		CheckStubs:             o.stubs,
 		Verify:                 o.verify,
 		Notef:                  notef,
 	}
-	if err := codegen.Generate(context.Background(), cfg); err != nil {
+	if err := generateOrCheck(cfg, o.check, o.stubs); err != nil {
 		return err
 	}
 	// Under -check as well: a check that passes has found the files on disk
@@ -415,16 +413,23 @@ func runFlags(schema repeatable, out, pkg string, models repeatable, nullableOmi
 			return fmt.Errorf("gqlc: %w", err)
 		}
 	}
-	return codegen.Generate(context.Background(), codegen.Config{
+	return generateOrCheck(codegen.Config{
 		SchemaGlobs:            schema,
 		Output:                 out,
 		Package:                pkg,
 		Models:                 m,
 		NullableInputOmittable: nullableOmittable,
 		ZeroForNullInputs:      zeroForNull,
-		Check:                  check,
-		CheckStubs:             stubs,
 		Verify:                 verify,
 		Notef:                  notef,
-	})
+	}, check, stubs)
+}
+
+// generateOrCheck is -check and -stubs: a check when -check is given, a
+// generate otherwise. -stubs without -check is refused by the flag parsing.
+func generateOrCheck(cfg codegen.Config, check, stubs bool) error {
+	if check {
+		return codegen.Check(context.Background(), cfg, codegen.CheckOptions{Stubs: stubs})
+	}
+	return codegen.Generate(context.Background(), cfg)
 }

@@ -50,10 +50,10 @@ func TestABindingChangeIsNamedByGenerateAndCheck(t *testing.T) {
 	}
 	cfg := Config{
 		Dir: dir, SchemaGlobs: []string{"schema.graphql"}, Output: "graph", Package: "hello/graph",
-		Manifest: after, Check: true,
+		Manifest: after,
 	}
 
-	err := Generate(context.Background(), cfg)
+	err := Check(context.Background(), cfg, CheckOptions{})
 	if !errors.Is(err, ErrStale) {
 		t.Fatalf("check: err = %v, want ErrStale", err)
 	}
@@ -67,7 +67,6 @@ func TestABindingChangeIsNamedByGenerateAndCheck(t *testing.T) {
 	}
 
 	var notes []string
-	cfg.Check = false
 	cfg.Notef = func(format string, args ...any) { notes = append(notes, fmt.Sprintf(format, args...)) }
 	if err := Generate(context.Background(), cfg); err != nil {
 		t.Fatal(err)

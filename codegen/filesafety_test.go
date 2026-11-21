@@ -224,8 +224,7 @@ func TestSchemaSourcesOfAnyExtensionAreEmbedded(t *testing.T) {
 				t.Errorf("%s: the copy of %s is not where the root package embeds it from: %v", name, stem, err)
 			}
 		}
-		cfg.Check = true
-		if err := Generate(context.Background(), cfg); err != nil {
+		if err := Check(context.Background(), cfg, CheckOptions{}); err != nil {
 			t.Errorf("%s: a check straight after a generate: %v", name, err)
 		}
 		roots = append(roots, "hello/"+name+"/graph")
@@ -277,8 +276,7 @@ func TestGenerateNeverDeletesAnSDLFileItDidNotWrite(t *testing.T) {
 		t.Helper()
 		before := snapshot(t, dir)
 		for _, check := range []bool{false, true} {
-			cfg.Check = check
-			err := Generate(context.Background(), cfg)
+			err := generateOrCheck(cfg, check)
 			if err == nil || errors.Is(err, ErrStale) || !strings.Contains(filepath.ToSlash(err.Error()), "graph/schema/legacy.graphql") {
 				t.Errorf("check=%v: err = %v, want a refusal naming graph/schema/legacy.graphql", check, err)
 			}
@@ -398,8 +396,7 @@ func TestGenerateRefusesToCopyOverAnSDLFileItDidNotWrite(t *testing.T) {
 		before := snapshot(t, dir)
 		for _, check := range []bool{false, true} {
 			c := cfg(dir)
-			c.Check = check
-			err := Generate(context.Background(), c)
+			err := generateOrCheck(c, check)
 			if err == nil || errors.Is(err, ErrStale) || !strings.Contains(filepath.ToSlash(err.Error()), "graph/schema/user.graphql") {
 				t.Errorf("check=%v: err = %v, want a refusal naming graph/schema/user.graphql", check, err)
 			}

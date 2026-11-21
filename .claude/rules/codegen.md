@@ -723,12 +723,20 @@ were diffed on that project: 3 187 files, no difference. **Still open, in `newMa
 `name` entry on a field of an interface or input object is accepted and binds nothing, and one
 on a root field emits a call on `model.Query`, which does not exist.
 
-**`gqlc -check` (`Config.Check`) is a generate that writes and deletes nothing** and returns
+**`gqlc -check` (`codegen.Check`) is a generate that writes and deletes nothing** and returns
 `ErrStale` naming each file it would create, rewrite or delete, relative to `Config.Dir`. It
 runs every refusal a generate runs first, so a broken configuration is an error and never
 "current"; what it would delete comes from `pruneList`, the listing half of `pruneGenerated`,
 so the two cannot disagree. Scaffolding is left out on purpose, apart from its configuration
 (`checkScaffold`): it adds to code the author owns, and the compiler reports what is missing.
+
+**`Generate`, `Check` and `Render` share one pipeline in `generate.go`**: `render` (the schema
+and configuration refusals, then `emit`), `plan` (`render` plus every refusal about what is on
+disk under Output), then `apply` (write, prune, scaffold, verify). A new refusal about the
+schema or configuration goes in `render`, so `Render` refuses it too; one that needs the disk
+goes in `plan`. Nothing in `apply` may refuse: every refusal must come before the first write.
+`TestRenderRefusesWhatAGenerateRefuses` and `TestRenderIsWhatAGenerateWritesAndWritesNothing`
+pin the split.
 
 **A review of `-check` ran it and then a generate on nine setups and compared**, and found what
 reading had not. Stale SDL copies were named with the output directory twice -- the glob
@@ -764,7 +772,7 @@ left out, which makes a change unreported rather than misreported, and
 `TestBindingSourcesReadsEveryEmittedShape` lists every shape -- add a line there with a new one.
 Only a `generated.go` both runs have is compared.
 
-**A stub left as scaffolded is named after every generate, and `CheckStubs` (`-check -stubs`)
+**A stub left as scaffolded is named after every generate, and `CheckOptions.Stubs` (`-check -stubs`)
 fails on it** (`scaffoldedStub`). The body must be exactly the one `panic(stubPanic+coord)`
 statement: anything the author added makes it theirs. A generate counts what the package held
 plus what this run wrote (`pkgIndex.addStubs`), since the index is read before the write; a

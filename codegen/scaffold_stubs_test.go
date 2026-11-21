@@ -60,8 +60,8 @@ func TestScaffoldedStubsAreNamedAndCheckStubsFailsOnThem(t *testing.T) {
 	edit(postFile, `panic("not implemented: Query.post")`, "panic(\"not implemented: Query.post\")\n\t_ = args")
 
 	check := cfg
-	check.Check, check.CheckStubs, check.Notef = true, true, nil
-	err := Generate(context.Background(), check)
+	check.Notef = nil
+	err := Check(context.Background(), check, CheckOptions{Stubs: true})
 	if !errors.Is(err, ErrStubs) || errors.Is(err, ErrStale) {
 		t.Fatalf("err = %v, want ErrStubs alone", err)
 	}
@@ -76,11 +76,9 @@ func TestScaffoldedStubsAreNamedAndCheckStubsFailsOnThem(t *testing.T) {
 		}
 	}
 
-	// Without CheckStubs the same tree is current.
-	plain := check
-	plain.CheckStubs = false
-	if err := Generate(context.Background(), plain); err != nil {
-		t.Fatalf("a check without CheckStubs: %v", err)
+	// Without Stubs the same tree is current.
+	if err := Check(context.Background(), check, CheckOptions{}); err != nil {
+		t.Fatalf("a check without Stubs: %v", err)
 	}
 
 	stub := regexp.MustCompile(`panic\("not implemented: [^"]*"\)`)
@@ -105,10 +103,9 @@ func TestScaffoldedStubsAreNamedAndCheckStubsFailsOnThem(t *testing.T) {
 
 func TestCheckStubsNeedsScaffold(t *testing.T) {
 	dir, _ := scaffoldModule(t, nil)
-	err := Generate(context.Background(), Config{
+	err := Check(context.Background(), Config{
 		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph",
-		Check: true, CheckStubs: true,
-	})
+	}, CheckOptions{Stubs: true})
 	if err == nil || !strings.Contains(err.Error(), "Scaffold names none") {
 		t.Fatalf("err = %v, want a refusal naming Scaffold", err)
 	}
@@ -139,8 +136,7 @@ func TestCheckStubsListsAStubOnceWhateverTheSpelling(t *testing.T) {
 	if err := Generate(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	cfg.Check, cfg.CheckStubs = true, true
-	err := Generate(context.Background(), cfg)
+	err := Check(context.Background(), cfg, CheckOptions{Stubs: true})
 	if !errors.Is(err, ErrStubs) {
 		t.Fatalf("err = %v, want ErrStubs", err)
 	}
@@ -166,8 +162,7 @@ func TestCheckStubsReadsEverySpellingWhereCaseMatters(t *testing.T) {
 	if err := Generate(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	cfg.Check, cfg.CheckStubs = true, true
-	err := Generate(context.Background(), cfg)
+	err := Check(context.Background(), cfg, CheckOptions{Stubs: true})
 	if !errors.Is(err, ErrStubs) {
 		t.Fatalf("err = %v, want ErrStubs", err)
 	}

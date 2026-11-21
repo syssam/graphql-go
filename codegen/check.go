@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// check is Config.Check: what a generate would create, rewrite and delete,
+// check is Check: what a generate would create, rewrite and delete,
 // named relative to Config.Dir, in that order and sorted within each.
 func (b *builder) check(outDir string, rels []string, olds [][]byte, files map[string][]byte, recorded []string, changes []string) error {
 	base, _ := filepath.Abs(b.dir)

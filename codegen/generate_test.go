@@ -844,8 +844,7 @@ func TestSchemaGlobDoubleStarLeavesGqlcsOwnCopiesAlone(t *testing.T) {
 			t.Fatalf("generate %d: %v", run, err)
 		}
 	}
-	cfg.Check = true
-	if err := Generate(context.Background(), cfg); err != nil {
+	if err := Check(context.Background(), cfg, CheckOptions{}); err != nil {
 		t.Errorf("a check after two generates: %v", err)
 	}
 }

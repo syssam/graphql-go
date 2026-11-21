@@ -65,8 +65,7 @@ func TestVerifyFailsAGenerateWhoseOutputDoesNotBuild(t *testing.T) {
 		t.Errorf("a second generate over the same broken output said %v, want the same refusal", err)
 	}
 	// A check writes nothing and so builds nothing.
-	cfg.Check = true
-	if err := Generate(context.Background(), cfg); err != nil {
+	if err := Check(context.Background(), cfg, CheckOptions{}); err != nil {
 		t.Errorf("a check with Verify set said %v; the output is current, and building is a generate's", err)
 	}
 }

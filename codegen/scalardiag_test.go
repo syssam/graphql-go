@@ -163,14 +163,14 @@ func TestAScalarIsNamedOnceAndANewOneAlone(t *testing.T) {
 	sdl("scalar Money\nscalar Stamp\nscalar Colour")
 	for range 2 {
 		notes = nil
-		err := Generate(context.Background(), Config{
-			Dir: dir, SchemaGlobs: []string{"schema.graphql"}, Output: "graph", Package: "hello/graph", Check: true,
+		err := Check(context.Background(), Config{
+			Dir: dir, SchemaGlobs: []string{"schema.graphql"}, Output: "graph", Package: "hello/graph",
 			Notef: func(f string, a ...any) {
 				if n := fmt.Sprintf(f, a...); strings.Contains(n, "custom scalar") {
 					notes = append(notes, n)
 				}
 			},
-		})
+		}, CheckOptions{})
 		if err == nil {
 			t.Fatal("a check over a stale tree passed")
 		}

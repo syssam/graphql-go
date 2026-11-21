@@ -33,7 +33,7 @@ func snapshot(t *testing.T, dir string) map[string]string {
 	return out
 }
 
-// Config.Check is a generate that writes nothing and says what it would
+// Check is a generate that writes nothing and says what it would
 // have done: CI's "is the generated code current" without running the
 // generator over the tree and asking git, and the same question asked
 // locally before a commit.
@@ -48,8 +48,7 @@ func TestCheckReportsWhatAGenerateWouldChange(t *testing.T) {
 		t.Helper()
 		before := snapshot(t, dir)
 		c := cfg
-		c.Check = true
-		err := Generate(context.Background(), c)
+		err := Check(context.Background(), c, CheckOptions{})
 		if after := snapshot(t, dir); len(after) != len(before) {
 			t.Fatalf("a check changed the tree: %d files before, %d after", len(before), len(after))
 		} else {
@@ -140,17 +139,16 @@ func TestCheckReportsWhatAGenerateWouldChange(t *testing.T) {
 func TestCheckRefusesWhatGenerateRefuses(t *testing.T) {
 	scaffold := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
 	dir, _ := wireFieldModule(t, scaffold, wireFieldDeps)
-	err := Generate(context.Background(), Config{
+	err := Check(context.Background(), Config{
 		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph",
 		Scaffold: scaffold, Wire: Wire{Deps: "hello/internal/deps.Deps", Pass: map[string]string{"nobody": "d"}},
-		Check: true,
-	})
+	}, CheckOptions{})
 	if err == nil || errors.Is(err, ErrStale) || !strings.Contains(err.Error(), "nobody") {
 		t.Fatalf("err = %v, want the configuration refused, not a staleness report", err)
 	}
 }
 
-// A review of Config.Check, which ran gqlc -check and then a generate and
+// A review of Check, which ran gqlc -check and then a generate and
 // compared. Everything below was found that way.
 
 // The report, exactly: each path relative to Config.Dir once, the verbs in
@@ -190,8 +188,7 @@ func TestCheckReportIsExact(t *testing.T) {
 	if err := os.Remove(filepath.Join(dir, "graph", "user", "generated.go")); err != nil {
 		t.Fatal(err)
 	}
-	cfg.Check = true
-	err := Generate(context.Background(), cfg)
+	err := Check(context.Background(), cfg, CheckOptions{})
 	const want = "codegen: generated code is not current; a generate would\n" +
 		"  create graph/user/generated.go\n" +
 		"  rewrite graph/post/generated.go\n" +
@@ -220,10 +217,10 @@ func TestALineEndingIsNotAChange(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	err := Generate(context.Background(), Config{
+	err := Check(context.Background(), Config{
 		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph",
-		Scaffold: scaffold, Wire: Wire{Deps: "hello/internal/deps.Deps"}, Check: true,
-	})
+		Scaffold: scaffold, Wire: Wire{Deps: "hello/internal/deps.Deps"},
+	}, CheckOptions{})
 	if err != nil {
 		t.Errorf("CRLF line endings were reported as a change: %v", err)
 	}
@@ -272,8 +269,7 @@ func TestCheckRefusesEachThingGenerateRefuses(t *testing.T) {
 				dir, _ = wireFieldModule(t, both, wireFieldDeps)
 				cfg.Dir = dir
 			}
-			cfg.Check = true
-			err := Generate(context.Background(), cfg)
+			err := Check(context.Background(), cfg, CheckOptions{})
 			if err == nil || errors.Is(err, ErrStale) || !strings.Contains(err.Error(), c.want) {
 				t.Fatalf("a generate says %v\nand a check says %v", genErr, err)
 			}
@@ -297,13 +293,12 @@ func TestCheckFindsLeftoversThroughALinkedOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFiles(t, dir, map[string]string{"real/old/generated.go": generatedHeader + "\n\npackage old\n"})
-	cfg.Check = true
-	if err := Generate(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "delete graph/old/generated.go") {
+	if err := Check(context.Background(), cfg, CheckOptions{}); err == nil || !strings.Contains(err.Error(), "delete graph/old/generated.go") {
 		t.Fatalf("err = %v, want the leftover found through the link and named under it", err)
 	}
 }
 
-// An eighth review, of Config.Check as committed, by running a check and a
+// An eighth review, of Check as committed, by running a check and a
 // generate side by side.
 
 // Every refusal scaffolding makes is made before anything is written, by a
@@ -344,8 +339,7 @@ func TestScaffoldRefusalsComeBeforeAnythingIsWritten(t *testing.T) {
 			if after := snapshot(t, dir); len(after) != len(before) {
 				t.Errorf("a refused generate wrote or deleted files: %d before, %d after", len(before), len(after))
 			}
-			cfg.Check = true
-			if err := Generate(context.Background(), cfg); err == nil || errors.Is(err, ErrStale) || !strings.Contains(err.Error(), c.want) {
+			if err := Check(context.Background(), cfg, CheckOptions{}); err == nil || errors.Is(err, ErrStale) || !strings.Contains(err.Error(), c.want) {
 				t.Errorf("a check says %v, where a generate refuses with %q", err, c.want)
 			}
 		})
@@ -370,10 +364,10 @@ func TestSchemaCopiesAreComparedWhateverTheirLineEndings(t *testing.T) {
 	if err := os.WriteFile(copyPath, []byte(strings.ReplaceAll(readFile(t, copyPath), "\r\n", "\n")), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := Generate(context.Background(), Config{
+	err := Check(context.Background(), Config{
 		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph",
-		Scaffold: scaffold, Wire: Wire{Deps: "hello/internal/deps.Deps"}, Check: true,
-	})
+		Scaffold: scaffold, Wire: Wire{Deps: "hello/internal/deps.Deps"},
+	}, CheckOptions{})
 	if err != nil {
 		t.Errorf("an LF copy of a CRLF source was reported: %v", err)
 	}
@@ -415,10 +409,10 @@ func TestCheckNamesPathsTheSameWayEverywhere(t *testing.T) {
 		if real == dir {
 			t.Skip("the temporary directory is not reached through a link here")
 		}
-		err := Generate(context.Background(), Config{
+		err := Check(context.Background(), Config{
 			Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: filepath.Join(real, "graph"), Package: "hello/graph",
-			Scaffold: scaffold, Check: true,
-		})
+			Scaffold: scaffold,
+		}, CheckOptions{})
 		for _, line := range strings.Split(err.Error(), "\n")[1:] {
 			if f := strings.Fields(line); len(f) == 2 && !strings.HasPrefix(f[1], "graph/") {
 				t.Errorf("named %q, not relative to Config.Dir:\n%v", f[1], err)
@@ -427,10 +421,10 @@ func TestCheckNamesPathsTheSameWayEverywhere(t *testing.T) {
 	})
 	t.Run("an Output outside Config.Dir", func(t *testing.T) {
 		out := filepath.Join(t.TempDir(), "elsewhere")
-		err := Generate(context.Background(), Config{
+		err := Check(context.Background(), Config{
 			Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: out, Package: "hello/graph",
-			Scaffold: scaffold, Check: true,
-		})
+			Scaffold: scaffold,
+		}, CheckOptions{})
 		for _, line := range strings.Split(err.Error(), "\n")[1:] {
 			if f := strings.Fields(line); len(f) == 2 && !filepath.IsAbs(filepath.FromSlash(f[1])) {
 				t.Errorf("named %q, where outside Config.Dir a path is absolute:\n%v", f[1], err)
@@ -456,10 +450,10 @@ func TestCheckReportsAnEmptyOrMarkedGeneratedFile(t *testing.T) {
 	if err := os.WriteFile(post, []byte("\ufeff"+readFile(t, post)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := Generate(context.Background(), Config{
+	err := Check(context.Background(), Config{
 		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph",
-		Scaffold: scaffold, Check: true,
-	})
+		Scaffold: scaffold,
+	}, CheckOptions{})
 	if err == nil || !strings.Contains(err.Error(), "rewrite graph/user/generated.go") || !strings.Contains(err.Error(), "rewrite graph/post/generated.go") {
 		t.Fatalf("err = %v, want both reported as rewrites", err)
 	}
@@ -496,8 +490,7 @@ func TestAStaleGeneratedFileBehindAByteOrderMarkIsPruned(t *testing.T) {
 		t.Fatal(err)
 	}
 	check := cfg
-	check.Check = true
-	err := Generate(context.Background(), check)
+	err := Check(context.Background(), check, CheckOptions{})
 	for _, rel := range stale {
 		if err == nil || !strings.Contains(err.Error(), "delete "+rel) {
 			t.Errorf("a check does not say %s would be deleted: %v", rel, err)
@@ -544,4 +537,13 @@ func TestPruneLeavesALinkedDirectory(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "elsewhere", "schema", "old.graphql")); err == nil {
 		t.Error("the stale copy was not pruned")
 	}
+}
+
+// generateOrCheck runs a check when check is set and a generate otherwise,
+// for the tests that ask both the same question.
+func generateOrCheck(cfg Config, check bool) error {
+	if check {
+		return Check(context.Background(), cfg, CheckOptions{})
+	}
+	return Generate(context.Background(), cfg)
 }
