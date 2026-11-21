@@ -33,7 +33,12 @@ import (
 // improve: AutoBind already matches these as methods, which is the correct
 // binding. Reaching through the container would only demote a correct method
 // call to a wrong field read.
-func discoverFields(def *ast.Definition, named *types.Named, want func(*ast.Type, string, bool) string, qual types.Qualifier) map[string]FieldBinding {
+//
+// goName is the Go name the author gave a field (Config.FieldDirective's name
+// argument), or "". Where there is one it is the only name looked up, and
+// exactly: the author has said which field answers, so neither a json tag nor
+// a case-insensitive match may pick another.
+func discoverFields(def *ast.Definition, named *types.Named, want func(*ast.Type, string, bool) string, qual types.Qualifier, goName func(field string) string) map[string]FieldBinding {
 	fields := structFields(named)
 	methods := methodSet(named)
 
@@ -42,9 +47,10 @@ func discoverFields(def *ast.Definition, named *types.Named, want func(*ast.Type
 		if strings.HasPrefix(fd.Name, "__") {
 			continue
 		}
+		given := goName(fd.Name)
 		expected := want(fd.Type, "", false)
 		if len(fd.Arguments) == 0 {
-			if f, ok := matchField(fields, fd.Name); ok {
+			if f, ok := matchFieldNamed(fields, fd.Name, given); ok {
 				if conv, usable := reconcile(f.typ, expected, qual); usable {
 					out[fd.Name] = FieldBinding{Kind: FieldStruct, GoName: f.name, Convert: conv}
 					continue
@@ -55,7 +61,7 @@ func discoverFields(def *ast.Definition, named *types.Named, want func(*ast.Type
 				}
 			}
 		}
-		if m, ok := matchMethod(methods, fd.Name); ok && m.fits(fd.Arguments, want, qual) {
+		if m, ok := matchMethodNamed(methods, fd.Name, given); ok && m.fits(fd.Arguments, want, qual) {
 			if conv, usable := reconcile(m.result, expected, qual); usable {
 				out[fd.Name] = FieldBinding{
 					Kind:    FieldMethod,
@@ -174,6 +180,26 @@ func matchField(fields map[string]goField, sdlName string) (goField, bool) {
 	}
 	f, ok := fields[strings.ToLower(sdlName)]
 	return f, ok
+}
+
+// matchFieldNamed is matchField, or the struct field named exactly given
+// when the author gave a name.
+func matchFieldNamed(fields map[string]goField, sdlName, given string) (goField, bool) {
+	if given == "" {
+		return matchField(fields, sdlName)
+	}
+	f, ok := fields[strings.ToLower(given)]
+	return f, ok && f.name == given
+}
+
+// matchMethodNamed is matchMethod, or the method named exactly given when the
+// author gave a name.
+func matchMethodNamed(methods map[string]goMethod, sdlName, given string) (goMethod, bool) {
+	if given == "" {
+		return matchMethod(methods, sdlName)
+	}
+	m, ok := methods[strings.ToLower(given)]
+	return m, ok && m.name == given
 }
 
 // goMethod is a method with the shape a binding needs to declare.

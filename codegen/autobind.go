@@ -165,7 +165,8 @@ func autoBind(dir string, patterns []string, schema *ast.Schema, b *builder) (*M
 		if named == nil {
 			continue
 		}
-		man.Types[i].Fields = discoverFields(schema.Types[name], named, b.goType, b.goQualifier)
+		man.Types[i].Fields = discoverFields(schema.Types[name], named, b.goType, b.goQualifier,
+			func(field string) string { return b.directiveGoName(name, field) })
 	}
 	if len(man.Types) == 0 {
 		return nil, nil

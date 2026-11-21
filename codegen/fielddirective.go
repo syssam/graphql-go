@@ -1,0 +1,107 @@
+package codegen
+
+import (
+	"fmt"
+	"go/token"
+	"maps"
+	"slices"
+	"strings"
+)
+
+// foldFieldDirective reads every use of Config.FieldDirective once, before
+// discovery, and records the Go names its name argument gives.
+//
+// A name is folded into FieldNames under the field's schema coordinate, so a
+// model or input struct, an args struct and a Resolver method all follow it
+// through fieldIdent, as gqlgen's GoFieldName did; a coordinate the config
+// already names wins, as Models wins over the model directive. It is also kept
+// in directiveNames, because on a bound model the author is saying which Go
+// field answers, and discovery must look that field up instead of matching the
+// SDL name (directiveGoName). A FieldNames entry renames and binds nothing.
+//
+// An argument the configuration does not read is refused with the field's
+// coordinate. It used to be dropped, which left @goField(name: "X") deriving
+// another name and the field falling to a Resolver nobody asked for.
+func (b *builder) foldFieldDirective() error {
+	fdir := b.cfg.FieldDirective
+	if fdir.IsZero() {
+		return nil
+	}
+	read := map[string]bool{}
+	for _, a := range []string{fdir.ForceResolverArg, fdir.NameArg} {
+		if a != "" {
+			read[a] = true
+		}
+	}
+	var names map[string]string
+	for _, typeName := range slices.Sorted(maps.Keys(b.schema.Types)) {
+		def := b.schema.Types[typeName]
+		if def.BuiltIn || strings.HasPrefix(typeName, "__") {
+			continue
+		}
+		for _, fd := range def.Fields {
+			d := fd.Directives.ForName(fdir.Name)
+			if d == nil {
+				continue
+			}
+			coord := typeName + "." + fd.Name
+			for _, arg := range d.Arguments {
+				if !read[arg.Name] {
+					return fmt.Errorf("%s: @%s(%s:) is not read: %s", coord, fdir.Name, arg.Name, unreadFieldDirectiveArg(fdir, arg.Name))
+				}
+			}
+			if fdir.NameArg == "" {
+				continue
+			}
+			arg := d.Arguments.ForName(fdir.NameArg)
+			if arg == nil {
+				continue
+			}
+			if !isStringValue(arg.Value) {
+				return fmt.Errorf("%s: @%s(%s:) must be a string, the Go name", coord, fdir.Name, fdir.NameArg)
+			}
+			if g := arg.Value.Raw; !token.IsIdentifier(g) || !token.IsExported(g) {
+				return fmt.Errorf("%s: @%s(%s: %q) is not an exported Go identifier", coord, fdir.Name, fdir.NameArg, g)
+			}
+			if names == nil {
+				names = map[string]string{}
+			}
+			names[coord] = arg.Value.Raw
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	merged := maps.Clone(b.cfg.FieldNames)
+	if merged == nil {
+		merged = map[string]string{}
+	}
+	for coord, g := range names {
+		if _, set := merged[coord]; !set {
+			merged[coord] = g
+		}
+	}
+	b.cfg.FieldNames = merged
+	b.directiveNames = names
+	return nil
+}
+
+// unreadFieldDirectiveArg says what to do about an argument gqlc does not
+// read, naming the option that does it where there is one.
+func unreadFieldDirectiveArg(fdir FieldDirective, arg string) string {
+	switch arg {
+	case "name":
+		return "set FieldDirective.NameArg (gqlc.yaml: fieldDirective.nameArg) to bind the field to that Go name"
+	case "forceResolver":
+		return "set FieldDirective.ForceResolverArg (gqlc.yaml: fieldDirective.forceResolverArg) to honour it"
+	case "omittable":
+		return "Config.NullableInputOmittable (gqlc.yaml: nullableInputOmittable) makes every nullable input field Omittable; remove the argument"
+	}
+	return "remove it, or name it in Config.FieldDirective"
+}
+
+// directiveGoName is the Go name Config.FieldDirective's name argument gives a
+// field, or "" when it gives none.
+func (b *builder) directiveGoName(typeName, field string) string {
+	return b.directiveNames[typeName+"."+field]
+}

@@ -268,10 +268,13 @@ modelDirective:
 #    @goField(forceResolver: true). There were 4 567. This is not redundant
 #    with the generator refusing a guess: it verifies a struct field exists,
 #    where the author is saying the value must be computed. Binding it to the
-#    column anyway compiles and answers the wrong thing.
+#    column anyway compiles and answers the wrong thing. nameArg reads
+#    @goField(name: "MaxStorageGB"), the Go name gqlc's derivation would not
+#    give; a use of the directive with an argument not named here is refused.
 fieldDirective:
   name: goField
   forceResolverArg: forceResolver
+  nameArg: name
 
 # 3. An ORM filter says `isNil: Boolean` in SDL and backs it with a plain
 #    `bool`, reading false as "apply no predicate" -- so absent, null and

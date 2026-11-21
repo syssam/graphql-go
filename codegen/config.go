@@ -112,8 +112,8 @@ type Config struct {
 	// type, so a config can override what the SDL says.
 	ModelDirective ModelDirective
 	// FieldDirective names an SDL directive that forces a field to the
-	// Resolver interface, and the boolean argument that turns it on. Empty
-	// means none.
+	// Resolver interface, and the boolean argument that turns it on, or names
+	// the field's Go name. Empty means none.
 	//
 	// gqlgen spells it @goField(forceResolver: true), and one real schema
 	// carries 4 567 of them. It is not redundant with AutoBind refusing a
@@ -123,8 +123,20 @@ type Config struct {
 	// will not be tomorrow. Binding it to the column anyway compiles and
 	// answers the wrong thing, which is worse than not compiling.
 	//
-	// Other arguments gqlgen's directive takes (name:, omittable:) are not
-	// read.
+	// NameArg, when set, is the string argument giving the field's Go name:
+	// gqlgen's @goField(name: "MaxStorageGB"). On a model gqlc writes, and on
+	// args structs and Resolver methods, it is the name the field gets, as a
+	// FieldNames entry for the field's coordinate would make it (a FieldNames
+	// entry for that coordinate wins). On a type bound to Go it also says which
+	// Go field or method answers: AutoBind looks that name up exactly instead
+	// of matching the SDL name, and a type bound without AutoBind is read
+	// through it. A name AutoBind finds nothing under leaves a Resolver method
+	// of that name.
+	//
+	// Any other argument on a use of the directive is refused with the
+	// field's coordinate: gqlgen's omittable:, and name: when NameArg is not
+	// set. Dropped, name: left the field deriving another Go name and falling
+	// to a Resolver nobody asked for.
 	//
 	// Measured: on the 5 503-type schema it was built for it moved the resolver
 	// count by exactly zero, because every field it forces was a computed field
@@ -365,16 +377,20 @@ type ModelDirective struct {
 func (d ModelDirective) IsZero() bool { return d.Name == "" || d.Arg == "" }
 
 // FieldDirective names an SDL directive that forces a field to the Resolver
-// interface.
+// interface or names its Go field.
 type FieldDirective struct {
 	// Name is the directive, without the @.
 	Name string
 	// ForceResolverArg is the boolean argument that forces the resolver.
 	ForceResolverArg string
+	// NameArg is the string argument naming the field's Go field or method.
+	NameArg string
 }
 
-// IsZero reports that no directive was named.
-func (d FieldDirective) IsZero() bool { return d.Name == "" || d.ForceResolverArg == "" }
+// IsZero reports that no directive was named, or no argument of it.
+func (d FieldDirective) IsZero() bool {
+	return d.Name == "" || (d.ForceResolverArg == "" && d.NameArg == "")
+}
 
 // Wire configures the generated Wire function.
 type Wire struct {

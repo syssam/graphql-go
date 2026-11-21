@@ -43,10 +43,12 @@ gqlc.yaml keys (cmd/gqlc/README.md describes each):
   modelDirective            SDL directive naming a type's Go type (@goModel)
     modelDirective.name     the directive, without @
     modelDirective.arg      its argument holding import/path.Type
-  fieldDirective            SDL directive forcing a field to the Resolver
+  fieldDirective            SDL directive forcing a field to the Resolver or
+                            naming its Go field; other arguments are refused
     fieldDirective.name     the directive, without @ (gqlgen: goField)
     fieldDirective.forceResolverArg
                             its boolean argument (gqlgen: forceResolver)
+    fieldDirective.nameArg  its argument holding the Go name (gqlgen: name)
   tagDirective              SDL directive adding a struct tag to an input
                             object's field (gqlgen: @goTag)
     tagDirective.name       the directive, without @

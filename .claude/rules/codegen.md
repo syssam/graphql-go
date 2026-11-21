@@ -251,6 +251,18 @@ the kind, the emitted call and the `Resolver` interface -- and they now share
 `modelAnswers`, because honouring it in the call alone emits a `Resolve` for a method the
 interface never declares.
 
+**`FieldDirective.NameArg` reads `@goField(name: "X")` with gqlgen's meaning, and any argument
+not configured is refused** (`foldFieldDirective`). The name is folded into `FieldNames` under
+the field's coordinate (a written coordinate wins), so models, args and Resolver methods follow
+it; on a bound type AutoBind looks up exactly `X` (`matchFieldNamed`/`matchMethodNamed`), not a
+json tag or the case-folded SDL name. A `FieldNames` entry still only renames -- the binding half
+is the directive's alone, so turning it on changes no existing config's output. Before it,
+`name:` was dropped silently; the real consumer carries four (`maxStorageGb` → `MaxStorageGB`,
+which case-folding happened to match) beside 10 062 `forceResolver`s, and its explicit
+`fieldDirective` needs `nameArg: name` or its generate is refused. Eight breaks each fail a
+`TestFieldDirective*` test; the identifier check alone is backed up by `checkFieldNames`, which
+catches the same names with no coordinate in its message.
+
 **A mapped package's qualifier is chosen per import path and always written as an alias.**
 It used to be the path's last element, unaliased, which is right only while a package is
 named after its directory, no two mapped paths share a last element, and none ends in

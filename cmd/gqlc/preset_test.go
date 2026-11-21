@@ -108,7 +108,7 @@ func TestThePresetFillsOnlyWhatADirectiveKeyLeftOut(t *testing.T) {
 	if fc.ModelDirective.Name != "goModel" || fc.ModelDirective.Arg != "type" {
 		t.Errorf("modelDirective = %+v, want the written arg kept and the name filled in", fc.ModelDirective)
 	}
-	if fc.FieldDirective.Name != "goField" || fc.FieldDirective.ForceResolverArg != "forceResolver" {
+	if fc.FieldDirective.Name != "goField" || fc.FieldDirective.ForceResolverArg != "forceResolver" || fc.FieldDirective.NameArg != "name" {
 		t.Errorf("fieldDirective = %+v, want the missing argument filled in", fc.FieldDirective)
 	}
 	if fc.TagDirective.Name != "goTag" || fc.TagDirective.KeyArg != "key" || fc.TagDirective.ValueArg != "v" {

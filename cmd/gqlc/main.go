@@ -48,7 +48,7 @@ type fileConfig struct {
 	//
 	//	preset: gqlgen
 	//
-	// is modelDirective goModel/model, fieldDirective goField/forceResolver,
+	// is modelDirective goModel/model, fieldDirective goField/forceResolver/name,
 	// tagDirective goTag/key/value, jsonTags, inputListPointers and
 	// structObjectFields. Each is silent when missing -- the output compiles
 	// and the models are a different shape -- which is what makes a list of
@@ -84,15 +84,18 @@ type fileConfig struct {
 		Name string `yaml:"name"`
 		Arg  string `yaml:"arg"`
 	} `yaml:"modelDirective"`
-	// fieldDirective forces a field to the Resolver interface, for the same
-	// reason: gqlgen spells it @goField(forceResolver: true).
+	// fieldDirective forces a field to the Resolver interface, or names the Go
+	// field that answers it, for the same reason: gqlgen spells them
+	// @goField(forceResolver: true) and @goField(name: "MaxStorageGB").
 	//
 	//	fieldDirective:
 	//	  name: goField
 	//	  forceResolverArg: forceResolver
+	//	  nameArg: name
 	FieldDirective struct {
 		Name             string `yaml:"name"`
 		ForceResolverArg string `yaml:"forceResolverArg"`
+		NameArg          string `yaml:"nameArg"`
 	} `yaml:"fieldDirective"`
 	// tagDirective adds a struct tag to an input-object field, for the validation tags
 	// gqlgen's @goTag(key: "valid", value: "required") carried:
@@ -196,7 +199,7 @@ func (fc *fileConfig) applyPreset() error {
 		is  string
 	}{
 		{&fc.ModelDirective.Name, "goModel"}, {&fc.ModelDirective.Arg, "model"},
-		{&fc.FieldDirective.Name, "goField"}, {&fc.FieldDirective.ForceResolverArg, "forceResolver"},
+		{&fc.FieldDirective.Name, "goField"}, {&fc.FieldDirective.ForceResolverArg, "forceResolver"}, {&fc.FieldDirective.NameArg, "name"},
 		{&fc.TagDirective.Name, "goTag"}, {&fc.TagDirective.KeyArg, "key"}, {&fc.TagDirective.ValueArg, "value"},
 	} {
 		if *d.key == "" {
@@ -374,7 +377,7 @@ func runTo(args []string, stdout, stderr io.Writer) error {
 		Inline:                 fc.Inline,
 		Federation:             fc.Federation,
 		ModelDirective:         codegen.ModelDirective{Name: fc.ModelDirective.Name, Arg: fc.ModelDirective.Arg},
-		FieldDirective:         codegen.FieldDirective{Name: fc.FieldDirective.Name, ForceResolverArg: fc.FieldDirective.ForceResolverArg},
+		FieldDirective:         codegen.FieldDirective{Name: fc.FieldDirective.Name, ForceResolverArg: fc.FieldDirective.ForceResolverArg, NameArg: fc.FieldDirective.NameArg},
 		TagDirective:           codegen.TagDirective{Name: fc.TagDirective.Name, KeyArg: fc.TagDirective.KeyArg, ValueArg: fc.TagDirective.ValueArg},
 		JSONTags:               set(fc.JSONTags),
 		Wire:                   codegen.Wire{Deps: fc.Wire.Deps, Pass: fc.Wire.Pass},

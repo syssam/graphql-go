@@ -223,6 +223,14 @@ rename: it changes the Go name gqlc derives -- on models, argument structs and R
 -- wherever the SDL name appears, or at one coordinate. `fields.name` renames nothing; it says
 which field of a struct you wrote answers one field of one type.
 
+`fieldDirective.nameArg` reads gqlgen's `@goField(name: "MaxStorageGB")`, and means what gqlgen
+meant by it: on a model gqlc writes, the Go name the field gets (as a `fieldNames` entry for that
+coordinate would; one written in `fieldNames` wins); on a type bound to Go, also the Go field or
+method that answers it, looked up by exactly that name rather than by matching the SDL name. A
+name nothing on the type has leaves a Resolver method of that name. Any other argument on a use
+of the directive -- `omittable:`, or `name:` with no `nameArg` -- is refused with the field's
+coordinate rather than dropped.
+
 An entry that cannot be meant is refused before anything is written, naming the type and
 field: `resolver: true` beside any other key, `method` with `value`, either without `name`, an
 entry that says nothing, a `name` that is not an exported Go identifier, and a type or field

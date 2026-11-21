@@ -27,6 +27,10 @@ type builder struct {
 	cfg      Config
 	dir      string
 
+	// directiveNames is the Go name Config.FieldDirective's name argument
+	// gives a field, by schema coordinate: see foldFieldDirective.
+	directiveNames map[string]string
+
 	// wire is what Config.Wire needs of the dependencies struct and the
 	// scaffold targets, read once. See wireFields and wireArg.
 	wire struct {
@@ -228,6 +232,9 @@ func newBuilder(dir string, cfg Config) (*builder, error) {
 		// field whose type the SDL binds is measured against the model the
 		// generator would have written instead, and none of them match.
 		b.setModels(cfg.Models)
+	}
+	if err := b.foldFieldDirective(); err != nil {
+		return nil, fmt.Errorf("codegen: %w", err)
 	}
 
 	// Discovery produces a manifest and then stops, so everything downstream
