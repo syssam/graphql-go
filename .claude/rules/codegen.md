@@ -738,6 +738,15 @@ goes in `plan`. Nothing in `apply` may refuse: every refusal must come before th
 `TestRenderRefusesWhatAGenerateRefuses` and `TestRenderIsWhatAGenerateWritesAndWritesNothing`
 pin the split.
 
+**A refusal about a place in the SDL is a `*Diagnostic`** (`diagnostic.go`), built with
+`b.diag(pos, coord, ...)`, so its error starts `file:line:col: ` relative to `Config.Dir` and a
+tool reads the parts through `Diagnostics(err)`. Converted: name collisions, list depth,
+`@goField` arguments and name targets, tag directives. A refusal of a configuration key
+(`FieldNames`, `Models`, Wire) has no SDL position and stays a plain error. Do not wrap a
+diagnostic in `fmt.Errorf("codegen: %w")`: the message carries its own `codegen: ` and the
+wrap pushes the position off the front of the line. Two colliding root fields are told the
+`FieldNames` entry that fixes them, for the field that is not `Query`'s.
+
 **A review of `-check` ran it and then a generate on nine setups and compared**, and found what
 reading had not. Stale SDL copies were named with the output directory twice -- the glob
 returns paths under it and the namer joined it again -- in the commonest invocation, a

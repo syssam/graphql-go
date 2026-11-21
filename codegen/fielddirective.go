@@ -51,7 +51,7 @@ func (b *builder) foldFieldDirective() error {
 			coord := typeName + "." + fd.Name
 			for _, arg := range d.Arguments {
 				if !read[arg.Name] {
-					return fmt.Errorf("%s: @%s(%s:) is not read: %s", coord, fdir.Name, arg.Name, unreadFieldDirectiveArg(fdir, arg.Name))
+					return b.diag(arg.Position, coord, "codegen: %s: @%s(%s:) is not read: %s", coord, fdir.Name, arg.Name, unreadFieldDirectiveArg(fdir, arg.Name))
 				}
 			}
 			if fdir.NameArg == "" {
@@ -62,10 +62,10 @@ func (b *builder) foldFieldDirective() error {
 				continue
 			}
 			if !isStringValue(arg.Value) {
-				return fmt.Errorf("%s: @%s(%s:) must be a string, the Go name", coord, fdir.Name, fdir.NameArg)
+				return b.diag(arg.Position, coord, "codegen: %s: @%s(%s:) must be a string, the Go name", coord, fdir.Name, fdir.NameArg)
 			}
 			if g := arg.Value.Raw; !token.IsIdentifier(g) || !token.IsExported(g) {
-				return fmt.Errorf("%s: @%s(%s: %q) is not an exported Go identifier", coord, fdir.Name, fdir.NameArg, g)
+				return b.diag(arg.Position, coord, "codegen: %s: @%s(%s: %q) is not an exported Go identifier", coord, fdir.Name, fdir.NameArg, g)
 			}
 			if names == nil {
 				names = map[string]string{}
@@ -119,7 +119,7 @@ func unreadFieldDirectiveArg(fdir FieldDirective, arg string) string {
 // On an interface no Go field or method is chosen at all: each implementing
 // object's field answers, and the name there is the one that counts.
 func (b *builder) checkDirectiveNameTargets() error {
-	var errs []string
+	var errs []error
 	for _, coord := range slices.Sorted(maps.Keys(b.directiveNames)) {
 		goName := b.directiveNames[coord]
 		typeName, field, _ := strings.Cut(coord, ".")
@@ -128,9 +128,16 @@ func (b *builder) checkDirectiveNameTargets() error {
 			continue
 		}
 		at := fmt.Sprintf("%s: @%s(%s: %q)", coord, b.cfg.FieldDirective.Name, b.cfg.FieldDirective.NameArg, goName)
+		var pos *ast.Position
+		if fd := def.Fields.ForName(field); fd != nil {
+			pos = fd.Position
+			if d := fd.Directives.ForName(b.cfg.FieldDirective.Name); d != nil {
+				pos = d.Position
+			}
+		}
 		switch {
 		case def.Kind == ast.InputObject && b.mapped(typeName) && inputFieldName(goName) != field:
-			errs = append(errs, fmt.Sprintf("%s binds nothing: %s is bound to %s, and Input[T] matches an input field by its graphql or json tag or by its Go field's name (%s reads as %s). Tag the Go field `graphql:%q` and remove the argument",
+			errs = append(errs, b.diag(pos, coord, "codegen: %s binds nothing: %s is bound to %s, and Input[T] matches an input field by its graphql or json tag or by its Go field's name (%s reads as %s). Tag the Go field `graphql:%q` and remove the argument",
 				at, typeName, b.cfg.Models[typeName], goName, inputFieldName(goName), field))
 		case def.Kind == ast.Interface:
 			var impls []string
@@ -140,14 +147,11 @@ func (b *builder) checkDirectiveNameTargets() error {
 				}
 			}
 			slices.Sort(impls)
-			errs = append(errs, fmt.Sprintf("%s binds nothing: an interface field is answered by each implementing object's field, and %s has no Go field or method of its own. Put the argument on %s",
+			errs = append(errs, b.diag(pos, coord, "codegen: %s binds nothing: an interface field is answered by each implementing object's field, and %s has no Go field or method of its own. Put the argument on %s",
 				at, typeName, summarize(impls, 8)))
 		}
 	}
-	if len(errs) > 0 {
-		return errors.New(strings.Join(errs, "\n"))
-	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // inputFieldName is the GraphQL name Input[T] derives from a Go field's name

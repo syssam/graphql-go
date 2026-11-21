@@ -24,15 +24,35 @@ import (
 // types to another SDL file rather than to rename a field.
 func (b *builder) checkNameCollisions(groups []string) error {
 	var errs []error
-	report := func(kind, group, name, a, bcoord string) {
-		errs = append(errs, fmt.Errorf(
-			"codegen: %s in group %q: %s and %s both generate %q; "+
-				"move one type to a different SDL file, or rename one of the fields",
-			kind, group, a, bcoord, name))
+	type seen struct {
+		typeName string
+		fd       *ast.FieldDefinition
+	}
+	coordOf := func(s seen) string { return s.typeName + "." + s.fd.Name }
+	report := func(kind, group, name string, first, second seen) {
+		at := second
+		fix := "move one type to a different SDL file, or rename one of the fields"
+		// Two root fields cannot be moved apart -- Query and Mutation are not
+		// types an author splits by file to dodge a name -- and renaming one
+		// changes the API. Naming the Go identifier -- the method and the args
+		// struct both derive from it -- is the fix that changes nothing a
+		// client sees, so it is the one spelled out, for the field that is not
+		// Query's when one is.
+		if b.isRoot(first.typeName) && b.isRoot(second.typeName) {
+			if b.schema.Query != nil && second.typeName == b.schema.Query.Name {
+				at = first
+			}
+			ident := at.typeName + b.fieldIdent(at.typeName, at.fd.Name)
+			fix = fmt.Sprintf("name one field's Go identifier instead: Config.FieldNames[%q] = %q (gqlc.yaml: fieldNames: {%s: %s})",
+				coordOf(at), ident, coordOf(at), ident)
+		}
+		errs = append(errs, b.diag(at.fd.Position, coordOf(at),
+			"codegen: %s in group %q: %s and %s both generate %q; %s",
+			kind, group, coordOf(first), coordOf(second), name, fix))
 	}
 	for _, g := range groups {
-		methods := map[string]string{}
-		args := map[string]string{}
+		methods := map[string]seen{}
+		args := map[string]seen{}
 		// Each name is checked over the walk that emits it: a method for each
 		// field eachResolverField gives emitResolver, an args struct for every
 		// field with arguments emitArgs writes, model-answered ones included.
@@ -41,22 +61,22 @@ func (b *builder) checkNameCollisions(groups []string) error {
 		// FeatureFlagTargeting.rules(x:) wrote FeatureFlagTargetingRulesArgs
 		// twice.
 		b.eachResolverField(g, func(typeName string, fd *ast.FieldDefinition) {
-			coord := typeName + "." + fd.Name
-			if m := b.resolverMethod(typeName, fd.Name); methods[m] != "" {
-				report("resolver method", g, m, methods[m], coord)
+			cur := seen{typeName, fd}
+			if m := b.resolverMethod(typeName, fd.Name); methods[m].fd != nil {
+				report("resolver method", g, m, methods[m], cur)
 			} else {
-				methods[m] = coord
+				methods[m] = cur
 			}
 		})
 		b.eachGroupField(g, func(typeName string, fd *ast.FieldDefinition) {
 			if len(fd.Arguments) == 0 {
 				return
 			}
-			coord := typeName + "." + fd.Name
-			if a := b.argsName(typeName, fd.Name); args[a] != "" {
-				report("args struct", g, a, args[a], coord)
+			cur := seen{typeName, fd}
+			if a := b.argsName(typeName, fd.Name); args[a].fd != nil {
+				report("args struct", g, a, args[a], cur)
 			} else {
-				args[a] = coord
+				args[a] = cur
 			}
 		})
 	}

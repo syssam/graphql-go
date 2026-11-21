@@ -18,7 +18,7 @@ func (b *builder) checkTagDirectives() error {
 	for _, name := range b.typeNames(ast.InputObject) {
 		for _, fd := range b.schema.Types[name].Fields {
 			if _, err := b.tagsFor(fd); err != nil {
-				return fmt.Errorf("%s.%s: %w", name, fd.Name, err)
+				return b.diag(fd.Position, name+"."+fd.Name, "codegen: %s.%s: %v", name, fd.Name, err)
 			}
 		}
 	}

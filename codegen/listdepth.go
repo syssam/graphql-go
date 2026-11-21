@@ -2,7 +2,6 @@ package codegen
 
 import (
 	"errors"
-	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -18,7 +17,7 @@ import (
 // an output position is bound at any depth and is not checked.
 func (b *builder) checkListDepth() error {
 	var errs []error
-	check := func(coord string, t *ast.Type) {
+	check := func(pos *ast.Position, coord string, t *ast.Type) {
 		depth := 0
 		for ; t.Elem != nil; t = t.Elem {
 			depth++
@@ -37,7 +36,7 @@ func (b *builder) checkListDepth() error {
 			return
 		}
 		if depth > limit {
-			errs = append(errs, fmt.Errorf("codegen: %s nests %s in %d lists, and the engine binds %s; flatten it, or wrap the inner list in a type of its own", coord, t.NamedType, depth, what))
+			errs = append(errs, b.diag(pos, coord, "codegen: %s nests %s in %d lists, and the engine binds %s; flatten it, or wrap the inner list in a type of its own", coord, t.NamedType, depth, what))
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(b.schema.Types)) {
@@ -46,9 +45,9 @@ func (b *builder) checkListDepth() error {
 			continue
 		}
 		for _, fd := range def.Fields {
-			check(name+"."+fd.Name, fd.Type)
+			check(fd.Position, name+"."+fd.Name, fd.Type)
 			for _, arg := range fd.Arguments {
-				check(name+"."+fd.Name+"("+arg.Name+":)", arg.Type)
+				check(arg.Position, name+"."+fd.Name+"("+arg.Name+":)", arg.Type)
 			}
 		}
 	}

@@ -234,7 +234,7 @@ func newBuilder(dir string, cfg Config) (*builder, error) {
 		b.setModels(cfg.Models)
 	}
 	if err := b.foldFieldDirective(); err != nil {
-		return nil, fmt.Errorf("codegen: %w", err)
+		return nil, err
 	}
 
 	// Discovery produces a manifest and then stops, so everything downstream
@@ -267,7 +267,7 @@ func newBuilder(dir string, cfg Config) (*builder, error) {
 	b.manifest = man
 	b.setExtraEnums(explicit)
 	if err := b.checkDirectiveNameTargets(); err != nil {
-		return nil, fmt.Errorf("codegen: %w", err)
+		return nil, err
 	}
 	if err := b.checkFieldNames(); err != nil {
 		return nil, fmt.Errorf("codegen: %w", err)
@@ -276,7 +276,7 @@ func newBuilder(dir string, cfg Config) (*builder, error) {
 		return nil, err
 	}
 	if err := b.checkTagDirectives(); err != nil {
-		return nil, fmt.Errorf("codegen: %w", err)
+		return nil, err
 	}
 	return b, nil
 }
