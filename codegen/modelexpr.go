@@ -126,6 +126,14 @@ func (b *builder) modelExprImports() map[string]string {
 	return out
 }
 
+// modelExprQualifier is the qualifier modelExprImports gave path, if any
+// Config.Models entry names it.
+func (b *builder) modelExprQualifier(path string) (string, bool) {
+	b.modelExprImports()
+	q, ok := b.exprQualifiers[path]
+	return q, ok
+}
+
 // reservedQualifier reports whether no mapped package may be imported under
 // q: a name every generated file may already import under, one a group's file
 // declares for itself, or one that is Go's own. A package whose path ends in

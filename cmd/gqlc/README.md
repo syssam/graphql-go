@@ -227,9 +227,13 @@ which field of a struct you wrote answers one field of one type.
 meant by it: on a model gqlc writes, the Go name the field gets (as a `fieldNames` entry for that
 coordinate would; one written in `fieldNames` wins); on a type bound to Go, also the Go field or
 method that answers it, looked up by exactly that name rather than by matching the SDL name. A
-name nothing on the type has leaves a Resolver method of that name. Any other argument on a use
-of the directive -- `omittable:`, or `name:` with no `nameArg` -- is refused with the field's
-coordinate rather than dropped.
+name nothing on the type has leaves a Resolver method of that name. Two places where it would
+bind nothing are refused with the field's coordinate: a field of an input object bound to Go
+(the engine's `Input[T]` matches by `graphql` or `json` tag or by Go field name, so tag the Go
+field `graphql:"maxGb"` instead -- a name that already derives the SDL name, `AuthorID` for
+`authorId`, is accepted), and an interface field (put it on each implementing object's field).
+Any other argument on a use of the directive -- `omittable:`, or `name:` with no `nameArg` -- is
+refused with the field's coordinate rather than dropped.
 
 An entry that cannot be meant is refused before anything is written, naming the type and
 field: `resolver: true` beside any other key, `method` with `value`, either without `name`, an

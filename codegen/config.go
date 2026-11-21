@@ -131,7 +131,13 @@ type Config struct {
 	// Go field or method answers: AutoBind looks that name up exactly instead
 	// of matching the SDL name, and a type bound without AutoBind is read
 	// through it. A name AutoBind finds nothing under leaves a Resolver method
-	// of that name.
+	// of that name. Two places it cannot bind anything are refused with the
+	// coordinate: a field of an input object bound to Go, unless the engine
+	// already derives the SDL name from it (AuthorID for authorId), because
+	// Input[T] matches by graphql or json tag or Go field name and gqlc writes
+	// nothing else for that input -- tag the Go field `graphql:"maxGb"`
+	// instead; and an interface field, which each implementing object's field
+	// answers.
 	//
 	// Any other argument on a use of the directive is refused with the
 	// field's coordinate: gqlgen's omittable:, and name: when NameArg is not

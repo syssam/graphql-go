@@ -2,6 +2,8 @@ package codegen
 
 import (
 	"fmt"
+	"go/token"
+	"maps"
 	"slices"
 	"strings"
 
@@ -184,9 +186,7 @@ func kindPhrase(k ast.DefinitionKind) string {
 // Config.Models entry and a manifest binding cannot silently disagree.
 func newManifest(src *Manifest, schema *ast.Schema, models map[string]string) (*manifest, map[string]string, error) {
 	merged := map[string]string{}
-	for k, v := range models {
-		merged[k] = v
-	}
+	maps.Copy(merged, models)
 	if src == nil {
 		return nil, merged, nil
 	}
@@ -258,11 +258,78 @@ func newManifest(src *Manifest, schema *ast.Schema, models map[string]string) (*
 		}
 		m.fields[tb.Name] = fields
 	}
+	errs = append(errs, checkExtraEnums(src.ExtraEnums, schema)...)
 	if len(errs) > 0 {
 		slices.Sort(errs)
 		return nil, nil, fmt.Errorf("%s", strings.Join(errs, "\n"))
 	}
 	return m, merged, nil
+}
+
+// checkExtraEnums holds each second Go type to what a type binding is held to.
+// Unchecked, one naming no enum bound nothing and said nothing, and one missing
+// a value wrote "q.: VALUE" into generated.go, which does not parse: the
+// emitter writes a constant for every SDL value, and there is no generated
+// model to derive a missing one from.
+func checkExtraEnums(extra []TypeBinding, schema *ast.Schema) []string {
+	var errs []string
+	type key struct {
+		name string
+		typ  GoType
+	}
+	seen := map[key]bool{}
+	for _, tb := range extra {
+		at := "manifest: extra enum " + tb.Name
+		if !tb.Go.zero() {
+			at += " as " + tb.Go.expr()
+		}
+		def := schema.Types[tb.Name]
+		switch {
+		case tb.Name == "":
+			errs = append(errs, "manifest: extra enum: a binding has no Name")
+			continue
+		case def == nil:
+			errs = append(errs, at+": "+tb.Name+" is not defined in the schema")
+			continue
+		case def.Kind != ast.Enum:
+			errs = append(errs, at+": "+tb.Name+" is "+kindPhrase(def.Kind)+", and an extra enum binds an enum")
+			continue
+		case tb.Go.zero() || tb.Go.PkgPath == "" || !token.IsIdentifier(tb.Go.Name) || !importPathOK(tb.Go.PkgPath):
+			errs = append(errs, at+": Go must name a Go type in a package, as PkgPath and Name")
+			continue
+		}
+		k := key{tb.Name, tb.Go}
+		if seen[k] {
+			errs = append(errs, at+": bound more than once")
+			continue
+		}
+		seen[k] = true
+		var missing, unknown, bad []string
+		for _, ev := range def.EnumValues {
+			c, ok := tb.Values[ev.Name]
+			switch {
+			case !ok:
+				missing = append(missing, ev.Name)
+			case !token.IsIdentifier(c):
+				bad = append(bad, ev.Name)
+			}
+		}
+		for _, v := range sortedKeys(tb.Values) {
+			if def.EnumValues.ForName(v) == nil {
+				unknown = append(unknown, v)
+			}
+		}
+		if len(missing) > 0 {
+			errs = append(errs, at+": Values has no constant for "+strings.Join(missing, ", ")+"; every value needs one, since no model is generated to derive it from")
+		}
+		if len(unknown) > 0 {
+			errs = append(errs, at+": Values names "+strings.Join(unknown, ", ")+", which "+tb.Name+" does not declare")
+		}
+		if len(bad) > 0 {
+			errs = append(errs, at+": the constant for "+strings.Join(bad, ", ")+" is not a Go identifier")
+		}
+	}
+	return errs
 }
 
 func sortedKeys[V any](m map[string]V) []string {
@@ -291,7 +358,12 @@ func (m *manifest) enumConstant(typeName, value string) (string, bool) {
 
 // mergeManifests lets an explicit manifest override discovery. Discovery is a
 // guess from names; a written binding is a statement, so the statement wins,
-// field by field rather than whole types.
+// field by field and value by value rather than whole types.
+//
+// Every TypeBinding field needs a decision in mergeTypeBinding, and a field
+// added without one is dropped whenever discovery also produced the type --
+// Values was, and the derived constant it fell back to did not exist
+// (TestMergeManifestsKeepsEveryExplicitTypeBindingField).
 func mergeManifests(discovered, explicit *Manifest) *Manifest {
 	if discovered == nil {
 		return explicit
@@ -311,29 +383,47 @@ func mergeManifests(discovered, explicit *Manifest) *Manifest {
 			out.Types = append(out.Types, tb)
 			continue
 		}
-		merged := out.Types[i]
-		if !tb.Go.zero() {
-			merged.Go = tb.Go
-		}
-		if tb.Group != "" {
-			merged.Group = tb.Group
-		}
-		if len(tb.Fields) > 0 {
-			fields := map[string]FieldBinding{}
-			for k, v := range merged.Fields {
-				fields[k] = v
-			}
-			for k, v := range tb.Fields {
-				fields[k] = v
-			}
-			merged.Fields = fields
-		}
-		out.Types[i] = merged
+		out.Types[i] = mergeTypeBinding(out.Types[i], tb)
 	}
 	// Discovery is the only producer of these, and an explicit manifest may
 	// add its own: an author who knows about a second Go type says so here
-	// rather than editing generated code.
-	out.ExtraEnums = slices.Concat(discovered.ExtraEnums, explicit.ExtraEnums)
+	// rather than editing generated code. One naming a type discovery also
+	// found replaces it, because registering one Go type twice for one enum
+	// is a NewSchema error.
+	for _, tb := range discovered.ExtraEnums {
+		if !slices.ContainsFunc(explicit.ExtraEnums, func(e TypeBinding) bool { return e.Name == tb.Name && e.Go == tb.Go }) {
+			out.ExtraEnums = append(out.ExtraEnums, tb)
+		}
+	}
+	out.ExtraEnums = append(out.ExtraEnums, explicit.ExtraEnums...)
+	return out
+}
+
+// mergeTypeBinding is one type's merge: what the explicit binding sets wins,
+// and a map is merged key by key, so stating one field or one value does not
+// discard what discovery found for the others.
+func mergeTypeBinding(discovered, explicit TypeBinding) TypeBinding {
+	merged := discovered
+	if !explicit.Go.zero() {
+		merged.Go = explicit.Go
+	}
+	if explicit.Group != "" {
+		merged.Group = explicit.Group
+	}
+	merged.Values = mergeMaps(discovered.Values, explicit.Values)
+	merged.Fields = mergeMaps(discovered.Fields, explicit.Fields)
+	return merged
+}
+
+// mergeMaps is base with over's entries on top, and base itself when over is
+// empty.
+func mergeMaps[V any](base, over map[string]V) map[string]V {
+	if len(over) == 0 {
+		return base
+	}
+	out := make(map[string]V, len(base)+len(over))
+	maps.Copy(out, base)
+	maps.Copy(out, over)
 	return out
 }
 

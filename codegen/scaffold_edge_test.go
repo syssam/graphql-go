@@ -3,6 +3,7 @@ package codegen
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -208,5 +209,84 @@ func TestScaffoldStubsUseTheImportsTheFileAlreadyHas(t *testing.T) {
 			}
 			goBuild(t, dir)
 		})
+	}
+}
+
+// A new resolvers file is written whole, and its imports have to give way to
+// a name the package already declares as an appended file's do: a helper
+// func user in the package beside the post group's stubs, which name the
+// user models, was "user already declared through import of package user".
+func TestScaffoldNewFileImportsGiveWayToNamesThePackageDeclares(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping go vet subprocess")
+	}
+	dir, generate := scaffoldModule(t, map[string]string{"user": "impl.UserResolver", "post": "impl.PostResolver"})
+	writeFiles(t, dir, map[string]string{"impl/helpers.go": "package impl\n\nfunc user() {}\n\nvar _ = user\n"})
+	if err := generate(); err != nil {
+		t.Fatal(err)
+	}
+	src := readFile(t, filepath.Join(dir, "impl", "post.resolvers.go"))
+	if !strings.Contains(src, `user2 "hello/graph/model/user"`) || !strings.Contains(src, "(*user2.User, error)") {
+		t.Errorf("post.resolvers.go does not name the user models user2:\n%s", src)
+	}
+	goBuild(t, dir)
+}
+
+// The resolvers file a stub is appended to is the author's code, and writing
+// it in place meant a crash between the truncate and the last byte lost it.
+// It is replaced by a rename instead -- a new file at the path, which a write
+// in place never is -- keeping its mode, and a link to it stays a link.
+func TestScaffoldReplacesTheAuthorsFileWhole(t *testing.T) {
+	dir, generate := scaffoldModule(t, map[string]string{"user": "impl.UserResolver", "post": "impl.PostResolver"})
+	if err := generate(); err != nil {
+		t.Fatal(err)
+	}
+	real := filepath.Join(dir, "impl", "user.resolvers.go")
+	if err := os.Chmod(real, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFiles(t, dir, map[string]string{"schema/user.graphql": strings.Replace(scaffoldUserSDL, "name: String!", "name: String! friends: [User!]!", 1)})
+	if err := generate(); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(readFile(t, real), "UserFriends") {
+		t.Fatal("no stub was appended, so nothing was rewritten")
+	}
+	if os.SameFile(before, after) {
+		t.Error("user.resolvers.go was rewritten in place")
+	}
+	if after.Mode().Perm() != 0o640 {
+		t.Errorf("mode = %v, want the author's 0640", after.Mode().Perm())
+	}
+	if entries, _ := os.ReadDir(filepath.Join(dir, "impl")); len(entries) != 2 {
+		t.Errorf("impl holds %d entries, want the two resolvers files: %v", len(entries), entries)
+	}
+
+	// Kept elsewhere and linked into the package: the file behind the link
+	// is replaced, and the link is left as the author made it.
+	kept := filepath.Join(dir, "kept.go.txt")
+	if err := os.Rename(real, kept); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(kept, real); err != nil {
+		t.Skipf("no symlinks here: %v", err)
+	}
+	writeFiles(t, dir, map[string]string{"schema/user.graphql": strings.Replace(scaffoldUserSDL, "name: String!", "name: String! friends: [User!]! followers: [User!]!", 1)})
+	if err := generate(); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Lstat(real); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the link was replaced by a file (%v)", err)
+	}
+	if !strings.Contains(readFile(t, kept), "UserFollowers") {
+		t.Error("the file behind the link was not given the new stub")
 	}
 }

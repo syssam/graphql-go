@@ -6,9 +6,8 @@ import (
 	"reflect"
 	"slices"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
+	"github.com/syssam/graphql-go/internal/gqlname"
 	"github.com/vektah/gqlparser/v2/ast"
 )
 
@@ -900,20 +899,9 @@ func graphqlNameOf(sf reflect.StructField) (name string, fromTag, skip bool) {
 	return exportedToGraphQL(sf.Name), false, false
 }
 
-// initialisms are the words a Go name writes in capitals and a GraphQL name
-// does not. UUID and GUID come first so that each is taken whole: they end in
-// ID, and read as a word followed by one they became uUId and gUId.
-var initialisms = strings.NewReplacer("UUID", "Uuid", "GUID", "Guid", "ID", "Id", "URL", "Url")
-
-// exportedToGraphQL maps AuthorID → authorId, URL → url and UUID → uuid.
-func exportedToGraphQL(name string) string {
-	if name == "" {
-		return name
-	}
-	name = initialisms.Replace(name)
-	r, w := utf8.DecodeRuneInString(name)
-	return string(unicode.ToLower(r)) + name[w:]
-}
+// exportedToGraphQL maps AuthorID → authorId, URL → url and UUID → uuid. The
+// rule lives in internal/gqlname because gqlc predicts it.
+func exportedToGraphQL(name string) string { return gqlname.FromGo(name) }
 
 func unwrapOmittable(t reflect.Type) (reflect.Type, bool) {
 	if t.PkgPath() == omittablePkg && strings.HasPrefix(t.Name(), "Omittable") {

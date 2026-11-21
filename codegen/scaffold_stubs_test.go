@@ -148,3 +148,32 @@ func TestCheckStubsListsAStubOnceWhateverTheSpelling(t *testing.T) {
 		t.Errorf("Query.users is listed %d times:\n%v", n, err)
 	}
 }
+
+// Where case matters, Impl and impl are two packages and each holds its own
+// stubs. checkScaffoldTargets read a directory once per lower-cased spelling,
+// so the second was never read: its stubs went unreported by -check -stubs,
+// and a generated name declared in it was never refused. Skipped where case
+// is ignored, since there they are one directory.
+func TestCheckStubsReadsEverySpellingWhereCaseMatters(t *testing.T) {
+	dir, _ := scaffoldModule(t, nil)
+	if caseInsensitive(t, dir) {
+		t.Skip("case-insensitive filesystem: impl and Impl are one directory")
+	}
+	cfg := Config{
+		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph",
+		Scaffold: map[string]string{"user": "impl.UserR", "post": "Impl.PostR"},
+	}
+	if err := Generate(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Check, cfg.CheckStubs = true, true
+	err := Generate(context.Background(), cfg)
+	if !errors.Is(err, ErrStubs) {
+		t.Fatalf("err = %v, want ErrStubs", err)
+	}
+	for _, want := range []string{"Query.users (impl.UserR", "Query.post (Impl.PostR"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the stubs lack %q:\n%v", want, err)
+		}
+	}
+}

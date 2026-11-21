@@ -125,17 +125,14 @@ func (b *builder) emitBindings(group string, withResolver bool) string {
 		w.WriteString("\t\t),\n")
 	}
 
-	seen := map[string]bool{}
+	// Two fields with one args name never reach here: checkNameCollisions
+	// refuses them over this same walk, as emitArgs would otherwise declare
+	// the struct twice.
 	b.eachGroupField(group, func(name string, fd *ast.FieldDefinition) {
 		if len(fd.Arguments) == 0 {
 			return
 		}
-		an := b.argsName(name, fd.Name)
-		if seen[an] {
-			return
-		}
-		seen[an] = true
-		w.WriteString("\t\tgraphql.Args[" + an + "](),\n")
+		w.WriteString("\t\tgraphql.Args[" + b.argsName(name, fd.Name) + "](),\n")
 	})
 
 	w.WriteString("\t)\n}\n")

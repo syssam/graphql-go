@@ -186,12 +186,16 @@ func (b *builder) groupEmits(typeName string) bool {
 	return true
 }
 
+// hasResolver reports whether group's Resolver interface would have a method.
+// It walks eachResolverField, which is what the interface is rendered from:
+// asking fieldKind alone counted a manifest method with a context or an error,
+// which the model answers, and gave a group of nothing else an empty
+// interface, a Bindings(r Resolver) NewSchema did not register, and a scaffold
+// target Wire and Scaffold then demanded.
 func (b *builder) hasResolver(group string) bool {
 	found := false
-	b.eachGroupField(group, func(name string, fd *ast.FieldDefinition) {
-		if b.fieldKind(name, fd) == fieldResolve {
-			found = true
-		}
+	b.eachResolverField(group, func(string, *ast.FieldDefinition) {
+		found = true
 	})
 	return found
 }
@@ -295,10 +299,10 @@ func (b *builder) modelPkgNames() []string {
 // modelGroupsAcyclic reports whether per-group model packages could import one
 // another without forming a cycle, which Go forbids.
 //
-// Generated models hold only leaf fields -- composite fields become resolver
-// methods -- so object types never reference each other and cannot create a
-// cycle. Input objects can reference other input objects, so two groups whose
-// inputs refer to each other must stay in one package.
+// A model references another group's model wherever the emitter writes its
+// type: an input object's fields, and an object's pure fields, which with
+// StructObjectFields include object-, interface- and union-valued ones. Two
+// groups referring to each other must stay in one package.
 func (b *builder) modelGroupsAcyclic(groups []string) bool {
 	deps := map[string]map[string]bool{}
 	edge := func(ownerType, refType string) {
@@ -313,17 +317,14 @@ func (b *builder) modelGroupsAcyclic(groups []string) bool {
 	}
 	ref := func(ownerType string, t *ast.Type) {
 		named := t.Name()
-		def := b.schema.Types[named]
-		if def == nil || def.BuiltIn {
-			return
+		// A root is graphql.Root and an abstract type without a marker is
+		// any, so neither is in a model package; one with a marker is, and
+		// skipping it split A.n: Bnode and B.a: A into model packages that
+		// import each other. The marker's methods name no type, so the
+		// reference is the only edge a marker adds.
+		if b.declaresModel(named) {
+			edge(ownerType, named)
 		}
-		if _, mapped := b.cfg.Models[named]; mapped {
-			return
-		}
-		if def.Kind == ast.Interface || def.Kind == ast.Union {
-			return
-		}
-		edge(ownerType, named)
 	}
 
 	for _, name := range b.typeNames(ast.Object) {

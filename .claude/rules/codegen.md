@@ -256,12 +256,47 @@ not configured is refused** (`foldFieldDirective`). The name is folded into `Fie
 the field's coordinate (a written coordinate wins), so models, args and Resolver methods follow
 it; on a bound type AutoBind looks up exactly `X` (`matchFieldNamed`/`matchMethodNamed`), not a
 json tag or the case-folded SDL name. A `FieldNames` entry still only renames -- the binding half
-is the directive's alone, so turning it on changes no existing config's output. Before it,
+is the directive's alone, so turning it on changes no existing config's output. **It is refused
+where it could bind nothing**: on a field of an input bound to Go, unless the engine already
+derives the SDL name from it (`Input[T]` reads tags and `internal/gqlname`, which gqlc shares
+with the engine rather than copying -- a `graphql:"maxGb"` tag is what works there), and on an
+interface field, which no Go field answers. Before it,
 `name:` was dropped silently; the real consumer carries four (`maxStorageGb` → `MaxStorageGB`,
 which case-folding happened to match) beside 10 062 `forceResolver`s, and its explicit
 `fieldDirective` needs `nameArg: name` or its generate is refused. Eight breaks each fail a
 `TestFieldDirective*` test; the identifier check alone is backed up by `checkFieldNames`, which
 catches the same names with no coordinate in its message.
+
+**A seventh review (2026-11) found seventeen defects; the pattern behind most is that what is
+checked was computed apart from what is emitted.** `declaresModel` is now the list of types
+`emitModel` writes, and the cycle check and a per-model-package table of constants read it: a
+marked interface is an edge between model packages, an unmarked one (`any`) collides with
+nothing, and a root type is neither -- a field returning one is `*graphql.Root`, which the
+executor answers as the root (`TestARootTypeAsAFieldTypeIsTheEngineRoot` executes it). Enum
+constants are compared across enums (`A._B` and `AX.B` are both `AXB`). Args collisions are
+checked over `eachGroupField`, the walk `emitArgs` uses, and `hasResolver` over
+`eachResolverField`, so a group whose fields the model answers registers itself. Tests are in
+`emit_review_test.go`. **When adding a check, derive it from the emitter's own walk.**
+
+In discovery: a second enum type's package is named by `pathQualifier`, the table mapped
+packages use, and always imported under an alias; every distinct second type is bound, not the
+first; explicit `ExtraEnums` are validated in `newManifest`; `mergeManifests` decides every
+`TypeBinding` field (Values merged key by key, explicit winning), and a reflection test fails on
+a field added without a decision; "the first AutoBind pattern wins" holds because `byPattern`
+re-sorts the roots `packages.Load` returns in dependency order -- still one Load, export data
+only (`discovery_review_test.go`).
+
+On disk: a copy is refused where it would replace a file in `Output/schema` the last run did not
+list, unless that file already says the same or is empty (`foreignSchemaFiles`); before, only
+files a run did *not* write were asked about, and a hand-written `user.graphql` was overwritten.
+**A source read from `Output/schema` itself is never gqlc's**: `copyIsItsSource` keeps it off the
+list, and `trustedCopies` stops an older list from deleting it -- where any source lives there, a
+listed name is believed only while a source elsewhere copies onto it. The two are deliberately
+redundant (either alone keeps the file), so each has its own test. A new resolvers file names its
+imports by the same rule as an appended one (`planImports`); the author's file is replaced by
+rename (`replaceFile`), never written in place; scaffold target directories are told apart by
+`dirSet` (folded real path, then `samePath`), which also took `checkStubs` from 961 probes for 31
+targets to one pass.
 
 **A mapped package's qualifier is chosen per import path and always written as an alias.**
 It used to be the path's last element, unaliased, which is right only while a package is
@@ -587,6 +622,13 @@ suppressed for a listed group, and the two orderings in error text. Each has a t
 seventeen breaks -- those and the new rules -- each fail one. **"Ten breaks, each failing a
 test" was true and was not the claim it read as**: it said the ten rules tried were guarded,
 not that every rule was.
+
+**Wire's inference is frozen (2026-11).** A seventh review weighed seven files and six review
+rounds against what they buy and found each round mostly patching syntax-only readings of
+"takes everything". Do not add a new reading of a constructor or a struct to the inference. A
+case it gets wrong is answered by `wire.pass` or by naming the constructor's parameters after
+`Deps` fields, both of which say outright what `wire.go` writes. Bug fixes to the existing
+readings are fine, and they still need the old-binary-beside-new comparison described below.
 
 **A constructor's parameters are matched to fields by name** (`wireArgs`, `paramField`). The
 one-thing rule fit a project with a service per group and nothing else: on nextapp (558 groups)

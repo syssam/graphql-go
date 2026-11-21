@@ -33,6 +33,13 @@ func (b *builder) checkNameCollisions(groups []string) error {
 	for _, g := range groups {
 		methods := map[string]string{}
 		args := map[string]string{}
+		// Each name is checked over the walk that emits it: a method for each
+		// field eachResolverField gives emitResolver, an args struct for every
+		// field with arguments emitArgs writes, model-answered ones included.
+		// Checked over the Resolver's fields alone, a manifest method on
+		// FeatureFlag.targetingRules(x:) beside the resolver
+		// FeatureFlagTargeting.rules(x:) wrote FeatureFlagTargetingRulesArgs
+		// twice.
 		b.eachResolverField(g, func(typeName string, fd *ast.FieldDefinition) {
 			coord := typeName + "." + fd.Name
 			if m := b.resolverMethod(typeName, fd.Name); methods[m] != "" {
@@ -40,9 +47,12 @@ func (b *builder) checkNameCollisions(groups []string) error {
 			} else {
 				methods[m] = coord
 			}
+		})
+		b.eachGroupField(g, func(typeName string, fd *ast.FieldDefinition) {
 			if len(fd.Arguments) == 0 {
 				return
 			}
+			coord := typeName + "." + fd.Name
 			if a := b.argsName(typeName, fd.Name); args[a] != "" {
 				report("args struct", g, a, args[a], coord)
 			} else {
@@ -53,10 +63,14 @@ func (b *builder) checkNameCollisions(groups []string) error {
 	return errors.Join(errs...)
 }
 
-// checkEnumConstants refuses an enum whose constant has the name of a type
-// generated into the same model package. A constant is named Type+Value, which
-// is a legal type name too: enum Color { RED } beside type ColorRed declared
-// ColorRed twice.
+// checkEnumConstants refuses an enum constant whose name another declaration
+// in the same model package already has. A constant is named Type+Value, which
+// is a legal type name too -- enum Color { RED } beside type ColorRed declared
+// ColorRed twice -- and a legal constant of another enum: A._B and AX.B are
+// both AXB, since goIdent prefixes an underscored value with X.
+//
+// The table holds what emitModel declares, by declaresModel, so an abstract
+// type that is any and declares nothing collides with nothing.
 func (b *builder) checkEnumConstants() error {
 	pkg := func(name string) string {
 		if b.modelSplit {
@@ -64,22 +78,36 @@ func (b *builder) checkEnumConstants() error {
 		}
 		return ""
 	}
-	types := map[[2]string]bool{}
-	for name, def := range b.schema.Types {
-		if !def.BuiltIn && !b.mapped(name) && !b.isRoot(name) {
-			types[[2]string{pkg(name), name}] = true
+	type declared struct{ what, enum string }
+	names := map[[2]string]declared{}
+	for name := range b.schema.Types {
+		if b.declaresModel(name) {
+			names[[2]string{pkg(name), name}] = declared{what: "type " + name}
 		}
 	}
 	var errs []error
 	for _, name := range b.typeNames(ast.Enum) {
-		if b.mapped(name) {
+		if !b.declaresModel(name) {
 			continue
 		}
 		for _, ev := range b.schema.Types[name].EnumValues {
-			if ident := name + goIdent(strings.ToLower(ev.Name)); types[[2]string{pkg(name), ident}] {
+			ident := name + goIdent(strings.ToLower(ev.Name))
+			key := [2]string{pkg(name), ident}
+			prev, taken := names[key]
+			switch {
+			case !taken:
+				names[key] = declared{what: "enum value " + name + "." + ev.Name, enum: name}
+			case prev.enum == name:
+				// Two values of one enum folding together is checkIdentifiers'
+				// to report, and it has, before this runs.
+			case prev.enum == "":
 				errs = append(errs, fmt.Errorf(
 					"codegen: enum value %s.%s and type %s both generate the Go name %q; rename one of them in the schema",
 					name, ev.Name, ident, ident))
+			default:
+				errs = append(errs, fmt.Errorf(
+					"codegen: %s and enum value %s.%s both generate the Go name %q; rename one of them in the schema",
+					prev.what, name, ev.Name, ident))
 			}
 		}
 	}

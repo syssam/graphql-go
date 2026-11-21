@@ -216,3 +216,46 @@ func TestScaffoldTwoGroupsIntoOneType(t *testing.T) {
 	}
 	goBuild(t, dir)
 }
+
+// checkStubs finds each target's files by the directory the filesystem says
+// they are in. It asked that of every target and every file checked, two stats
+// a pair, which at 800 groups each in a package of its own is millions; the
+// files are grouped by directory once and each target looked up.
+func TestCheckStubsMatchesFilesToTargetsInOnePass(t *testing.T) {
+	const groups = 30
+	dir := t.TempDir()
+	files := map[string]string{"schema/query.graphql": "type Query { ping: Boolean }\n"}
+	scaffold := map[string]string{"query": "impl/query.Handler"}
+	for i := range groups {
+		files[fmt.Sprintf("schema/mod%02d.graphql", i)] = fmt.Sprintf("type M%02dT { id: ID! }\nextend type Query { q%02d: M%02dT }\n", i, i, i)
+		scaffold[fmt.Sprintf("mod%02d", i)] = fmt.Sprintf("impl/mod%02d.Handler", i)
+	}
+	writeFiles(t, dir, files)
+	cfg := Config{Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "example.com/s/graph", Scaffold: scaffold}
+	if err := Generate(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	b, err := newBuilder(dir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := b.emit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.checkScaffoldTargets(filepath.Join(dir, "graph"), out); err != nil {
+		t.Fatal(err)
+	}
+	b.scaffoldProbes = 0
+	err = b.checkStubs()
+	if limit := 2 * (len(b.checked) + len(scaffold)); b.scaffoldProbes > limit {
+		t.Errorf("checkStubs asked the filesystem %d times for %d files and %d targets, want at most %d",
+			b.scaffoldProbes, len(b.checked), len(scaffold), limit)
+	}
+	// And every target's stub is still found, once.
+	for i := range groups {
+		if n := strings.Count(fmt.Sprint(err), fmt.Sprintf("Query.q%02d (", i)); n != 1 {
+			t.Errorf("Query.q%02d is listed %d times:\n%v", i, n, err)
+		}
+	}
+}

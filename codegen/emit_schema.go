@@ -88,9 +88,11 @@ func ValidateSchema(opts ...graphql.SchemaOption) error {
 func (b *builder) emitEmbed() string {
 	var w strings.Builder
 	w.WriteString("// " + copiesListed + "\n//\n")
-	names := make([]string, len(b.sources))
-	for i, src := range b.sources {
-		names[i] = copyName(src.Name)
+	var names []string
+	for _, src := range b.sources {
+		if !b.copyIsItsSource(src.Name) {
+			names = append(names, copyName(src.Name))
+		}
 	}
 	slices.Sort(names)
 	for _, name := range names {

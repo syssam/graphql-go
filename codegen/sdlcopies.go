@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	goast "go/ast"
@@ -27,7 +28,14 @@ func copyName(source string) string {
 // sources that are themselves read from that directory. It cannot be left
 // either, since what is in the directory is in the schema, which leaves
 // saying so and touching nothing.
-func foreignSchemaFiles(outDir string, written map[string][]byte, recorded []string) error {
+//
+// The same goes for a file this run would write a copy over (rels and olds,
+// what each output path holds now): asking only of the files a run did not
+// write, a hand-written graph/schema/user.graphql was replaced by the copy of
+// schema/user.graphql. One is gqlc's to replace if the last run listed it, if
+// it already says what the copy does, or if it is empty, as an interrupted
+// write leaves one; with no list, only the last two.
+func (b *builder) foreignSchemaFiles(outDir string, written map[string][]byte, recorded, rels []string, olds [][]byte) error {
 	_, foreign, err := schemaLeftovers(outDir, writtenKeys(outDir, written), recorded)
 	if err != nil {
 		return err
@@ -36,7 +44,68 @@ func foreignSchemaFiles(outDir string, written map[string][]byte, recorded []str
 	for _, path := range foreign {
 		errs = append(errs, fmt.Errorf("codegen: %s is not a copy gqlc made: no schema source produces it and the last generate did not write it. It is in the directory the generated package embeds whole, so it can be neither left nor deleted unasked; add it to the schema globs, or move or delete it", filepath.ToSlash(path)))
 	}
+	dir := filepath.Join(outDir, "schema")
+	sources := map[string]string{}
+	for _, src := range b.sources {
+		sources[copyName(src.Name)] = src.Name
+	}
+	for i, rel := range rels {
+		base, isCopy := strings.CutPrefix(rel, "schema/")
+		old := olds[i]
+		if !isCopy || old == nil || len(bytes.TrimSpace(old)) == 0 || sameContent(old, written[rel]) || recordedCopy(dir, recorded, base) {
+			continue
+		}
+		errs = append(errs, fmt.Errorf("codegen: %s is not a copy gqlc made: the last generate did not write it, and the copy of %s would replace it; rename the source, or move or delete the file", filepath.ToSlash(filepath.Join(dir, base)), sources[base]))
+	}
 	return errors.Join(errs...)
+}
+
+// copyIsItsSource reports whether the source at path is read from the file
+// its copy is written to, which the layout that keeps its SDL in
+// Output/schema does. Such a "copy" is the author's file, not gqlc's, and is
+// never listed as gqlc's: listed, narrowing the glob deleted a source that had
+// no other copy. The filesystem decides, as for every path here.
+func (b *builder) copyIsItsSource(path string) bool {
+	return samePath(filepath.FromSlash(path), filepath.Join(outputDir(b.dir, b.cfg.Output), "schema", copyName(path)))
+}
+
+// trustedCopies is the part of the last run's list this run may treat as
+// gqlc's. Where any source is read from Output/schema itself, a listed name is
+// believed only while a source elsewhere still copies onto it: output written
+// before copyIsItsSource listed the author's own files, and a name dropped
+// from the globs there is as likely a source as a stale copy. It is refused
+// as foreign then, never deleted -- the author deletes it or adds it back.
+func (b *builder) trustedCopies(recorded []string) []string {
+	var self bool
+	copies := map[string]bool{}
+	for _, src := range b.sources {
+		if b.copyIsItsSource(src.Name) {
+			self = true
+		} else {
+			copies[copyName(src.Name)] = true
+		}
+	}
+	if !self {
+		return recorded
+	}
+	var kept []string
+	for _, name := range recorded {
+		if copies[name] {
+			kept = append(kept, name)
+		}
+	}
+	return kept
+}
+
+// recordedCopy reports whether path, dir/base, is a copy the last run listed:
+// by name, or by a name the filesystem says is this file, since a copy
+// written into an existing one of another letter case keeps the spelling it
+// had, where case is ignored.
+func recordedCopy(dir string, recorded []string, base string) bool {
+	path := filepath.Join(dir, base)
+	return slices.ContainsFunc(recorded, func(name string) bool {
+		return name == base || (strings.EqualFold(name, base) && samePath(filepath.Join(dir, name), path))
+	})
 }
 
 // schemaLeftovers is the SDL files in outDir/schema this run did not write:
@@ -53,13 +122,7 @@ func schemaLeftovers(outDir string, keys writtenSet, recorded []string) (stale, 
 		if keys.has(filepath.Join("schema", base)) {
 			continue
 		}
-		// By name, or by a name the filesystem says is this file: a copy
-		// written into an existing one of another letter case keeps the
-		// spelling it had, where case is ignored.
-		ours := slices.ContainsFunc(recorded, func(name string) bool {
-			return name == base || (strings.EqualFold(name, base) && samePath(filepath.Join(dir, name), path))
-		})
-		if ours {
+		if recordedCopy(dir, recorded, base) {
 			stale = append(stale, path)
 		} else {
 			foreign = append(foreign, path)

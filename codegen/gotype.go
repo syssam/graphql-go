@@ -44,6 +44,13 @@ func (b *builder) modelName(graphqlName, selfPkg string) string {
 	case "ID":
 		return "graphql.ID"
 	}
+	// The engine binds every root type to graphql.Root and no model is
+	// generated for one, so a field returning a root -- a mutation payload's
+	// `query: Query!` -- is that type too. It was model.Query, which is
+	// undefined; the executor answers such a field with the root object.
+	if b.isRoot(graphqlName) {
+		return "graphql.Root"
+	}
 	def := b.schema.Types[graphqlName]
 	if def != nil && (def.Kind == ast.Interface || def.Kind == ast.Union) && !b.hasMarker(graphqlName) {
 		return "any"
@@ -157,6 +164,23 @@ func (b *builder) modelRef(typeName, ident string) string {
 		return ident
 	}
 	return b.modelQualifier(b.modelPkgOf(typeName)) + "." + ident
+}
+
+// declaresModel reports whether a generated model package declares a Go type
+// for the named SDL type. emitModel writes exactly these, and every check
+// about what a model package holds -- the import-cycle check, the enum
+// constant collisions -- asks the same question here: answered separately,
+// the cycle check skipped every abstract type though a marker is one, and the
+// constant check refused a name beside an abstract type that is any.
+func (b *builder) declaresModel(name string) bool {
+	def := b.schema.Types[name]
+	if def == nil || def.BuiltIn || b.mapped(name) || b.isRoot(name) {
+		return false
+	}
+	if def.Kind == ast.Interface || def.Kind == ast.Union {
+		return b.hasMarker(name)
+	}
+	return true
 }
 
 // mapped reports whether a type is supplied by the caller through

@@ -76,6 +76,7 @@ func Generate(ctx context.Context, cfg Config) error {
 	if last, err := os.ReadFile(filepath.Join(outDir, "schema.go")); err == nil {
 		recorded, b.scalarsNamedBefore = recordedIn(last)
 	}
+	recorded = b.trustedCopies(recorded)
 	files, err := b.emit()
 	if err != nil {
 		return err
@@ -97,7 +98,7 @@ func Generate(ctx context.Context, cfg Config) error {
 	if err := errors.Join(errs...); err != nil {
 		return err
 	}
-	if err := foreignSchemaFiles(outDir, files, recorded); err != nil {
+	if err := b.foreignSchemaFiles(outDir, files, recorded, rels, olds); err != nil {
 		return err
 	}
 	// And what scaffolding would refuse, which came last, after the writes:

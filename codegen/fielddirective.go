@@ -1,11 +1,15 @@
 package codegen
 
 import (
+	"errors"
 	"fmt"
 	"go/token"
 	"maps"
 	"slices"
 	"strings"
+
+	"github.com/syssam/graphql-go/internal/gqlname"
+	"github.com/vektah/gqlparser/v2/ast"
 )
 
 // foldFieldDirective reads every use of Config.FieldDirective once, before
@@ -99,6 +103,56 @@ func unreadFieldDirectiveArg(fdir FieldDirective, arg string) string {
 	}
 	return "remove it, or name it in Config.FieldDirective"
 }
+
+// checkDirectiveNameTargets refuses a name argument where it would bind
+// nothing, once the model map is final, naming the coordinate and what does
+// work there.
+//
+// On an input object bound to Go, Input[T] matches a field by its graphql or
+// json tag or by its Go field's name, and gqlc writes nothing for the input
+// but that call -- naming one field explicitly (InputField) would mean naming
+// every field, with Go types gqlc has not loaded. So a name the engine's own
+// derivation does not turn back into the SDL name was accepted and then
+// failed NewSchema with "input field PlanIn.maxGb has no binding". One it does
+// turn back (AuthorID for authorId) binds as written, and stays.
+//
+// On an interface no Go field or method is chosen at all: each implementing
+// object's field answers, and the name there is the one that counts.
+func (b *builder) checkDirectiveNameTargets() error {
+	var errs []string
+	for _, coord := range slices.Sorted(maps.Keys(b.directiveNames)) {
+		goName := b.directiveNames[coord]
+		typeName, field, _ := strings.Cut(coord, ".")
+		def := b.schema.Types[typeName]
+		if def == nil {
+			continue
+		}
+		at := fmt.Sprintf("%s: @%s(%s: %q)", coord, b.cfg.FieldDirective.Name, b.cfg.FieldDirective.NameArg, goName)
+		switch {
+		case def.Kind == ast.InputObject && b.mapped(typeName) && inputFieldName(goName) != field:
+			errs = append(errs, fmt.Sprintf("%s binds nothing: %s is bound to %s, and Input[T] matches an input field by its graphql or json tag or by its Go field's name (%s reads as %s). Tag the Go field `graphql:%q` and remove the argument",
+				at, typeName, b.cfg.Models[typeName], goName, inputFieldName(goName), field))
+		case def.Kind == ast.Interface:
+			var impls []string
+			for _, obj := range b.schema.PossibleTypes[typeName] {
+				if obj.Kind == ast.Object && obj.Fields.ForName(field) != nil {
+					impls = append(impls, obj.Name+"."+field)
+				}
+			}
+			slices.Sort(impls)
+			errs = append(errs, fmt.Sprintf("%s binds nothing: an interface field is answered by each implementing object's field, and %s has no Go field or method of its own. Put the argument on %s",
+				at, typeName, summarize(impls, 8)))
+		}
+	}
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "\n"))
+	}
+	return nil
+}
+
+// inputFieldName is the GraphQL name Input[T] derives from a Go field's name
+// when no tag gives one -- the engine's own rule, not a copy of it.
+func inputFieldName(goName string) string { return gqlname.FromGo(goName) }
 
 // directiveGoName is the Go name Config.FieldDirective's name argument gives a
 // field, or "" when it gives none.

@@ -3,7 +3,6 @@ package codegen
 import (
 	"bytes"
 	"fmt"
-	"go/format"
 	"go/parser"
 	"go/token"
 	"os"
@@ -212,9 +211,7 @@ func (b *builder) scaffoldGroup(pkgs *pkgCache, name, group, target string) ([]s
 	}
 	var out []byte
 	if len(old) == 0 {
-		// A new file is written whole, imports grouped the way goimports
-		// would: the standard library, then everything else.
-		out, err = format.Source([]byte("package " + pkg + "\n\n" + importDecl(imports) + body))
+		out, err = newResolversFile(pkg, body, imports, b.packageName, idx.names)
 	} else {
 		out, err = addImports(src, len(old), imports, b.packageName, idx.names)
 	}
@@ -224,7 +221,13 @@ func (b *builder) scaffoldGroup(pkgs *pkgCache, name, group, target string) ([]s
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(file, out, 0o644); err != nil {
+	// Only a file with something in it is the author's to lose.
+	if len(old) > 0 {
+		err = replaceFile(file, out)
+	} else {
+		err = os.WriteFile(file, out, 0o644)
+	}
+	if err != nil {
 		return nil, err
 	}
 	// What was just written is in the package now, for a later group that

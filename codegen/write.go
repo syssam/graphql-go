@@ -105,3 +105,46 @@ func boundedEach(n int, fn func(i int)) {
 	}
 	wg.Wait()
 }
+
+// replaceFile writes data over path, a file somebody else wrote, by writing
+// it beside the file and renaming it into place: a crash part-way through
+// os.WriteFile leaves the author's code truncated, and a rename leaves either
+// all of the old file or all of the new. The file keeps its mode, and a link
+// at path is followed, so the link stays the author's link.
+//
+// gqlc's own output does not need it: an interrupted write leaves a file that
+// is empty or headed as gqlc's, and the next generate writes it again.
+func replaceFile(path string, data []byte) (err error) {
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
+	mode := os.FileMode(0o644)
+	if fi, err := os.Stat(path); err == nil {
+		mode = fi.Mode().Perm()
+	}
+	// A dot name and no .go: the go command ignores what a crash leaves.
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".gqlc-*")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = os.Remove(tmp.Name())
+		}
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), mode); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
+}

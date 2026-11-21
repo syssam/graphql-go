@@ -231,10 +231,20 @@ func (b *builder) reportStale(groups []string, target string, have, want map[str
 // parsed, which are every file of each target's package that gqlc did not
 // write.
 func (b *builder) checkStubs() error {
-	// A directory is matched as the filesystem resolves it (samePath), since
+	// A directory is matched as the filesystem resolves it (dirSet), since
 	// checkScaffoldTargets parsed it under the first spelling a target gave;
 	// two spellings of one directory then find the same files, and a line is
-	// kept once.
+	// kept once. The files are grouped by directory first: matching every
+	// target against every file was two stats a pair.
+	byDir := map[string][]string{}
+	dirs := b.newDirSet()
+	for _, path := range slices.Sorted(maps.Keys(b.checked)) {
+		d := filepath.Dir(path)
+		if byDir[d] == nil {
+			dirs.add(d)
+		}
+		byDir[d] = append(byDir[d], path)
+	}
 	var lines []string
 	seen := map[string]bool{}
 	for _, name := range slices.Sorted(maps.Keys(b.cfg.Scaffold)) {
@@ -243,10 +253,11 @@ func (b *builder) checkStubs() error {
 		if err != nil {
 			continue
 		}
-		for _, path := range slices.Sorted(maps.Keys(b.checked)) {
-			if !samePath(filepath.Dir(path), dir) {
-				continue
-			}
+		d, ok := dirs.find(dir)
+		if !ok {
+			continue
+		}
+		for _, path := range byDir[d] {
 			for _, st := range b.checked[path].stubs {
 				if st[0] != typ {
 					continue

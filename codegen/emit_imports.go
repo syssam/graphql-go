@@ -35,19 +35,14 @@ func (b *builder) importBlock(src, selfPkg string) string {
 		}
 	}
 	// An extra enum's package is named by neither Config.Models nor the
-	// generated models, and its qualifier was settled in setExtraEnums, so
-	// the import is written under that name whenever it differs from the
-	// package's own.
+	// generated models, and its qualifier was settled in setExtraEnums by the
+	// same rule, so it is aliased the same way: the package's own name is not
+	// known here, and its directory's need not be it.
 	for _, qualifier := range slices.Sorted(maps.Keys(b.extraImports)) {
 		if !used(qualifier) {
 			continue
 		}
-		path := b.extraImports[qualifier]
-		if base := path[strings.LastIndex(path, "/")+1:]; base == qualifier {
-			rest = append(rest, "\t\""+path+"\"")
-			continue
-		}
-		rest = append(rest, "\t"+qualifier+" \""+path+"\"")
+		rest = append(rest, "\t"+qualifier+" \""+b.extraImports[qualifier]+"\"")
 	}
 	for _, pkg := range b.modelPkgNames() {
 		if pkg == selfPkg {

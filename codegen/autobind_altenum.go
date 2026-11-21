@@ -10,7 +10,7 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-// altEnumTypes finds a second Go type for an SDL enum.
+// altEnumTypes finds the other Go types an SDL enum is held as.
 //
 // The registry is keyed on (GraphQL type, reflect.Type), so one SDL enum can
 // have two Go types, and an ORM produces exactly that: @goModel binds
@@ -23,12 +23,14 @@ import (
 // Only input objects are searched. An object field of the unbound type falls
 // to a resolver, which the author writes and can convert in; an input field
 // has nowhere to put that conversion.
-func altEnumTypes(schema *ast.Schema, models map[string]string, found map[string]*types.Named, idx map[string]*types.Named) map[string]*types.Named {
+//
+// Every distinct type is kept, not the first: the registry holds as many as
+// there are, and one dropped leaves each input field holding it a NewSchema
+// error with nothing said. Input names and fields are walked in sorted and SDL
+// order, so the types come out in the same order every run.
+func altEnumTypes(schema *ast.Schema, models map[string]string, found map[string]*types.Named, idx map[string]*types.Named) map[string][]*types.Named {
 	primary := boundEnumTypes(schema, models, found)
-	out := map[string]*types.Named{}
-	// Input names and fields are walked in sorted and SDL order, so a third Go
-	// type for one enum loses to the second every run rather than by map
-	// iteration.
+	out := map[string][]*types.Named{}
 	for _, name := range inputNames(schema) {
 		named := found[name]
 		if expr, declared := models[name]; declared {
@@ -40,12 +42,11 @@ func altEnumTypes(schema *ast.Schema, models map[string]string, found map[string
 		fields := structFields(named)
 		for _, fd := range schema.Types[name].Fields {
 			enum := fd.Type.Name()
-			if _, taken := out[enum]; taken {
+			alt := altTypeAt(schema, fields, fd, primary[enum])
+			if alt == nil || slices.ContainsFunc(out[enum], func(n *types.Named) bool { return typeKeyOf(n) == typeKeyOf(alt) }) {
 				continue
 			}
-			if alt := altTypeAt(schema, fields, fd, primary[enum]); alt != nil {
-				out[enum] = alt
-			}
+			out[enum] = append(out[enum], alt)
 		}
 	}
 	return out
@@ -87,10 +88,15 @@ func altTypeAt(schema *ast.Schema, fields map[string]goField, fd *ast.FieldDefin
 	if n == nil || n.Obj().Pkg() == nil {
 		return nil
 	}
-	if n.Obj().Pkg().Path()+"."+n.Obj().Name() == bound {
+	if typeKeyOf(n) == bound {
 		return nil
 	}
 	return n
+}
+
+// typeKeyOf is a named type as "importPath.TypeName".
+func typeKeyOf(n *types.Named) string {
+	return n.Obj().Pkg().Path() + "." + n.Obj().Name()
 }
 
 // namedLeaf unwraps pointers, slices and arrays down to the named type a leaf
@@ -120,19 +126,21 @@ func namedLeaf(t types.Type) *types.Named {
 // AutoBind pattern and no @goModel named -- they are reachable only through a
 // bound struct's field, and export data for a dependency does not come back
 // from packages.Load as a package of its own.
-func altEnumPkgs(dir string, alt map[string]*types.Named, loaded []*packages.Package, loads *int) []*packages.Package {
+func altEnumPkgs(dir string, alt map[string][]*types.Named, loaded []*packages.Package, loads *int) []*packages.Package {
 	have := map[string]bool{}
 	for _, p := range loaded {
 		have[p.PkgPath] = true
 	}
 	var want []string
 	for _, name := range slices.Sorted(maps.Keys(alt)) {
-		path := alt[name].Obj().Pkg().Path()
-		if have[path] {
-			continue
+		for _, n := range alt[name] {
+			path := n.Obj().Pkg().Path()
+			if have[path] {
+				continue
+			}
+			have[path] = true
+			want = append(want, path)
 		}
-		have[path] = true
-		want = append(want, path)
 	}
 	if len(want) == 0 {
 		return nil
@@ -151,30 +159,31 @@ func altEnumPkgs(dir string, alt map[string]*types.Named, loaded []*packages.Pac
 // error it replaces: the first is silent at run time, the second stops the
 // build. What it cannot bind it reports, because the author can write the map
 // by hand and cannot be expected to guess that they need to.
-func altEnumBindings(schema *ast.Schema, alt map[string]*types.Named, consts map[string]*enumConsts, notef func(string, ...any)) []TypeBinding {
+func altEnumBindings(schema *ast.Schema, alt map[string][]*types.Named, consts map[string]*enumConsts, notef func(string, ...any)) []TypeBinding {
 	var out []TypeBinding
 	var unbound []string
 	for _, name := range slices.Sorted(maps.Keys(alt)) {
-		named := alt[name]
-		key := named.Obj().Pkg().Path() + "." + named.Obj().Name()
 		def := schema.Types[name]
-		values := map[string]string{}
-		if vals := consts[key]; vals != nil {
-			for _, ev := range def.EnumValues {
-				if c, ok := vals.lookup(ev.Name); ok {
-					values[ev.Name] = c
+		for _, named := range alt[name] {
+			key := typeKeyOf(named)
+			values := map[string]string{}
+			if vals := consts[key]; vals != nil {
+				for _, ev := range def.EnumValues {
+					if c, ok := vals.lookup(ev.Name); ok {
+						values[ev.Name] = c
+					}
 				}
 			}
+			if len(values) != len(def.EnumValues) {
+				unbound = append(unbound, name+" as "+key)
+				continue
+			}
+			out = append(out, TypeBinding{
+				Name:   name,
+				Go:     GoType{PkgPath: named.Obj().Pkg().Path(), Name: named.Obj().Name()},
+				Values: values,
+			})
 		}
-		if len(values) != len(def.EnumValues) {
-			unbound = append(unbound, name+" as "+key)
-			continue
-		}
-		out = append(out, TypeBinding{
-			Name:   name,
-			Go:     GoType{PkgPath: named.Obj().Pkg().Path(), Name: named.Obj().Name()},
-			Values: values,
-		})
 	}
 	if len(unbound) > 0 {
 		notef("%d enums are used at a second Go type whose constants could not all be found, so every input field using that type will fail at NewSchema; bind each with graphql.Enum (%s)",

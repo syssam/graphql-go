@@ -2,8 +2,11 @@ package codegen
 
 import (
 	"fmt"
+	"go/build"
 	"go/types"
 	"maps"
+	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -43,6 +46,9 @@ func autoBind(dir string, patterns []string, schema *ast.Schema, b *builder) (*M
 
 	// Later patterns lose to earlier ones, so the order given is the
 	// precedence: a schema type found in two packages binds to the first.
+	// packages.Load returns its roots in dependency order, not pattern order,
+	// so they are put back in the order of the pattern that named each.
+	pkgs = byPattern(dir, patterns, pkgs)
 	found := map[string]*types.Named{}
 	for _, p := range pkgs {
 		if p.Types == nil {
@@ -172,6 +178,83 @@ func autoBind(dir string, patterns []string, schema *ast.Schema, b *builder) (*M
 		return nil, nil
 	}
 	return man, nil
+}
+
+// byPattern orders loaded roots by the first pattern that matches each, keeping
+// the load order among packages one pattern matched. With NeedDeps the go
+// command lists roots after their dependencies, so with ./ent importing
+// ./other, AutoBind: [./ent, ./other] bound other's Product.
+//
+// The match is redone here rather than by a Load per pattern, which would cost
+// a go command per pattern for an answer the one Load already has: Dir comes
+// with export data, and PkgPath with every mode. A root no pattern is seen to
+// match (std, all) sorts after the rest.
+func byPattern(dir string, patterns []string, pkgs []*packages.Package) []*packages.Package {
+	if len(patterns) < 2 {
+		return pkgs
+	}
+	base, err := filepath.Abs(dir)
+	if err != nil {
+		return pkgs
+	}
+	matchers := make([]patternMatcher, len(patterns))
+	for i, pat := range patterns {
+		matchers[i] = newPatternMatcher(base, pat)
+	}
+	rank := func(p *packages.Package) int {
+		for i, m := range matchers {
+			if m.matches(p) {
+				return i
+			}
+		}
+		return len(patterns)
+	}
+	ranks := make(map[*packages.Package]int, len(pkgs))
+	for _, p := range pkgs {
+		ranks[p] = rank(p)
+	}
+	out := slices.Clone(pkgs)
+	slices.SortStableFunc(out, func(a, b *packages.Package) int { return ranks[a] - ranks[b] })
+	return out
+}
+
+// patternMatcher is one go command package pattern, compiled once for every
+// root it is asked about: a filesystem pattern (./x, ../x, /abs) matches p's
+// directory, anything else its import path, with "..." matching any string as
+// the go command has it.
+type patternMatcher struct {
+	local bool
+	re    *regexp.Regexp
+}
+
+func newPatternMatcher(base, pattern string) patternMatcher {
+	local := build.IsLocalImport(pattern) || filepath.IsAbs(pattern)
+	if local && !filepath.IsAbs(pattern) {
+		pattern = filepath.Join(base, pattern)
+	}
+	if local {
+		pattern = filepath.ToSlash(pattern)
+	}
+	return patternMatcher{local: local, re: goPattern(pattern)}
+}
+
+func (m patternMatcher) matches(p *packages.Package) bool {
+	if !m.local {
+		return m.re.MatchString(p.PkgPath)
+	}
+	return p.Dir != "" && m.re.MatchString(filepath.ToSlash(p.Dir))
+}
+
+// goPattern is the go command's pattern match: "..." matches any string, and
+// a trailing "/..." also matches the empty string before it, so x/... names x
+// itself. The pattern is quoted first, so nothing else in it is a regexp.
+func goPattern(pattern string) *regexp.Regexp {
+	re := regexp.QuoteMeta(pattern)
+	re = strings.ReplaceAll(re, `\.\.\.`, `.*`)
+	if before, ok := strings.CutSuffix(re, `/.*`); ok {
+		re = before + `(/.*)?`
+	}
+	return regexp.MustCompile("^" + re + "$")
 }
 
 // modelPkgs loads the packages the model map names for an enum, an input

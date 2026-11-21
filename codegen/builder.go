@@ -266,6 +266,9 @@ func newBuilder(dir string, cfg Config) (*builder, error) {
 	b.setModels(models)
 	b.manifest = man
 	b.setExtraEnums(explicit)
+	if err := b.checkDirectiveNameTargets(); err != nil {
+		return nil, fmt.Errorf("codegen: %w", err)
+	}
 	if err := b.checkFieldNames(); err != nil {
 		return nil, fmt.Errorf("codegen: %w", err)
 	}

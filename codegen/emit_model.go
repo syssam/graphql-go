@@ -7,7 +7,7 @@ import (
 )
 
 // emitModel renders the model types of one group, or of the whole schema
-// when group is empty.
+// when group is empty: each type declaresModel names, and nothing else.
 func (b *builder) emitModel(group string) string {
 	selfPkg := "model"
 	if group != "" {
@@ -15,7 +15,7 @@ func (b *builder) emitModel(group string) string {
 	}
 	var body strings.Builder
 	for _, name := range b.typeNames(ast.Enum) {
-		if !b.inGroup(name, group) || b.mapped(name) {
+		if !b.inGroup(name, group) || !b.declaresModel(name) {
 			continue
 		}
 		def := b.schema.Types[name]
@@ -26,10 +26,7 @@ func (b *builder) emitModel(group string) string {
 		body.WriteString(")\n\n")
 	}
 	for _, name := range b.typeNames(ast.Scalar) {
-		if _, ok := b.cfg.Models[name]; ok {
-			continue
-		}
-		if !b.inGroup(name, group) {
+		if !b.inGroup(name, group) || !b.declaresModel(name) {
 			continue
 		}
 		body.WriteString("// " + name + " is a custom scalar; bind it with graphql.Scalar in NewSchema options.\n")
@@ -37,7 +34,7 @@ func (b *builder) emitModel(group string) string {
 	}
 	for _, kind := range []ast.DefinitionKind{ast.Interface, ast.Union} {
 		for _, name := range b.typeNames(kind) {
-			if !b.inGroup(name, group) || !b.hasMarker(name) {
+			if !b.inGroup(name, group) || !b.declaresModel(name) {
 				continue
 			}
 			body.WriteString("type " + name + " interface {\n")
@@ -48,7 +45,7 @@ func (b *builder) emitModel(group string) string {
 		}
 	}
 	for _, name := range b.typeNames(ast.Object) {
-		if b.isRoot(name) || !b.inGroup(name, group) || b.mapped(name) {
+		if !b.inGroup(name, group) || !b.declaresModel(name) {
 			continue
 		}
 		def := b.schema.Types[name]
@@ -72,7 +69,7 @@ func (b *builder) emitModel(group string) string {
 		}
 	}
 	for _, name := range b.typeNames(ast.InputObject) {
-		if !b.inGroup(name, group) || b.mapped(name) {
+		if !b.inGroup(name, group) || !b.declaresModel(name) {
 			continue
 		}
 		def := b.schema.Types[name]

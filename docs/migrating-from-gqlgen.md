@@ -84,3 +84,19 @@ reports them:
   ```sh
   go tool gqlc -config gqlc.yaml -check -stubs
   ```
+
+## `@goField` arguments gqlc does not read
+
+gqlc reads two of `@goField`'s arguments, `forceResolver:` and `name:`, and
+refuses a use carrying any other (`omittable:` -- use
+`nullableInputOmittable`), naming the field. `preset: gqlgen` reads both. A
+`fieldDirective` written out by hand needs `nameArg: name` for `name:`, or each
+use is refused:
+
+```yaml
+fieldDirective: { name: goField, forceResolverArg: forceResolver, nameArg: name }
+```
+
+`name:` on a field of an input object bound to a Go type is refused too: the
+engine binds input fields by tag or Go field name, so tag the Go field
+`graphql:"maxGb"` instead.

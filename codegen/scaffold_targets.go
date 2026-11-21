@@ -27,7 +27,7 @@ func (b *builder) checkScaffoldTargets(outDir string, files map[string][]byte) e
 		return nil
 	}
 	output := b.outputPackages(outDir, files)
-	seen := map[string]bool{}
+	seen := b.newDirSet()
 	for _, name := range slices.Sorted(maps.Keys(b.cfg.Scaffold)) {
 		target := b.cfg.Scaffold[name]
 		dir, typ, err := b.splitTarget(target)
@@ -52,10 +52,14 @@ func (b *builder) checkScaffoldTargets(outDir string, files map[string][]byte) e
 		if generated[typ] {
 			return fmt.Errorf("codegen: scaffold %s: target %q: %s is declared by the generated code in that package; name the implementation something else", name, target, typ)
 		}
-		if seen[strings.ToLower(dir)] {
+		// Read once per directory the filesystem has, which is not once per
+		// lower-cased spelling: where case matters impl and Impl are two
+		// packages, and the second went unread -- its stubs unreported and a
+		// generated name declared in it unrefused.
+		if _, ok := seen.find(dir); ok {
 			continue
 		}
-		seen[strings.ToLower(dir)] = true
+		seen.add(dir)
 		for _, e := range entries {
 			n := e.Name()
 			if e.IsDir() || !strings.HasSuffix(n, ".go") || strings.HasSuffix(n, "_test.go") {
@@ -144,6 +148,45 @@ func (b *builder) outputPackages(outDir string, files map[string][]byte) *output
 func (o *outputPackages) key(dir string) string {
 	o.b.scaffoldProbes++
 	return strings.ToLower(realPath(dir))
+}
+
+// dirSet is a set of directories as the filesystem tells them apart:
+// spellings differing in letter case are one where it ignores case and two
+// where it does not, and a path through a link is the directory behind it.
+// Only the filesystem knows, so samePath asks it -- but within a bucket of
+// spellings that resolve and fold to one key, so a set of hundreds is not
+// asked about pairwise.
+type dirSet struct {
+	b     *builder
+	byKey map[string][]string
+}
+
+func (b *builder) newDirSet() *dirSet {
+	return &dirSet{b: b, byKey: map[string][]string{}}
+}
+
+func (s *dirSet) key(dir string) string {
+	s.b.scaffoldProbes++
+	return strings.ToLower(realPath(dir))
+}
+
+// find is the spelling dir was added under that is dir, if any.
+func (s *dirSet) find(dir string) (string, bool) {
+	for _, d := range s.byKey[s.key(dir)] {
+		if filepath.Clean(d) == filepath.Clean(dir) {
+			return d, true
+		}
+		s.b.scaffoldProbes++
+		if samePath(d, dir) {
+			return d, true
+		}
+	}
+	return "", false
+}
+
+func (s *dirSet) add(dir string) {
+	k := s.key(dir)
+	s.byKey[k] = append(s.byKey[k], dir)
 }
 
 // in is every name the generated code declares in dir, and the base name of

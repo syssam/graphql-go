@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -376,5 +377,134 @@ func TestRecordedCopiesReadsBackWhatWasWritten(t *testing.T) {
 		if got, _ := recordedIn([]byte(schemaGo)); got != nil {
 			t.Errorf("%s: read back %q from a file that lists nothing", name, got)
 		}
+	}
+}
+
+// A copy is written over whatever has its name in Output/schema, and only the
+// files a run did not write were asked whose they are: a hand-written
+// graph/schema/user.graphql beside a source schema/user.graphql was replaced
+// by the copy, and a check called it a rewrite. It is refused like any other
+// file there gqlc did not write, before anything is written. A file that
+// already says what the copy does, or holds nothing, loses nothing, list or
+// no list.
+func TestGenerateRefusesToCopyOverAnSDLFileItDidNotWrite(t *testing.T) {
+	const legacy = "# hand-written\ntype Legacy { x: Int }\n"
+	cfg := func(dir string) Config {
+		return Config{Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph"}
+	}
+	t.Run("before the first generate", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFiles(t, dir, map[string]string{"schema/user.graphql": "type Query { a: Int }\n", "graph/schema/user.graphql": legacy})
+		before := snapshot(t, dir)
+		for _, check := range []bool{false, true} {
+			c := cfg(dir)
+			c.Check = check
+			err := Generate(context.Background(), c)
+			if err == nil || errors.Is(err, ErrStale) || !strings.Contains(filepath.ToSlash(err.Error()), "graph/schema/user.graphql") {
+				t.Errorf("check=%v: err = %v, want a refusal naming graph/schema/user.graphql", check, err)
+			}
+		}
+		after := snapshot(t, dir)
+		if after["graph/schema/user.graphql"] != legacy || len(after) != len(before) {
+			t.Errorf("a refused generate changed the tree: %d files before, %d after, user.graphql %q", len(before), len(after), after["graph/schema/user.graphql"])
+		}
+	})
+	t.Run("beside copies gqlc wrote", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFiles(t, dir, map[string]string{"schema/query.graphql": "type Query { a: Int }\n"})
+		if err := Generate(context.Background(), cfg(dir)); err != nil {
+			t.Fatal(err)
+		}
+		writeFiles(t, dir, map[string]string{"schema/user.graphql": "type User { id: ID }\n", "graph/schema/user.graphql": legacy})
+		if err := Generate(context.Background(), cfg(dir)); err == nil || !strings.Contains(filepath.ToSlash(err.Error()), "graph/schema/user.graphql") {
+			t.Errorf("err = %v, want a refusal naming graph/schema/user.graphql", err)
+		}
+		if got := readFile(t, filepath.Join(dir, "graph", "schema", "user.graphql")); got != legacy {
+			t.Errorf("user.graphql was overwritten: %q", got)
+		}
+		// A copy gqlc did write is still rewritten when its source changes.
+		writeFiles(t, dir, map[string]string{"schema/query.graphql": "type Query { b: Int }\n", "graph/schema/user.graphql": "type User { id: ID }\n"})
+		if err := Generate(context.Background(), cfg(dir)); err != nil {
+			t.Fatalf("a listed copy, or one already equal to its source, was refused: %v", err)
+		}
+	})
+	// Or that holds nothing, as an interrupted write leaves a file.
+	for name, held := range map[string]string{"equal to the copy": "type Query { a: Int }\r\n", "empty": "\n"} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFiles(t, dir, map[string]string{"schema/user.graphql": "type Query { a: Int }\n", "graph/schema/user.graphql": held})
+			if err := Generate(context.Background(), cfg(dir)); err != nil {
+				t.Fatalf("a file holding %q was refused: %v", held, err)
+			}
+		})
+	}
+}
+
+// Sources may be read from Output/schema itself, and then each copy is its
+// source. Listed as gqlc's, narrowing the glob from graph/schema/*.graphql to
+// graph/schema/a.graphql deleted b.graphql, the author's only copy of it. A
+// file that is its own source is never listed, so it is refused like any
+// other file there that no source produces, and kept.
+func TestGenerateNeverDeletesASourceReadFromOutputSchema(t *testing.T) {
+	dir := t.TempDir()
+	const b = "type B { x: Int }\n"
+	writeFiles(t, dir, map[string]string{"graph/schema/a.graphql": "type Query { a: Int }\n", "graph/schema/b.graphql": b})
+	cfg := Config{Dir: dir, SchemaGlobs: []string{"graph/schema/*.graphql"}, Output: "graph", Package: "hello/graph"}
+	if err := Generate(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	// The write half on its own: trustedCopies would keep b.graphql even if
+	// it were listed, so only the list itself shows this half works.
+	schemaGo, err := os.ReadFile(filepath.Join(dir, "graph", "schema.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if copies, _ := recordedIn(schemaGo); len(copies) != 0 {
+		t.Errorf("schema.go lists %v, files that are their own sources", copies)
+	}
+	cfg.SchemaGlobs = []string{"graph/schema/a.graphql"}
+	err = Generate(context.Background(), cfg)
+	if got, rerr := os.ReadFile(filepath.Join(dir, "graph", "schema", "b.graphql")); rerr != nil || string(got) != b {
+		t.Fatalf("b.graphql, a source, was deleted or changed (generate err: %v): %q %v", err, got, rerr)
+	}
+	if err == nil || !strings.Contains(filepath.ToSlash(err.Error()), "graph/schema/b.graphql") {
+		t.Errorf("err = %v, want a refusal naming graph/schema/b.graphql", err)
+	}
+}
+
+// Output written before copyIsItsSource lists the author's own files as
+// copies, and a read-side guard is all that stands between that list and the
+// first narrowing after an upgrade. trustedCopies believes a listed name only
+// while a source elsewhere copies onto it, so b.graphql is refused and kept.
+func TestAnOldListNeverDeletesASourceReadFromOutputSchema(t *testing.T) {
+	dir := t.TempDir()
+	const b = "type B { x: Int }\n"
+	writeFiles(t, dir, map[string]string{"graph/schema/a.graphql": "type Query { a: Int }\n", "graph/schema/b.graphql": b})
+	cfg := Config{Dir: dir, SchemaGlobs: []string{"graph/schema/*.graphql"}, Output: "graph", Package: "hello/graph"}
+	if err := Generate(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	schemaGo := filepath.Join(dir, "graph", "schema.go")
+	src, err := os.ReadFile(schemaGo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := strings.Replace(string(src), copiesListed+"\n//\n", copiesListed+"\n//\n//\ta.graphql\n//\tb.graphql\n", 1)
+	if old == string(src) {
+		t.Fatal("could not plant the old list")
+	}
+	if err := os.WriteFile(schemaGo, []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if copies, _ := recordedIn([]byte(old)); !slices.Contains(copies, "b.graphql") {
+		t.Fatalf("planted list reads back as %v", copies)
+	}
+	cfg.SchemaGlobs = []string{"graph/schema/a.graphql"}
+	err = Generate(context.Background(), cfg)
+	if got, rerr := os.ReadFile(filepath.Join(dir, "graph", "schema", "b.graphql")); rerr != nil || string(got) != b {
+		t.Fatalf("b.graphql was deleted on an old list (generate err: %v): %q %v", err, got, rerr)
+	}
+	if err == nil || !strings.Contains(filepath.ToSlash(err.Error()), "graph/schema/b.graphql") {
+		t.Errorf("err = %v, want a refusal naming graph/schema/b.graphql", err)
 	}
 }
