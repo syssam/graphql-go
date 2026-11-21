@@ -12,6 +12,7 @@ import (
 // -- it is the package -- and nothing is qualified by it: importing itself is
 // a cycle the compiler refuses.
 func TestScaffoldIntoItsOwnGroupPackage(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -52,6 +53,7 @@ func TestScaffoldIntoItsOwnGroupPackage(t *testing.T) {
 // generated code, so a name the generator declares is refused by name, not
 // left to a redeclaration inside a file marked DO NOT EDIT.
 func TestScaffoldRefusesAGeneratedNameInItsOwnPackage(t *testing.T) {
+	t.Parallel()
 	// Its own package, and another group's: either way the name is taken by
 	// code the author cannot edit.
 	for _, target := range []string{"graph/post.Resolver", "graph/post.PostArgs", "graph/post.Bindings", "graph/user.Resolver", "graph/user.Bindings"} {
@@ -69,6 +71,7 @@ func TestScaffoldRefusesAGeneratedNameInItsOwnPackage(t *testing.T) {
 // so it must not import itself. Skipped where case matters, since there the
 // two spellings are two directories.
 func TestScaffoldOwnPackageInOtherLetterCase(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}

@@ -13,6 +13,7 @@ import (
 // generated.go. A hand-written name gqlc also emits is named, file and all,
 // instead of surfacing as a redeclaration inside a file marked DO NOT EDIT.
 func TestScaffoldNamesAHandWrittenClashWithGeneratedCode(t *testing.T) {
+	t.Parallel()
 	dir, generate := scaffoldModule(t, map[string]string{"post": "graph/post.Handler"})
 	writeUnder(t, dir, "graph/post/extra.go", "package post\n\ntype PostArgs struct{}\n")
 	err := generate()
@@ -24,6 +25,7 @@ func TestScaffoldNamesAHandWrittenClashWithGeneratedCode(t *testing.T) {
 // One implementation spelled two ways is one implementation: judged apart,
 // each spelling called the other group's live methods stale.
 func TestScaffoldTargetSpellingsAreOneImplementation(t *testing.T) {
+	t.Parallel()
 	dir, _ := scaffoldModule(t, nil)
 	notes := scaffoldNotes(t, dir, map[string]string{"user": "impl.Resolver", "post": "./impl/.Resolver"})
 	for _, n := range notes {
@@ -37,6 +39,7 @@ func TestScaffoldTargetSpellingsAreOneImplementation(t *testing.T) {
 // type, naming every group it serves -- not once per group, each naming one
 // interface as if it alone had been checked.
 func TestScaffoldReportsAStaleMethodOncePerType(t *testing.T) {
+	t.Parallel()
 	dir, _ := scaffoldModule(t, nil)
 	targets := map[string]string{"user": "impl.Resolver", "post": "impl.Resolver"}
 	scaffoldNotes(t, dir, targets)
@@ -57,6 +60,7 @@ func TestScaffoldReportsAStaleMethodOncePerType(t *testing.T) {
 // Impl's was never looked at. Skipped where case is ignored, where they are
 // one directory.
 func TestScaffoldKeepsTargetsApartWhereCaseMatters(t *testing.T) {
+	t.Parallel()
 	dir, _ := scaffoldModule(t, nil)
 	if caseInsensitive(t, dir) {
 		t.Skip("case-insensitive filesystem: impl and Impl are one directory")
@@ -80,6 +84,7 @@ func TestScaffoldKeepsTargetsApartWhereCaseMatters(t *testing.T) {
 // spelling, gamma read Impl's stale copy, missed the T beta had just written
 // to impl, and declared T again. Skipped where case matters.
 func TestScaffoldOnePackageUnderEverySpelling(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -105,6 +110,7 @@ func TestScaffoldOnePackageUnderEverySpelling(t *testing.T) {
 // into: its package clause does not name a new stub file, and its
 // declarations do not clash with generated code.
 func TestScaffoldIgnoresFilesTheBuildLeavesOut(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -126,6 +132,7 @@ func TestScaffoldIgnoresFilesTheBuildLeavesOut(t *testing.T) {
 // declared only there was declared again, and the build where it exists
 // failed. plan9 is a platform no test machine is.
 func TestScaffoldCountsFilesBuiltElsewhere(t *testing.T) {
+	t.Parallel()
 	dir, generate := scaffoldModule(t, map[string]string{"user": "impl.UserResolver"})
 	writeUnder(t, dir, "impl/zz_plan9.go", "//go:build plan9\n\npackage impl\n\ntype UserResolver struct{}\n\nfunc (r *UserResolver) Users() {}\n")
 	if err := generate(); err != nil {
@@ -160,6 +167,7 @@ func scaffoldNotes(t *testing.T, dir string, scaffold map[string]string) []strin
 // another package -- a user service beside the user group's models -- was
 // declared twice the same way. The stubs take the file's names instead.
 func TestScaffoldStubsUseTheImportsTheFileAlreadyHas(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -217,6 +225,7 @@ func TestScaffoldStubsUseTheImportsTheFileAlreadyHas(t *testing.T) {
 // func user in the package beside the post group's stubs, which name the
 // user models, was "user already declared through import of package user".
 func TestScaffoldNewFileImportsGiveWayToNamesThePackageDeclares(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -237,6 +246,7 @@ func TestScaffoldNewFileImportsGiveWayToNamesThePackageDeclares(t *testing.T) {
 // It is replaced by a rename instead -- a new file at the path, which a write
 // in place never is -- keeping its mode, and a link to it stays a link.
 func TestScaffoldReplacesTheAuthorsFileWhole(t *testing.T) {
+	t.Parallel()
 	dir, generate := scaffoldModule(t, map[string]string{"user": "impl.UserResolver", "post": "impl.PostResolver"})
 	if err := generate(); err != nil {
 		t.Fatal(err)

@@ -15,6 +15,7 @@ import (
 // split. Each root field now goes to the group of the file declaring it, and
 // the engine merges the groups' Query bindings back into one root.
 func TestRootFieldsAreGroupedByTheirOwnFile(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go test subprocess")
 	}
@@ -103,6 +104,7 @@ func (postR) Publish(context.Context, postg.PublishArgs) (*post.Post, error) {
 }
 
 func TestRootMergesAcrossGroups(t *testing.T) {
+	t.Parallel()
 	s, err := graph.NewSchema(rootg.Bindings(rootR{}), userg.Bindings(userR{}), postg.Bindings(postR{}))
 	if err != nil {
 		t.Fatal(err)
@@ -135,6 +137,7 @@ func TestRootMergesAcrossGroups(t *testing.T) {
 // instead; a field returning a built-in scalar has no such group and falls
 // back to its file.
 func TestRootFieldGroupCanFollowTheReturnedType(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	for name, body := range map[string]string{
 		"schema.graphql":     "type Query { todos: [Todo!]! users: [User!]! version: String! }\ntype Mutation { createTodo(title: String!): Todo! }\n",

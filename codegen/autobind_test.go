@@ -94,6 +94,7 @@ func autoGenerate(t *testing.T, dir string, cfg Config) string {
 }
 
 func TestAutoBindDiscoversFieldsAndMethods(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -128,6 +129,7 @@ func TestAutoBindDiscoversFieldsAndMethods(t *testing.T) {
 // confidently matched falls through to the resolver, because a resolver method
 // can always be written where a bad guess is a compile error in generated code.
 func TestAutoBindRefusesUncallableMethods(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -144,6 +146,7 @@ func TestAutoBindRefusesUncallableMethods(t *testing.T) {
 // TestAutoBindLeavesUnknownTypesAlone checks that discovery is additive: a
 // schema type with no Go counterpart still gets a generated model.
 func TestAutoBindLeavesUnknownTypesAlone(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -170,6 +173,7 @@ type Query { product(id: ID!): Product }
 // TestManifestOverridesDiscovery is the precedence rule: discovery is a guess
 // from names, an explicit binding is a statement.
 func TestManifestOverridesDiscovery(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -193,6 +197,7 @@ func TestManifestOverridesDiscovery(t *testing.T) {
 }
 
 func TestAutoBindReportsLoadErrors(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -213,6 +218,7 @@ func TestAutoBindReportsLoadErrors(t *testing.T) {
 // query through it. Reading the emitted text cannot tell whether the field
 // access and method calls actually type-check.
 func TestGeneratedAutoBindExecutes(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go test subprocess")
 	}
@@ -255,6 +261,7 @@ import (
 )
 
 func TestAutoBoundQuery(t *testing.T) {
+	t.Parallel()
 	s, err := graph.NewSchema(graph.Stub{})
 	if err != nil {
 		t.Fatal(err)
@@ -295,6 +302,7 @@ func TestAutoBoundQuery(t *testing.T) {
 // to the Resolver -- 2 179 fields on one real schema, 29% of everything
 // AutoBind left behind on types it had otherwise bound.
 func TestAutoBindValueSatisfiesANullableField(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -357,6 +365,7 @@ type Reading struct {
 // compile error in generated code, and a field the struct does not have was
 // one too where it should have been a Resolver method.
 func TestAutoBindReadsADeclaredObjectTypeOutsideItsPatterns(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -409,6 +418,7 @@ type Query { server: McpServer product: Product }
 // whatever name the generated file imports that model package by. Read by
 // package name alone, a field the struct already had became a Resolver method.
 func TestAutoBindReadsAHandWrittenStructHoldingGeneratedTypes(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -470,6 +480,7 @@ type Query { swatch: Swatch product: Product }
 // model.Colour while its own field said paint.Colour, so on a real schema four
 // fields the structs held fell to Resolver methods nobody had written.
 func TestAutoBindRecognisesAnotherGroupsModelInAHandWrittenStruct(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}

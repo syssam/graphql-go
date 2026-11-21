@@ -11,6 +11,7 @@ import (
 // tomorrow, and binding it to the column compiles and answers the wrong thing.
 // One real schema carries 4 567 of them.
 func TestForceResolverDirectiveIsHonoured(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -61,6 +62,7 @@ type Doc struct {
 // Off by default, like ModelDirective: a schema that happens to carry a
 // directive of that name gets nothing from it until the config asks.
 func TestFieldDirectiveOffByDefault(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -90,6 +92,7 @@ var goFieldNamed = FieldDirective{Name: "goField", ForceResolverArg: "forceResol
 // not a json tag naming the field, not a case-insensitive match. A name the
 // type lacks leaves a Resolver method of that name. The output must compile.
 func TestFieldDirectiveNameBindsTheNamedGoField(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -145,6 +148,7 @@ func (d *Doc) Computed() string { return d.Title }
 // the input alike, and the binding reads it. A FieldNames entry for the same
 // coordinate wins, as Models wins over the model directive.
 func TestFieldDirectiveNameNamesAGeneratedModelField(t *testing.T) {
+	t.Parallel()
 	const sdl = `
 directive @goField(forceResolver: Boolean, name: String) on FIELD_DEFINITION | INPUT_FIELD_DEFINITION
 type Plan { maxStorageGb: Int! @goField(name: "MaxStorageGB") seats: Int! @goField(name: "SeatCount") }
@@ -175,6 +179,7 @@ type Query { plan(in: PlanInput): Plan }
 // The name argument alone switches the directive on: IsZero must not ask for
 // ForceResolverArg too.
 func TestFieldDirectiveNameArgAlone(t *testing.T) {
+	t.Parallel()
 	const sdl = `
 directive @goField(name: String) on FIELD_DEFINITION
 type Plan { maxStorageGb: Int! @goField(name: "MaxStorageGB") }
@@ -190,6 +195,7 @@ type Query { plan: Plan }
 // coordinate and what to do instead. Dropped, name: derived another Go name
 // and omittable: changed nothing, both silently.
 func TestFieldDirectiveRefusesAnArgumentItDoesNotRead(t *testing.T) {
+	t.Parallel()
 	const decl = "directive @goField(forceResolver: Boolean, name: String, omittable: Boolean) on FIELD_DEFINITION | INPUT_FIELD_DEFINITION\n"
 	for _, tc := range []struct {
 		field string
@@ -221,6 +227,7 @@ func TestFieldDirectiveRefusesAnArgumentItDoesNotRead(t *testing.T) {
 // naming the coordinate, rather than becoming an unexported field Input[T]
 // skips.
 func TestFieldDirectiveRefusesANameThatIsNotAnExportedIdentifier(t *testing.T) {
+	t.Parallel()
 	const decl = "directive @goField(name: String) on FIELD_DEFINITION\n"
 	for _, bad := range []string{`"lower"`, `""`, `"Two Words"`, `"1X"`, `true`} {
 		sdl := decl + "type T { n: Int @goField(name: " + bad + ") }\ntype Query { t: T }\n"

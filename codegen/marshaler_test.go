@@ -17,6 +17,7 @@ import (
 // generated string enum back. Now all three bind as they are, and so does a
 // Cursor scalar with the same contract.
 func TestAutoBindBindsTypesThatEncodeThemselves(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -125,6 +126,7 @@ func (c *Category) Products(ctx context.Context, after *Cursor, orderBy *Product
 import "testing"
 
 func TestValidate(t *testing.T) {
+	t.Parallel()
 	if err := ValidateSchema(); err != nil {
 		t.Fatal(err)
 	}

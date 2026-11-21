@@ -38,6 +38,7 @@ func generateWith(t *testing.T, sdl string, cfg Config) (string, error) {
 // declares. They follow the graphql tag, in directive order, and a field without the
 // directive keeps only the graphql tag.
 func TestTagDirectiveWritesTagsOnInputFields(t *testing.T) {
+	t.Parallel()
 	dir := generate(t, tagSDL, Config{TagDirective: goTag})
 	models := norm(generated(t, dir, "model/models.go"))
 
@@ -55,6 +56,7 @@ func TestTagDirectiveWritesTagsOnInputFields(t *testing.T) {
 // Unconfigured, the output is what it was before the option existed: a directive in the SDL
 // is not read.
 func TestTagDirectiveIsOffByDefault(t *testing.T) {
+	t.Parallel()
 	dir := generate(t, tagSDL, Config{})
 	models := generated(t, dir, "model/models.go")
 	if strings.Contains(models, "valid:") || strings.Contains(models, "label:") {
@@ -65,6 +67,7 @@ func TestTagDirectiveIsOffByDefault(t *testing.T) {
 // A tag the struct-tag syntax cannot carry would be dropped silently by reflect or mean
 // something else, so each is a generation error that names the field.
 func TestTagDirectiveRejectsWhatATagCannotCarry(t *testing.T) {
+	t.Parallel()
 	sdl := func(field string) string {
 		return "directive @goTag(key: String!, value: String!) repeatable on INPUT_FIELD_DEFINITION\n" +
 			"input In { " + field + " }\ntype Query { q(i: In): String }\n"
@@ -97,6 +100,7 @@ func TestTagDirectiveRejectsWhatATagCannotCarry(t *testing.T) {
 // The same inputs are fine when the option is not configured: the directive is just an
 // annotation nobody reads, so existing users see no change.
 func TestTagDirectiveIgnoredWhenUnconfiguredEvenIfMalformed(t *testing.T) {
+	t.Parallel()
 	sdl := "directive @goTag(key: String!, value: String!) repeatable on INPUT_FIELD_DEFINITION\n" +
 		"input In { a: String @goTag(key: \"valid\", value: \"x`y\") }\ntype Query { q(i: In): String }\n"
 	if _, err := generateWith(t, sdl, Config{}); err != nil {
@@ -105,6 +109,7 @@ func TestTagDirectiveIgnoredWhenUnconfiguredEvenIfMalformed(t *testing.T) {
 }
 
 func TestTagDirectiveIsZero(t *testing.T) {
+	t.Parallel()
 	for _, d := range []TagDirective{{}, {Name: "goTag"}, {Name: "goTag", KeyArg: "key"}, {KeyArg: "key", ValueArg: "value"}} {
 		if !d.IsZero() {
 			t.Errorf("%+v should be zero", d)

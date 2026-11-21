@@ -747,6 +747,19 @@ itself was given the context -- with `Context:` removed every other cancellation
 green. A failed alternate-enum load is a note, not a refusal, and is silent only when the
 context was cancelled.
 
+**Codegen tests run in parallel** (`t.Parallel()` first in each top-level test): 65 s
+serial became about 20 s, and 25 s under `-race`. Three stay serial, each saying why: one
+`Chdir`s, one `Setenv`s a fake `go` onto PATH, and `TestBoundedEachUsesAFixedPool` counts every
+goroutine in the process. A new test that reads process-wide state belongs with them. Shared
+fixture maps (`goTag`, `lastUpdated`, ...) are read-only; one a test mutates is a race,
+which `go test -race -count=3 ./codegen` is the check for.
+
+**`FuzzRender`** (`fuzz_test.go`) feeds arbitrary SDL to `Render`: no panic, no
+`codegen: format` error (gqlc emitting Go that does not parse from text it copied out of the
+SDL) and identical output twice. CI's fuzz job finds it by `go test -list`. A seed exists for
+each emitter that copies SDL text into Go; a multi-line field description is the one that
+catches a broken doc-comment loop in `emit_group.go`.
+
 **A refusal about a place in the SDL is a `*Diagnostic`** (`diagnostic.go`), built with
 `b.diag(pos, coord, ...)`, so its error starts `file:line:col: ` relative to `Config.Dir` and a
 tool reads the parts through `Diagnostics(err)`. Converted: name collisions, list depth,

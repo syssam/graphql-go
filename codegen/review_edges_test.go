@@ -21,6 +21,7 @@ import (
 // graphql.graphql, context.graphql and embed.graphql for a package whose name
 // the generated code already uses for an import.
 func TestAGroupIsNeverNamedSomethingGoOrTheGeneratorReserves(t *testing.T) {
+	t.Parallel()
 	for _, stem := range []string{
 		"func", "type", "go", "range", "select", "main", "init", "graphql", "context", "embed",
 		// Predeclared: the generated code spells its types and calls with them.
@@ -43,6 +44,7 @@ func TestAGroupIsNeverNamedSomethingGoOrTheGeneratorReserves(t *testing.T) {
 // enum Color { RED } beside type ColorRed generated two declarations of
 // ColorRed, found by the compiler in a file the author is told not to edit.
 func TestAnEnumConstantThatCollidesWithATypeIsRefused(t *testing.T) {
+	t.Parallel()
 	_, err := generateWith(t, `
 		enum Color { RED GREEN }
 		type ColorRed { id: ID! }
@@ -71,6 +73,7 @@ type Query { thing(input: CreateThing): String }
 // JSONTags and a @goTag for json each wrote a json key, and reflect answers
 // with the first: the tag the author spelled out was silently dead.
 func TestATagDirectiveForJSONReplacesTheGeneratedJSONTag(t *testing.T) {
+	t.Parallel()
 	dir := generate(t, jsonAndGoTagSDL, Config{TagDirective: goTag, JSONTags: true})
 	models := norm(generated(t, dir, "model/models.go"))
 	if !strings.Contains(models, norm("`graphql:\"name\" json:\"custom_name\"`")) {
@@ -82,6 +85,7 @@ func TestATagDirectiveForJSONReplacesTheGeneratedJSONTag(t *testing.T) {
 }
 
 func TestTagDirectiveRefusesWhatAStructTagCannotCarry(t *testing.T) {
+	t.Parallel()
 	for name, directive := range map[string]string{
 		"control character in the key":   `@goTag(key: "v\u0001", value: "x")`,
 		"control character in the value": `@goTag(key: "v", value: "a\u0000b")`,
@@ -106,6 +110,7 @@ func TestTagDirectiveRefusesWhatAStructTagCannotCarry(t *testing.T) {
 // A FieldNames key that names nothing in the schema is a typo, and was
 // accepted in silence where every other configuration key is checked.
 func TestFieldNamesRefusesANameTheSchemaDoesNotHave(t *testing.T) {
+	t.Parallel()
 	sdl := `type T { userId: ID! } type Query { t(byId: ID): T }`
 	if _, err := generateWith(t, sdl, Config{FieldNames: map[string]string{"userId": "UserID", "byId": "ByID"}}); err != nil {
 		t.Fatalf("a field name and an argument name were refused: %v", err)
@@ -135,6 +140,7 @@ func TestFieldNamesRefusesANameTheSchemaDoesNotHave(t *testing.T) {
 // so -- and no Go type the author could substitute, since the limit is on the
 // position, not on the model.
 func TestListsNestedDeeperThanTheEngineBindsAreRefused(t *testing.T) {
+	t.Parallel()
 	_, err := generateWith(t, `
 		input Point { x: Float! y: Float! }
 		input Poly { rings: [[Point!]!]  ok: [Point!] }
@@ -159,6 +165,7 @@ func TestListsNestedDeeperThanTheEngineBindsAreRefused(t *testing.T) {
 // What the engine does bind still generates, including an object list of any
 // depth, which goes through the reflection traverser.
 func TestListsTheEngineBindsStillGenerate(t *testing.T) {
+	t.Parallel()
 	if _, err := generateWith(t, `
 		input Point { x: Float! }
 		type Cell { id: ID! }
@@ -173,6 +180,7 @@ func TestListsTheEngineBindsStillGenerate(t *testing.T) {
 // error was gofmt's: a line and column in a file that was never written,
 // followed by the whole of its source.
 func TestConfigThatCannotBeGoIsRefusedByName(t *testing.T) {
+	t.Parallel()
 	sdl := `type User { id: ID! } type Query { me: User }`
 	for name, tc := range map[string]struct {
 		cfg  Config
@@ -213,6 +221,7 @@ func TestConfigThatCannotBeGoIsRefusedByName(t *testing.T) {
 // package gopkg.in/guregu/null and the type v4.String: a formatter error over
 // a file that was never written, for a path the go command accepts.
 func TestAModelPathMayHaveADotInItsLastElement(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go build subprocess")
 	}
@@ -239,6 +248,7 @@ func TestAModelPathMayHaveADotInItsLastElement(t *testing.T) {
 // last dot refused database/sql.Null[string], which had generated code that
 // compiles.
 func TestAModelMayBeAGenericOverPredeclaredTypes(t *testing.T) {
+	t.Parallel()
 	for _, expr := range []string{"database/sql.Null[string]", "*database/sql.Null[int64]", "[]database/sql.Null[bool]"} {
 		if !modelExprOK(expr) {
 			t.Errorf("modelExprOK(%q) = false, want it accepted", expr)
@@ -274,6 +284,7 @@ func TestAModelMayBeAGenericOverPredeclaredTypes(t *testing.T) {
 // imports fed, and NewSchema's parameter is opts. A group of one of those
 // names generated a file that did not compile.
 func TestAGroupNamedLikeTheRootPackagesOwnNamesStillCompiles(t *testing.T) {
+	t.Parallel()
 	for _, stem := range []string{"sdl", "opts"} {
 		if got := sanitizeGroup(stem, "graph", false); got == stem {
 			t.Errorf("sanitizeGroup(%q) = %q, which the generated root package already uses", stem, got)
@@ -328,6 +339,7 @@ func groupNamedLikeGo(names ...string) map[string]string {
 // init cannot name an import at all; and r and v are what the bindings call
 // the Resolver and the parent value.
 func TestAGroupNamedLikeSomethingPredeclaredCompiles(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go test subprocess")
 	}
@@ -345,6 +357,7 @@ func TestAGroupNamedLikeSomethingPredeclaredCompiles(t *testing.T) {
 // and the entities NewSchema takes. A group with no Resolver is registered by
 // NewSchema itself, in the scope of all three.
 func TestAGroupNamedLikeAFederatedRootsOwnNamesCompiles(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go test subprocess")
 	}
@@ -367,6 +380,7 @@ func TestAGroupNamedLikeAFederatedRootsOwnNamesCompiles(t *testing.T) {
 // lower-case letters and digits -- has to be one sanitizeGroup renames. A
 // parameter added to an emitter fails here until it is reserved.
 func TestEveryNameGeneratedCodeDeclaresIsReserved(t *testing.T) {
+	t.Parallel()
 	groupName := regexp.MustCompile(`^[a-z][a-z0-9]*$`)
 	for name, federation := range map[string]bool{"plain": false, "federated": true} {
 		dir := t.TempDir()
@@ -464,6 +478,7 @@ func TestEveryNameGeneratedCodeDeclaresIsReserved(t *testing.T) {
 // renamed it, and renamed more with each Go that added a built-in. A type or
 // constant a new Go adds fails here, where reserving it is a decision.
 func TestPredeclaredNamesCoverWhatGeneratedCodeWrites(t *testing.T) {
+	t.Parallel()
 	for _, name := range types.Universe.Names() {
 		switch types.Universe.Lookup(name).(type) {
 		case *types.TypeName, *types.Const, *types.Nil:

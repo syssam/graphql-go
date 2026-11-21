@@ -19,6 +19,7 @@ type Query { user(id: ID!): User users: [User!]! }
 `
 
 func TestGenerateHelloFiles(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "schema.graphql"), []byte(helloSDL), 0o644); err != nil {
 		t.Fatal(err)
@@ -89,6 +90,7 @@ replace github.com/syssam/graphql-go => ` + filepath.ToSlash(root) + `
 }
 
 func TestGeneratedHelloExecutes(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go test subprocess")
 	}
@@ -137,6 +139,7 @@ import (
 )
 
 func TestUserQuery(t *testing.T) {
+	t.Parallel()
 	s, err := graph.NewSchema(graph.Stub{})
 	if err != nil {
 		t.Fatal(err)
@@ -170,6 +173,7 @@ func TestUserQuery(t *testing.T) {
 }
 
 func TestGenerateEmptyGlobs(t *testing.T) {
+	t.Parallel()
 	if err := Generate(context.Background(), Config{Output: "x", Package: "x"}); err == nil {
 		t.Fatal("expected error")
 	}
@@ -186,6 +190,7 @@ type Query { user(id: ID!): User posts(filter: PostFilter): [Post!]! }
 `
 
 func TestGenerateRichFiles(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "schema.graphql"), []byte(richSDL), 0o644); err != nil {
 		t.Fatal(err)
@@ -278,6 +283,7 @@ func TestGenerateRichFiles(t *testing.T) {
 }
 
 func TestGenerateTwoGroups(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "user.graphql"), []byte(`
 type User { id: ID! name: String! posts: [Post!]! }
@@ -376,6 +382,7 @@ type Query { users: [User!]! user(id: ID!): User }
 }
 
 func TestGenerateGroupFuncRegistersPureGroupItself(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "schema.graphql"), []byte(helloSDL), 0o644); err != nil {
 		t.Fatal(err)
@@ -426,6 +433,7 @@ func TestGenerateGroupFuncRegistersPureGroupItself(t *testing.T) {
 }
 
 func TestGeneratedTwoGroupsExecutes(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go test subprocess")
 	}
@@ -504,6 +512,7 @@ import (
 )
 
 func TestUsersQuery(t *testing.T) {
+	t.Parallel()
 	s, err := graph.NewSchema(post.Bindings(post.Stub{}), user.Bindings(user.Stub{}))
 	if err != nil {
 		t.Fatal(err)
@@ -522,6 +531,7 @@ func TestUsersQuery(t *testing.T) {
 // The point of registering groups one by one: forgetting one is a build
 // error naming what it left unbound, not a nil resolver found by a request.
 func TestAGroupLeftOutFailsTheBuild(t *testing.T) {
+	t.Parallel()
 	_, err := graph.NewSchema(post.Bindings(post.Stub{}))
 	if err == nil || !strings.Contains(err.Error(), "type User has no Object binding") {
 		t.Fatalf("NewSchema without the user group: err = %v", err)
@@ -555,6 +565,7 @@ type Mutation { ping: Boolean! }
 `
 
 func TestGenerateRootScalarFieldsAreResolvers(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "schema.graphql"), []byte(rootScalarSDL), 0o644); err != nil {
 		t.Fatal(err)
@@ -594,6 +605,7 @@ func TestGenerateRootScalarFieldsAreResolvers(t *testing.T) {
 // packages cannot express: input objects in two groups that reference each
 // other. Go forbids the import cycle, so the models must stay in one package.
 func TestModelCycleFallsBackToOnePackage(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "alpha.graphql"), []byte(`
 type Alpha { id: ID! }
@@ -644,6 +656,7 @@ extend type Query { beta(f: BetaFilter): Beta }
 // path used to be written inline, which is not valid Go, so only types from
 // packages that happened to be imported already (time) worked.
 func TestModelsMapToExternalPackage(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "schema.graphql"), []byte(`
 type Product { id: ID! name: String! }
@@ -680,6 +693,7 @@ type Query { product(id: ID!): Product }
 }
 
 func TestSplitModelExpr(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ expr, path, ref string }{
 		{"time.Time", "time", "time.Time"},
 		{"example.com/x/shop.Product", "example.com/x/shop", "shop.Product"},
@@ -733,6 +747,7 @@ func validateGenerated(t *testing.T, dir string, roots ...string) {
 // its own name does not match, so its files were left out without a word, and
 // a[b failed the generate as a syntax error in a pattern nobody wrote.
 func TestSchemaGlobDoubleStarWalksDirectoriesNamedLikePatterns(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeFiles(t, dir, map[string]string{
 		"web/query.graphql":            "type Query { ping: Boolean }\n",
@@ -762,6 +777,7 @@ func TestSchemaGlobDoubleStarWalksDirectoriesNamedLikePatterns(t *testing.T) {
 // workflow guide gives as the way to name a tree of SDL, generated from the
 // files one level down and silently left out the rest.
 func TestSchemaGlobDoubleStarMatchesAnyDepth(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeFiles(t, dir, map[string]string{
 		"schema/query.graphql":        "type Query { ping: Boolean }\n",
@@ -833,6 +849,7 @@ func TestSchemaGlobDoubleStarMatchesAnyDepth(t *testing.T) {
 // writes, once it has written them: the first generate worked and the second
 // read every type twice.
 func TestSchemaGlobDoubleStarLeavesGqlcsOwnCopiesAlone(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeFiles(t, dir, map[string]string{
 		"api/query.graphql":     "type Query { ping: Boolean }\n",

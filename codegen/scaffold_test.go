@@ -77,6 +77,7 @@ func goBuild(t *testing.T, dir string) {
 // From nothing: the type, the assertion that it satisfies the group's
 // Resolver, and a stub for every method, all of which compile.
 func TestScaffoldWritesStubsThatCompile(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -120,6 +121,7 @@ func TestScaffoldWritesStubsThatCompile(t *testing.T) {
 // never stubbed again or touched, wherever it lives; a field added to the
 // SDL arrives as one new stub; and a run with nothing new changes nothing.
 func TestScaffoldKeepsWhatExists(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -189,6 +191,7 @@ func (r *UserResolver) Users(context.Context) ([]*model.User, error) { return ni
 
 // A misspelt group would otherwise scaffold nothing and say nothing.
 func TestScaffoldRejectsAnUnknownGroup(t *testing.T) {
+	t.Parallel()
 	_, generate := scaffoldModule(t, map[string]string{"usr": "impl.UserResolver"})
 	err := generate()
 	if err == nil || !strings.Contains(err.Error(), `"usr" is not a group`) || !strings.Contains(err.Error(), "post, user") {
@@ -198,6 +201,7 @@ func TestScaffoldRejectsAnUnknownGroup(t *testing.T) {
 
 // With one group there is no group name; the output package names it.
 func TestScaffoldFlatUsesThePackageName(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "schema.graphql"), []byte("type Query { hello: String! }\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -222,6 +226,7 @@ func TestScaffoldFlatUsesThePackageName(t *testing.T) {
 // run that removed it is the one moment anything knows, so it says so.
 // Unexported methods are the implementation's own helpers and are not named.
 func TestScaffoldNamesMethodsTheResolverNoLongerHas(t *testing.T) {
+	t.Parallel()
 	dir, _ := scaffoldModule(t, nil)
 	handWritten := `package impl
 
@@ -266,6 +271,7 @@ func (UserResolver) Archived()                          {}
 // as a gRPC service interface is, so it carries what the SDL says about each
 // field; Bindings says how it is used.
 func TestGeneratedGroupIsDocumented(t *testing.T) {
+	t.Parallel()
 	dir, generate := scaffoldModule(t, nil)
 	if err := generate(); err != nil {
 		t.Fatal(err)
@@ -288,6 +294,7 @@ func TestGeneratedGroupIsDocumented(t *testing.T) {
 // line was added for it. A group with no Resolver takes nothing from the
 // pattern, and one listed by name keeps what its own line says.
 func TestScaffoldPatternCoversEveryGroupWithAResolver(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -328,6 +335,7 @@ func TestScaffoldPatternCoversEveryGroupWithAResolver(t *testing.T) {
 // Without {group} the pattern names one type for every group, which is one
 // Handler asked to be every group's: said, with what to write instead.
 func TestScaffoldPatternNeedsTheGroupInIt(t *testing.T) {
+	t.Parallel()
 	_, generate := scaffoldModule(t, map[string]string{"*": "impl.Handler"})
 	err := generate()
 	if err == nil || !strings.Contains(err.Error(), "{group}") {
@@ -337,6 +345,7 @@ func TestScaffoldPatternNeedsTheGroupInIt(t *testing.T) {
 
 // With one group the pattern stands for the output package's entry.
 func TestScaffoldPatternFlat(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "schema.graphql"), []byte("type Query { hello: String! }\n"), 0o644); err != nil {
 		t.Fatal(err)

@@ -21,6 +21,7 @@ import (
 // undefined symbols across 381 packages -- one bug, and the generated tree did
 // not build at all.
 func TestImportCollisionIsAliased(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go build subprocess")
 	}

@@ -15,6 +15,7 @@ import (
 // only building the schema finds it. A leading underscore is legal in SDL and
 // conventional for a meta field, which is why one appears 342 times.
 func TestGoIdentExportsALeadingUnderscore(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct{ in, want string }{
 		{"_lastUpdatedAt", "XLastUpdatedAt"},
 		{"__meta", "XMeta"},
@@ -34,6 +35,7 @@ func TestGoIdentExportsALeadingUnderscore(t *testing.T) {
 // The end of it: an SDL input carrying a leading-underscore field must produce
 // a schema that builds, not merely Go that compiles.
 func TestLeadingUnderscoreInputBuilds(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go test subprocess")
 	}
@@ -86,6 +88,7 @@ import (
 )
 
 func TestBuilds(t *testing.T) {
+	t.Parallel()
 	if _, err := graph.NewSchema(graph.Stub{}); err != nil {
 		t.Fatalf("NewSchema: %v", err)
 	}
@@ -113,6 +116,7 @@ func TestBuilds(t *testing.T) {
 // (it becomes XLastUpdatedAt, which derives to xLastUpdatedAt), and neither
 // does ownerID.
 func TestArgsStructPinsTheSDLName(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go test subprocess")
 	}
@@ -167,6 +171,7 @@ import (
 )
 
 func TestBuilds(t *testing.T) {
+	t.Parallel()
 	if _, err := graph.NewSchema(graph.Stub{}); err != nil {
 		t.Fatalf("NewSchema: %v", err)
 	}

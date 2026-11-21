@@ -15,6 +15,7 @@ import (
 // 1 006 packages on one real schema, each a compile error in a file marked DO
 // NOT EDIT.
 func TestNoImportIsWrittenForACommentAlone(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go build subprocess")
 	}
@@ -73,6 +74,7 @@ type Query { doc(id: ID!): Doc }
 // spurious one is merely noise. Nothing in the suite produces an unparsable
 // body, so this asks the function directly.
 func TestUsedQualifiersFallsBackToASearch(t *testing.T) {
+	t.Parallel()
 	broken := "func Bindings() { graphql.Field(\n" // deliberately unbalanced
 	used := usedQualifiers(broken)
 	if !used("graphql") {

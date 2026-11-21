@@ -16,6 +16,7 @@ import (
 // names what is left after every run, and CheckStubs makes a check fail on
 // it, which is what a CI job can hold.
 func TestScaffoldedStubsAreNamedAndCheckStubsFailsOnThem(t *testing.T) {
+	t.Parallel()
 	dir, _ := scaffoldModule(t, nil)
 	var notes []string
 	cfg := Config{
@@ -102,6 +103,7 @@ func TestScaffoldedStubsAreNamedAndCheckStubsFailsOnThem(t *testing.T) {
 }
 
 func TestCheckStubsNeedsScaffold(t *testing.T) {
+	t.Parallel()
 	dir, _ := scaffoldModule(t, nil)
 	err := Check(context.Background(), Config{
 		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph",
@@ -113,6 +115,7 @@ func TestCheckStubsNeedsScaffold(t *testing.T) {
 
 // A project with hundreds of stubs reads one line, not all of them.
 func TestTheStubNoteIsCapped(t *testing.T) {
+	t.Parallel()
 	var said string
 	b := &builder{cfg: Config{Notef: func(format string, args ...any) { said = fmt.Sprintf(format, args...) }}}
 	stubs := map[string]bool{}
@@ -128,6 +131,7 @@ func TestTheStubNoteIsCapped(t *testing.T) {
 // Two spellings of one target are one implementation, and each of its stubs
 // is listed once, not once per spelling.
 func TestCheckStubsListsAStubOnceWhateverTheSpelling(t *testing.T) {
+	t.Parallel()
 	dir, _ := scaffoldModule(t, nil)
 	cfg := Config{
 		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph",
@@ -151,6 +155,7 @@ func TestCheckStubsListsAStubOnceWhateverTheSpelling(t *testing.T) {
 // and a generated name declared in it was never refused. Skipped where case
 // is ignored, since there they are one directory.
 func TestCheckStubsReadsEverySpellingWhereCaseMatters(t *testing.T) {
+	t.Parallel()
 	dir, _ := scaffoldModule(t, nil)
 	if caseInsensitive(t, dir) {
 		t.Skip("case-insensitive filesystem: impl and Impl are one directory")

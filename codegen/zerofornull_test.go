@@ -12,6 +12,7 @@ import (
 // The engine refuses that by default, and rightly; ZeroForNullInputs is the
 // one place the author says the two mean the same thing for this schema.
 func TestZeroForNullInputsIsEmitted(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go build subprocess")
 	}
@@ -69,6 +70,7 @@ import (
 )
 
 func TestSchemaBuilds(t *testing.T) {
+	t.Parallel()
 	if _, err := graph.NewSchema(graph.Stub{}); err != nil {
 		t.Fatalf("NewSchema: %v", err)
 	}

@@ -26,6 +26,7 @@ import (
 // alias, so none of the three can reach the output. Found by the velox + fx
 // example, whose first generate did not compile.
 func TestMappedPackagesGetTheirOwnQualifier(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go build subprocess")
 	}
@@ -76,6 +77,7 @@ type Mutation { createTodo(input: CreateTodoInput!): Todo! }
 // holding it would bind as if it held the mapped type, which is a compile
 // error in the generated file.
 func TestAutoBindComparesTypesUnderTheGeneratedQualifier(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -131,6 +133,7 @@ type Todo struct {
 // Every qualifier must be a Go identifier nothing else in the file holds, so
 // a path element that is not one has to be turned into one.
 func TestPathQualifierIsAnUnusedIdentifier(t *testing.T) {
+	t.Parallel()
 	taken := map[string]string{"todo": "a/todo", "clienttodo": "b/client/todo"}
 	for _, c := range []struct{ path, want string }{
 		{"example.com/shop/v2", "shop"},       // a major version names no package

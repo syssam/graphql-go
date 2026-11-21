@@ -12,6 +12,7 @@ import (
 // file per generated package carries a package comment: none is a warning for
 // every user of gqlc, and more than one gives the package duplicate docs.
 func TestGeneratedPackagesHaveExactlyOnePackageComment(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name string
 		sdl  string

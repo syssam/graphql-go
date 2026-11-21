@@ -22,6 +22,7 @@ type Query { node(id: ID!): Node named: Named search(q: String!): [SearchResult!
 // any, which accepted a value of a type the schema does not allow and moved
 // the error from the compiler to a request.
 func TestAbstractTypesOfGeneratedModelsAreTyped(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "schema.graphql"), []byte(typedAbstractSDL), 0o644); err != nil {
 		t.Fatal(err)
@@ -97,6 +98,7 @@ import (
 )
 
 func TestServes(t *testing.T) {
+	t.Parallel()
 	s, err := graph.NewSchema(graph.Stub{})
 	if err != nil {
 		t.Fatalf("NewSchema: %v", err)
@@ -136,6 +138,7 @@ func TestServes(t *testing.T) {
 // abstract type with a mapped member stays any rather than generating a method
 // on someone else's type.
 func TestAbstractTypeWithAMappedMemberStaysAny(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	const sdl = `
 type User { id: ID! }
@@ -158,6 +161,7 @@ type Query { search: [SearchResult!]! }
 // A member with a field whose Go name is the marker method would declare
 // IsNode twice, once as a field and once as a method, which does not compile.
 func TestAbstractTypeWhoseMethodNameIsTakenStaysAny(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	const sdl = `
 interface Node { id: ID! }

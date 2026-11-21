@@ -13,6 +13,7 @@ import (
 // A refusal about a place in the SDL says where, as file:line:column
 // relative to Config.Dir, and Diagnostics finds each one in a joined error.
 func TestRefusalsCarryTheirSDLPosition(t *testing.T) {
+	t.Parallel()
 	for name, c := range map[string]struct {
 		sdl          string
 		cfg          func(*Config)
@@ -77,6 +78,7 @@ func TestRefusalsCarryTheirSDLPosition(t *testing.T) {
 
 // Diagnostics walks errors.Join and %w, in order, and skips what is not one.
 func TestDiagnosticsWalksTheWholeTree(t *testing.T) {
+	t.Parallel()
 	a := &Diagnostic{Coord: "A", Message: "a"}
 	b := &Diagnostic{File: "s.graphql", Line: 1, Column: 2, Coord: "B", Message: "b"}
 	err := errors.Join(a, errors.New("plain"), fmt.Errorf("wrapped: %w", errors.Join(b)))
@@ -95,6 +97,7 @@ func TestDiagnosticsWalksTheWholeTree(t *testing.T) {
 // Two root fields that collide are told the fix that changes nothing a
 // client sees, and that fix works as written.
 func TestRootFieldCollisionSaysWhichFieldNamesEntryFixesIt(t *testing.T) {
+	t.Parallel()
 	sdl := "type Query { node(id: ID): Int }\ntype Mutation { node(id: ID): Int }\n"
 	_, err := generateWith(t, sdl, Config{})
 	const want = `Config.FieldNames["Mutation.node"] = "MutationNode" (gqlc.yaml: fieldNames: {Mutation.node: MutationNode})`

@@ -24,6 +24,7 @@ func renderConfig(t *testing.T, sdl string) Config {
 // Render returns what a generate writes, byte for byte and file for file,
 // and writes nothing itself.
 func TestRenderIsWhatAGenerateWritesAndWritesNothing(t *testing.T) {
+	t.Parallel()
 	cfg := renderConfig(t, renderSDL)
 	before := snapshot(t, cfg.Dir)
 	files, err := Render(context.Background(), cfg)
@@ -55,6 +56,7 @@ func TestRenderIsWhatAGenerateWritesAndWritesNothing(t *testing.T) {
 // configuration: a caller previewing the output must not be shown files a
 // generate would never write.
 func TestRenderRefusesWhatAGenerateRefuses(t *testing.T) {
+	t.Parallel()
 	for name, c := range map[string]struct {
 		sdl  string
 		cfg  func(*Config)
@@ -94,6 +96,7 @@ func TestRenderRefusesWhatAGenerateRefuses(t *testing.T) {
 // A cancelled context stops Render, Check and Generate before they read the
 // schema, and nothing is written.
 func TestCancelledContextIsRefusedFirst(t *testing.T) {
+	t.Parallel()
 	cfg := renderConfig(t, renderSDL)
 	before := snapshot(t, cfg.Dir)
 	ctx, cancel := context.WithCancel(context.Background())

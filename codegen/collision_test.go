@@ -17,6 +17,7 @@ import (
 //
 // Failing at generation instead, naming both coordinates, is the whole fix.
 func TestResolverMethodCollisionIsRefused(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "schema"), 0o755); err != nil {
 		t.Fatal(err)
@@ -57,6 +58,7 @@ type Query { flag(id: ID!): FeatureFlag }
 // The interface is per group, so the same two types in different groups are
 // fine -- and that is the cheapest remedy, which the error message names.
 func TestSameCollisionInDifferentGroupsIsFine(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "schema"), 0o755); err != nil {
 		t.Fatal(err)

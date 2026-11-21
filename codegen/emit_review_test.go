@@ -30,6 +30,7 @@ func generateFiles(t *testing.T, files map[string]string, cfg Config) (string, e
 // as well as validated, since the claim is that the executor treats the value
 // as the root object, not that the output compiles.
 func TestARootTypeAsAFieldTypeIsTheEngineRoot(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go test subprocess")
 	}
@@ -72,6 +73,7 @@ import (
 )
 
 func TestRootThroughAField(t *testing.T) {
+	t.Parallel()
 	s, err := graph.NewSchema(graph.Stub{})
 	if err != nil {
 		t.Fatal(err)
@@ -101,6 +103,7 @@ func TestRootThroughAField(t *testing.T) {
 // from model/agrp, and B.a: A the import back; the cycle check skipped every
 // abstract reference and split the models into a cycle Go refuses.
 func TestAMarkerReferenceCountsTowardsTheModelImportCycle(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -121,6 +124,7 @@ func TestAMarkerReferenceCountsTowardsTheModelImportCycle(t *testing.T) {
 // cost the per-group split, or "always share one package" would pass the test
 // above.
 func TestAOneWayMarkerReferenceKeepsTheSplit(t *testing.T) {
+	t.Parallel()
 	dir, err := generateFiles(t, map[string]string{
 		"a.graphql": "type A { n: Bnode }\ntype Query { a: A }\n",
 		"b.graphql": "interface Bnode { id: ID! }\ntype B implements Bnode { id: ID! }\n",
@@ -136,6 +140,7 @@ func TestAOneWayMarkerReferenceKeepsTheSplit(t *testing.T) {
 // A root is graphql.Root, in no model package, so a reference to one is no
 // edge: A.q: Query beside B.a: A is not a cycle, and the models stay split.
 func TestARootReferenceAddsNoModelEdge(t *testing.T) {
+	t.Parallel()
 	dir, err := generateFiles(t, map[string]string{
 		"a.graphql": "type A { id: ID! q: Query }\n",
 		"b.graphql": "type Query { a: A }\ntype B { a: A }\n",
@@ -152,6 +157,7 @@ func TestARootReferenceAddsNoModelEdge(t *testing.T) {
 // and AX.B are both AXB, A._ID and AX.ID both AXID. Nothing compared constants
 // across enums, and the output did not compile.
 func TestEnumConstantsAcrossEnumsAreRefused(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct{ sdl, a, b, ident string }{
 		{"enum A { _B }\nenum AX { B }\n", "A._B", "AX.B", "AXB"},
 		{"enum A { _ID }\nenum AX { ID }\n", "A._ID", "AX.ID", "AXID"},
@@ -172,6 +178,7 @@ func TestEnumConstantsAcrossEnumsAreRefused(t *testing.T) {
 // A constant collides only within one model package: the same pair in two
 // groups, split per group, is two packages and compiles.
 func TestEnumConstantsInDifferentModelPackagesAreAllowed(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -190,6 +197,7 @@ func TestEnumConstantsInDifferentModelPackagesAreAllowed(t *testing.T) {
 // manifest method on FeatureFlag.targetingRules(x:) beside the resolver
 // FeatureFlagTargeting.rules(x:) wrote FeatureFlagTargetingRulesArgs twice.
 func TestArgsStructCollisionCountsModelAnsweredFields(t *testing.T) {
+	t.Parallel()
 	_, err := generateWith(t, `
 type FeatureFlag { id: ID! targetingRules(x: Int): String }
 type FeatureFlagTargeting { id: ID! rules(x: Int): String }
@@ -218,6 +226,7 @@ type Query { flag: FeatureFlag t: FeatureFlagTargeting }
 // did not register and Wire and Scaffold demanded a target for. It is a group
 // with no Resolver now, registered by NewSchema itself.
 func TestAGroupWhoseFieldsTheModelAnswersHasNoResolver(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -266,6 +275,7 @@ func (*Thing) Stock(context.Context) (*int, error) { return nil, nil }
 // an enum constant of the same name collides with nothing: Kind.NODE is
 // KindNode, and union KindNode over a mapped member has no marker.
 func TestEnumConstantBesideAnUnemittedAbstractTypeIsAllowed(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}

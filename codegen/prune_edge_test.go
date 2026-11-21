@@ -43,6 +43,7 @@ func caseInsensitive(t *testing.T, dir string) bool {
 // removed what it had just generated. Both prunes, the Go files and the
 // embedded SDL copies.
 func TestPruneKeepsWhatThisRunWroteWhateverTheCase(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if !caseInsensitive(t, dir) {
 		t.Skip("case-sensitive filesystem: the two spellings are two directories")
@@ -78,6 +79,7 @@ func TestPruneKeepsWhatThisRunWroteWhateverTheCase(t *testing.T) {
 // case in the compare kept it; only asking the filesystem gets both halves.
 // Skipped on a filesystem that ignores case, where the two are one file.
 func TestPruneDeletesACaseVariantWhereCaseMatters(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if caseInsensitive(t, dir) {
 		t.Skip("case-insensitive filesystem: the two spellings are one file")
@@ -108,6 +110,7 @@ func TestPruneDeletesACaseVariantWhereCaseMatters(t *testing.T) {
 // Another module inside Output -- what an Output of "." walks into -- is that
 // module's: a gqlc-headed file there is not this run's to delete.
 func TestPruneLeavesANestedModuleAlone(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeUnder(t, dir, "sdl/query.graphql", "type Query { ping: Boolean }\n")
 	writeUnder(t, dir, "graph/tool/go.mod", "module example.com/tool\n")
@@ -126,6 +129,7 @@ func TestPruneLeavesANestedModuleAlone(t *testing.T) {
 // A GroupDir reaching into another gqlc run's output root would have the two
 // runs prune each other's packages on every regenerate.
 func TestGroupDirMayNotReachIntoAnotherRun(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeUnder(t, dir, "sdl/query.graphql", "type Query { ping: Boolean }\n")
 	writeUnder(t, dir, "sdl/user.graphql", "type User { id: ID! }\nextend type Query { user: User }\n")
@@ -146,6 +150,7 @@ func TestGroupDirMayNotReachIntoAnotherRun(t *testing.T) {
 // listed and then removed before its header is read -- is skipped and the
 // walk goes on; any other error still stops it.
 func TestPruneWalkerSkipsWhatVanished(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	var candidates []string
 	walk := pruneWalker(dir, writtenKeys(dir, nil), &candidates)
@@ -177,6 +182,7 @@ func TestPruneWalkerSkipsWhatVanished(t *testing.T) {
 // nothing, which the walk finds and cannot open -- is skipped. It used to end
 // the walk, reported as success, and every stale file after it survived.
 func TestPruneWalksPastWhatVanished(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeUnder(t, dir, "sdl/query.graphql", "type Query { ping: Boolean }\n")
 	gen := func() {
@@ -204,6 +210,7 @@ func TestPruneWalksPastWhatVanished(t *testing.T) {
 // other: WalkDir does not follow a link at its root, and a glob over schema/
 // does, as the embed reading it does. Skipped where links cannot be made.
 func TestPruneFollowsALinkedOutput(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeUnder(t, dir, "sdl/query.graphql", "type Query { ping: Boolean }\n")
 	writeUnder(t, dir, "sdl/legacy.graphql", "type Legacy { id: ID! }\nextend type Query { legacy: Legacy }\n")
@@ -236,6 +243,7 @@ func TestPruneFollowsALinkedOutput(t *testing.T) {
 // On a filesystem that ignores case, an existing Schema/ is where this run's
 // schema/ copies land, and a stale copy in it is still found and deleted.
 func TestPruneFindsSchemaCopiesWhateverTheCase(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if !caseInsensitive(t, dir) {
 		t.Skip("case-sensitive filesystem: Schema and schema are two directories")
@@ -270,6 +278,7 @@ func TestPruneFindsSchemaCopiesWhateverTheCase(t *testing.T) {
 // the caller to judge. A non-empty directory stands in for a locked file,
 // since os.Remove refuses both.
 func TestRemoveStaleReturnsWhatItCannotDelete(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeUnder(t, dir, "locked/keep.txt", "x")
 	writeUnder(t, dir, "gone/generated.go", generatedHeader)
@@ -287,6 +296,7 @@ func TestRemoveStaleReturnsWhatItCannotDelete(t *testing.T) {
 // Notef also hears. A non-empty directory under the copy's name is what the
 // glob finds and os.Remove refuses on every OS.
 func TestPruneFailsOnAnSDLCopyItCannotDelete(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeUnder(t, dir, "sdl/query.graphql", "type Query { ping: Boolean }\n")
 	writeUnder(t, dir, "sdl/legacy.graphql", emptySDL)
@@ -312,6 +322,7 @@ func TestPruneFailsOnAnSDLCopyItCannotDelete(t *testing.T) {
 // held open is what Windows refuses to delete; elsewhere it is deleted and
 // this skips.
 func TestPruneNotesAGoFileItCannotDelete(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeUnder(t, dir, "sdl/query.graphql", "type Query { ping: Boolean }\n")
 	writeUnder(t, dir, "sdl/legacy.graphql", "type Legacy { id: ID! }\nextend type Query { legacy: Legacy }\n")
@@ -353,6 +364,7 @@ func TestPruneNotesAGoFileItCannotDelete(t *testing.T) {
 // another gqlc run's root, another module, a file -- generation stops before
 // writing and names the directory.
 func TestGroupPackagesStayOutOfForeignDirectories(t *testing.T) {
+	t.Parallel()
 	base := func(t *testing.T) string {
 		dir := t.TempDir()
 		writeUnder(t, dir, "sdl/query.graphql", "type Query { ping: Boolean }\n")
@@ -393,6 +405,11 @@ func TestGroupPackagesStayOutOfForeignDirectories(t *testing.T) {
 
 // boundedEach visits every index once on at most ioParallel goroutines: a
 // goroutine per item, parked on a semaphore, was thousands at 800 groups.
+//
+// Not parallel: it counts every goroutine in the process, and a test running
+// beside it adds its own. Counting only the callbacks in flight would not do
+// instead, since a goroutine per item parked on a semaphore has no more than
+// ioParallel of those either.
 func TestBoundedEachUsesAFixedPool(t *testing.T) {
 	const n = 500
 	base := runtime.NumGoroutine()

@@ -64,6 +64,7 @@ type Asset { id: ID! method: Method! }
 `
 
 func TestSecondEnumPackageDoesNotCollideWithAGeneratedModelPackage(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}

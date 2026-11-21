@@ -53,6 +53,7 @@ type Doc struct {
 `
 
 func TestAutoBindDiscoversEnumConstants(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -107,6 +108,7 @@ func TestAutoBindDiscoversEnumConstants(t *testing.T) {
 // otherwise model itself: the values it did find would name constants in the
 // package it writes, where they do not exist.
 func TestPartialEnumDiscoveryBindsNothing(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -148,6 +150,7 @@ type Doc struct {
 // real schema names about five hundred of them; requiring the author to list
 // each one a second time is bookkeeping, and getting it wrong is silent.
 func TestEnumConstantsComeFromTheModelMapsPackages(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -215,6 +218,7 @@ const (
 // must still find nothing, because guessing there binds the wrong constant
 // silently.
 func TestEnumConstantsMatchCaseInsensitively(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -278,6 +282,7 @@ type Doc struct {
 // An exact match must still win a fold: a type carrying both "VIEW" and
 // "view" answers VIEW with the one that says so.
 func TestExactEnumValueBeatsTheFold(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}

@@ -14,6 +14,7 @@ import (
 // NewSchema takes the entity resolvers, and ValidateSchema builds with a
 // placeholder for each @key type.
 func TestFederationGeneratesASubgraph(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go run subprocess")
 	}
@@ -63,6 +64,7 @@ func TestFederationGeneratesASubgraph(t *testing.T) {
 // key was an entity to one and not the other. A key another subgraph resolves
 // is no entity here to either.
 func TestFederationReadsEverySpellingTheRuntimeDoes(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go test subprocess")
 	}

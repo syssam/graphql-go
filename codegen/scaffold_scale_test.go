@@ -19,6 +19,7 @@ import (
 // written, for what scaffolding would refuse, and again to scaffold. Counted
 // in the second alone, this passed while every file was parsed twice.
 func TestScaffoldParsesEachFileOnce(t *testing.T) {
+	t.Parallel()
 	const groups = 30
 	dir := t.TempDir()
 	write := func(rel, body string) {
@@ -93,6 +94,7 @@ func TestScaffoldParsesEachFileOnce(t *testing.T) {
 // other, so a parse is taken only for the bytes it was made from: taken by
 // path alone, a method that arrived in between was scaffolded a second time.
 func TestScaffoldParsesAgainAFileChangedSinceTheCheck(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	const impl = "package impl\n\ntype Resolver struct{}\n"
 	writeFiles(t, dir, map[string]string{
@@ -137,6 +139,7 @@ func TestScaffoldParsesAgainAFileChangedSinceTheCheck(t *testing.T) {
 // file's directory is the target's was targets times files: a regenerate with
 // nothing to do went from 0.4 s to 2.2 s at 600 groups. Counted, not timed.
 func TestScaffoldTargetsAreMatchedToOutputInOnePass(t *testing.T) {
+	t.Parallel()
 	const groups = 30
 	dir := t.TempDir()
 	files := map[string]string{"schema/query.graphql": "type Query { ping: Boolean }\n"}
@@ -189,6 +192,7 @@ func TestScaffoldTargetsAreMatchedToOutputInOnePass(t *testing.T) {
 // package declares it twice. Reading the directory once per run is what made
 // that something to keep true on purpose.
 func TestScaffoldTwoGroupsIntoOneType(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -222,6 +226,7 @@ func TestScaffoldTwoGroupsIntoOneType(t *testing.T) {
 // a pair, which at 800 groups each in a package of its own is millions; the
 // files are grouped by directory once and each target looked up.
 func TestCheckStubsMatchesFilesToTargetsInOnePass(t *testing.T) {
+	t.Parallel()
 	const groups = 30
 	dir := t.TempDir()
 	files := map[string]string{"schema/query.graphql": "type Query { ping: Boolean }\n"}

@@ -55,6 +55,7 @@ func generated(t *testing.T, dir, rel string) string {
 // already has the Go type, so no model is generated and the bindings point at
 // its own package.
 func TestManifestBindsAnExternalType(t *testing.T) {
+	t.Parallel()
 	dir := generate(t, manifestSDL, Config{
 		Manifest: &Manifest{Types: []TypeBinding{{
 			Name: "Product",
@@ -98,6 +99,7 @@ func TestManifestBindsAnExternalType(t *testing.T) {
 // be written, rather than generated access to a struct field that may not
 // exist.
 func TestManifestUnlistedFieldsAreResolvers(t *testing.T) {
+	t.Parallel()
 	dir := generate(t, manifestSDL, Config{
 		Manifest: &Manifest{Types: []TypeBinding{{
 			Name:   "Product",
@@ -117,6 +119,7 @@ func TestManifestUnlistedFieldsAreResolvers(t *testing.T) {
 }
 
 func TestManifestMethodWithArguments(t *testing.T) {
+	t.Parallel()
 	dir := generate(t, manifestSDL, Config{
 		Manifest: &Manifest{Types: []TypeBinding{{
 			Name: "Product",
@@ -132,6 +135,7 @@ func TestManifestMethodWithArguments(t *testing.T) {
 }
 
 func TestManifestGroupOverride(t *testing.T) {
+	t.Parallel()
 	const sdl = `
 type Product { id: ID! }
 type Order { id: ID! }
@@ -151,6 +155,7 @@ type Query { product(id: ID!): Product order(id: ID!): Order }
 }
 
 func TestManifestValidation(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		man  *Manifest
@@ -211,6 +216,7 @@ func TestManifestValidation(t *testing.T) {
 // TestManifestContradictsModels catches the configuration that would silently
 // pick one of two answers.
 func TestManifestContradictsModels(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "schema.graphql"), []byte(manifestSDL), 0o644); err != nil {
 		t.Fatal(err)
@@ -236,6 +242,7 @@ func TestManifestContradictsModels(t *testing.T) {
 // Go type and runs a query through it, which is the only way to know the
 // emitted field access actually type-checks.
 func TestGeneratedManifestExecutes(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go test subprocess")
 	}
@@ -325,6 +332,7 @@ import (
 )
 
 func TestManifestBoundQuery(t *testing.T) {
+	t.Parallel()
 	s, err := graph.NewSchema(graph.Stub{})
 	if err != nil {
 		t.Fatal(err)
@@ -363,6 +371,7 @@ func TestManifestBoundQuery(t *testing.T) {
 // parent's goroutine; a method with arguments -- a connection that may page
 // per row -- stays concurrent, and without the option nothing changes.
 func TestInlineAccessors(t *testing.T) {
+	t.Parallel()
 	manifest := func() *Manifest {
 		return &Manifest{Types: []TypeBinding{{
 			Name: "Product",
@@ -401,6 +410,7 @@ func TestInlineAccessors(t *testing.T) {
 // knows answers from memory -- and a coordinate that names no field fails
 // generation rather than leaving the field concurrent in silence.
 func TestInlineList(t *testing.T) {
+	t.Parallel()
 	src := generated(t, generate(t, manifestSDL, Config{Inline: []string{"Product.related", "Query.product"}}), "generated.go")
 	// gofmt splits a long binding over lines; compare it as one.
 	flat := strings.Join(strings.Fields(src), " ")
@@ -437,6 +447,7 @@ func TestInlineList(t *testing.T) {
 // to be resolvers is a gate the author believes is there; on a root field it
 // emitted a call on a Query model the generator never writes.
 func TestManifestRefusesAFieldBindingWithNothingToBind(t *testing.T) {
+	t.Parallel()
 	const sdl = `
 interface Node { id: ID! }
 input Filter { q: String }

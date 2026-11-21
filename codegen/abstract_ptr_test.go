@@ -17,6 +17,7 @@ import (
 // "Go type *pkg.Noder returned for abstract type Node is not bound to any
 // object type".
 func TestMappedAbstractTypeIsNotAPointer(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go test subprocess")
 	}
@@ -80,6 +81,7 @@ import (
 )
 
 func TestBuilds(t *testing.T) {
+	t.Parallel()
 	if _, err := graph.NewSchema(graph.Stub{}); err != nil {
 		t.Fatalf("NewSchema: %v", err)
 	}

@@ -15,6 +15,7 @@ import (
 // name a single value. One real schema does this 444 times, written into the
 // SDL by the ORM, so there is nothing for the author to correct by hand.
 func TestAnUnbindableEnumIsModelledInstead(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go build subprocess")
 	}
@@ -91,6 +92,7 @@ type Doc struct {
 // The real schema drops 444 enums and the report has to stay one readable
 // line. Nothing in the suite gets near the truncation, so it is asked here.
 func TestSummarizeTruncates(t *testing.T) {
+	t.Parallel()
 	names := []string{"A", "B", "C", "D"}
 	if got := summarize(names, 4); got != "A, B, C, D" {
 		t.Errorf("summarize at the limit = %q", got)
@@ -107,6 +109,7 @@ func TestSummarizeTruncates(t *testing.T) {
 // errors the real schema produced at NewSchema, every one of them an XOrder.
 // The drop has to close over the types that hold what was dropped.
 func TestADroppedEnumTakesItsContainerWithIt(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go build subprocess")
 	}

@@ -18,6 +18,7 @@ import (
 // packages are bound, stops it with the context's error before anything is
 // written; Render stops the same way.
 func TestCancelDuringGenerateStopsBeforeWriting(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -52,6 +53,7 @@ func TestCancelDuringGenerateStopsBeforeWriting(t *testing.T) {
 // the load, rather than the load running to the end and the cancellation
 // being noticed after.
 func TestAutoBindLoadsUnderTheContext(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeTempModule(t, dir)
 	b := &builder{}
@@ -66,6 +68,7 @@ func TestAutoBindLoadsUnderTheContext(t *testing.T) {
 // said: the alternates go unbound, and the author is told which packages and
 // why. A cancelled context is not a failure to report.
 func TestAltEnumLoadFailureIsNoted(t *testing.T) {
+	t.Parallel()
 	named := types.NewNamed(types.NewTypeName(0, types.NewPackage("example.com/alt", "alt"), "Status", nil), types.Typ[types.String], nil)
 	alt := map[string][]*types.Named{"Status": {named}}
 	missing := filepath.Join(t.TempDir(), "not-there")

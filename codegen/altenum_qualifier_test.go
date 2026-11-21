@@ -133,6 +133,7 @@ func buildGenerated(t *testing.T, dir string) {
 
 // Two enums, two alternate types, one package between them: imported once.
 func TestTwoAlternateEnumsInOnePackageShareOneImport(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -160,6 +161,7 @@ func TestTwoAlternateEnumsInOnePackageShareOneImport(t *testing.T) {
 // imported: reusing that qualifier rather than registering a second import is
 // the fix for the redeclaration the real schema produced.
 func TestAnAlternatePackageAlreadyNamedByModelsIsNotImportedTwice(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -224,6 +226,7 @@ const (
 // And when the base name is taken by a *different* package, both have to stay
 // referable, so the alternate one takes a suffixed qualifier.
 func TestAnAlternatePackageWhoseBaseNameIsTakenGetsASuffix(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}

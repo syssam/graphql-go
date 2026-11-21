@@ -15,6 +15,7 @@ import (
 // each asserts the binding is present rather than that nothing broke.
 
 func TestDiscoveryBindsObjectValuedFields(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -61,6 +62,7 @@ func (p *Product) Reseller() *Owner { return p.Owner }
 // every field typed by a directive-bound type was measured against the model
 // the generator would have written instead.
 func TestDirectiveBindingReachesDiscovery(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -97,6 +99,7 @@ type Product struct {
 // field holding a pointer to another bound model is the shape most likely to
 // be subtly wrong.
 func TestDiscoveredObjectFieldExecutes(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go test subprocess")
 	}
@@ -149,6 +152,7 @@ import (
 )
 
 func TestDiscoveredObjectField(t *testing.T) {
+	t.Parallel()
 	s, err := graph.NewSchema(graph.Stub{})
 	if err != nil {
 		t.Fatal(err)
@@ -188,6 +192,7 @@ func TestDiscoveredObjectField(t *testing.T) {
 // bound the field to a method the declared type does not have, which is a
 // compile error in a file marked DO NOT EDIT.
 func TestFieldsComeFromTheDeclaredType(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go build subprocess")
 	}
@@ -241,6 +246,7 @@ func (p *PaymentTerms) HasEarlyPaymentDiscount() bool { return true }
 // generator compiles to `cannot use a.OrderBy (*model.XOrder) as *ent.XOrder`,
 // in a file marked DO NOT EDIT.
 func TestAMethodMustMatchItsArgumentTypes(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}

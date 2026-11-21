@@ -68,6 +68,7 @@ func writeAltEnumModule(t *testing.T) string {
 }
 
 func TestAutoBindDiscoversASecondGoTypeForAnEnum(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -109,6 +110,7 @@ func TestAutoBindDiscoversASecondGoTypeForAnEnum(t *testing.T) {
 // leave that value unrepresentable at every position holding this type, which
 // is a wrong answer at run time where the unbound type is a refused build.
 func TestPartialSecondTypeBindsNothingAndSaysSo(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}

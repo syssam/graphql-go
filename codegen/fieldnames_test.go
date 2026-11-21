@@ -15,6 +15,7 @@ var lastUpdated = map[string]string{"_lastUpdatedAt": "LastUpdatedAt"}
 // A leading underscore keeps an X by default; FieldNames chooses the plain name instead, for the
 // input field and for an argument of the same SDL name, and the tag still pins the SDL name.
 func TestFieldNamesOverrideTheDerivedName(t *testing.T) {
+	t.Parallel()
 	dir := generate(t, fieldNamesSDL, Config{FieldNames: lastUpdated})
 	models := norm(generated(t, dir, "model/models.go"))
 	if !strings.Contains(models, norm("LastUpdatedAt string `graphql:\"_lastUpdatedAt\"`")) {
@@ -29,6 +30,7 @@ func TestFieldNamesOverrideTheDerivedName(t *testing.T) {
 }
 
 func TestFieldNamesKeepTheDerivedNameByDefault(t *testing.T) {
+	t.Parallel()
 	dir := generate(t, fieldNamesSDL, Config{})
 	if models := generated(t, dir, "model/models.go"); !strings.Contains(models, "XLastUpdatedAt") {
 		t.Errorf("default must keep the X prefix:\n%s", models)
@@ -36,6 +38,7 @@ func TestFieldNamesKeepTheDerivedNameByDefault(t *testing.T) {
 }
 
 func TestFieldNamesRejectsAnUnexportedOrInvalidName(t *testing.T) {
+	t.Parallel()
 	for _, bad := range []string{"lastUpdatedAt", "", "Last Updated", "1Last"} {
 		_, err := generateWith(t, fieldNamesSDL, Config{FieldNames: map[string]string{"_lastUpdatedAt": bad}})
 		if err == nil || !strings.Contains(err.Error(), "exported Go identifier") {
@@ -47,6 +50,7 @@ func TestFieldNamesRejectsAnUnexportedOrInvalidName(t *testing.T) {
 // The collision check runs on the final names, so an override that makes two fields on one type
 // the same identifier is refused with their SDL coordinates, like any other collision.
 func TestFieldNamesCollisionIsStillRefused(t *testing.T) {
+	t.Parallel()
 	sdl := "input In { _lastUpdatedAt: String lastUpdatedAt: String }\ntype Query { q(i: In): String }\n"
 	_, err := generateWith(t, sdl, Config{FieldNames: lastUpdated})
 	if err == nil {
@@ -64,6 +68,7 @@ func TestFieldNamesCollisionIsStillRefused(t *testing.T) {
 // a schema coordinate applies to that field or argument alone, and wins over
 // a bare key for the same name.
 func TestFieldNamesTakesASchemaCoordinate(t *testing.T) {
+	t.Parallel()
 	sdl := `
 		type User { userId: ID! }
 		type Post { userId: ID! }

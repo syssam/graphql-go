@@ -45,6 +45,7 @@ func manyGroupSchema(t *testing.T, n int) string {
 // There are six kinds of type, so six scans is the whole budget however many
 // groups there are.
 func TestTypeNamesIsComputedOncePerKind(t *testing.T) {
+	t.Parallel()
 	const groups = 30
 	dir := manyGroupSchema(t, groups)
 
@@ -76,6 +77,7 @@ func TestTypeNamesIsComputedOncePerKind(t *testing.T) {
 // millions of calls. It reads the type's source file and sanitizes the stem,
 // neither of which changes once the schema is loaded.
 func TestGroupOfIsMemoized(t *testing.T) {
+	t.Parallel()
 	dir := manyGroupSchema(t, 5)
 	b, err := newBuilder(context.Background(), dir, Config{
 		Dir:         dir,
@@ -102,6 +104,7 @@ func TestGroupOfIsMemoized(t *testing.T) {
 // discovered type, so recomputing it is references times types: the real
 // 5 503-type schema took 4m58s to generate and 16s once this was memoized.
 func TestModelExprImportsIsComputedOnce(t *testing.T) {
+	t.Parallel()
 	const groups = 30
 	dir := manyGroupSchema(t, groups)
 
@@ -136,6 +139,7 @@ func TestModelExprImportsIsComputedOnce(t *testing.T) {
 // second and 44 MB -- and nothing else in the suite would notice, because
 // loading packages makes no output wrong.
 func TestNoPackagesAreLoadedWithoutAutoBind(t *testing.T) {
+	t.Parallel()
 	const groups = 3
 	dir := manyGroupSchema(t, groups)
 	// A real module with a loadable package in it, so that a load would
@@ -167,6 +171,7 @@ func TestNoPackagesAreLoadedWithoutAutoBind(t *testing.T) {
 // list: groups times types, a fifth of a generate at 800 groups. Both are
 // built once per emit.
 func TestGroupFieldsAndGroupsAreComputedOnce(t *testing.T) {
+	t.Parallel()
 	const groups = 30
 	dir := manyGroupSchema(t, groups)
 	b, err := newBuilder(context.Background(), dir, Config{

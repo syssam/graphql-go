@@ -33,6 +33,7 @@ type Query { account(id: ID!): Account }
 // decision in it, so the directive's spelling is declared and the bindings are
 // read from where they already are.
 func TestModelDirectiveIsRead(t *testing.T) {
+	t.Parallel()
 	dir := writeSchema(t, goModelSDL)
 	b, err := newBuilder(context.Background(), dir, Config{
 		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"},
@@ -59,6 +60,7 @@ func TestModelDirectiveIsRead(t *testing.T) {
 
 // Naming no directive leaves the schema read exactly as before.
 func TestModelDirectiveOffByDefault(t *testing.T) {
+	t.Parallel()
 	dir := writeSchema(t, goModelSDL)
 	b, err := newBuilder(context.Background(), dir, Config{
 		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"},
@@ -74,6 +76,7 @@ func TestModelDirectiveOffByDefault(t *testing.T) {
 
 // A config file is a deliberate override of what the SDL happens to say.
 func TestModelsBeatsTheDirective(t *testing.T) {
+	t.Parallel()
 	dir := writeSchema(t, goModelSDL)
 	b, err := newBuilder(context.Background(), dir, Config{
 		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"},
@@ -99,6 +102,7 @@ func TestModelsBeatsTheDirective(t *testing.T) {
 // case: the declaration wins, quietly, and the discovery keeps everything else
 // it learned.
 func TestDiscoveryYieldsToADeclaredBinding(t *testing.T) {
+	t.Parallel()
 	discovered := &Manifest{Types: []TypeBinding{
 		{
 			Name:   "Account",
@@ -142,6 +146,7 @@ func TestDiscoveryYieldsToADeclaredBinding(t *testing.T) {
 // through newBuilder and fails with "is bound to ... but Models says ..."
 // when the call is removed.
 func TestDiscoveryYieldsThroughTheBuilder(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}

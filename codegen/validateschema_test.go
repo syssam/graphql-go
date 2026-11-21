@@ -17,6 +17,7 @@ import (
 // That is the reason it had never been asked, and why ten codegen bugs reached
 // a state where the generated Go compiled and the schema could not be built.
 func TestValidateSchemaNeedsNoResolvers(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go test subprocess")
 	}
@@ -54,6 +55,7 @@ import (
 
 // The whole point: no Resolver implementation exists in this package.
 func TestSchemaIsBindable(t *testing.T) {
+	t.Parallel()
 	err := graph.ValidateSchema()
 	if err == nil {
 		t.Fatal("the unbound scalar was not reported")
@@ -82,6 +84,7 @@ func TestSchemaIsBindable(t *testing.T) {
 // one interface, so ValidateSchema has a second shape and it needs its own test:
 // the flat one passing says nothing about it.
 func TestValidateSchemaWithGroups(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go test subprocess")
 	}
@@ -124,6 +127,7 @@ import (
 )
 
 func TestGroupedSchemaIsBindable(t *testing.T) {
+	t.Parallel()
 	err := graph.ValidateSchema()
 	if err == nil {
 		t.Fatal("the unbound scalar was not reported")

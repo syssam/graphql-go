@@ -19,6 +19,7 @@ type Query { thing(input: CreateThing): Thing }
 // Reflection over a model finds a field by its json tag: required fields carry the bare name
 // and nullable ones add omitempty, as gqlgen wrote them.
 func TestJSONTagsOnObjectAndInputFields(t *testing.T) {
+	t.Parallel()
 	dir := generate(t, jsonTagSDL, Config{JSONTags: true, TagDirective: goTag})
 	models := norm(generated(t, dir, "model/models.go"))
 
@@ -37,6 +38,7 @@ func TestJSONTagsOnObjectAndInputFields(t *testing.T) {
 }
 
 func TestJSONTagsAreOffByDefault(t *testing.T) {
+	t.Parallel()
 	dir := generate(t, jsonTagSDL, Config{})
 	if models := generated(t, dir, "model/models.go"); strings.Contains(models, "json:") {
 		t.Errorf("no json tags expected without Config.JSONTags:\n%s", models)

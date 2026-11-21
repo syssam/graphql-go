@@ -27,6 +27,7 @@ func namedFrom(t *testing.T, src, name string) *types.Named {
 // first it met and bound the GraphQL field to v.Name, in a file marked DO NOT
 // EDIT that then did not compile.
 func TestStructFieldsLeavesOutAnAmbiguousPromotion(t *testing.T) {
+	t.Parallel()
 	fields := structFields(namedFrom(t, `package p
 		type A struct{ Name string; OnlyA int }
 		type B struct{ Name string }
@@ -45,6 +46,7 @@ func TestStructFieldsLeavesOutAnAmbiguousPromotion(t *testing.T) {
 
 // A field of the struct itself hides both, which is Go's rule too.
 func TestStructFieldsKeepsAShallowerFieldOverAnAmbiguousPair(t *testing.T) {
+	t.Parallel()
 	fields := structFields(namedFrom(t, `package p
 		type A struct{ Name string }
 		type B struct{ Name string }
@@ -60,6 +62,7 @@ func TestStructFieldsKeepsAShallowerFieldOverAnAmbiguousPair(t *testing.T) {
 // engine's Input[T] honours it. Discovery read the tag as "no name", fell back
 // to the Go name, and bound Password to a `password` field in the schema.
 func TestStructFieldsLeavesOutAFieldHiddenFromJSON(t *testing.T) {
+	t.Parallel()
 	fields := structFields(namedFrom(t, "package p\ntype U struct {\n"+
 		"\tPassword string `json:\"-\"`\n"+
 		"\tName string `json:\"name\"`\n"+
@@ -80,6 +83,7 @@ func TestStructFieldsLeavesOutAFieldHiddenFromJSON(t *testing.T) {
 // Two fields can carry one json tag, and the match ranged a map: which of them
 // answered the GraphQL field changed from one generate to the next.
 func TestMatchFieldIsTheSameEveryTime(t *testing.T) {
+	t.Parallel()
 	fields := map[string]goField{
 		"alpha": {name: "Alpha", tag: "id"},
 		"beta":  {name: "Beta", tag: "id"},
@@ -101,6 +105,7 @@ func TestMatchFieldIsTheSameEveryTime(t *testing.T) {
 // shadows a deeper one of its name: Go resolves v.Secret to the outer field,
 // so offering the embedded one binds the GraphQL field to the hidden value.
 func TestStructFieldsHonoursTheHiddenTagThroughEmbedding(t *testing.T) {
+	t.Parallel()
 	src := "package p\n" +
 		"type Credentials struct{ PasswordHash string }\n" +
 		"type Base struct{ Secret string; Plain string }\n" +

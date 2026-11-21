@@ -41,6 +41,7 @@ func verifyModule(t *testing.T, field string) (string, Config) {
 // does not compile is the one that says so. Without it this one exits 0: url
 // is written as v.Url against a field called URL.
 func TestVerifyFailsAGenerateWhoseOutputDoesNotBuild(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go build subprocess")
 	}
@@ -71,6 +72,7 @@ func TestVerifyFailsAGenerateWhoseOutputDoesNotBuild(t *testing.T) {
 }
 
 func TestVerifyPassesOutputThatBuilds(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go build subprocess")
 	}

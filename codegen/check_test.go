@@ -38,6 +38,7 @@ func snapshot(t *testing.T, dir string) map[string]string {
 // generator over the tree and asking git, and the same question asked
 // locally before a commit.
 func TestCheckReportsWhatAGenerateWouldChange(t *testing.T) {
+	t.Parallel()
 	scaffold := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
 	dir, _ := wireFieldModule(t, scaffold, wireFieldDeps)
 	cfg := Config{
@@ -137,6 +138,7 @@ func TestCheckReportsWhatAGenerateWouldChange(t *testing.T) {
 // A check refuses what a generate refuses, so a configuration error is not
 // reported as the code being current.
 func TestCheckRefusesWhatGenerateRefuses(t *testing.T) {
+	t.Parallel()
 	scaffold := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
 	dir, _ := wireFieldModule(t, scaffold, wireFieldDeps)
 	err := Check(context.Background(), Config{
@@ -206,6 +208,7 @@ func TestCheckReportIsExact(t *testing.T) {
 // generate and a check went by bytes, so every generated file was rewritten
 // on every run and reported stale on every check.
 func TestALineEndingIsNotAChange(t *testing.T) {
+	t.Parallel()
 	scaffold := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
 	dir, generate := wireFieldModule(t, scaffold, wireFieldDeps)
 	if err := generate(); err != nil {
@@ -238,6 +241,7 @@ func TestALineEndingIsNotAChange(t *testing.T) {
 // the group directories, the scaffold targets -- and a check that returned
 // before any one of them called a broken setup current.
 func TestCheckRefusesEachThingGenerateRefuses(t *testing.T) {
+	t.Parallel()
 	both := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
 	for name, c := range map[string]struct {
 		scaffold map[string]string
@@ -280,6 +284,7 @@ func TestCheckRefusesEachThingGenerateRefuses(t *testing.T) {
 // Output reached through a symlink is walked from where it really is, for
 // the files to delete as for the generate's own prune.
 func TestCheckFindsLeftoversThroughALinkedOutput(t *testing.T) {
+	t.Parallel()
 	scaffold := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
 	dir, _ := wireFieldModule(t, scaffold, wireFieldDeps)
 	if err := os.MkdirAll(filepath.Join(dir, "real"), 0o755); err != nil {
@@ -307,6 +312,7 @@ func TestCheckFindsLeftoversThroughALinkedOutput(t *testing.T) {
 // tree half this run's; and a check, which stopped before scaffolding,
 // called the same setup current.
 func TestScaffoldRefusalsComeBeforeAnythingIsWritten(t *testing.T) {
+	t.Parallel()
 	both := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
 	for name, c := range map[string]struct {
 		scaffold map[string]string
@@ -350,6 +356,7 @@ func TestScaffoldRefusalsComeBeforeAnythingIsWritten(t *testing.T) {
 // the one generated file whose endings gqlc does not choose: a CRLF source
 // beside an LF copy, and the reverse, are the same content.
 func TestSchemaCopiesAreComparedWhateverTheirLineEndings(t *testing.T) {
+	t.Parallel()
 	scaffold := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
 	dir, generate := wireFieldModule(t, scaffold, wireFieldDeps)
 	src := filepath.Join(dir, "schema", "user.graphql")
@@ -375,6 +382,7 @@ func TestSchemaCopiesAreComparedWhateverTheirLineEndings(t *testing.T) {
 
 // What is a change and what is not, at the edges of sameContent.
 func TestSameContent(t *testing.T) {
+	t.Parallel()
 	for name, c := range map[string]struct {
 		disk, generated string
 		same            bool
@@ -399,6 +407,7 @@ func TestSameContent(t *testing.T) {
 // under an Output spelled through its real path while Config.Dir is spelled
 // through a link, and an Output outside Config.Dir.
 func TestCheckNamesPathsTheSameWayEverywhere(t *testing.T) {
+	t.Parallel()
 	scaffold := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
 	dir, _ := wireFieldModule(t, scaffold, wireFieldDeps)
 	real, err := filepath.EvalSymlinks(dir)
@@ -437,6 +446,7 @@ func TestCheckNamesPathsTheSameWayEverywhere(t *testing.T) {
 // interrupted write leaves one, and carrying a byte-order mark, as some
 // editors add one. Both are gqlc's to rewrite, and a check says so.
 func TestCheckReportsAnEmptyOrMarkedGeneratedFile(t *testing.T) {
+	t.Parallel()
 	scaffold := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
 	dir, generate := wireFieldModule(t, scaffold, wireFieldDeps)
 	if err := generate(); err != nil {
@@ -470,6 +480,7 @@ func TestCheckReportsAnEmptyOrMarkedGeneratedFile(t *testing.T) {
 // it is long, so behind a mark it was never found: the file was left, still
 // compiling, and a check called the tree current.
 func TestAStaleGeneratedFileBehindAByteOrderMarkIsPruned(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeFiles(t, dir, map[string]string{
 		"sdl/query.graphql":  "type Query { ping: Boolean }\n",
@@ -510,6 +521,7 @@ func TestAStaleGeneratedFileBehindAByteOrderMarkIsPruned(t *testing.T) {
 // directory: os.Remove deletes the link whatever is behind it, and with
 // schema/ linked elsewhere, a stale copy took the author's link with it.
 func TestPruneLeavesALinkedDirectory(t *testing.T) {
+	t.Parallel()
 	scaffold := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
 	dir, generate := wireFieldModule(t, scaffold, wireFieldDeps)
 	for _, d := range []string{"elsewhere/schema", "graph"} {

@@ -14,6 +14,7 @@ import (
 // graph/register/user is a second, dead copy of the group. The resolvers are
 // scaffolded inside Output, where pruning runs, and must survive it.
 func TestGroupDirHoldsEveryGroupPackage(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -72,6 +73,7 @@ func TestGroupDirHoldsEveryGroupPackage(t *testing.T) {
 }
 
 func TestGroupDirMustStayInsideOutput(t *testing.T) {
+	t.Parallel()
 	dir, _ := scaffoldModule(t, nil)
 	// "Model" and "SCHEMA/x" are the reserved directories on Windows and macOS,
 	// whose filesystems ignore case.

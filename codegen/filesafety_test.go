@@ -28,6 +28,7 @@ func writeFiles(t *testing.T, dir string, files map[string]string) {
 // generate succeeded, the output compiled, and the service failed at start-up
 // on the types of the file that was dropped.
 func TestGenerateRefusesSourcesThatShareABaseName(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeFiles(t, dir, map[string]string{
 		"user/schema.graphql": `type User { id: ID! } type Query { me: User }`,
@@ -56,6 +57,7 @@ func TestGenerateRefusesSourcesThatShareABaseName(t *testing.T) {
 // deleting anything. Writing did not: a hand-written file at a path gqlc
 // generates was replaced without a word.
 func TestGenerateRefusesToOverwriteAHandWrittenGoFile(t *testing.T) {
+	t.Parallel()
 	const mine = "package graph\n\n// Mine.\nfunc Mine() {}\n"
 	for _, rel := range []string{"graph/generated.go", "graph/schema.go", "graph/model/models.go"} {
 		t.Run(rel, func(t *testing.T) {
@@ -93,6 +95,7 @@ func TestGenerateRefusesToOverwriteAHandWrittenGoFile(t *testing.T) {
 
 // Regenerating over gqlc's own output is the ordinary case and must stay one.
 func TestGenerateOverwritesItsOwnOutput(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeFiles(t, dir, map[string]string{"schema.graphql": helloSDL})
 	cfg := Config{Dir: dir, SchemaGlobs: []string{"schema.graphql"}, Output: "graph", Package: "hello/graph"}
@@ -114,6 +117,7 @@ func TestGenerateOverwritesItsOwnOutput(t *testing.T) {
 // sources themselves live in that directory, a file the globs do not name is
 // the author's own, and it was deleted all the same.
 func TestGenerateDoesNotDeleteAnSDLFileBesideItsSources(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	const draft = "type Draft { id: ID! }\n"
 	writeFiles(t, dir, map[string]string{
@@ -139,6 +143,7 @@ func TestGenerateDoesNotDeleteAnSDLFileBesideItsSources(t *testing.T) {
 
 // The case prune exists for is unchanged: a copy whose source went away.
 func TestGenerateStillPrunesAStaleSchemaCopy(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeFiles(t, dir, map[string]string{
 		"a.graphql": `type Query { ok: Boolean! }`,
@@ -162,6 +167,7 @@ func TestGenerateStillPrunesAStaleSchemaCopy(t *testing.T) {
 // An absolute Output was joined under Dir like a relative one, so
 // /srv/app/graph became <dir>/srv/app/graph.
 func TestGenerateHonoursAnAbsoluteOutput(t *testing.T) {
+	t.Parallel()
 	dir, out := t.TempDir(), filepath.Join(t.TempDir(), "graph")
 	writeFiles(t, dir, map[string]string{"schema.graphql": helloSDL})
 	err := Generate(context.Background(), Config{
@@ -182,6 +188,7 @@ func TestGenerateHonoursAnAbsoluteOutput(t *testing.T) {
 // It carries no header, and refusing it as somebody else's would fail every
 // generate after until it was deleted by hand.
 func TestGenerateOverwritesAnEmptyGoFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeFiles(t, dir, map[string]string{"schema.graphql": helloSDL, "graph/generated.go": "", "graph/schema.go": "\n"})
 	err := Generate(context.Background(), Config{
@@ -201,6 +208,7 @@ func TestGenerateOverwritesAnEmptyGoFile(t *testing.T) {
 // the package did not compile; with some, it compiled and the schema was
 // missing their types.
 func TestSchemaSourcesOfAnyExtensionAreEmbedded(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go test subprocess")
 	}
@@ -237,6 +245,7 @@ func TestSchemaSourcesOfAnyExtensionAreEmbedded(t *testing.T) {
 // that ignores case User.graphql and user.graphql are one file, which two
 // writes at once left holding parts of both.
 func TestGenerateRefusesSourcesWhoseCopiesCollide(t *testing.T) {
+	t.Parallel()
 	for name, files := range map[string][2]string{
 		"letter case": {"a/User.graphql", "b/user.graphql"},
 		"extension":   {"a/user.graphqls", "b/user.graphql"},
@@ -271,6 +280,7 @@ func TestGenerateRefusesSourcesWhoseCopiesCollide(t *testing.T) {
 // apart. It cannot be left either, since the root embeds the directory, so it
 // is named and the generate refused, by a check as well.
 func TestGenerateNeverDeletesAnSDLFileItDidNotWrite(t *testing.T) {
+	t.Parallel()
 	const legacy = "# kept by hand\ntype Legacy { id: ID! }\n"
 	refused := func(t *testing.T, cfg Config, dir string) {
 		t.Helper()
@@ -345,6 +355,7 @@ func TestGenerateNeverDeletesAnSDLFileItDidNotWrite(t *testing.T) {
 // The list of copies is written by one function and read back by another,
 // through gofmt and whatever a checkout does to line endings in between.
 func TestRecordedCopiesReadsBackWhatWasWritten(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeFiles(t, dir, map[string]string{
 		"api/query.graphql":      "type Query { ok: Boolean! }\n",
@@ -386,6 +397,7 @@ func TestRecordedCopiesReadsBackWhatWasWritten(t *testing.T) {
 // already says what the copy does, or holds nothing, loses nothing, list or
 // no list.
 func TestGenerateRefusesToCopyOverAnSDLFileItDidNotWrite(t *testing.T) {
+	t.Parallel()
 	const legacy = "# hand-written\ntype Legacy { x: Int }\n"
 	cfg := func(dir string) Config {
 		return Config{Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph"}
@@ -443,6 +455,7 @@ func TestGenerateRefusesToCopyOverAnSDLFileItDidNotWrite(t *testing.T) {
 // file that is its own source is never listed, so it is refused like any
 // other file there that no source produces, and kept.
 func TestGenerateNeverDeletesASourceReadFromOutputSchema(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	const b = "type B { x: Int }\n"
 	writeFiles(t, dir, map[string]string{"graph/schema/a.graphql": "type Query { a: Int }\n", "graph/schema/b.graphql": b})
@@ -474,6 +487,7 @@ func TestGenerateNeverDeletesASourceReadFromOutputSchema(t *testing.T) {
 // first narrowing after an upgrade. trustedCopies believes a listed name only
 // while a source elsewhere copies onto it, so b.graphql is refused and kept.
 func TestAnOldListNeverDeletesASourceReadFromOutputSchema(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	const b = "type B { x: Int }\n"
 	writeFiles(t, dir, map[string]string{"graph/schema/a.graphql": "type Query { a: Int }\n", "graph/schema/b.graphql": b})

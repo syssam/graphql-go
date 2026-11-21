@@ -3,6 +3,7 @@ package codegen
 import "testing"
 
 func TestSanitizeGroup(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		in, pkg, want string
 	}{

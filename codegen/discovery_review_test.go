@@ -28,6 +28,7 @@ func writeAltEnumModuleAt(t *testing.T, pkgDir, pkgName string) string {
 // inputs in .../client/todo under package todoclient) and is not a package at
 // all for a major-version element.
 func TestASecondEnumTypeIsImportedUnderTheQualifierItIsReferredTo(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -53,6 +54,7 @@ func TestASecondEnumTypeIsImportedUnderTheQualifierItIsReferredTo(t *testing.T) 
 // a binding the registry can hold, and dropping the second left every input
 // field of that type a NewSchema error, with nothing said.
 func TestEverySecondGoTypeForAnEnumIsBound(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -123,6 +125,7 @@ type Asset struct {
 // discovery also produced the type, and the derived ent.StatusArchived does not
 // exist.
 func TestExplicitEnumValuesWinOverDiscovery(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -195,6 +198,7 @@ func fillNonZero(t *testing.T, v reflect.Value) {
 // it must come out of the merge with it set. Values was the one left out, and
 // a field added later is caught here rather than in a consumer's generate.
 func TestMergeManifestsKeepsEveryExplicitTypeBindingField(t *testing.T) {
+	t.Parallel()
 	var explicit TypeBinding
 	fillNonZero(t, reflect.ValueOf(&explicit).Elem())
 	discovered := TypeBinding{Name: explicit.Name}
@@ -223,6 +227,7 @@ func TestMergeManifestsKeepsEveryExplicitTypeBindingField(t *testing.T) {
 // mergeManifests and yieldToDeclared each build a new Manifest by hand, so a
 // field added to Manifest is dropped by both until they are taught it.
 func TestManifestFieldsAreTheOnesTheMergeKnows(t *testing.T) {
+	t.Parallel()
 	var names []string
 	for f := range reflect.TypeFor[Manifest]().Fields() {
 		names = append(names, f.Name)
@@ -235,6 +240,7 @@ func TestManifestFieldsAreTheOnesTheMergeKnows(t *testing.T) {
 // An explicit second type for the same Go type discovery found replaces it
 // rather than registering it twice, which NewSchema refuses.
 func TestExplicitExtraEnumReplacesTheDiscoveredOne(t *testing.T) {
+	t.Parallel()
 	gt := GoType{PkgPath: "hello/method", Name: "Method"}
 	out := mergeManifests(
 		&Manifest{ExtraEnums: []TypeBinding{{Name: "Method", Go: gt, Values: map[string]string{"A": "MA"}}}},
@@ -249,6 +255,7 @@ func TestExplicitExtraEnumReplacesTheDiscoveredOne(t *testing.T) {
 // returns roots in dependency order: with ent importing other, other came
 // first whichever order the patterns were given in.
 func TestTheFirstAutoBindPatternWinsWhenPackagesImportEachOther(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -290,6 +297,7 @@ type Product struct {
 // unknown enum binds nothing, silently, and partial values were a syntax error
 // in generated.go. Both are refused, naming the enum, before a file is written.
 func TestExplicitExtraEnumsAreValidated(t *testing.T) {
+	t.Parallel()
 	const sdl = `enum Method { STRAIGHT_LINE NONE }
 input F { m: Method }
 type Query { a(f: F): Method }
@@ -336,6 +344,7 @@ type Query { a(f: F): Method }
 // "input field PlanIn.maxGb has no binding". A name the engine's own
 // derivation already arrives at is coherent and stays accepted.
 func TestFieldDirectiveNameOnABoundInputFieldIsRefused(t *testing.T) {
+	t.Parallel()
 	const decl = `
 directive @goModel(model: String) on ENUM | OBJECT | INPUT_OBJECT
 directive @goField(name: String) on FIELD_DEFINITION | INPUT_FIELD_DEFINITION
@@ -381,6 +390,7 @@ type Query { plan(in: PlanIn): Int }
 // interface itself has no Go field or method for a name to choose, so the
 // argument there named nothing.
 func TestFieldDirectiveNameOnAnInterfaceFieldIsRefused(t *testing.T) {
+	t.Parallel()
 	const sdl = `
 directive @goField(name: String) on FIELD_DEFINITION | INPUT_FIELD_DEFINITION
 interface Node { nodeId: ID! @goField(name: "Key") }
@@ -401,6 +411,7 @@ type Query { node: Node }
 // A single-file federated schema takes the flat emitter, which no test
 // generated: it has to compile and build as a subgraph.
 func TestFlatFederatedSchemaBuildsAsASubgraph(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go run subprocess")
 	}

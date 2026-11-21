@@ -18,6 +18,7 @@ import (
 // with nothing changed writes nothing, and a field added to one type writes
 // that group's two files.
 func TestGenerateWritesOnlyWhatChanged(t *testing.T) {
+	t.Parallel()
 	scaffold := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
 	dir, generate := wireFieldModule(t, scaffold, wireFieldDeps)
 	if err := generate(); err != nil {

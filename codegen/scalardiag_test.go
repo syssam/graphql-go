@@ -15,6 +15,7 @@ import (
 // schema the silence cost 21 641 errors at build time, for eight scalars.
 // Saying it at generate time is the same information, hours earlier.
 func TestUnboundScalarsAreReportedWhileGenerating(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -73,6 +74,7 @@ type Doc struct{ ID string }
 // Silence when there is nothing to say: a schema whose scalars are all bound
 // must produce no diagnostic at all, or the signal is worth nothing.
 func TestNoScalarDiagnosticWhenAllAreBound(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping package load")
 	}
@@ -104,6 +106,7 @@ type Doc struct {
 // been named is kept in schema.go, so the next generate says only what that
 // one did not.
 func TestAScalarIsNamedOnceAndANewOneAlone(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sdl := func(scalars string) {
 		writeFiles(t, dir, map[string]string{"schema.graphql": scalars + "\ntype Query { ping: Boolean }\n"})

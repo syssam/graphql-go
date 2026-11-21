@@ -33,6 +33,7 @@ func taskManifest(fields map[string]FieldBinding) *Manifest {
 // Task.createdAt from a resolver that derived it to the stored column, and
 // the consumer found out by reading the diff.
 func TestABindingChangeIsNamedByGenerateAndCheck(t *testing.T) {
+	t.Parallel()
 	dir := generate(t, bindingChangeSDL, Config{Manifest: taskManifest(map[string]FieldBinding{
 		"id":    {Kind: FieldStruct},
 		"title": {Kind: FieldStruct},
@@ -92,6 +93,7 @@ func TestABindingChangeIsNamedByGenerateAndCheck(t *testing.T) {
 // the emitters write has to be recognised; one that is not reads as no
 // binding, and a change to or from it goes unreported.
 func TestBindingSourcesReadsEveryEmittedShape(t *testing.T) {
+	t.Parallel()
 	src := []byte(`package graph
 
 func Bindings(r Resolver) graphql.SchemaOption {

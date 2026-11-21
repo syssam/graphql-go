@@ -31,6 +31,7 @@ func generateSDL(t *testing.T, sdl string) (string, error) {
 // color not exported by package model` inside a DO NOT EDIT file. It must be
 // refused before anything is written, naming the SDL coordinates.
 func TestUncompilableIdentifiersAreRefused(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name string
 		sdl  string
@@ -82,6 +83,7 @@ func TestUncompilableIdentifiersAreRefused(t *testing.T) {
 // The check must not refuse what compiles: fields that differ only by a
 // leading underscore stay apart (X prefix), and so do id and ownerId.
 func TestDistinctIdentifiersAreAccepted(t *testing.T) {
+	t.Parallel()
 	if _, err := generateSDL(t, `type User { id: ID! _id: ID ownerId: ID owner: String } type Query { u: User }`); err != nil {
 		t.Fatal(err)
 	}

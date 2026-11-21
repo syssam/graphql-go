@@ -37,6 +37,7 @@ func wireModule(t *testing.T, scaffold map[string]string) (string, func() error)
 // process starts. gqlc knows every group and where its implementation is, so
 // it writes the list, and a group with no constructor does not compile.
 func TestWireBuildsEveryGroupFromOneDependenciesValue(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go test subprocess")
 	}
@@ -89,6 +90,7 @@ import (
 )
 
 func TestWire(t *testing.T) {
+	t.Parallel()
 	opts := graph.Wire(deps.Deps{Greeting: "hi"})
 	if len(opts) != 2 {
 		t.Fatalf("Wire returned %d bindings, want one per group with a Resolver", len(opts))
@@ -109,6 +111,7 @@ func TestWire(t *testing.T) {
 // An implementation that exists already is the author's, and so is its
 // constructor: gqlc never touches one that is there.
 func TestWireLeavesAnExistingConstructorAlone(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -143,6 +146,7 @@ func NewHandler(d deps.Deps) *Handler { return &Handler{greeting: d.Greeting} }
 // compiler. Nothing is written now: the build fails on the missing name, and
 // a note says what to write.
 func TestWireWritesNoConstructorForATypeThatExists(t *testing.T) {
+	t.Parallel()
 	scaffold := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
 	dir, _ := wireModule(t, scaffold)
 	writeFiles(t, dir, map[string]string{
@@ -174,6 +178,7 @@ func TestWireWritesNoConstructorForATypeThatExists(t *testing.T) {
 // and handed to each. A constructor call per group made as many instances as
 // there were groups, each with its own caches and connections.
 func TestWireBuildsASharedImplementationOnce(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go test subprocess")
 	}
@@ -196,6 +201,7 @@ import (
 )
 
 func TestWire(t *testing.T) {
+	t.Parallel()
 	opts := graph.Wire(deps.Deps{})
 	if len(opts) != 2 {
 		t.Fatalf("Wire returned %d bindings, want one per group", len(opts))
@@ -216,6 +222,7 @@ func TestWire(t *testing.T) {
 // The dependencies package is imported into a file that already has imports,
 // and its last element is no safer a name there than anywhere else.
 func TestWireScaffoldsADependenciesImportThatCompiles(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -266,6 +273,7 @@ func TestWireScaffoldsADependenciesImportThatCompiles(t *testing.T) {
 // type included if the author puts it there. Wire imported that package into
 // itself.
 func TestWireWithTheDependenciesInTheGeneratedPackage(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -289,6 +297,7 @@ func TestWireWithTheDependenciesInTheGeneratedPackage(t *testing.T) {
 }
 
 func TestWireRefusesWhatItCannotBuild(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		scaffold map[string]string
 		wire     Wire
@@ -328,6 +337,7 @@ func TestWireRefusesWhatItCannotBuild(t *testing.T) {
 
 // Off by default: nothing is written and nothing about scaffolding changes.
 func TestWireIsOffByDefault(t *testing.T) {
+	t.Parallel()
 	dir, generate := scaffoldModule(t, map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"})
 	if err := generate(); err != nil {
 		t.Fatal(err)
@@ -382,6 +392,7 @@ type Deps struct {
 // each group's package imports its own service alone. So a field of the
 // struct named after a group is what that group's constructor is given.
 func TestWireHandsAGroupTheFieldNamedAfterIt(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go test subprocess")
 	}
@@ -442,6 +453,7 @@ import (
 )
 
 func TestWire(t *testing.T) {
+	t.Parallel()
 	opts := graph.Wire(deps.Deps{User: &user.Service{Greeting: "hi"}})
 	if len(opts) != 2 {
 		t.Fatalf("Wire returned %d bindings, want one per group with a Resolver", len(opts))
@@ -461,6 +473,7 @@ func TestWire(t *testing.T) {
 
 // When a group gets the whole value instead, and why.
 func TestWireHandsOverTheWholeValueWhereNoFieldFits(t *testing.T) {
+	t.Parallel()
 	both := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
 	for name, c := range map[string]struct {
 		scaffold map[string]string
@@ -511,6 +524,7 @@ func TestWireHandsOverTheWholeValueWhereNoFieldFits(t *testing.T) {
 // group; the Go field is LineItem. Both are compared with case and
 // punctuation taken out.
 func TestWireMatchesAGroupToItsFieldWhateverThePunctuation(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeFiles(t, dir, map[string]string{
 		"schema/query.graphql":     "type Query { ping: Boolean }\n",
@@ -537,6 +551,7 @@ func TestWireMatchesAGroupToItsFieldWhateverThePunctuation(t *testing.T) {
 // named from there: a type of the dependencies package itself gains that
 // package's qualifier, and a qualifier already taken in the stub file gives way.
 func TestWireWritesAFieldsTypeAsTheGroupsPackageSeesIt(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -571,6 +586,7 @@ func TestWireWritesAFieldsTypeAsTheGroupsPackageSeesIt(t *testing.T) {
 // whole value, which works and costs that package its build isolation, so
 // the run that writes it says so once.
 func TestWireSaysWhenANewGroupGetsTheWholeValueBesideOthersThatDoNot(t *testing.T) {
+	t.Parallel()
 	scaffold := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
 	dir, _ := wireFieldModule(t, scaffold, strings.Replace(wireFieldDeps, "\tUser *usersvc.Service\n", "", 1))
 	var notes []string
@@ -606,6 +622,7 @@ func TestWireSaysWhenANewGroupGetsTheWholeValueBesideOthersThatDoNot(t *testing.
 // passes and what the constructor takes have to be the same type, whatever
 // the dependencies struct looks like.
 func TestWireFieldsThatCannotBeHandedOverFallBackAndStillCompile(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -686,6 +703,7 @@ func TestWireFieldsThatCannotBeHandedOverFallBackAndStillCompile(t *testing.T) {
 // Two files the build chooses between each declare the struct, and nothing
 // here evaluates build constraints, so neither is trusted.
 func TestWireReadsNoFieldsFromAStructDeclaredTwice(t *testing.T) {
+	t.Parallel()
 	both := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
 	dir, generate := wireFieldModule(t, both, "//go:build !linux\n\n"+wireFieldDeps)
 	writeFiles(t, dir, map[string]string{
@@ -705,6 +723,7 @@ func TestWireReadsNoFieldsFromAStructDeclaredTwice(t *testing.T) {
 // the moment a field named after its group appeared, in a file marked DO NOT
 // EDIT, and left a group that wants the whole value no way to ask for it.
 func TestWirePassesWhatAnExistingConstructorTakes(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -738,6 +757,7 @@ func NewHandler(d app.Deps) *Handler { return &Handler{all: d} }
 // package, variables and constants included: the resolver package's own
 // logger was called log, and so was the package a field's type came from.
 func TestWireImportNamesAvoidThePackagesVariables(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -754,6 +774,7 @@ func TestWireImportNamesAvoidThePackagesVariables(t *testing.T) {
 
 // The notes say what is so, to the run that can act on it, and nothing else.
 func TestWireNotesAreTrueAndOnlyWhereTheyApply(t *testing.T) {
+	t.Parallel()
 	both := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
 	for name, c := range map[string]struct {
 		scaffold map[string]string
@@ -799,6 +820,7 @@ func TestWireNotesAreTrueAndOnlyWhereTheyApply(t *testing.T) {
 // A third review, again by running the generator. What an existing
 // constructor takes is read for what it is, not for what it ends in.
 func TestWireReadsAnExistingConstructorExactly(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -893,6 +915,7 @@ func TestWireReadsAnExistingConstructorExactly(t *testing.T) {
 // any of them rebuilt the group. A constructor's parameters say what it
 // needs, by name.
 func TestWireGivesEachParameterTheFieldItIsNamedAfter(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -937,6 +960,7 @@ func TestWireGivesEachParameterTheFieldItIsNamedAfter(t *testing.T) {
 // generated, naming the parameter, rather than written into a file that does
 // not compile and may not be edited.
 func TestWireRefusesAParameterItCannotMatch(t *testing.T) {
+	t.Parallel()
 	both := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
 	handler := func(params string) string {
 		return "package user\n\nimport (\n\t\"hello/internal/svc/post\"\n\tusersvc \"hello/internal/svc/user\"\n)\n\n// Handler is hand-written.\ntype Handler struct{}\n\n// NewHandler is hand-written.\nfunc NewHandler(" + params + ") *Handler { return &Handler{} }\n"
@@ -971,6 +995,7 @@ func TestWireRefusesAParameterItCannotMatch(t *testing.T) {
 
 // What Wire cannot make compile is refused when it is generated.
 func TestWireRefusesWhatWouldNotCompile(t *testing.T) {
+	t.Parallel()
 	both := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
 	for name, c := range map[string]struct {
 		scaffold map[string]string
@@ -1004,6 +1029,7 @@ func TestWireRefusesWhatWouldNotCompile(t *testing.T) {
 // directory, and not at all -- refused, saying why -- where they are not, or
 // where nothing exists yet to ask.
 func TestWireNamesADirectorySpelledTwoWaysOnce(t *testing.T) {
+	t.Parallel()
 	scaffold := map[string]string{"user": "internal/Resolver.R", "post": "internal/resolver.R"}
 	dir, generate := wireModule(t, scaffold)
 	if err := os.MkdirAll(filepath.Join(dir, "internal", "resolver"), 0o755); err != nil {
@@ -1036,6 +1062,7 @@ func TestWireNamesADirectorySpelledTwoWaysOnce(t *testing.T) {
 // are one directory; guessing would write a file that compiles on one machine
 // and not on another.
 func TestWireRefusesTwoSpellingsOfADirectoryNotYetThere(t *testing.T) {
+	t.Parallel()
 	_, generate := wireModule(t, map[string]string{"user": "internal/Resolver.R", "post": "internal/resolver.R"})
 	if err := generate(); err == nil || !strings.Contains(err.Error(), "letter case") {
 		t.Fatalf("err = %v, want the two spellings refused", err)
@@ -1046,6 +1073,7 @@ func TestWireRefusesTwoSpellingsOfADirectoryNotYetThere(t *testing.T) {
 // another beside it compiled under go build and was a redeclaration under go
 // vet and go test; nothing is written, and the note says where it is.
 func TestWireDoesNotScaffoldOverAConstructorInATestFile(t *testing.T) {
+	t.Parallel()
 	scaffold := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
 	dir, _ := wireModule(t, scaffold)
 	writeFiles(t, dir, map[string]string{
@@ -1071,6 +1099,7 @@ func TestWireDoesNotScaffoldOverAConstructorInATestFile(t *testing.T) {
 // value has to be recognised however the file spells that, because the price
 // of missing it is a wire.go that passes it a field.
 func TestWireRecognisesTheWholeValueHoweverItIsSpelled(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -1128,6 +1157,7 @@ func TestWireRecognisesTheWholeValueHoweverItIsSpelled(t *testing.T) {
 // build constraint beside it is an alternative this run cannot evaluate, and
 // no reason to refuse.
 func TestWireTakesThePlainDeclarationOverAGenericAlternative(t *testing.T) {
+	t.Parallel()
 	both := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
 	dir, generate := wireFieldModule(t, both, wireFieldDeps)
 	writeFiles(t, dir, map[string]string{
@@ -1146,6 +1176,7 @@ func TestWireTakesThePlainDeclarationOverAGenericAlternative(t *testing.T) {
 // spelling of the group's package in another letter case is the same
 // collision, and it was found only on the second run.
 func TestWireComparesATargetWithThePackagesItAlreadyImports(t *testing.T) {
+	t.Parallel()
 	_, generate := wireModule(t, map[string]string{"user": "graph/User.Handler", "post": "graph/post.Handler"})
 	if err := generate(); err == nil || !strings.Contains(err.Error(), "letter case") {
 		t.Fatalf("err = %v, want graph/User refused beside the group package graph/user", err)
@@ -1156,6 +1187,7 @@ func TestWireComparesATargetWithThePackagesItAlreadyImports(t *testing.T) {
 // met in the configuration may be the wrong one, and every other file that
 // imports the package uses the directory's.
 func TestWireSpellsADirectoryAsItIsOnDisk(t *testing.T) {
+	t.Parallel()
 	scaffold := map[string]string{"post": "internal/Resolver.R", "user": "internal/resolver.R"}
 	dir, generate := wireModule(t, scaffold)
 	if err := os.MkdirAll(filepath.Join(dir, "internal", "resolver"), 0o755); err != nil {
@@ -1179,6 +1211,7 @@ func TestWireSpellsADirectoryAsItIsOnDisk(t *testing.T) {
 // A test file is read as the other files are: one no build includes is not
 // there, and a constructor is a name however it is declared.
 func TestWireReadsTestFilesAsItReadsTheRest(t *testing.T) {
+	t.Parallel()
 	scaffold := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
 	for name, c := range map[string]struct {
 		file     string
@@ -1221,6 +1254,7 @@ func wirePassModule(t *testing.T, scaffold map[string]string, deps string, pass 
 // out was to rearrange one's own code around the generator. Wire.Pass says it
 // outright, as the expression wire.go writes, and is believed.
 func TestWirePassSaysWhatAGroupIsGiven(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -1296,6 +1330,7 @@ func TestWirePassSaysWhatAGroupIsGiven(t *testing.T) {
 // An entry is believed, so one that cannot be right is refused where it is
 // written rather than left for the compiler to report in generated code.
 func TestWirePassRefusesWhatCannotBeMeant(t *testing.T) {
+	t.Parallel()
 	both := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
 	for name, c := range map[string]struct {
 		scaffold map[string]string
@@ -1337,6 +1372,7 @@ func TestWirePassRefusesWhatCannotBeMeant(t *testing.T) {
 // With no Wire there is nothing for an entry to apply to, and it is more
 // likely that deps was left out than that pass was meant to do nothing.
 func TestWirePassNeedsWire(t *testing.T) {
+	t.Parallel()
 	dir, _ := scaffoldModule(t, map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"})
 	err := Generate(context.Background(), Config{
 		Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph",
@@ -1349,6 +1385,7 @@ func TestWirePassNeedsWire(t *testing.T) {
 
 // A group that is not listed is decided as it was.
 func TestWirePassLeavesOtherGroupsAlone(t *testing.T) {
+	t.Parallel()
 	both := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
 	dir, generate := wirePassModule(t, both, wireFieldDeps, map[string]string{"user": "d"})
 	if err := generate(); err != nil {
@@ -1363,6 +1400,7 @@ func TestWirePassLeavesOtherGroupsAlone(t *testing.T) {
 // say whatever the right argument is, or the way out it offers is closed
 // exactly where it is needed.
 func TestWirePassReachesWhatTheStructDoesNotSpellOut(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -1457,6 +1495,7 @@ func TestWirePassReachesWhatTheStructDoesNotSpellOut(t *testing.T) {
 // one entry speaks for all of them: the group it is written under is which
 // line of the configuration it happens to be on.
 func TestWirePassForASharedTypeIsSaidOnce(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -1489,6 +1528,7 @@ func TestWirePassForASharedTypeIsSaidOnce(t *testing.T) {
 // What the first tests of Wire.Pass left unguarded, each found by breaking it
 // and seeing nothing fail.
 func TestWirePassEdges(t *testing.T) {
+	t.Parallel()
 	both := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
 	run := func(t *testing.T, scaffold map[string]string, deps string, pass map[string]string, files map[string]string) (string, []string, error) {
 		t.Helper()
@@ -1561,6 +1601,7 @@ func TestWirePassEdges(t *testing.T) {
 // With one group everything is in the generated package, and so may the
 // dependencies type be. Its unexported fields are then in reach of wire.go.
 func TestWirePassMayNameAnUnexportedFieldInItsOwnPackage(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -1589,6 +1630,7 @@ func TestWirePassMayNameAnUnexportedFieldInItsOwnPackage(t *testing.T) {
 // scaffolded over it, and what it takes is unknown, so nothing is inferred
 // from it.
 func TestWireInfersNothingFromAConstructorItCannotRead(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -1639,6 +1681,7 @@ func TestWireInfersNothingFromAConstructorItCannotRead(t *testing.T) {
 // which group happened to be looked at when it was found, and in an order
 // that does not change.
 func TestWirePassErrorsNameTheGroupTheEntryIsUnder(t *testing.T) {
+	t.Parallel()
 	// post sorts first and has no entry; the entry is user's.
 	shared := map[string]string{"user": "internal/resolver.R", "post": "internal/resolver.R"}
 	inline := strings.Replace(wireFieldDeps, "\tUser *usersvc.Service", "\tUser struct{ n int }", 1)
@@ -1720,6 +1763,7 @@ func TestWirePassErrorsNameTheGroupTheEntryIsUnder(t *testing.T) {
 // disagree. The two named are the two that disagree, not the one being
 // decided when the disagreement was met.
 func TestWirePassNamesTheTwoGroupsThatDisagree(t *testing.T) {
+	t.Parallel()
 	scaffold := map[string]string{"post": "internal/resolver.R", "tag": "internal/resolver.R", "user": "internal/resolver.R"}
 	dir, _ := wireFieldModule(t, scaffold, wireFieldDeps)
 	writeFiles(t, dir, map[string]string{"schema/tag.graphql": "type Tag { id: ID! }\nextend type Query { tags: [Tag!]! }\n"})
@@ -1736,6 +1780,7 @@ func TestWirePassNamesTheTwoGroupsThatDisagree(t *testing.T) {
 // What one implementation is, for an entry to speak for all of it and for
 // nothing else.
 func TestWirePassKeepsToItsOwnImplementation(t *testing.T) {
+	t.Parallel()
 	// Two types in one directory are two implementations.
 	t.Run("another type in the same directory", func(t *testing.T) {
 		dir, generate := wirePassModule(t, map[string]string{"user": "internal/resolver.A", "post": "internal/resolver.B"}, wireFieldDeps, map[string]string{"user": "d"})
@@ -1780,6 +1825,7 @@ func TestWirePassKeepsToItsOwnImplementation(t *testing.T) {
 // naming a field is a group being handed one, and a struct that could not be
 // read says nothing about what fields there are.
 func TestWirePassAndTheNoteAboutFields(t *testing.T) {
+	t.Parallel()
 	both := map[string]string{"user": "graph/user.Handler", "post": "graph/post.Handler"}
 	note := func(t *testing.T, deps string, pass map[string]string, files map[string]string) string {
 		t.Helper()
@@ -1809,6 +1855,7 @@ func TestWirePassAndTheNoteAboutFields(t *testing.T) {
 // With the dependencies in the generated package every field is in reach,
 // and the blank one is still not a field.
 func TestWirePassOffersNoBlankField(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeFiles(t, dir, map[string]string{
 		"schema/schema.graphql": "type Thing { id: ID! }\ntype Query { thing(id: ID!): Thing }\n",
@@ -1832,6 +1879,7 @@ func TestWirePassOffersNoBlankField(t *testing.T) {
 // run wired d.User and the second d.Dep, from the same input, and where the
 // two fields have one type the result compiled.
 func TestWireReadsAConstructorItScaffoldedAsItWroteIt(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -1902,6 +1950,7 @@ type Deps struct {
 // author's file knows it under: an answer kept from the first ask wrote stubs
 // against a package called graph.
 func TestScaffoldReadsAPackageNameAgainOnceItIsWritten(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -1947,6 +1996,7 @@ func NewWidgets(deps.Deps) *Widgets { return &Widgets{} }
 // every file beside a constructor: with a Handler per group, one service
 // package was read once for each of them. Counted, not timed.
 func TestWireReadsAPackagesNameOnce(t *testing.T) {
+	t.Parallel()
 	scaffold := map[string]string{"user": "impl.Users", "post": "impl.Posts"}
 	dir, _ := wireModule(t, scaffold)
 	ctor := func(typ string) string {

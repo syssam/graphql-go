@@ -12,6 +12,7 @@ import (
 // file removed from the sources must leave the output too, or its types stay
 // in the served schema.
 func TestDeletedSDLLeavesTheEmbeddedSchema(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	write := func(name, body string) {
 		p := filepath.Join(dir, "sdl", name)
@@ -52,6 +53,7 @@ func TestDeletedSDLLeavesTheEmbeddedSchema(t *testing.T) {
 // own, stops getting a models.go. The old one must go with it: it still
 // compiles, so nothing reports it, and it declares types no binding uses.
 func TestStaleGeneratedFilesAreRemoved(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	write := func(rel, body string) {
 		p := filepath.Join(dir, rel)

@@ -16,6 +16,7 @@ type Subscription { messages: Message! countdown(from: Int!): Int! }
 `
 
 func TestGenerateSubscriptionBindings(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "schema.graphql"), []byte(subSDL), 0o644); err != nil {
 		t.Fatal(err)
@@ -54,6 +55,7 @@ func TestGenerateSubscriptionBindings(t *testing.T) {
 }
 
 func TestGeneratedSubscriptionExecutes(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go test subprocess")
 	}
@@ -146,6 +148,7 @@ func collect(t *testing.T, e *graphql.Executor, query string) []string {
 }
 
 func TestSubscriptionEvents(t *testing.T) {
+	t.Parallel()
 	s, err := graph.NewSchema(graph.Stub{})
 	if err != nil {
 		t.Fatal(err)

@@ -20,6 +20,7 @@ type Query { report: Report }
 // the struct like a scalar, as gqlgen did; a field with arguments still needs a
 // resolver.
 func TestStructObjectFieldsKeepsObjectFieldsOnGeneratedModels(t *testing.T) {
+	t.Parallel()
 	dir := generate(t, structObjectsSDL, Config{StructObjectFields: true})
 	models := generated(t, dir, "model/models.go")
 	src := generated(t, dir, "generated.go")
@@ -47,6 +48,7 @@ func TestStructObjectFieldsKeepsObjectFieldsOnGeneratedModels(t *testing.T) {
 
 // The default is unchanged: object fields are resolvers.
 func TestObjectFieldsAreResolversByDefault(t *testing.T) {
+	t.Parallel()
 	dir := generate(t, structObjectsSDL, Config{})
 	src := generated(t, dir, "generated.go")
 	if !strings.Contains(src, "ReportLines(") || !strings.Contains(src, "ReportOwner(") {
@@ -58,6 +60,7 @@ func TestObjectFieldsAreResolversByDefault(t *testing.T) {
 // Before, appearing in the manifest at all turned every other field into a
 // resolver, so forcing one field to a resolver on a generated model emptied it.
 func TestManifestEntryWithoutAGoTypeOnlyOverridesItsFields(t *testing.T) {
+	t.Parallel()
 	dir := generate(t, structObjectsSDL, Config{
 		StructObjectFields: true,
 		Manifest: &Manifest{Types: []TypeBinding{{
@@ -93,6 +96,7 @@ type Query { echo(lines: [Line!]): Int }
 // gqlgen spelled a list of input objects []*Input; callers written against it
 // test elements for nil and dereference them. InputListPointers keeps that shape.
 func TestInputListPointersKeepsPointerElements(t *testing.T) {
+	t.Parallel()
 	dir := generate(t, inputListSDL, Config{InputListPointers: true})
 	models := norm(generated(t, dir, "model/models.go"))
 	for _, want := range []string{"Lines []*Line", "Maybe []*Line", "Tags []string", "Sparse []*Line"} {
@@ -108,6 +112,7 @@ func TestInputListPointersKeepsPointerElements(t *testing.T) {
 // A nullable ELEMENT must not be wrapped in Omittable and then pointed at: the
 // element is simply *T.
 func TestInputListPointersOnNullableElementsWithOmittable(t *testing.T) {
+	t.Parallel()
 	dir := generate(t, inputListSDL, Config{InputListPointers: true, NullableInputOmittable: true})
 	models := norm(generated(t, dir, "model/models.go"))
 	if strings.Contains(models, "*graphql.Omittable") || strings.Contains(models, "[]graphql.Omittable") {
@@ -129,6 +134,7 @@ type Query { posts(filter: Filter, tags: [String]): [String!]! }
 // compiled, and NewSchema then refused every input holding a list of nullable
 // elements, which only building the schema shows.
 func TestOmittableIsNeverAListElement(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go test subprocess")
 	}
@@ -171,6 +177,7 @@ func TestOmittableIsNeverAListElement(t *testing.T) {
 // it had no other use for. The same schema restored that shape, too, with a
 // string replacement over the generated models.
 func TestOmittableDoesNotPointAtWhatIsAlreadyNilable(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping go vet subprocess")
 	}
@@ -205,6 +212,7 @@ type Query { posts(filter: Filter): [String!]! }
 }
 
 func TestInputListsAreValuesByDefault(t *testing.T) {
+	t.Parallel()
 	dir := generate(t, inputListSDL, Config{})
 	if models := norm(generated(t, dir, "model/models.go")); !strings.Contains(models, "Lines []Line") {
 		t.Errorf("default should keep value elements:\n%s", models)
@@ -232,6 +240,7 @@ func writeGroups(t *testing.T, cfg Config, files map[string]string) string {
 // CAN make two groups' models refer to each other; Go forbids the import cycle, so the
 // models must then fall back to one shared package, exactly as cyclic inputs do.
 func TestStructObjectFieldsCycleFallsBackToOnePackage(t *testing.T) {
+	t.Parallel()
 	dir := writeGroups(t, Config{StructObjectFields: true}, map[string]string{
 		"alpha.graphql": "type Alpha { id: ID! beta: Beta }\ntype Query { alpha: Alpha }\n",
 		"beta.graphql":  "type Beta { id: ID! alpha: Alpha }\nextend type Query { beta: Beta }\n",
@@ -248,6 +257,7 @@ func TestStructObjectFieldsCycleFallsBackToOnePackage(t *testing.T) {
 
 // No cycle, no fallback: the per-group split is what makes an edit recompile one group.
 func TestStructObjectFieldsKeepsTheSplitWhenThereIsNoCycle(t *testing.T) {
+	t.Parallel()
 	dir := writeGroups(t, Config{StructObjectFields: true}, map[string]string{
 		"alpha.graphql": "type Alpha { id: ID! beta: Beta }\ntype Query { alpha: Alpha }\n",
 		"beta.graphql":  "type Beta { id: ID! }\nextend type Query { beta: Beta }\n",
