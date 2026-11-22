@@ -1,6 +1,8 @@
 package codegen
 
 import (
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/vektah/gqlparser/v2/ast"
@@ -73,20 +75,42 @@ func (b *builder) modelName(graphqlName, selfPkg string) string {
 // symbols across 381 packages, from this one cause.
 //
 // The generated side is the one that yields, because it is the side whose
-// references this generator writes.
+// references this generator writes. It yields to the extra enum packages too,
+// for the same reason: they are the author's, reached through their own
+// struct, where this one is a name the generator chose. A group called
+// "method" beside a second enum type in .../method put two imports under one
+// qualifier (TestSecondEnumPackageDoesNotCollideWithAGeneratedModelPackage).
+//
+// The name it yields to is checked as the first was, and against every other
+// model package as well: a group called timemodel beside time, renamed for
+// a mapped time.Time, imported both packages as timemodel. A numeric suffix
+// follows until the name is free, as pathQualifier does for mapped packages.
 func (b *builder) modelQualifier(pkg string) string {
-	if _, taken := b.modelExprImports()[pkg]; taken {
-		return pkg + "model"
+	q := pkg
+	for n := 1; b.qualifierTaken(q, pkg); n++ {
+		q = pkg + "model"
+		if n > 1 {
+			q += strconv.Itoa(n)
+		}
 	}
-	// And to an extra enum's package, for the same reason: it is the author's
-	// package, reached through their own struct, where this one is a name the
-	// generator chose. A group called "method" beside a second enum type in
-	// .../method put two imports under one qualifier, which is a redeclaration
-	// rather than a warning (TestSecondEnumPackageDoesNotCollideWithAGeneratedModelPackage).
-	if _, taken := b.extraImports[pkg]; taken {
-		return pkg + "model"
+	return q
+}
+
+// qualifierTaken reports whether model package pkg may not be imported as q:
+// a mapped or extra enum package holds q, or q is another model package's
+// own name.
+func (b *builder) qualifierTaken(q, pkg string) bool {
+	if _, taken := b.modelExprImports()[q]; taken {
+		return true
 	}
-	return pkg
+	if _, taken := b.extraImports[q]; taken {
+		return true
+	}
+	if q == pkg || !b.modelSplit {
+		return false
+	}
+	_, other := slices.BinarySearch(b.uniqueGroups(), q)
+	return other
 }
 
 func (b *builder) goType(t *ast.Type, selfPkg string, omitNull bool) string {
