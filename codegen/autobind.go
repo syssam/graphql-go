@@ -3,7 +3,10 @@ package codegen
 import (
 	"context"
 	"fmt"
+	goast "go/ast"
 	"go/build"
+	"go/parser"
+	"go/token"
 	"go/types"
 	"maps"
 	"path/filepath"
@@ -65,7 +68,12 @@ func autoBind(ctx context.Context, dir string, patterns []string, schema *ast.Sc
 				continue
 			}
 			named, ok := types.Unalias(obj.Type()).(*types.Named)
-			if !ok {
+			// A generic type has no single name to bind: Object[ent.Page] is
+			// "cannot use generic type without instantiation". An instance,
+			// reached through an alias, reports its origin's type parameters
+			// too, and its name drops the arguments, so it is skipped with
+			// it. Models can name an instance.
+			if !ok || named.TypeParams().Len() > 0 {
 				continue
 			}
 			if _, taken := found[name]; !taken {
@@ -403,12 +411,52 @@ func namedIndex(pkgs []*packages.Package) map[string]*types.Named {
 
 // namedByExpr resolves a Config.Models entry to the loaded named type it
 // spells, or nil when that package was not loaded.
+//
+// An instance of a generic type, ent.Page[int], is instantiated, so its fields
+// are read with their type arguments in place; looked up by its spelling it
+// matched nothing, its fields were derived from the SDL, and url was written
+// v.Url against a field called URL. modelExprOK keeps type arguments free of
+// any package, so they are evaluated as predeclared types. A generic type
+// named without arguments is no type at all and resolves to nothing.
 func namedByExpr(idx map[string]*types.Named, expr string) *types.Named {
 	path, _ := splitModelExpr(expr)
 	if path == "" {
 		return nil
 	}
-	return idx[path+expr[strings.LastIndex(expr, "."):]]
+	name := expr[strings.LastIndex(expr, ".")+1:]
+	base, _, generic := strings.Cut(name, "[")
+	named := idx[path+"."+base]
+	if named == nil || !generic {
+		if named != nil && named.TypeParams().Len() > 0 {
+			return nil
+		}
+		return named
+	}
+	inst, err := parser.ParseExpr(name)
+	if err != nil {
+		return nil
+	}
+	var argExprs []goast.Expr
+	switch e := inst.(type) {
+	case *goast.IndexExpr:
+		argExprs = []goast.Expr{e.Index}
+	case *goast.IndexListExpr:
+		argExprs = e.Indices
+	}
+	targs := make([]types.Type, 0, len(argExprs))
+	for _, a := range argExprs {
+		tv, err := types.Eval(token.NewFileSet(), nil, token.NoPos, types.ExprString(a))
+		if err != nil || !tv.IsType() {
+			return nil
+		}
+		targs = append(targs, tv.Type)
+	}
+	t, err := types.Instantiate(nil, named, targs, true)
+	if err != nil {
+		return nil
+	}
+	out, _ := t.(*types.Named)
+	return out
 }
 
 // summarize renders at most n of the names, with a count of the rest.

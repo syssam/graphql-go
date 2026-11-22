@@ -141,11 +141,23 @@ func structFields(named *types.Named) map[string]goField {
 	}
 	walk(named, 0)
 	for key, f := range out {
-		if f.ambiguous || f.hidden {
+		if f.ambiguous || f.hidden || !selectsField(named, f.name) {
 			delete(out, key)
 		}
 	}
 	return out
+}
+
+// selectsField reports whether v.name, for a v of type *named, is a struct
+// field. The walk above sees fields only, and in Go v.Name is whichever of
+// field and method is shallowest, and nothing when two tie: Product.Name()
+// over an embedded Base.Name makes v.Name the method, and binding the field
+// wrote "cannot use v.Name (value of type func() string)". Go's own lookup is
+// the rule, rather than a second copy of it here.
+func selectsField(named *types.Named, name string) bool {
+	obj, _, _ := types.LookupFieldOrMethod(types.NewPointer(named), true, named.Obj().Pkg(), name)
+	_, ok := obj.(*types.Var)
+	return ok
 }
 
 func underlying(t types.Type) types.Type {
@@ -261,7 +273,9 @@ func describe(name string, sig *types.Signature) goMethod {
 		m.context = true
 		start = 1
 	}
-	if sig.Variadic() {
+	// A generic method needs type arguments the generated call has no way to
+	// supply: v.Label() is "cannot infer T".
+	if sig.Variadic() || sig.TypeParams().Len() > 0 {
 		return m
 	}
 	for i := start; i < params.Len(); i++ {

@@ -37,10 +37,57 @@ func reconcile(actual types.Type, expected string, qual types.Qualifier) (conver
 		return false, false
 	}
 	basic, ok := types.Unalias(actual).Underlying().(*types.Basic)
-	if !ok {
+	if !ok || basic.Info()&want == 0 {
 		return false, false
 	}
-	return true, basic.Info()&want != 0
+	return true, lossless(basic, expected)
+}
+
+// lossless reports whether every value of from survives conversion to the
+// basic type expected spells. int is taken at 64 bits, so int64 into int
+// binds and uint64 does not. On a 32-bit platform int64 into int truncates;
+// that is accepted, because refusing it would send every int64 column an ORM
+// generates through a Resolver on the platforms servers run on.
+func lossless(from *types.Basic, expected string) bool {
+	switch expected {
+	case "string", "graphql.ID", "bool", "float64":
+		return true
+	case "float32":
+		return from.Kind() == types.Float32
+	}
+	to := map[string]int{"int": 64, "int64": 64, "int32": 32}[expected]
+	bits, signed := intWidth(from.Kind())
+	if bits == 0 {
+		return false
+	}
+	if signed {
+		return bits <= to
+	}
+	return bits < to
+}
+
+// intWidth is the width of an integer kind and whether it is signed; 0 for
+// anything else, uintptr included, which is an address and not a number.
+func intWidth(k types.BasicKind) (bits int, signed bool) {
+	switch k {
+	case types.Int8:
+		return 8, true
+	case types.Int16:
+		return 16, true
+	case types.Int32:
+		return 32, true
+	case types.Int64, types.Int:
+		return 64, true
+	case types.Uint8:
+		return 8, false
+	case types.Uint16:
+		return 16, false
+	case types.Uint32:
+		return 32, false
+	case types.Uint64, types.Uint:
+		return 64, false
+	}
+	return 0, false
 }
 
 // basicClassOf maps a Go type expression the generator emits to the class of

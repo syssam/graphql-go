@@ -94,7 +94,9 @@ type Config struct {
 	// named string types in the model package. An entry is a predeclared
 	// type, or import/path.Type behind any * and [], the type being what
 	// follows the last dot; a map or generic over another package's type is
-	// refused, and a named type declared for it can be mapped instead.
+	// refused, and a named type declared for it can be mapped instead. Only
+	// a scalar is mapped behind * or []: the generator writes an object's
+	// pointer and every list itself.
 	Models map[string]string
 	// ModelDirective names an SDL directive that already carries a type's Go
 	// binding, and the argument holding it. Empty means none.

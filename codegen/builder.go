@@ -2,7 +2,9 @@ package codegen
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -234,6 +236,9 @@ func newBuilder(ctx context.Context, dir string, cfg Config) (*builder, error) {
 		// generator would have written instead, and none of them match.
 		b.setModels(cfg.Models)
 	}
+	if err := b.checkModelIndirection(); err != nil {
+		return nil, err
+	}
 	if err := b.foldFieldDirective(); err != nil {
 		return nil, err
 	}
@@ -280,6 +285,29 @@ func newBuilder(ctx context.Context, dir string, cfg Config) (*builder, error) {
 		return nil, err
 	}
 	return b, nil
+}
+
+// checkModelIndirection refuses a Models entry behind * or [] for anything but
+// a scalar. The generator writes an object's pointer and every list itself, so
+// Product: *ent.Product became Object[*ent.Product] over func(v **ent.Product),
+// a compile error in generated code. A scalar is a leaf whose Go type is used
+// as given, which is what *, [] and a generic are there for.
+func (b *builder) checkModelIndirection() error {
+	var errs []error
+	for _, name := range slices.Sorted(maps.Keys(b.cfg.Models)) {
+		def := b.schema.Types[name]
+		expr := b.cfg.Models[name]
+		if def == nil || def.Kind == ast.Scalar || strings.TrimLeft(expr, "*[]") == expr {
+			continue
+		}
+		phrase := "an object"
+		if def.Kind != ast.Object {
+			phrase = kindPhrase(def.Kind)
+		}
+		errs = append(errs, fmt.Errorf("codegen: Models[%q] = %q: %s is %s, and the generator writes its pointers and lists itself, so only a scalar is mapped behind * or []; map it to %s",
+			name, expr, name, phrase, strings.TrimLeft(expr, "*[]")))
+	}
+	return errors.Join(errs...)
 }
 
 // typeNames returns the schema's type names of one kind, sorted. The slice is
