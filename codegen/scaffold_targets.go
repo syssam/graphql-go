@@ -28,6 +28,7 @@ func (b *builder) checkScaffoldTargets(outDir string, files map[string][]byte) e
 	}
 	output := b.outputPackages(outDir, files)
 	seen := b.newDirSet()
+	shared := b.sharedTargets()
 	for _, name := range slices.Sorted(maps.Keys(b.cfg.Scaffold)) {
 		target := b.cfg.Scaffold[name]
 		dir, typ, err := b.splitTarget(target)
@@ -52,14 +53,24 @@ func (b *builder) checkScaffoldTargets(outDir string, files map[string][]byte) e
 		if generated[typ] {
 			return fmt.Errorf("codegen: scaffold %s: target %q: %s is declared by the generated code in that package; name the implementation something else", name, target, typ)
 		}
+		if err := checkStubFile(filepath.Join(dir, identFrom(name)+".resolvers.go")); err != nil {
+			return fmt.Errorf("codegen: scaffold %s: %w", name, err)
+		}
 		// Read once per directory the filesystem has, which is not once per
 		// lower-cased spelling: where case matters impl and Impl are two
 		// packages, and the second went unread -- its stubs unreported and a
 		// generated name declared in it unrefused.
-		if _, ok := seen.find(dir); ok {
+		canon, read := seen.find(dir)
+		if !read {
+			seen.add(dir)
+			canon = dir
+		}
+		if err := shared.add(name, canon, typ); err != nil {
+			return err
+		}
+		if read {
 			continue
 		}
-		seen.add(dir)
 		for _, e := range entries {
 			n := e.Name()
 			if e.IsDir() || !strings.HasSuffix(n, ".go") || strings.HasSuffix(n, "_test.go") {
@@ -91,6 +102,75 @@ func (b *builder) checkScaffoldTargets(outDir string, files map[string][]byte) e
 						name, path, declared)
 				}
 			}
+		}
+	}
+	return nil
+}
+
+// checkStubFile refuses the file a group's stubs are appended to when the
+// append cannot work, which the directory walk above does not see: it skips
+// a directory and a file no build includes, and scaffoldGroup reads and
+// parses the file all the same. Left to it, a directory was refused after
+// the output was written, and a file under //go:build ignore took the stubs
+// -- and the type, on every run -- where no build would compile them.
+func checkStubFile(path string) error {
+	fi, err := os.Stat(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	case err != nil:
+		return err
+	case fi.IsDir():
+		return fmt.Errorf("%s is a directory, where the stubs are written", path)
+	}
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if excludedEverywhere(src) {
+		return fmt.Errorf("%s is excluded from every build by its constraint, so the stubs written into it would compile nowhere; remove the constraint or rename the file", path)
+	}
+	return nil
+}
+
+// sharedTargets collects, per implementation type, the Resolver methods each
+// group scaffolded into it needs. Root fields are grouped by file, so
+// Query.thing in one group and Mutation.thing(x:) in another are both a
+// method Thing, with two signatures. One type cannot have both: scaffolding
+// wrote the first, skipped the second as present, and the type then
+// implemented one Resolver and not the other, with the error at the caller.
+type sharedTargets struct {
+	b       *builder
+	keys    map[string]string
+	methods map[[2]string]map[string]sharedMethod
+}
+
+type sharedMethod struct{ name, signature string }
+
+func (b *builder) sharedTargets() *sharedTargets {
+	return &sharedTargets{b: b, keys: b.scaffoldKeys(b.uniqueGroups()), methods: map[[2]string]map[string]sharedMethod{}}
+}
+
+// add records scaffold name's methods against its target, dir being the
+// spelling the directory was first seen under, and refuses one another group
+// already needs with a different signature. The args structs are qualified by
+// group whether or not the target is the group's own package: two groups'
+// args structs are two types however either is spelled, and asking which
+// target is a group's own would cost a filesystem probe per target.
+func (s *sharedTargets) add(name, dir, typ string) error {
+	key := [2]string{dir, typ}
+	if s.methods[key] == nil {
+		s.methods[key] = map[string]sharedMethod{}
+	}
+	for _, m := range s.b.resolverSignatures(s.keys[name], identFrom(name)+"gql.") {
+		prev, ok := s.methods[key][m.name]
+		if !ok {
+			s.methods[key][m.name] = sharedMethod{name, m.signature}
+			continue
+		}
+		if prev.signature != m.signature {
+			return fmt.Errorf("codegen: scaffold %s: %s needs %s.%s%s, and scaffold %s needs %s%s of the same type; one type cannot have both, so give one group a target of its own",
+				name, typ, typ, m.name, m.signature, prev.name, m.name, prev.signature)
 		}
 	}
 	return nil
