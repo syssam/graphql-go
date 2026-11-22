@@ -217,6 +217,13 @@ func plan(ctx context.Context, cfg Config) (*run, error) {
 	if err := b.checkScaffoldTargets(outDir, files); err != nil {
 		return nil, err
 	}
+	// The last point a cancellation can stop a generate: everything after is
+	// apply, and a write abandoned halfway leaves a tree that is no run's.
+	// Between render's check and this one a large schema reads thousands of
+	// output files and parses every scaffold target's package.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return &run{
 		b: b, dir: b.dir, outDir: outDir, files: files, rels: rels, olds: olds,
 		recorded: recorded, changes: b.bindingChanges(rels, olds, files),
@@ -284,6 +291,12 @@ func checkGoConfig(cfg Config) error {
 	}
 	if cfg.Package != "" && !token.IsIdentifier(name) {
 		return fmt.Errorf("codegen: Package %q ends in %q, which is not a Go package name", cfg.Package, name)
+	}
+	// The whole path, not only its last element: it is written into every
+	// generated import, and a go.mod line read with its trailing comment made
+	// it "example.com/app // the app/graph", which passed the check above.
+	if cfg.Package != "" && !importPathOK(cfg.Package) {
+		return fmt.Errorf("codegen: Package %q is not an import path", cfg.Package)
 	}
 	var errs []error
 	for _, gql := range slices.Sorted(maps.Keys(cfg.Models)) {

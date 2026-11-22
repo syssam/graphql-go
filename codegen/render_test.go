@@ -71,6 +71,11 @@ func TestRenderRefusesWhatAGenerateRefuses(t *testing.T) {
 			cfg:  func(c *Config) { c.Inline = []string{"User.nope"} },
 			want: `inline "User.nope" names no field`,
 		},
+		"package is no import path": {
+			sdl:  renderSDL,
+			cfg:  func(c *Config) { c.Package = "example.com/app // the app/graph" },
+			want: "is not an import path",
+		},
 		"scaffold names no group": {
 			sdl:  renderSDL,
 			cfg:  func(c *Config) { c.Scaffold = map[string]string{"nogroup": "graph/x.Handler"} },

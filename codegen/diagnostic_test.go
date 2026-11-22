@@ -76,6 +76,27 @@ func TestRefusalsCarryTheirSDLPosition(t *testing.T) {
 	}
 }
 
+// A relative Config.Dir names the file relative to Dir too, as an absolute
+// one does: gqlc passes the directory of -config, which is relative or not as
+// the flag was typed. Serial: it changes the working directory.
+func TestDiagnosticFileIsRelativeToDirHoweverDirIsSpelled(t *testing.T) {
+	parent := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(parent, "sub", "schema"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "sub", "schema", "s.graphql"), []byte("type Query {\n  grid: [[[Int]]]\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(parent)
+	for _, dir := range []string{"sub", "./sub", filepath.Join(parent, "sub")} {
+		_, err := Render(context.Background(), Config{Dir: dir, SchemaGlobs: []string{"schema/*.graphql"}, Output: "graph", Package: "hello/graph"})
+		ds := Diagnostics(err)
+		if len(ds) != 1 || ds[0].File != "schema/s.graphql" {
+			t.Errorf("Dir %q: Diagnostics = %v, want one naming schema/s.graphql (from %v)", dir, ds, err)
+		}
+	}
+}
+
 // Diagnostics walks errors.Join and %w, in order, and skips what is not one.
 func TestDiagnosticsWalksTheWholeTree(t *testing.T) {
 	t.Parallel()

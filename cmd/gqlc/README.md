@@ -78,7 +78,8 @@ go tool gqlc -config gqlc.yaml -check
 A check that passes prints nothing and exits 0; one that fails names each
 file, relative to the directory of `gqlc.yaml`, and exits 1. It refuses
 whatever a generate would refuse, scaffold configuration included, so a broken
-configuration is never reported as up to date. A file that differs only in
+configuration is never reported as up to date: that, and any other failure,
+exits 2, as `diff` does, so a CI step can tell "regenerate" from "broken". A file that differs only in
 line endings is the same file, to a check as to a generate: a Windows
 checkout with `core.autocrlf` does not make everything stale.
 

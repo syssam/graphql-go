@@ -286,6 +286,30 @@ a field added without a decision; "the first AutoBind pattern wins" holds becaus
 re-sorts the roots `packages.Load` returns in dependency order -- still one Load, export data
 only (`discovery_review_test.go`).
 
+**An eighth review (2026-11) found fourteen defects, ten of them in shapes no fixture had**:
+generic types and methods, a method hiding a promoted field, `*` and generic `Models` entries,
+and two scaffold targets sharing a method name. Each is a compile test now, which is the only
+evidence for generated code:
+- `found` skips a generic type, and an alias of an instance of one (`TypeParams` reports the
+  origin's parameters on an instance, so one check covers both). `describe` refuses a generic
+  method. `structFields` keeps a field only where `types.LookupFieldOrMethod` -- Go's own
+  selector rule -- says `v.Name` is that field and not a method.
+- `namedByExpr` instantiates `Page[int]` so its fields are read; `Models` behind `*` or `[]` is
+  refused for anything but a scalar (`checkModelIndirection`), since the generator writes an
+  object's pointer itself (`autobind_shapes_test.go`).
+- `reconcile` converts only when every value survives (`lossless`): `uint64` into `int`
+  compiled and served negative numbers.
+- `modelQualifier` retries until the name is free of mapped, extra-enum and other model
+  packages: group `time` yielding to `time.Time` took `timemodel`, another group's package
+  (`qualifier_test.go`).
+- `checkScaffoldTargets` checks the stub file itself (a directory, or one no build includes, was
+  refused after the writes or silently took the stubs) and the signatures every group sharing a
+  target needs (`scaffold_refusals_test.go`).
+- `plan` checks the context once more after `render`; `Diagnostic.File` makes a relative source
+  name absolute before taking it relative to `Dir`; `Package` is checked as a whole import
+  path; gqlc's `modulePath` strips a `//` comment and unquotes, still with no `x/mod`
+  dependency; a second YAML document holding anything is refused.
+
 On disk: a copy is refused where it would replace a file in `Output/schema` the last run did not
 list, unless that file already says the same or is empty (`foreignSchemaFiles`); before, only
 files a run did *not* write were asked about, and a hand-written `user.graphql` was overwritten.
@@ -729,6 +753,8 @@ runs every refusal a generate runs first, so a broken configuration is an error 
 "current"; what it would delete comes from `pruneList`, the listing half of `pruneGenerated`,
 so the two cannot disagree. Scaffolding is left out on purpose, apart from its configuration
 (`checkScaffold`): it adds to code the author owns, and the compiler reports what is missing.
+gqlc exits as `diff` does (`exitCode`): 0 current, 1 stale (`ErrStale`, or `ErrStubs` with
+`-stubs`), 2 anything else, so CI can tell "regenerate" from "broken".
 
 **`Generate`, `Check` and `Render` share one pipeline in `generate.go`**: `render` (the schema
 and configuration refusals, then `emit`), `plan` (`render` plus every refusal about what is on

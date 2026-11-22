@@ -246,10 +246,25 @@ func (fc *fileConfig) rootFieldGroup() (func(codegen.RootField) string, error) {
 }
 
 func main() {
-	if err := run(os.Args[1:]); err != nil {
+	err := run(os.Args[1:])
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
 	}
+	os.Exit(exitCode(err))
+}
+
+// exitCode is diff's convention: 0 when nothing is stale, 1 when a check
+// found the tree stale -- or a scaffolded stub left, with -stubs -- and 2 for
+// anything else. A CI step can then tell "regenerate" from "the configuration
+// is broken", which one code for both left it to parse stderr for.
+func exitCode(err error) int {
+	switch {
+	case err == nil:
+		return 0
+	case errors.Is(err, codegen.ErrStale), errors.Is(err, codegen.ErrStubs):
+		return 1
+	}
+	return 2
 }
 
 func run(args []string) error { return runTo(args, os.Stdout, os.Stderr) }
@@ -345,6 +360,22 @@ func runTo(args []string, stdout, stderr io.Writer) error {
 	dec.KnownFields(true)
 	if err := dec.Decode(&fc); err != nil && !errors.Is(err, io.EOF) {
 		return fmt.Errorf("gqlc: parse %s: %w", configPath, err)
+	}
+	// One document. A second, after ---, was never read, so KnownFields saw
+	// none of its keys and a misspelling there was silent again. An empty one,
+	// a trailing --- or a comment after it, holds nothing to miss.
+	for {
+		var more yaml.Node
+		err := dec.Decode(&more)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("gqlc: parse %s: %w", configPath, err)
+		}
+		if len(more.Content) > 0 && more.Content[0].Tag != "!!null" {
+			return fmt.Errorf("gqlc: %s holds more than one YAML document; gqlc reads one", configPath)
+		}
 	}
 	rootFieldGroup, err := fc.rootFieldGroup()
 	if err != nil {

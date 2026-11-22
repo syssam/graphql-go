@@ -51,6 +51,42 @@ func TestCancelDuringGenerateStopsBeforeWriting(t *testing.T) {
 	}
 }
 
+// countingCtx is never done, but reports Canceled from call cancelAt of Err
+// on, so a test can cancel at one exact check.
+type countingCtx struct {
+	context.Context
+	calls, cancelAt int
+}
+
+func (c *countingCtx) Err() error {
+	c.calls++
+	if c.cancelAt > 0 && c.calls >= c.cancelAt {
+		return context.Canceled
+	}
+	return nil
+}
+
+// A cancellation after render, while plan reads the output and the scaffold
+// targets, still stops a generate before its first write. The number of
+// checks render makes is counted, not assumed, so the context cancels at the
+// first check after it, whichever that is.
+func TestCancelAfterRenderStopsBeforeWriting(t *testing.T) {
+	t.Parallel()
+	cfg := renderConfig(t, renderSDL)
+	count := &countingCtx{Context: context.Background()}
+	if _, err := Render(count, cfg); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshot(t, cfg.Dir)
+	ctx := &countingCtx{Context: context.Background(), cancelAt: count.calls + 1}
+	if err := Generate(ctx, cfg); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Generate: err = %v after %d checks, want context.Canceled", err, ctx.calls)
+	}
+	if after := snapshot(t, cfg.Dir); !maps.Equal(before, after) {
+		t.Errorf("a generate cancelled after render changed the tree")
+	}
+}
+
 // The context reaches packages.Load itself: an already-cancelled one fails
 // the load, rather than the load running to the end and the cancellation
 // being noticed after.

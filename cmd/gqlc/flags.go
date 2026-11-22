@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -78,7 +79,11 @@ func derivePackage(dir string) (string, error) {
 
 // modulePath reads the module line without depending on golang.org/x/mod: the
 // root package's restraint about dependencies is worth keeping in its own
-// tooling, and one line of go.mod does not need a parser.
+// tooling, and one line of go.mod does not need a parser. It does need the
+// line's grammar: a // comment ends it, the keyword is a whole word, and the
+// path may be quoted. Read as the text after "module", a trailing comment
+// made "module example.com/app // the app" the import path
+// "example.com/app // the app/graph" in every generated file.
 func modulePath(goMod string) (string, error) {
 	f, err := os.Open(goMod)
 	if err != nil {
@@ -87,12 +92,16 @@ func modulePath(goMod string) (string, error) {
 	defer func() { _ = f.Close() }()
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if rest, ok := strings.CutPrefix(line, "module"); ok {
-			if path := strings.TrimSpace(rest); path != "" && path != "(" {
-				return strings.Trim(path, `"`), nil
-			}
+		line, _, _ := strings.Cut(sc.Text(), "//")
+		fields := strings.Fields(line)
+		if len(fields) != 2 || fields[0] != "module" {
+			continue
 		}
+		path := fields[1]
+		if unquoted, err := strconv.Unquote(path); err == nil {
+			path = unquoted
+		}
+		return path, nil
 	}
 	if err := sc.Err(); err != nil {
 		return "", err

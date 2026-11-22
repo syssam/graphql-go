@@ -69,10 +69,17 @@ func (b *builder) diag(pos *ast.Position, coord string, format string, args ...a
 }
 
 // sdlName is how a Diagnostic names an SDL file: relative to Config.Dir when
-// it is under it, since that is where gqlc is run from.
+// it is under it, since that is where gqlc is run from. A source is named as
+// its glob was joined onto Dir, so with a relative Dir its name is relative
+// to the working directory, and is made absolute the same way Dir is before
+// the two are compared: compared as given, Dir "sub" named the file
+// sub/schema/s.graphql and the same Dir spelled absolutely schema/s.graphql.
 func (b *builder) sdlName(name string) string {
 	path := filepath.FromSlash(name)
-	if base, err := filepath.Abs(b.dir); err == nil && filepath.IsAbs(path) {
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	if base, err := filepath.Abs(b.dir); err == nil {
 		if rel, err := filepath.Rel(base, path); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return filepath.ToSlash(rel)
 		}
