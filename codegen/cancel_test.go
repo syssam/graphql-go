@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/vektah/gqlparser/v2/ast"
 )
 
 // A context cancelled during a generate, once the schema is loaded and
@@ -92,11 +94,14 @@ func TestAltEnumLoadFailureIsNoted(t *testing.T) {
 	}
 }
 
-// The context reaches the go command packages.Load runs, not only the checks
-// around it: a go that never answers is stopped when the deadline passes,
-// where without the context the load waits for it. The fake go is a shell
-// script, so this runs where sh does.
-func TestAutoBindStopsAHungGoCommand(t *testing.T) {
+// The context reaches the go command each packages.Load runs, not only the
+// checks around it: a go that never answers is stopped when the deadline
+// passes, where without the context the load waits for it. modelPkgs and
+// altEnumPkgs swallow a failed load by design, so for them returning at all
+// is the observable, and each is driven on its own -- autoBind's ctx check
+// after its first load would otherwise hide either one losing its context.
+// The fake go is a shell script, so this runs where sh does.
+func TestEveryLoadStopsAHungGoCommand(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the fake go command is a shell script")
 	}
@@ -105,14 +110,42 @@ func TestAutoBindStopsAHungGoCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-	start := time.Now()
-	_, err := autoBind(ctx, t.TempDir(), []string{"./..."}, nil, &builder{})
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
-	}
-	if took := time.Since(start); took > 10*time.Second {
-		t.Fatalf("the load took %v: the hung go command was not stopped", took)
+	enum := &ast.Schema{Types: map[string]*ast.Definition{"Status": {Kind: ast.Enum, Name: "Status"}}}
+	alt := map[string][]*types.Named{"Status": {
+		types.NewNamed(types.NewTypeName(0, types.NewPackage("example.com/alt", "alt"), "Status", nil), types.Typ[types.String], nil),
+	}}
+	for name, load := range map[string]func(context.Context, string) error{
+		"autoBind": func(ctx context.Context, dir string) error {
+			_, err := autoBind(ctx, dir, []string{"./..."}, nil, &builder{})
+			return err
+		},
+		"modelPkgs": func(ctx context.Context, dir string) error {
+			var loads int
+			modelPkgs(ctx, dir, enum, map[string]string{"Status": "example.com/m.Status"}, nil, &loads)
+			if loads != 1 {
+				return fmt.Errorf("loads = %d, want the one load this test is about", loads)
+			}
+			return ctx.Err()
+		},
+		"altEnumPkgs": func(ctx context.Context, dir string) error {
+			var loads int
+			altEnumPkgs(ctx, dir, alt, nil, &loads, func(string, ...any) {})
+			if loads != 1 {
+				return fmt.Errorf("loads = %d, want the one load this test is about", loads)
+			}
+			return ctx.Err()
+		},
+	} {
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		start := time.Now()
+		err := load(ctx, t.TempDir())
+		took := time.Since(start)
+		cancel()
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("%s: err = %v, want context.DeadlineExceeded", name, err)
+		}
+		if took > 10*time.Second {
+			t.Errorf("%s: the load took %v: the hung go command was not stopped", name, took)
+		}
 	}
 }

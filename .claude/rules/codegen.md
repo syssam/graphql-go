@@ -741,10 +741,11 @@ pin the split.
 **The context is honoured until the first write.** Every `packages.Load` gets
 `Context: ctx` (`autoBind`, `modelPkgs`, `altEnumPkgs`), `autoBind` checks `ctx.Err()` after
 each, and `render` checks once more after `emit`. Nothing checks it in `apply`: a write
-abandoned halfway leaves a tree that is no run's. `TestAutoBindStopsAHungGoCommand` puts a
-`go` that sleeps on PATH, because the `ctx.Err()` check after a load hides whether the load
-itself was given the context -- with `Context:` removed every other cancellation test stays
-green. A failed alternate-enum load is a note, not a refusal, and is silent only when the
+abandoned halfway leaves a tree that is no run's. `TestEveryLoadStopsAHungGoCommand` puts a
+`go` that sleeps on PATH and drives each of the three loads on its own, because the
+`ctx.Err()` check after a load hides whether the load itself was given the context -- with
+`Context:` removed every other cancellation test stays green -- and `modelPkgs` and
+`altEnumPkgs` swallow a failed load, so returning promptly is all there is to observe. A failed alternate-enum load is a note, not a refusal, and is silent only when the
 context was cancelled.
 
 **Codegen tests run in parallel** (`t.Parallel()` first in each top-level test): 65 s

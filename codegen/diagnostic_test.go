@@ -108,10 +108,11 @@ func TestRootFieldCollisionSaysWhichFieldNamesEntryFixesIt(t *testing.T) {
 		t.Fatalf("the suggested entry does not fix it: %v", err)
 	}
 	// Two object fields keep the advice that fits them.
-	_, err = generateWith(t, "type Query { a: A b: B }\ntype A { bC: Int }\ntype AB { c: Int }\ntype B { x: Int }\n", Config{
-		FieldNames: map[string]string{"A.bC": "BC"},
-	})
-	if err != nil && strings.Contains(err.Error(), "FieldNames[") {
-		t.Errorf("a non-root collision was given the root-field advice: %v", err)
+	_, err = generateWith(t, "type Query { a: A b: AB }\ntype A { bC(x: Int): Int }\ntype AB { c(x: Int): Int }\n", Config{})
+	if err == nil || !strings.Contains(err.Error(), `both generate "ABCArgs"`) {
+		t.Fatalf("err = %v, want the A.bC / AB.c args collision", err)
+	}
+	if strings.Contains(err.Error(), "FieldNames[") || !strings.Contains(err.Error(), "move one type to a different SDL file") {
+		t.Errorf("a non-root collision was not given the object-field advice: %v", err)
 	}
 }
