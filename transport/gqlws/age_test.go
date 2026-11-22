@@ -13,17 +13,22 @@ import (
 // immediately.
 func TestWithMaxConnectionAgeDrainsConnection(t *testing.T) {
 	_, e := newTestExecutor(t)
+	// The age runs from when the server accepts the connection, so the clock
+	// starts before the dial: started after the subscription registered, it
+	// missed however long dial, init and subscribe took, and under CI load
+	// that was 60 ms of the 100. A timer never fires early, so the close
+	// comes no sooner than the age less its 10% jitter.
+	start := time.Now()
 	c := dial(t, e, gqlws.WithMaxConnectionAge(100*time.Millisecond, 0))
 	c.init("")
 
 	c.subscribe("1", `subscription { messages { id } }`)
 
-	start := time.Now()
 	code := c.recvErr()
 	elapsed := time.Since(start)
 
-	if elapsed < 50*time.Millisecond {
-		t.Fatalf("closed after %v, want not before 50ms (age is 100ms)", elapsed)
+	if elapsed < 90*time.Millisecond {
+		t.Fatalf("closed %v after the dial, want not before 90ms (age is 100ms, give or take 10%%)", elapsed)
 	}
 	if elapsed > 2*time.Second {
 		t.Fatalf("closed after %v, want within 2s", elapsed)
