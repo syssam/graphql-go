@@ -209,6 +209,7 @@ graphql: func Input[T any](name string, fields ...InputFieldOption) SchemaOption
 graphql: func Interface[T any](name string, opts ...AbstractOption) SchemaOption
 graphql: func IntrospectDeprecatedInputValues() SchemaOption
 graphql: func MarkerDirective(name, scope string) SchemaOption
+graphql: func MaskingErrorPresenter(ctx context.Context, err error) *Error
 graphql: func Mutation(fields ...FieldOption) SchemaOption
 graphql: func NewExecutor(s *Schema, opts ...ExecutorOption) *Executor
 graphql: func NewRequirement(anyOf ...[]string) Requirement

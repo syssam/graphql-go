@@ -36,11 +36,17 @@ run, and neither what it may ask for.
 | `gqlws.WithWriteTimeout` / `gqlfiber.WithWriteTimeout` | **10 s** | On already. It is what ends a WebSocket peer that stays connected but stops reading; pings do not. |
 | `gqlsse.WithWriteTimeout` | **10 s** | On already, and the same for an SSE client, on every stream the handler opens: a subscription's, and the single result of a query or mutation. A handler parked in a write sees neither the drain nor its cancelled context, so without it a stalled reader holds its stream, and a large result's buffer, past `Shutdown`. A payload is written in 32 KiB pieces with the deadline set again before each, so it bounds a reader that takes nothing, not a slow one. `gqlfiber.WithWriteTimeout` does the same for its SSE streams. |
 
-**A start-up check is not a limit but belongs with them.** A
-`QueryCost.FieldWeight` key that names no field of an object type -- a typo, a
-renamed field, an interface -- prices nothing and the field costs 1.
-`NewExecutor` logs it once; `QueryCost.Validate(schema)` returns it as an error
-for a start-up check or a test.
+**Two start-up checks are not limits but belong with them.** The default error
+presenter writes the text of any error a resolver returns to the client, so a
+driver's `pq: relation "users" does not exist` reaches whoever sent the query.
+`WithErrorPresenter(graphql.MaskingErrorPresenter)` replaces the text of every
+error that is not a `*graphql.Error` with "internal system error" and keeps the
+original in `Err` for your logs; an error you wrap as a `*graphql.Error` is
+presented as written. It is off by default because it changes what existing
+clients see. And a `QueryCost.FieldWeight` key that names no field of an
+object type -- a typo, a renamed field, an interface -- prices nothing and the
+field costs 1. `NewExecutor` logs it once; `QueryCost.Validate(schema)` returns
+it as an error for a start-up check or a test.
 
 **The plain HTTP handlers have no write deadline of their own.** `gqlhttp`
 (and `gqlecho.New`, `gqlmux`'s JSON branch) writes a response through

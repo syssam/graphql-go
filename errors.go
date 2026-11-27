@@ -289,6 +289,47 @@ func DefaultErrorPresenter(_ context.Context, err error) *Error {
 	return out
 }
 
+// internalMessage is what a client is told of any internal failure: a panic, a
+// failed authorizer, and an error MaskingErrorPresenter hides. One text for all
+// of them means a client cannot tell which path raised it.
+const internalMessage = "internal system error"
+
+// MaskingErrorPresenter is DefaultErrorPresenter that does not pass an
+// unrecognised error's text to the client. An error written for the client (a
+// *Error, or the parser's and validator's) is presented as the default would
+// present it. Any other error, which is what a driver, an ORM or a failed
+// network call returns and carries table names, SQL or addresses in its text,
+// becomes "internal system error" with code INTERNAL_SERVER_ERROR unless an
+// ExtensionsProvider in its chain names one. The original stays in Err, which
+// is never written to the response: a FieldObserver's EndField is handed the
+// raw error, and an interceptor sees it as Err on each of Response.Errors.
+// Nothing here logs it, so log it from one of those.
+//
+// What the engine itself fails to write is hidden too, a resolver's int64 where
+// the schema says Int, for instance: the client can do nothing with it. An
+// error about the request (a parse error, a variable that does not coerce, a
+// limit) is never touched.
+//
+// It is not the default because masking changes what existing clients see: one
+// that shows or matches an error's message would be shown the mask. An app that wants some of its errors to reach the client wraps them as a
+// *Error; one that wants to classify further writes its own presenter and
+// calls this for the remainder.
+//
+//	graphql.NewExecutor(schema, graphql.WithErrorPresenter(graphql.MaskingErrorPresenter))
+func MaskingErrorPresenter(ctx context.Context, err error) *Error {
+	out := DefaultErrorPresenter(ctx, err)
+	var gerr *Error
+	var perr *gqlerror.Error
+	if errors.As(err, &gerr) || errors.As(err, &perr) {
+		return out
+	}
+	out.Message = internalMessage
+	if _, ok := out.Extensions["code"]; !ok {
+		out = out.WithCode(CodeInternal)
+	}
+	return out
+}
+
 // fromGQLError converts a parser or validator error.
 func fromGQLError(e *gqlerror.Error) *Error {
 	out := &Error{Message: e.Message, Err: e}

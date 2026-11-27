@@ -278,7 +278,7 @@ func panicResponse(ctx context.Context, msg string, r any) *Response {
 		"panic", r,
 		"stack", string(stack),
 	)
-	return &Response{Errors: []*Error{Errorf("internal system error").WithCode(CodeInternal)}}
+	return &Response{Errors: []*Error{Errorf(internalMessage).WithCode(CodeInternal)}}
 }
 
 // timeoutError is the cause attached to the executor's own deadline.
@@ -605,7 +605,7 @@ type authorizerCause struct {
 // Error deliberately does not return cause's text: it is what the message
 // would be if something stringified Err directly instead of going through
 // Error.Message, so it must carry no more than Message already does.
-func (c *authorizerCause) Error() string { return "internal system error" }
+func (c *authorizerCause) Error() string { return internalMessage }
 
 // Is delegates to the real cause so errors.Is(presented, errPolicyDown)
 // still works, even though errors.As cannot see past this wrapper.
@@ -626,7 +626,7 @@ func authorizerError(ctx context.Context, err error) *Error {
 	if _, ok := errors.AsType[*panicError](err); !ok {
 		slog.ErrorContext(ctx, "graphql: authorizer failed", "error", err)
 	}
-	return (&Error{Message: "internal system error", Err: &authorizerCause{cause: err}}).WithCode(CodeInternal)
+	return (&Error{Message: internalMessage, Err: &authorizerCause{cause: err}}).WithCode(CodeInternal)
 }
 
 // authorize runs the Authorizer against p's shape and returns the resulting
@@ -1020,7 +1020,7 @@ type panicError struct {
 	value any
 }
 
-func (p *panicError) Error() string { return "internal system error" }
+func (p *panicError) Error() string { return internalMessage }
 
 func (p *panicError) GraphQLExtensions() map[string]any {
 	return map[string]any{"code": CodeInternal}
