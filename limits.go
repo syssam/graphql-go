@@ -2,8 +2,14 @@ package graphql
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"math"
+	"slices"
+	"strings"
 	"time"
+
+	"github.com/vektah/gqlparser/v2/ast"
 )
 
 // QueryCost is a Shopify / GitHub-style cost model computed from the
@@ -51,6 +57,70 @@ type QueryCost struct {
 	// It costs one integer add per resolved field on the write path, which is
 	// why it is separate from Report rather than implied by it.
 	Actual bool
+}
+
+// Validate reports each FieldWeight key that prices nothing in s, one error per
+// key in key order, joined. A weight is looked up by the object type that owns
+// the field, so a typo, a field since renamed, and a key on an interface (whose
+// fields are priced under each implementing object) all fall back to weight 1
+// without a word; so does a key on an introspection type, which is never
+// priced. NewExecutor logs the same finding once per process: call Validate
+// from a start-up check or a test to fail on it instead.
+//
+// It reads only FieldWeight, and a nil Schema reports nothing.
+func (c QueryCost) Validate(s *Schema) error {
+	if s == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(c.FieldWeight))
+	for k := range c.FieldWeight {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	var errs []error
+	for _, k := range keys {
+		if reason := s.weightKeyProblem(k); reason != "" {
+			errs = append(errs, fmt.Errorf("graphql: QueryCost.FieldWeight %q %s", k, reason))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// weightKeyProblem says why a FieldWeight key prices nothing, or is empty
+// when it prices a field of an object type.
+func (s *Schema) weightKeyProblem(key string) string {
+	typeName, field, ok := strings.Cut(key, ".")
+	if !ok || typeName == "" || field == "" {
+		return `is not a "Type.field" coordinate`
+	}
+	def := s.ast.Types[typeName]
+	switch {
+	case strings.HasPrefix(typeName, "__"):
+		return "names an introspection type, which is never priced"
+	case def == nil:
+		return "names no type in the schema"
+	case def.Kind == ast.Interface:
+		return "names an interface, and a weight is read under the object type that implements it: key each implementer"
+	case def.Kind != ast.Object:
+		return "names " + kindPhrase(def.Kind) + ", which has no fields to price"
+	case def.Fields.ForName(field) == nil:
+		return "names no field of " + typeName
+	}
+	return ""
+}
+
+func kindPhrase(k ast.DefinitionKind) string {
+	switch k {
+	case ast.Union:
+		return "a union"
+	case ast.Enum:
+		return "an enum"
+	case ast.Scalar:
+		return "a scalar"
+	case ast.InputObject:
+		return "an input object"
+	}
+	return "a " + strings.ToLower(string(k))
 }
 
 func (c QueryCost) listArgs() []string {

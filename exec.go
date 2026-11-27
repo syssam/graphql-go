@@ -209,6 +209,7 @@ func NewExecutor(s *Schema, opts ...ExecutorOption) *Executor {
 		e.sem = make(chan struct{}, e.maxConcurrency)
 	}
 	e.sayIfUnbounded()
+	e.sayIfCostKeysPriceNothing()
 	e.rules = e.validationRules()
 	e.largeRules = e.validationRules()
 	e.largeRules.ReplaceRule(fieldsCanMergeRule.Name, fieldsCanMergeRule.RuleFunc)

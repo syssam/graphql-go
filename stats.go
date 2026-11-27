@@ -74,6 +74,19 @@ func (e *Executor) sayIfUnbounded() {
 	}
 }
 
+// costKeysSaid is unboundedSaid's counterpart for QueryCost.FieldWeight: a
+// start-up line, not one per executor built.
+var costKeysSaid atomic.Bool
+
+func (e *Executor) sayIfCostKeysPriceNothing() {
+	if e.cost == nil || len(e.cost.FieldWeight) == 0 {
+		return
+	}
+	if err := e.cost.Validate(e.schema); err != nil && costKeysSaid.CompareAndSwap(false, true) {
+		slog.Warn("graphql: QueryCost.FieldWeight has keys that price no field, so those fields cost 1; QueryCost.Validate returns the same finding as an error", "err", err)
+	}
+}
+
 func (e *Executor) countPlan(hit bool) {
 	if hit {
 		e.planHits.Add(1)

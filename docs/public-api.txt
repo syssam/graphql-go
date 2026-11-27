@@ -107,6 +107,7 @@ graphql: const SiteInputWrite SiteKind = iota (iota 3)
 graphql: const SiteInstance SiteKind = iota (iota 4)
 graphql: const SiteObject SiteKind = iota (iota 1)
 graphql: const SiteOutput SiteKind = iota (iota 0)
+graphql: func (c QueryCost) Validate(s *Schema) error
 graphql: func (d *Decision) Input(site int) []InputKey
 graphql: func (d *Decision) Outcome(site int) Outcome
 graphql: func (d *Decision) Set(site int, o Outcome) error
