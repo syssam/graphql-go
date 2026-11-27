@@ -17,8 +17,24 @@ func (b *builder) checkTagDirectives() error {
 	}
 	for _, name := range b.typeNames(ast.InputObject) {
 		for _, fd := range b.schema.Types[name].Fields {
-			if _, err := b.tagsFor(fd); err != nil {
+			if _, err := b.tagsFor(fd.Directives); err != nil {
 				return b.diag(fd.Position, name+"."+fd.Name, "codegen: %s.%s: %v", name, fd.Name, err)
+			}
+		}
+	}
+	// An argument's directive is written onto its Args struct field, so the
+	// same refusals apply. Without this a tag on an argument was read by no
+	// one: the directive passed SDL validation when declared on
+	// ARGUMENT_DEFINITION and then changed nothing.
+	for _, kind := range []ast.DefinitionKind{ast.Object, ast.Interface} {
+		for _, name := range b.typeNames(kind) {
+			for _, fd := range b.schema.Types[name].Fields {
+				for _, arg := range fd.Arguments {
+					if _, err := b.tagsFor(arg.Directives); err != nil {
+						coord := name + "." + fd.Name + "(" + arg.Name + ")"
+						return b.diag(arg.Position, coord, "codegen: %s: %v", coord, err)
+					}
+				}
 			}
 		}
 	}
@@ -51,17 +67,17 @@ func (b *builder) jsonTag(fd *ast.FieldDefinition) string {
 	return " json:\"" + fd.Name + ",omitempty\""
 }
 
-// tagsFor renders the extra struct tags a field's Config.TagDirective directives ask for,
+// tagsFor renders the extra struct tags the Config.TagDirective directives in dirs ask for,
 // each as ` key:"value"`, in directive order. It is empty when no directive is configured
-// or none is on the field.
-func (b *builder) tagsFor(fd *ast.FieldDefinition) (string, error) {
+// or none is in dirs.
+func (b *builder) tagsFor(dirs ast.DirectiveList) (string, error) {
 	td := b.cfg.TagDirective
-	if td.IsZero() || fd == nil {
+	if td.IsZero() {
 		return "", nil
 	}
 	var out strings.Builder
 	seen := map[string]bool{}
-	for _, d := range fd.Directives.ForNames(td.Name) {
+	for _, d := range dirs.ForNames(td.Name) {
 		k, v := d.Arguments.ForName(td.KeyArg), d.Arguments.ForName(td.ValueArg)
 		if k == nil || v == nil {
 			return "", fmt.Errorf("@%s needs both %q and %q", td.Name, td.KeyArg, td.ValueArg)

@@ -153,8 +153,8 @@ type Config struct {
 	// migration win.
 	FieldDirective FieldDirective
 	// TagDirective names an SDL directive that adds a struct tag to an
-	// input-object field, with the arguments holding the tag's key and value.
-	// Empty means none.
+	// input-object field or to a field's argument, with the arguments holding
+	// the tag's key and value. Empty means none.
 	//
 	// gqlgen spells it @goTag(key: "valid", value: "required,max=200"), and a
 	// service that validates the decoded input with struct tags -- the
@@ -164,8 +164,10 @@ type Config struct {
 	// because a missing tag is not an error. One real schema carries 5 899.
 	//
 	// Tags are written after the graphql tag, in the order the directives
-	// appear. Only input-object fields take them: an output field is read, not
-	// validated. A key or value the struct-tag syntax cannot carry, a key that
+	// appear. Input-object fields and arguments take them, the latter on the
+	// field's Args struct, so the directive must be declared on
+	// ARGUMENT_DEFINITION for an argument to carry it: an output field is
+	// read, not validated. A key or value the struct-tag syntax cannot carry, a key that
 	// repeats on one field, and the reserved key "graphql" are errors rather
 	// than silently-wrong tags.
 	TagDirective TagDirective

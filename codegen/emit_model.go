@@ -79,7 +79,7 @@ func (b *builder) emitModel(group string) string {
 			// lossy: an SDL field named ownerID becomes OwnerID, which derives
 			// to ownerId, and the binding then fails to match the schema.
 			// Validated when the builder was made, so the error cannot occur here.
-			extra, _ := b.tagsFor(fd)
+			extra, _ := b.tagsFor(fd.Directives)
 			body.WriteString("\t" + b.fieldIdent(name, fd.Name) + " " +
 				b.goType(fd.Type, selfPkg, b.cfg.NullableInputOmittable) +
 				" `graphql:\"" + fd.Name + "\"" + b.jsonTag(fd) + extra + "`\n")

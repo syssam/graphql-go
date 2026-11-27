@@ -119,3 +119,80 @@ func TestTagDirectiveIsZero(t *testing.T) {
 		t.Error("a fully named directive is not zero")
 	}
 }
+
+const argTagSDL = `
+directive @goTag(key: String!, value: String!) repeatable on INPUT_FIELD_DEFINITION | ARGUMENT_DEFINITION
+type Query {
+  search(term: String! @goTag(key: "valid", value: "required,max=50"), page: Int): String
+}
+`
+
+// A directive the SDL accepts on an argument was read by nobody, so a service that
+// validated its Args struct with tags got none and found out at runtime. The tag goes
+// where it does on an input field: after the graphql tag, in directive order.
+func TestTagDirectiveWritesTagsOnArguments(t *testing.T) {
+	t.Parallel()
+	dir := generate(t, argTagSDL, Config{TagDirective: goTag})
+	all := norm(generatedSources(t, dir))
+	for _, want := range []string{
+		"`graphql:\"term\" valid:\"required,max=50\"`",
+		"`graphql:\"page\"`",
+	} {
+		if !strings.Contains(all, norm(want)) {
+			t.Errorf("generated code missing %s:\n%s", want, all)
+		}
+	}
+}
+
+func TestTagDirectiveOnArgumentsIsOffByDefault(t *testing.T) {
+	t.Parallel()
+	dir := generate(t, argTagSDL, Config{})
+	if all := generatedSources(t, dir); strings.Contains(all, "valid:") {
+		t.Errorf("no extra tags expected without Config.TagDirective:\n%s", all)
+	}
+}
+
+// An argument's tag is held to the rule an input field's is: one reflect would drop is a
+// generation error that names the argument, on an object and on an interface alike.
+func TestTagDirectiveRejectsWhatATagCannotCarryOnArguments(t *testing.T) {
+	t.Parallel()
+	const decl = "directive @goTag(key: String!, value: String!) repeatable on ARGUMENT_DEFINITION\n"
+	tests := []struct{ name, sdl, coord, want string }{
+		{"a quote in the value on an object", decl + `type Query { q(a: String @goTag(key: "valid", value: "min=\"1\"")): String }`, "Query.q(a)", "quote"},
+		{"a reserved key on an object", decl + `type Query { q(a: String @goTag(key: "graphql", value: "x")): String }`, "Query.q(a)", "reserved"},
+		{"a repeated key on an object", decl + `type Query { q(a: String @goTag(key: "v", value: "x") @goTag(key: "v", value: "y")): String }`, "Query.q(a)", "repeats"},
+		{"a bad key on an interface", decl + `interface Node { f(a: String @goTag(key: "my key", value: "x")): String } type T implements Node { f(a: String): String } type Query { t: T }`, "Node.f(a)", "struct-tag key"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := generateWith(t, tc.sdl, Config{TagDirective: goTag})
+			if err == nil {
+				t.Fatal("expected a generation error, got none")
+			}
+			if !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), tc.coord) {
+				t.Errorf("error should mention %q and name %s, got: %v", tc.want, tc.coord, err)
+			}
+		})
+	}
+}
+
+// A tag the emitter writes is only worth having if what it writes compiles and the
+// engine still reads the argument by its graphql tag beside the new one.
+func TestTagDirectiveOnArgumentsCompiles(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping package build")
+	}
+	dir := writeEntModule(t, argTagSDL, "package ent\n")
+	if err := Generate(context.Background(), Config{
+		Dir: dir, SchemaGlobs: []string{"schema.graphql"},
+		Output: "graph", Package: "hello/graph",
+		TagDirective: goTag,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if src := norm(generatedSources(t, dir)); !strings.Contains(src, norm("`graphql:\"term\" valid:\"required,max=50\"`")) {
+		t.Fatalf("the tag is not in the output:\n%s", src)
+	}
+	buildGenerated(t, dir)
+}

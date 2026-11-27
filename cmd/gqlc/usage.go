@@ -50,7 +50,7 @@ gqlc.yaml keys (cmd/gqlc/README.md describes each):
                             its boolean argument (gqlgen: forceResolver)
     fieldDirective.nameArg  its argument holding the Go name (gqlgen: name)
   tagDirective              SDL directive adding a struct tag to an input
-                            object's field (gqlgen: @goTag)
+                            field or an argument (gqlgen: @goTag)
     tagDirective.name       the directive, without @
     tagDirective.keyArg     its argument holding the tag key
     tagDirective.valueArg   its argument holding the tag value

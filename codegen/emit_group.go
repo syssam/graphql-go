@@ -20,9 +20,11 @@ func (b *builder) emitArgs(group string) string {
 			// lossy. Args structs went without one until an SDL argument
 			// arrived that does not survive the round trip -- ownerID
 			// derives to ownerId, and _lastUpdatedAt to xLastUpdatedAt.
+			// Validated when the builder was made, so the error cannot occur here.
+			extra, _ := b.tagsFor(arg.Directives)
 			body.WriteString("\t" + b.argIdent(name, fd.Name, arg.Name) + " " +
 				b.goType(arg.Type, "", false) +
-				" `graphql:\"" + arg.Name + "\"`\n")
+				" `graphql:\"" + arg.Name + "\"" + extra + "`\n")
 		}
 		body.WriteString("}\n\n")
 	})
