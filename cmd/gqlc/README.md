@@ -53,6 +53,7 @@ files declare beside their imports (`r`, `v`, `a`, `ctx`, `sdl`, `opts`,
 | `gqlc -h` | what gqlc does, every flag, and every `gqlc.yaml` key in a line |
 | `gqlc -check` | generate in memory, write nothing, and fail naming each file a generate would create, rewrite or delete |
 | `gqlc -check -stubs` | the same, and fail while a scaffolded stub still panics |
+| `gqlc -check -orphans` | the same, and fail on an exported method of a scaffold target that no Resolver has |
 | `gqlc -verify` | generate, then `go build` everything under `output` and fail with what the compiler says |
 | `gqlc -version` | the graphql-go version gqlc was built from, and the Go that built it |
 | `gqlc -schema FILES -out DIR` | generate with no `gqlc.yaml`; the package is read from the nearest `go.mod` |
@@ -118,6 +119,23 @@ go tool gqlc -config gqlc.yaml -check -stubs
 A stub is a method whose whole body is still the `panic("not implemented:
 ...")` gqlc wrote. Once you change that body in any way, gqlc treats the method
 as yours. `-stubs` needs `scaffold`, which says where the implementations are,
+and is refused without `-check`.
+
+The other thing a compiler cannot see is the reverse: a field dropped from the
+SDL leaves its method on the implementation, and an extra method satisfies the
+interface, so it compiles and nothing calls it. A generate names those in a note
+too (`scaffold user: impl.Resolver has methods ...: Archived. If the SDL dropped
+their fields, delete them.`), which a CI job does not read. `-check -orphans`
+fails on them, naming each with its file, and judges a type that serves several
+groups by all of their Resolvers:
+
+```sh
+go tool gqlc -config gqlc.yaml -check -orphans
+```
+
+It is opt-in because an exported method can be the author's own, `String` for
+instance, and the check cannot tell it from a leftover: asking for it says that
+every exported method of the scaffold target is a resolver. It needs `scaffold`
 and is refused without `-check`.
 
 With one SDL group, implement `graph.Resolver` and call

@@ -21,6 +21,11 @@ var ErrStale = errors.New("codegen: generated code is not current")
 // Check with CheckOptions.Stubs finds a scaffolded stub left unimplemented.
 var ErrStubs = errors.New("codegen: scaffolded Resolver methods are not implemented")
 
+// ErrOrphans is what Check returns, wrapped with the methods concerned, when
+// Check with CheckOptions.Orphans finds an exported method on a Scaffold
+// target that none of the Resolvers it implements has.
+var ErrOrphans = errors.New("codegen: Scaffold targets have exported methods no Resolver asks for")
+
 // Generate writes the bindings cfg describes under Config.Output, deletes the
 // files an earlier generate wrote that this one does not, and scaffolds the
 // Resolver methods Config.Scaffold's targets lack. Every refusal is found
@@ -47,6 +52,16 @@ type CheckOptions struct {
 	// field, so the compiler cannot report it. It needs Config.Scaffold, which
 	// says where the implementations are.
 	Stubs bool
+	// Orphans also fails, with an error wrapping ErrOrphans, while a Scaffold
+	// target has an exported method that none of the Resolvers it implements
+	// has. A field dropped from the SDL leaves its method behind, and the
+	// method compiles, so the compiler cannot report it; a generate says so in
+	// a note, which a CI job does not see. It is opt-in because an exported
+	// method can be the author's own, such as String, and the check cannot
+	// tell: asking for it says every exported method of the target is a
+	// resolver. It needs Config.Scaffold, which says where the implementations
+	// are.
+	Orphans bool
 }
 
 // Check is a generate that writes and deletes nothing. It returns an error
@@ -68,6 +83,9 @@ func Check(ctx context.Context, cfg Config, opts CheckOptions) error {
 	if opts.Stubs && len(cfg.Scaffold) == 0 {
 		return errors.New("codegen: CheckOptions.Stubs looks for stubs in the Scaffold targets, and Scaffold names none")
 	}
+	if opts.Orphans && len(cfg.Scaffold) == 0 {
+		return errors.New("codegen: CheckOptions.Orphans looks for orphan methods in the Scaffold targets, and Scaffold names none")
+	}
 	r, err := plan(ctx, cfg)
 	if err != nil {
 		return err
@@ -75,6 +93,9 @@ func Check(ctx context.Context, cfg Config, opts CheckOptions) error {
 	err = r.b.check(r.outDir, r.rels, r.olds, r.files, r.recorded, r.changes)
 	if opts.Stubs {
 		err = errors.Join(err, r.b.checkStubs())
+	}
+	if opts.Orphans {
+		err = errors.Join(err, r.b.checkOrphans())
 	}
 	return err
 }

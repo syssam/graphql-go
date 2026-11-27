@@ -26,6 +26,14 @@ func TestRunWritesBindings(t *testing.T) {
 	}
 }
 
+// -orphans, like -stubs, is part of a check.
+func TestOrphansFlagNeedsCheck(t *testing.T) {
+	err := run([]string{"-orphans", "-schema", "x.graphql", "-out", t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "-orphans is part of a check") {
+		t.Fatalf("err = %v, want -orphans refused without -check", err)
+	}
+}
+
 // -stubs fails a check; on a generate, which has just written the stubs it
 // would fail over, it is refused rather than ignored.
 func TestStubsFlagNeedsCheck(t *testing.T) {

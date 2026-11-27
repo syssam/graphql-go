@@ -23,6 +23,7 @@ Usage:
   gqlc -schema FILES -out DIR          generate with no configuration file
   gqlc -check [-config gqlc.yaml]      write nothing; fail naming what is stale
   gqlc -check -stubs                   and fail while a scaffolded stub is left
+  gqlc -check -orphans                 and fail on a method no Resolver has
   gqlc -verify [-config gqlc.yaml]     generate, then go build what was written
   gqlc -version                        print which gqlc this is
 

@@ -208,22 +208,100 @@ func (b *builder) splitTarget(target string) (dir, typ string, err error) {
 // group in groups -- since a type serving two groups has both groups' methods
 // and neither group's are stale.
 func (b *builder) reportStale(groups []string, target string, have, want map[string]bool) {
-	var stale []string
-	for m := range have {
-		if !want[m] && goast.IsExported(m) {
-			stale = append(stale, m)
-		}
-	}
+	stale := staleMethods(have, want)
 	if len(stale) == 0 {
 		return
 	}
-	slices.Sort(stale)
 	which := "the " + groups[0] + " Resolver does not"
 	if len(groups) > 1 {
 		which = "none of the " + strings.Join(groups, ", ") + " Resolvers has"
 	}
 	b.notef("scaffold %s: %s has methods %s: %s. If the SDL dropped their fields, delete them.",
 		strings.Join(groups, ", "), target, which, strings.Join(stale, ", "))
+}
+
+// staleMethods is the exported methods in have that want does not, sorted:
+// what reportStale names and CheckOptions.Orphans fails on, so the two cannot
+// disagree about what an orphan is.
+func staleMethods(have, want map[string]bool) []string {
+	var stale []string
+	for m := range have {
+		if !want[m] && goast.IsExported(m) {
+			stale = append(stale, m)
+		}
+	}
+	slices.Sort(stale)
+	return stale
+}
+
+// checkOrphans is CheckOptions.Orphans: every exported method of a Scaffold
+// target that none of the Resolvers the type implements has, read from the
+// files checkScaffoldTargets parsed. Like checkStubs it matches directories as
+// the filesystem resolves them, so two spellings of one target are one type,
+// and a type serving several groups is judged by all of their Resolvers.
+func (b *builder) checkOrphans() error {
+	byDir := map[string][]string{}
+	dirs := b.newDirSet()
+	for _, path := range slices.Sorted(maps.Keys(b.checked)) {
+		d := filepath.Dir(path)
+		if byDir[d] == nil {
+			dirs.add(d)
+		}
+		byDir[d] = append(byDir[d], path)
+	}
+	keys := b.scaffoldKeys(b.uniqueGroups())
+	type impl struct {
+		dir, typ, target string
+		want             map[string]bool
+	}
+	var order []string
+	impls := map[string]*impl{}
+	for _, name := range slices.Sorted(maps.Keys(b.cfg.Scaffold)) {
+		target := b.cfg.Scaffold[name]
+		dir, typ, err := b.splitTarget(target)
+		if err != nil {
+			continue
+		}
+		d, ok := dirs.find(dir)
+		if !ok {
+			continue
+		}
+		k := d + "\x00" + typ
+		t := impls[k]
+		if t == nil {
+			t = &impl{dir: d, typ: typ, target: target, want: map[string]bool{}}
+			impls[k] = t
+			order = append(order, k)
+		}
+		for _, m := range b.resolverSignatures(keys[name], "") {
+			t.want[m.name] = true
+		}
+	}
+	var lines []string
+	for _, k := range order {
+		t := impls[k]
+		have := map[string]bool{}
+		file := map[string]string{}
+		for _, path := range byDir[t.dir] {
+			for _, m := range b.checked[path].methods {
+				if m[0] == t.typ {
+					have[m[1]] = true
+					file[m[1]] = path
+				}
+			}
+		}
+		for _, m := range staleMethods(have, t.want) {
+			rel, err := filepath.Rel(b.dir, file[m])
+			if err != nil {
+				rel = file[m]
+			}
+			lines = append(lines, fmt.Sprintf("  %s (%s.%s, %s)", m, filepath.ToSlash(t.target[:strings.LastIndex(t.target, ".")]), t.typ, filepath.ToSlash(rel)))
+		}
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w; %d method(s), each a field dropped from the SDL or an exported method of the author's own:\n%s", ErrOrphans, len(lines), strings.Join(lines, "\n"))
 }
 
 // checkStubs is CheckOptions.Stubs: every method of a Scaffold target still

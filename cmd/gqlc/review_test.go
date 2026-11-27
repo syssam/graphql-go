@@ -98,13 +98,21 @@ func TestExitCodeTellsStaleFromBroken(t *testing.T) {
 		t.Errorf("a broken schema (%v) exits %d, want 2", broken, got)
 	}
 	// And a stub left, with -stubs, is stale too.
-	_, cfg = write(t, "schema: [schema.graphql]\noutput: graph\npackage: example/graph\nscaffold:\n  graph: impl.Resolver\n", "type Query { a: String }\n")
+	dir, cfg = write(t, "schema: [schema.graphql]\noutput: graph\npackage: example/graph\nscaffold:\n  graph: impl.Resolver\n", "type Query { a: String }\n")
 	if err := run([]string{"-config", cfg}); err != nil {
 		t.Fatal(err)
 	}
 	stubs := run([]string{"-config", cfg, "-check", "-stubs"})
 	if got := exitCode(stubs); got != 1 {
 		t.Errorf("a stub left (%v) exits %d, want 1", stubs, got)
+	}
+	// And so is a method left behind by a dropped field, with -orphans.
+	if err := os.WriteFile(filepath.Join(dir, "impl", "extra.go"), []byte("package impl\n\nfunc (r *Resolver) Gone() bool { return false }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orphans := run([]string{"-config", cfg, "-check", "-orphans"})
+	if got := exitCode(orphans); got != 1 || !strings.Contains(orphans.Error(), "Gone") {
+		t.Errorf("an orphan left (%v) exits %d, want 1 naming Gone", orphans, got)
 	}
 	if got := exitCode(errors.New("x")); got != 2 {
 		t.Errorf("an unrelated error exits %d, want 2", got)

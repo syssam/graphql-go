@@ -254,14 +254,15 @@ func main() {
 }
 
 // exitCode is diff's convention: 0 when nothing is stale, 1 when a check
-// found the tree stale -- or a scaffolded stub left, with -stubs -- and 2 for
+// found the tree stale -- or a scaffolded stub left, with -stubs, or an orphan
+// method, with -orphans -- and 2 for
 // anything else. A CI step can then tell "regenerate" from "the configuration
 // is broken", which one code for both left it to parse stderr for.
 func exitCode(err error) int {
 	switch {
 	case err == nil:
 		return 0
-	case errors.Is(err, codegen.ErrStale), errors.Is(err, codegen.ErrStubs):
+	case errors.Is(err, codegen.ErrStale), errors.Is(err, codegen.ErrStubs), errors.Is(err, codegen.ErrOrphans):
 		return 1
 	}
 	return 2
@@ -275,7 +276,7 @@ type options struct {
 	schema, models               repeatable
 	nullableOmittable, zeroNulls bool
 	check, version, verify       bool
-	stubs                        bool
+	stubs, orphans               bool
 }
 
 // newFlags is the command's flag set, apart so that a test can list every
@@ -288,6 +289,7 @@ func newFlags(stderr io.Writer) (*flag.FlagSet, *options) {
 	fs.StringVar(&o.config, "config", "gqlc.yaml", "path to gqlc.yaml")
 	fs.BoolVar(&o.check, "check", false, "write nothing; fail naming each file a generate would change")
 	fs.BoolVar(&o.stubs, "stubs", false, "with -check: also fail while a scaffolded stub still panics")
+	fs.BoolVar(&o.orphans, "orphans", false, "with -check: also fail on a scaffold target method no Resolver has")
 	fs.BoolVar(&o.verify, "verify", false, "go build the output once written; fail with what the compiler says")
 	fs.BoolVar(&o.version, "version", false, "print the graphql-go version gqlc was built from")
 	fs.Var(&o.schema, "schema", "SDL file or glob, repeated or comma-separated; the flag form")
@@ -324,6 +326,9 @@ func runTo(args []string, stdout, stderr io.Writer) error {
 	if o.stubs && !o.check {
 		return errors.New("gqlc: -stubs is part of a check; pass -check with it")
 	}
+	if o.orphans && !o.check {
+		return errors.New("gqlc: -orphans is part of a check; pass -check with it")
+	}
 	notef := func(format string, args ...any) {
 		// A check that passes says nothing, so that it can stand in a CI job
 		// or a pre-commit hook; the notes are a generate's to make.
@@ -344,7 +349,7 @@ func runTo(args []string, stdout, stderr io.Writer) error {
 		if explicitConfig {
 			return errors.New("gqlc: -config and -schema are two ways to say the same thing; pass one")
 		}
-		return runFlags(o.schema, o.out, o.pkg, o.models, o.nullableOmittable, o.zeroNulls, o.check, o.stubs, o.verify, notef)
+		return runFlags(o.schema, o.out, o.pkg, o.models, o.nullableOmittable, o.zeroNulls, o.check, o.verify, codegen.CheckOptions{Stubs: o.stubs, Orphans: o.orphans}, notef)
 	}
 
 	configPath := o.config
@@ -416,7 +421,7 @@ func runTo(args []string, stdout, stderr io.Writer) error {
 		Verify:                 o.verify,
 		Notef:                  notef,
 	}
-	if err := generateOrCheck(cfg, o.check, o.stubs); err != nil {
+	if err := generateOrCheck(cfg, o.check, codegen.CheckOptions{Stubs: o.stubs, Orphans: o.orphans}); err != nil {
 		return err
 	}
 	// Under -check as well: a check that passes has found the files on disk
@@ -431,7 +436,7 @@ func runTo(args []string, stdout, stderr io.Writer) error {
 
 // runFlags is the config-file-free path. Dir stays the process working
 // directory, so -schema and -out are read the way a shell would read them.
-func runFlags(schema repeatable, out, pkg string, models repeatable, nullableOmittable, zeroForNull, check, stubs, verify bool, notef func(string, ...any)) error {
+func runFlags(schema repeatable, out, pkg string, models repeatable, nullableOmittable, zeroForNull, check, verify bool, checkOpts codegen.CheckOptions, notef func(string, ...any)) error {
 	if out == "" {
 		return errors.New("gqlc: -out is required with -schema")
 	}
@@ -453,14 +458,15 @@ func runFlags(schema repeatable, out, pkg string, models repeatable, nullableOmi
 		ZeroForNullInputs:      zeroForNull,
 		Verify:                 verify,
 		Notef:                  notef,
-	}, check, stubs)
+	}, check, checkOpts)
 }
 
-// generateOrCheck is -check and -stubs: a check when -check is given, a
-// generate otherwise. -stubs without -check is refused by the flag parsing.
-func generateOrCheck(cfg codegen.Config, check, stubs bool) error {
+// generateOrCheck is -check with its -stubs and -orphans: a check when -check
+// is given, a generate otherwise. Either without -check is refused by the flag
+// parsing.
+func generateOrCheck(cfg codegen.Config, check bool, opts codegen.CheckOptions) error {
 	if check {
-		return codegen.Check(context.Background(), cfg, codegen.CheckOptions{Stubs: stubs})
+		return codegen.Check(context.Background(), cfg, opts)
 	}
 	return codegen.Generate(context.Background(), cfg)
 }
